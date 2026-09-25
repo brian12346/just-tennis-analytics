@@ -1,9 +1,9 @@
 name: Sync data
 
+# Started by Supabase (pg_cron -> workflow_dispatch, see db/supabase/sync_scheduler.sql):
+#   hourly at :07 (recent sales, orders, labels) and nightly at 11:30 UTC (catalog costs, cost check, 35-day re-sync).
+# GitHub's own cron skipped most hours on this repo, so it is not used. Run by hand from the Actions tab any time.
 on:
-  schedule:
-    - cron: "7 * * * *"      # hourly: recent sales, orders, labels
-    - cron: "30 11 * * *"    # nightly at 4:30am Pacific (PDT): catalog costs + 35-day re-sync
   workflow_dispatch:
     inputs:
       job:
@@ -40,7 +40,7 @@ jobs:
           SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
           SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
           SHIPSTATION_API_KEY: ${{ secrets.SHIPSTATION_API_KEY }}
-          JOB: ${{ github.event.inputs.job || (github.event.schedule == '30 11 * * *' && 'nightly' || 'hourly') }}
+          JOB: ${{ github.event.inputs.job || 'hourly' }}
           SINCE: ${{ github.event.inputs.since }}
         run: |
           if [ -n "$SINCE" ]; then python -m sync.run "$JOB" --since "$SINCE"; else python -m sync.run "$JOB"; fi
