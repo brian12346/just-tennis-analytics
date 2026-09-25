@@ -58,7 +58,8 @@
   // At most 2 calls in flight. The very first call runs alone, so the "allow Supabase" prompt
   // is answered before anything else is sent (calls made while it is open get refused).
   let active = 0, gate = null; const waiting = [];
-  const acquire = () => new Promise(r => { if (active < 2) { active++; r(); } else waiting.push(r); });
+  const LIMIT = WEB ? 4 : 2;                     // the Claude connector throttles bursts; direct web calls don't
+  const acquire = () => new Promise(r => { if (active < LIMIT) { active++; r(); } else waiting.push(r); });
   const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 

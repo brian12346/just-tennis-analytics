@@ -111,12 +111,13 @@
   }
 
   // ShipStation label costs for the orders in range (voided labels left out), plus when the last sync ran.
-  async function loadLabels(refresh) {
+  async function loadLabels(refresh, isCur = () => true) {
     const [r, sync] = await Promise.all([
       JT.rowsSplit(["l.order_id::text", "sum(l.cost)", "count(*)", "coalesce(json_agg(distinct l.service) filter (where l.service <> ''), '[]')"],
         `from jt.shipstation_labels l join jt.shopify_orders o on o.order_id = l.order_id where not l.voided and o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)} group by l.order_id`, "l.order_id", 1, refresh),
       JT.rows(["job", "finished_at", "ok"], "from jt.v_sync_status", refresh),
     ]);
+    if (!isCur()) return;                                  // a newer range is loading
     const bySid = new Map(); let labels = 0;
     for (const [sid, cost, n, sv] of r) { bySid.set(sid, { cost: num(cost), labels: num(n), services: new Set(sv || []) }); labels += num(n); }
     state.shipSid = bySid; state.shipLabels = labels; state.syncs = sync;
@@ -128,9 +129,7 @@
   function safeRender() { try { render(); } catch (e) { window.JT.showError && window.JT.showError(e); } }
   async function loadAll(refresh) {
     if (!state.mcp) return;
-    // A range picked while a load is running: finish that load, then load the new range.
-    // A load running over 40 seconds is abandoned (its results are ignored) and the new one starts now.
-    if (state.loading && Date.now() - state.loadStarted < 40000) { state.pending = { refresh: !!refresh || !!(state.pending && state.pending.refresh) }; setStatus("Loading…"); return; }
+    // A new range starts loading right away; a load still running for the old range is ignored when it finishes.
     const id = state.loadId = (state.loadId || 0) + 1, cur = () => id === state.loadId;
     state.loading = true; state.loadStarted = Date.now(); state.pending = null; state.fromCache = false;
     $("refresh").disabled = true;
@@ -141,18 +140,17 @@
       const ordersP = loadOrders(refresh, (n) => cur() && setStatus(`Loading orders… ${n} so far`)).then(o => { if (cur()) { state.orders = o; state.ordersErr = null; } }).catch(e => { if (cur()) { state.ordersErr = e; if (isDenial(e)) state.orders = null; } });
       const costsP = loadOrderCosts(refresh).then(c => { if (cur()) { state.costs = c; state.costsErr = null; } }).catch(e => { if (cur()) { state.costsErr = e; if (isDenial(e)) state.costs = null; } });
       const ncP = loadNoCostRows(refresh).then(r => { if (cur()) state.ncRows = r; }).catch(() => { if (cur()) state.ncRows = null; });
-      const shipP = loadLabels(refresh).catch(() => { if (cur()) { state.dbReady = true; state.shipErr = true; } });
-      await dailyP; if (cur() && !state.pending) safeRender();
+      const shipP = loadLabels(refresh, cur).catch(() => { if (cur()) { state.dbReady = true; state.shipErr = true; } });
+      await dailyP; if (cur()) safeRender();
       await Promise.all([ordersP, costsP, ncP, shipP]);
     } catch (e) { window.JT.showError && window.JT.showError(e); }
     finally { if (cur()) { state.loading = false; $("refresh").disabled = false; } }
     if (!cur()) return;                                   // a newer load took over
     state.loadedAt = new Date();
-    if (state.pending) { const p = state.pending; state.pending = null; return loadAll(p.refresh); }
     safeRender();
     const errs = [state.dailyErr, state.ordersErr, state.costsErr].filter(Boolean);
     if (errs.length) setStatus("");
-    else setStatus(`Updated ${state.loadedAt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})} · ${state.orders ? state.orders.length : 0} orders`);
+    else setStatus(`${state.start === state.end ? shortDay(state.start) : shortDay(state.start) + " – " + shortDay(state.end)} · Updated ${state.loadedAt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})} · ${state.orders ? state.orders.length : 0} orders`);
   }
 
   function setStatus(t) { $("status").textContent = t; }
