@@ -26,6 +26,8 @@
     has: "all", perPage: 40,   // filter on current Shopify cost; orders per page (0 = all)
     vcost: new Map(), vcostReady: false,   // variant id -> current Shopify unit cost (null = none)
     bulk: null,                // progress text while filling or saving in bulk
+    mode: "orders",            // "orders" | "products"
+    pcost: {},                 // products view: product key -> typed unit cost
   };
 
   function note(kind, html) { const n = $("cm-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; }
@@ -49,17 +51,17 @@
       const where = `from jt.shopify_sales s where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0`;
       const [or, lr] = await Promise.all([
         JT.rowsSplit(["s.order_id::text", "s.order_name", "sum(s.net)", "sum(s.cogs)", "sum(s.net_no_cost)"], `${where} group by s.order_id, s.order_name having sum(s.net_no_cost) > 0.005`, "s.order_id", 1, refresh),
-        JT.rowsSplit(["s.order_id::text", "s.variant_id::text", "s.product_id::text", "s.product_title", "s.variant_title", "s.sku", "sum(s.units)", "sum(s.net)", "sum(s.net_no_cost)", "max(v.unit_cost)", "bool_or(v.variant_id is not null)"],
+        JT.rowsSplit(["s.order_id::text", "s.variant_id::text", "s.product_id::text", "s.product_title", "s.variant_title", "s.sku", "sum(s.units)", "sum(s.net)", "sum(s.net_no_cost)", "max(v.unit_cost)", "bool_or(v.variant_id is not null)", "max(s.vendor)", "max(s.product_type)"],
           `from jt.shopify_sales s left join jt.variants v on v.variant_id = s.variant_id where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0 group by s.order_id, s.variant_id, s.product_id, s.product_title, s.variant_title, s.sku having sum(s.net_no_cost) > 0.005`,
           "s.order_id", 2, refresh),
       ]);
       if (id !== C.reqId) return;
       const by = new Map();
       for (const [sid, name, net, cogs, nc] of or) by.set(sid, { sid, name: name || "", nocost: n0(nc), cogs: n0(cogs), net: n0(net), items: [] });
-      for (const [sid, vid, pid, title, variant, sku, units, net, nc, uc, known] of lr) {
+      for (const [sid, vid, pid, title, variant, sku, units, net, nc, uc, known, vendor, ptype] of lr) {
         const o = by.get(sid); if (!o) continue;
         const v = vid === "0" ? "" : vid;
-        o.items.push({ vid: v, pid: pid === "0" ? "" : pid, title: title || "", variant: variant || "", sku: sku || "", qty: n0(units), net: n0(net), nocost: n0(nc) });
+        o.items.push({ vid: v, pid: pid === "0" ? "" : pid, title: title || "", variant: variant || "", sku: sku || "", qty: n0(units), net: n0(net), nocost: n0(nc), vendor: vendor || "", ptype: ptype || "" });
         if (v && known) C.vcost.set(v, uc == null ? null : Number(uc));
         else if (v) C.vcost.set(v, null);
       }
@@ -170,6 +172,12 @@
     else if (C.orders) st.textContent = `${C.orders.length.toLocaleString()} orders with items sold without a cost · ${C.start} to ${C.end}` + (C.db ? "" : " · saving isn't available in this view");
     renderKpis();
 
+    document.querySelectorAll("#cm-mode button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === C.mode)));
+    $("cm-hint").textContent = C.mode === "products"
+      ? "One cost per product: it's used for every order below that has this product without a cost. Orders with other uncosted items stay open in the Orders view."
+      : "Type the cost of one unit. Enter moves to the next box. When you enter a cost, other empty rows with the same item fill in too.";
+    $("cm-sort").querySelectorAll("option").forEach(op => { if (op.value !== "amt") op.disabled = C.mode === "products"; });
+    if (C.mode === "products") { $("cm-bulk").hidden = true; renderProducts(); return; }
     const t = $("cm-table");
     const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("cmi-") && t.contains(ae) ? ae.id : null;
     const sel = activeId ? [ae.selectionStart, ae.selectionEnd] : null;
@@ -277,6 +285,101 @@
     touched.forEach(refreshOrder);
   }
 
+  // ---------- products view ----------
+  const pkey = (i) => i.vid || "custom";
+  // Products sold without a cost in the orders the Show filter selects; custom items share one row.
+  function productList() {
+    let orders = C.orders || [];
+    if (C.show === "open") orders = orders.filter(o => !C.overrides.has(o.sid));
+    else if (C.show === "saved") orders = orders.filter(o => C.overrides.has(o.sid));
+    const by = new Map();
+    for (const o of orders) for (const i of o.items) {
+      const k = pkey(i);
+      const p = by.get(k) || { key: k, vid: i.vid, pid: i.pid, title: i.vid ? i.title : "Custom items", variant: i.vid ? i.variant : "", sku: i.vid ? i.sku : "",
+        vendor: i.vid ? i.vendor : "", ptype: i.vid ? i.ptype : "", sids: new Set(), open: new Set(), qty: 0, nocost: 0 };
+      p.sids.add(o.sid); if (!C.overrides.has(o.sid)) p.open.add(o.sid);
+      p.qty += i.qty; p.nocost += i.nocost;
+      by.set(k, p);
+    }
+    let list = [...by.values()];
+    if (C.has !== "all" && C.vcostReady) list = list.filter(p => (p.vid && C.vcost.get(p.vid) != null) === (C.has === "ready"));
+    const q = C.q.trim().toLowerCase();
+    if (q) list = list.filter(p => [p.title, p.variant, p.sku, p.vendor, p.ptype].join(" ").toLowerCase().includes(q));
+    return list.sort((a, b) => (a.key === "custom") - (b.key === "custom") || b.nocost - a.nocost);
+  }
+  const pcostOf = (p) => { const v = money(C.pcost[p.key]); return v == null || Number.isNaN(v) || v < 0 ? null : v; };
+  const readyProducts = () => productList().filter(p => p.key !== "custom" && p.open.size && pcostOf(p) != null);
+
+  function renderProducts() {
+    const t = $("cm-table");
+    const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("cmp-") && t.contains(ae) ? ae.id : null;
+    const sel = activeId ? [ae.selectionStart, ae.selectionEnd] : null;
+    const list = productList();
+    const per = C.perPage || Math.max(1, list.length);
+    const pages = Math.max(1, Math.ceil(list.length / per));
+    if (C.page >= pages) C.page = pages - 1;
+    const page = list.slice(C.page * per, (C.page + 1) * per);
+    const head = `<thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Category</th><th>Orders</th><th>Qty</th><th>Sales without cost</th><th>Shopify cost now</th><th>Your cost each</th><th>Est. cost</th><th class="l"></th></tr></thead>`;
+    let body = "";
+    if (!C.orders) body = `<tr><td class="l dim" colspan="10">${C.loading ? '<span class="skel">Loading…</span>' : C.err ? esc(errMsg(C.err)) : ""}</td></tr>`;
+    else if (!page.length) body = `<tr><td class="l dim" colspan="10">${C.show === "open" && !C.q ? "Every order in this range has a cost. Nice." : "No products match."}</td></tr>`;
+    for (const p of page) {
+      const now = p.vid ? C.vcost.get(p.vid) : null, typed = C.pcost[p.key] ?? "", v = money(typed), bad = Number.isNaN(v) || v < 0;
+      const each = v != null && !bad ? v : now;
+      const name = p.pid ? `<a class="olink" href="${ADMIN}/products/${encodeURIComponent(p.pid)}${p.vid ? "/variants/" + encodeURIComponent(p.vid) : ""}" target="_blank" rel="noopener">${esc(p.title || "(untitled)")}</a>` : esc(p.title);
+      const status = p.key === "custom" ? '<span class="small dim">Different items: enter per order in the Orders view</span>'
+        : !p.open.size ? '<span class="pill ok">All saved</span>'
+        : `<span class="small dim">${p.open.size.toLocaleString()} order${p.open.size > 1 ? "s" : ""} need${p.open.size > 1 ? "" : "s"} a cost</span>`;
+      const input = p.key === "custom" || !p.open.size ? '<span class="dim">—</span>'
+        : `<input id="cmp-${esc(p.key)}" class="cmin cmp ${bad ? "bad" : v != null ? "ok" : ""}" data-p="${esc(p.key)}" type="text" inputmode="decimal" placeholder="${now != null ? now.toFixed(2) : "0.00"}" aria-label="Cost each for ${esc(p.title)}" value="${esc(typed)}">`;
+      body += `<tr>
+        <td class="l"><div class="iname">${name}</div>${p.variant || p.sku ? `<div class="small dim">${esc([p.variant, p.sku].filter(Boolean).join(" · "))}</div>` : ""}</td>
+        <td class="l">${esc(p.vendor) || '<span class="dim">—</span>'}</td><td class="l">${esc(p.ptype) || '<span class="dim">—</span>'}</td>
+        <td>${p.sids.size.toLocaleString()}</td><td>${Math.round(p.qty * 100) / 100}</td><td>${m(p.nocost)}</td>
+        <td>${now == null ? '<span class="dim">—</span>' : p.open.size && p.key !== "custom" ? `<button class="linkbtn" data-cm="puse" data-p="${esc(p.key)}" title="Use this cost">${m(now)}</button>` : m(now)}</td>
+        <td>${input}</td>
+        <td id="cmpe-${esc(p.key)}">${each != null && p.key !== "custom" ? m(each * p.qty) : '<span class="dim">—</span>'}</td>
+        <td class="l">${status}</td></tr>`;
+    }
+    t.innerHTML = head + `<tbody>${body}</tbody>`;
+    $("cm-prev").hidden = C.page === 0;
+    $("cm-next").hidden = C.page >= pages - 1;
+    $("cm-count").textContent = list.length ? `Products ${C.page * per + 1}–${Math.min(list.length, (C.page + 1) * per)} of ${list.length.toLocaleString()}` : "";
+    saveProductsButton();
+    if (activeId && $(activeId)) { const i = $(activeId); i.focus(); try { i.setSelectionRange(sel[0], sel[1]); } catch (_) {} }
+  }
+  function saveProductsButton() {
+    const r = readyProducts(), sa = $("cm-saveall");
+    const n = new Set(r.flatMap(p => [...p.open])).size;
+    sa.disabled = !r.length || C.saving || !C.db;
+    sa.textContent = C.saving ? (C.bulk || "Saving…") : r.length ? `Save ${r.length} product cost${r.length > 1 ? "s" : ""} (${n.toLocaleString()} order${n > 1 ? "s" : ""})` : "Save product costs";
+  }
+  // Apply each typed product cost to its open orders, then save every order that is now fully costed.
+  async function saveProducts() {
+    const prods = readyProducts(); if (!prods.length || !C.db) return;
+    const cost = new Map(prods.map(p => [p.key, pcostOf(p)]));
+    const sids = [...new Set(prods.flatMap(p => [...p.open]))];
+    C.saving = true; C.bulk = "Loading order items…"; saveProductsButton();
+    await loadLines(sids, (d, n) => { C.bulk = `Loading order items… ${d} of ${n}`; saveProductsButton(); });
+    const touched = [];
+    for (const sid of sids) {
+      const o = (C.orders || []).find(x => x.sid === sid); if (!o) continue;
+      for (const it of needRows(o) || []) {
+        const k = dkey(sid, it.id);
+        if (it.vid && cost.has(it.vid) && (C.drafts[k] == null || C.drafts[k] === "")) C.drafts[k] = cost.get(it.vid).toFixed(2);
+      }
+      touched.push(o);
+    }
+    const complete = touched.filter(o => (orderCalc(o) || {}).complete), partial = touched.length - complete.length;
+    C.saving = false; C.bulk = null;
+    await saveMany(complete);
+    for (const p of prods) if (![...p.open].some(sid => !C.overrides.has(sid))) delete C.pcost[p.key];
+    const failed = complete.filter(o => !C.overrides.has(o.sid)).length;
+    if (!failed) note(partial ? "warn" : "info", `Saved ${complete.length.toLocaleString()} order${complete.length === 1 ? "" : "s"}.` +
+      (partial ? ` ${partial.toLocaleString()} order${partial > 1 ? "s have" : " has"} other items without a cost: the costs you entered are filled in there, so finish ${partial > 1 ? "them" : "it"} in the Orders view (Show: Needs cost).` : ""));
+    render();
+  }
+
   // ---------- save ----------
   function bodyFor(o) {
     const c = orderCalc(o); if (!c || !c.complete) return null;
@@ -330,8 +433,15 @@
   $("cm-q").addEventListener("input", (e) => { C.q = e.target.value; C.page = 0; render(); });
   $("cm-prev").addEventListener("click", () => { C.page = Math.max(0, C.page - 1); render(); $("cm-table").closest(".tbl-wrap").scrollTop = 0; });
   $("cm-next").addEventListener("click", () => { C.page++; render(); $("cm-table").closest(".tbl-wrap").scrollTop = 0; });
-  $("cm-saveall").addEventListener("click", () => saveMany(readyOrders()));
+  $("cm-saveall").addEventListener("click", () => C.mode === "products" ? saveProducts() : saveMany(readyOrders()));
+  document.querySelectorAll("#cm-mode button").forEach(b => b.addEventListener("click", () => { C.mode = b.dataset.mode; C.page = 0; render(); }));
   $("cm-useshop").addEventListener("click", () => {
+    if (C.mode === "products") {
+      let n = 0;
+      for (const p of productList()) if (p.key !== "custom" && p.open.size && p.vid && C.vcost.get(p.vid) != null && !String(C.pcost[p.key] ?? "").trim()) { C.pcost[p.key] = C.vcost.get(p.vid).toFixed(2); n++; }
+      note(n ? "info" : "", n ? `Filled ${n} product${n > 1 ? "s" : ""} with the current Shopify cost. Review, then press Save.` : "No empty products here have a current Shopify cost.");
+      render(); return;
+    }
     const touched = new Set();
     document.querySelectorAll("#cm-table input.cmin").forEach(i => {
       const k = i.dataset.k, sid = k.split("|")[0];
@@ -346,14 +456,23 @@
 
   const tbl = $("cm-table");
   tbl.addEventListener("input", (ev) => {
-    const i = ev.target; if (!i.classList || !i.classList.contains("cmin")) return;
+    const i = ev.target;
+    if (i.classList && i.classList.contains("cmp")) {
+      const key = i.dataset.p; C.pcost[key] = i.value;
+      const p = productList().find(x => x.key === key), v = money(i.value), bad = Number.isNaN(v) || v < 0;
+      i.classList.toggle("bad", bad); i.classList.toggle("ok", v != null && !bad);
+      const now = p && p.vid ? C.vcost.get(p.vid) : null, each = v != null && !bad ? v : now, cell = $("cmpe-" + key);
+      if (cell && p) cell.innerHTML = each != null ? m(each * p.qty) : '<span class="dim">—</span>';
+      saveProductsButton(); return;
+    }
+    if (!i.classList || !i.classList.contains("cmin")) return;
     C.drafts[i.dataset.k] = i.value; refreshOrder(i.dataset.k.split("|")[0]);
   });
-  tbl.addEventListener("change", (ev) => { const i = ev.target; if (i.classList && i.classList.contains("cmin")) fillSame(i); });
+  tbl.addEventListener("change", (ev) => { const i = ev.target; if (i.classList && i.classList.contains("cmin") && !i.classList.contains("cmp")) fillSame(i); });
   tbl.addEventListener("keydown", (ev) => {
     const i = ev.target; if (!i.classList || !i.classList.contains("cmin") || ev.key !== "Enter") return;
     ev.preventDefault();
-    fillSame(i);
+    if (!i.classList.contains("cmp")) fillSame(i);
     const all = [...tbl.querySelectorAll("input.cmin")], k = all.indexOf(i);
     const nx = all.slice(k + 1).find(x => !x.value.trim()) || all[k + 1];
     if (nx) { nx.focus(); nx.select(); } else i.blur();
@@ -364,6 +483,7 @@
     if (a === "save") { const o = (C.orders || []).find(x => x.sid === sid); if (o) saveMany([o]); }
     else if (a === "undo") undo(sid);
     else if (a === "retry") { C.lines.delete(sid); render(); }
+    else if (a === "puse") { const key = b.dataset.p, p = productList().find(x => x.key === key); if (p && p.vid && C.vcost.get(p.vid) != null) { C.pcost[key] = C.vcost.get(p.vid).toFixed(2); render(); } }
     else if (a === "use") { const k = b.dataset.k, o = (C.orders || []).find(x => x.sid === k.split("|")[0]), it = o && (needRows(o) || []).find(x => dkey(o.sid, x.id) === k); if (it) { C.drafts[k] = it.unit.toFixed(2); refreshOrder(o.sid); const inp = $(`cmi-${o.sid}-${it.id}`); if (inp) { inp.value = C.drafts[k]; fillSame(inp); } } }
   });
 

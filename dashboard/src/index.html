@@ -194,6 +194,10 @@
     <section class="panel">
       <div class="panel-head">
         <h2>Items without a cost</h2>
+        <div class="seg" id="cm-mode" role="group" aria-label="View by">
+          <button data-mode="orders" aria-pressed="true">Orders</button>
+          <button data-mode="products" aria-pressed="false">Products</button>
+        </div>
         <div class="filters">
           <label for="cm-show">Show
             <select id="cm-show"><option value="open">Needs cost</option><option value="saved">Saved</option><option value="all">All</option></select>
@@ -212,7 +216,7 @@
       </div>
       <div class="cmbulk" id="cm-bulk" hidden></div>
       <div class="cmbar" id="cm-bar">
-        <span class="muted small">Type the cost of one unit. Enter moves to the next box. When you enter a cost, other empty rows with the same item fill in too.</span>
+        <span class="muted small" id="cm-hint">Type the cost of one unit. Enter moves to the next box. When you enter a cost, other empty rows with the same item fill in too.</span>
         <span class="dbtns right">
           <button class="btn" id="cm-useshop" title="Fill empty boxes on this page with the item's current cost in Shopify">Fill from current Shopify cost</button>
           <button class="btn primary" id="cm-saveall" disabled>Save filled orders</button>
