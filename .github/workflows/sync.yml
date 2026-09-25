@@ -1,0 +1,46 @@
+name: Sync data
+
+on:
+  schedule:
+    - cron: "7 * * * *"      # hourly: recent sales, orders, labels
+    - cron: "30 11 * * *"    # nightly at 4:30am Pacific (PDT): catalog costs + 35-day re-sync
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Job to run (hourly, nightly, backfill, catalog, labels, shopify-sales, ...)"
+        default: hourly
+      since:
+        description: "Start date YYYY-MM-DD (backfill and single jobs)"
+        required: false
+
+concurrency:
+  group: sync        # never run two syncs at once
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Apply database migrations
+        run: python -m sync.migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Run sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          SHIPSTATION_API_KEY: ${{ secrets.SHIPSTATION_API_KEY }}
+          JOB: ${{ github.event.inputs.job || (github.event.schedule == '30 11 * * *' && 'nightly' || 'hourly') }}
+          SINCE: ${{ github.event.inputs.since }}
+        run: |
+          if [ -n "$SINCE" ]; then python -m sync.run "$JOB" --since "$SINCE"; else python -m sync.run "$JOB"; fi

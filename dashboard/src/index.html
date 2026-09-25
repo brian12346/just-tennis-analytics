@@ -1,0 +1,330 @@
+<title>Just Tennis Daily Sales</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+<!-- @inline css/app.css -->
+</style>
+
+<div class="wrap">
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
+    <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
+    <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
+    <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
+    <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
+  </nav>
+  <div id="tab-shopify">
+  <header class="top">
+    <div class="title">
+      <span class="eyebrow">Shopify · Pacific time</span>
+      <h1 id="h-store">Just Tennis Daily Sales</h1>
+    </div>
+    <div class="controls">
+      <div class="seg" id="rangeseg" role="group" aria-label="Date range">
+        <button id="r7" data-days="7">7d</button>
+        <button id="r14" data-days="14" aria-pressed="true">14d</button>
+        <button id="r30" data-days="30">30d</button>
+        <button id="rmtd" data-days="mtd">MTD</button>
+        <button id="rytd" data-days="ytd">YTD</button>
+      </div>
+      <div class="dates">
+        <input type="date" id="d-start" aria-label="Start date">
+        <span>–</span>
+        <input type="date" id="d-end" aria-label="End date">
+      </div>
+      <button class="btn primary" id="refresh">Refresh</button>
+    </div>
+  </header>
+  <div class="status" id="status" aria-live="polite">Connecting to Shopify…</div>
+  <div id="page-note" hidden></div>
+
+  <section class="kpis" id="kpis" aria-label="Range totals"></section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Daily net sales vs. label cost</h2>
+      <div class="legend"><span><i style="background:var(--sales)"></i>Net sales</span><span><i style="background:var(--cost)"></i>ShipStation label cost</span></div>
+    </div>
+    <div class="chart" id="chart"><div class="skel">Loading…</div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>By day</h2>
+      <span class="muted" style="font-size:12px">Sales columns match Shopify Analytics; label cost is attributed to the day the order was placed.</span>
+    </div>
+    <div id="daily-note" hidden></div>
+    <div class="tbl-wrap"><table id="daily"></table></div>
+  </section>
+
+  <section class="panel" id="ss">
+    <div class="panel-head">
+      <h2>ShipStation shipping costs</h2>
+      <span class="muted" id="ss-summary" style="font-size:12px"></span>
+    </div>
+    <div class="drop" id="drop">
+      <p>Label costs sync from ShipStation every morning and are matched to Shopify orders by order ID. To fill a gap by hand, export shipments from ShipStation as CSV and drop the file here. CSV rows match by order number, and labels already saved won't double count.</p>
+      <label class="btn" for="file">Choose CSV<input type="file" id="file" accept=".csv,text/csv" hidden></label>
+    </div>
+    <div id="ss-map" hidden></div>
+    <div id="ss-note" hidden></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Orders</h2>
+      <div class="filters">
+        <label for="f-chan">Channel
+          <select id="f-chan"><option value="all">All</option><option value="web">Online store</option><option value="pos">POS</option><option value="other">Other</option></select>
+        </label>
+        <label for="f-miss"><input type="checkbox" id="f-miss"> Shipped with no label cost</label>
+        <label for="f-nocost"><input type="checkbox" id="f-nocost"> Missing product cost</label>
+        <button class="btn" id="dl" hidden>Download CSV</button>
+      </div>
+    </div>
+    <div id="orders-note" hidden></div>
+    <div class="tbl-wrap tall"><table id="orders"></table></div>
+  </section>
+  </div>
+  <div id="tab-psales" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Shopify · product sales · Pacific time</span>
+        <h1>Product sales</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="ps-rangeseg" role="group" aria-label="Product sales range">
+          <button data-r="ytd" aria-pressed="true">YTD</button>
+          <button data-r="90">90d</button>
+          <button data-r="30">30d</button>
+          <button data-r="ly">Last year</button>
+        </div>
+        <div class="dates">
+          <input type="date" id="ps-start" aria-label="Start date">
+          <span>–</span>
+          <input type="date" id="ps-end" aria-label="End date">
+        </div>
+        <button class="btn primary" id="ps-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="ps-status" aria-live="polite">Loading product sales…</div>
+    <div id="ps-note" hidden></div>
+
+    <section class="kpis" id="ps-kpis" aria-label="Product sales totals"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 id="ps-h">By category, vendor and model</h2>
+        <div class="filters">
+          <label for="ps-group">Group by
+            <select id="ps-group">
+              <option value="type,vendor,title">Category › Vendor › Model</option>
+              <option value="vendor,type,title">Vendor › Category › Model</option>
+              <option value="vendor,title">Vendor › Model</option>
+              <option value="type,title">Category › Model</option>
+              <option value="title">Model</option>
+            </select>
+          </label>
+          <label for="ps-chan">Channel <select id="ps-chan"><option value="all">All channels</option></select></label>
+          <label for="ps-sort">Sort
+            <select id="ps-sort"><option value="net">Net sales</option><option value="units">Units</option><option value="gp">Gross profit</option><option value="margin">Margin</option><option value="growth">Change vs last year</option></select>
+          </label>
+          <label for="ps-q">Search <input id="ps-q" class="inp" type="search" placeholder="Category, vendor or model"></label>
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn" id="ps-expand">Expand all</button>
+        <button class="btn" id="ps-collapse">Collapse all</button>
+        <button class="btn" id="ps-dl" hidden>Download CSV</button>
+        <span class="muted small">Net sales = gross sales − discounts − returns. Margin is on sales with a product cost recorded. Last year is the same dates a year earlier.</span>
+      </div>
+      <div class="tbl-wrap tall xl"><table id="ps-table"></table></div>
+    </section>
+
+    <section class="panel" id="cw">
+      <div class="panel-head">
+        <h2>Cost watch</h2>
+        <span class="muted small" id="cw-sub">Daily check of product costs, run each morning.</span>
+      </div>
+      <div id="cw-alert"></div>
+      <div id="cw-hist"></div>
+      <div class="panel-head"><h2 class="h3">Cost changes</h2><span class="muted small">Every variant's cost is compared with the day before. Click Correction or Real change to override how a row is treated.</span></div>
+      <div class="tbl-wrap"><table id="cw-changes"></table></div>
+    </section>
+  </div>
+  <div id="tab-costmap" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Shopify · orders sold without a product cost</span>
+        <h1>Shopify cost mapping</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="cm-rangeseg" role="group" aria-label="Cost mapping range">
+          <button data-r="ytd" aria-pressed="true">YTD</button>
+          <button data-r="90">90d</button>
+          <button data-r="ly">Last year</button>
+        </div>
+        <div class="dates">
+          <input type="date" id="cm-start" aria-label="Start date">
+          <span>–</span>
+          <input type="date" id="cm-end" aria-label="End date">
+        </div>
+        <button class="btn primary" id="cm-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="cm-status" aria-live="polite">Loading orders…</div>
+    <div id="cm-note" hidden></div>
+
+    <section class="kpis" id="cm-kpis" aria-label="Cost mapping progress"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Items without a cost</h2>
+        <div class="filters">
+          <label for="cm-show">Show
+            <select id="cm-show"><option value="open">Needs cost</option><option value="saved">Saved</option><option value="all">All</option></select>
+          </label>
+          <label for="cm-has">Shopify cost now
+            <select id="cm-has"><option value="all">Any</option><option value="ready">Has a cost in Shopify</option><option value="none">No cost in Shopify</option></select>
+          </label>
+          <label for="cm-per">Per page
+            <select id="cm-per"><option value="40">40</option><option value="200">200</option><option value="0">All</option></select>
+          </label>
+          <label for="cm-sort">Sort
+            <select id="cm-sort"><option value="amt">Largest first</option><option value="new">Newest first</option><option value="old">Oldest first</option></select>
+          </label>
+          <label for="cm-q">Search <input id="cm-q" class="inp" type="search" placeholder="Order #, item or SKU"></label>
+        </div>
+      </div>
+      <div class="cmbulk" id="cm-bulk" hidden></div>
+      <div class="cmbar" id="cm-bar">
+        <span class="muted small">Type the cost of one unit. Enter moves to the next box. When you enter a cost, other empty rows with the same item fill in too.</span>
+        <span class="dbtns right">
+          <button class="btn" id="cm-useshop" title="Fill empty boxes on this page with the item's current cost in Shopify">Fill from current Shopify cost</button>
+          <button class="btn primary" id="cm-saveall" disabled>Save filled orders</button>
+        </span>
+      </div>
+      <div class="tbl-wrap tall xl"><table id="cm-table" class="cmt"></table></div>
+      <div class="row"><button class="btn" id="cm-prev" hidden>Previous</button><button class="btn" id="cm-next" hidden>Next page</button><span class="muted small" id="cm-count"></span></div>
+    </section>
+  </div>
+  <div id="tab-amazon" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Amazon · by posted date, Pacific time</span>
+        <h1>Amazon sales &amp; profit</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="az-rangeseg" role="group" aria-label="Amazon date range">
+          <button data-days="7">7d</button>
+          <button data-days="30" aria-pressed="true">30d</button>
+          <button data-days="90">90d</button>
+        </div>
+        <div class="dates">
+          <input type="date" id="az-start" aria-label="Amazon start date">
+          <span>–</span>
+          <input type="date" id="az-end" aria-label="Amazon end date">
+        </div>
+        <label class="btn" for="az-tfile">Upload Transaction report<input type="file" id="az-tfile" accept=".csv,text/csv" hidden></label>
+      </div>
+    </header>
+    <div class="status" id="az-status" aria-live="polite">Loading Amazon data…</div>
+    <div id="az-note" hidden></div>
+
+    <section class="kpis" id="az-kpis" aria-label="Amazon range totals"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Daily product sales vs. profit</h2>
+        <div class="legend"><span><i style="background:var(--sales)"></i>Product sales</span><span><i style="background:var(--good)"></i>Profit after fees &amp; product cost</span></div>
+      </div>
+      <div class="chart" id="az-chart"><div class="skel">Loading…</div></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>By day</h2>
+        <span class="muted small">Product cost only counts for mapped listings. Refunds don't credit product cost back.</span>
+      </div>
+      <div class="tbl-wrap"><table id="az-daily"></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>By listing</h2>
+        <div class="filters">
+          <label for="az-skuq">Search <input id="az-skuq" class="inp" type="search" placeholder="Title or Amazon SKU"></label>
+          <label for="az-skumap"><input type="checkbox" id="az-skumap"> Not mapped only</label>
+        </div>
+      </div>
+      <div class="tbl-wrap tall"><table id="az-skus"></table></div>
+      <div class="row"><button class="btn" id="az-skumore" hidden>Show more</button><span class="muted small" id="az-skucount"></span></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Orders</h2>
+        <div class="filters">
+          <label for="az-oq">Search <input id="az-oq" class="inp" type="search" placeholder="Order ID, SKU or title"></label>
+          <label for="az-ochan">Fulfillment
+            <select id="az-ochan"><option value="all">All</option><option value="fba">FBA</option><option value="fbm">Merchant</option></select>
+          </label>
+        </div>
+      </div>
+      <div class="tbl-wrap tall"><table id="az-orders"></table></div>
+      <div class="row"><button class="btn" id="az-omore" hidden>Show more</button><span class="muted small" id="az-ocount"></span></div>
+    </section>
+  </div>
+  <div id="tab-amzmap" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Amazon · Listing → Shopify product</span>
+        <h1>Amazon cost mapping</h1>
+      </div>
+      <div class="controls">
+        <label class="btn" for="amz-lfile">Upload All Listings report<input type="file" id="amz-lfile" accept=".txt,.tsv,.csv,text/plain" hidden></label>
+      </div>
+    </header>
+    <div class="status" id="amz-status" aria-live="polite">Loading listings…</div>
+    <div id="amz-note" hidden></div>
+
+    <section class="kpis" id="amz-kpis" aria-label="Mapping progress"></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Listings</h2>
+        <div class="filters">
+          <label for="amz-q">Search <input id="amz-q" type="search" class="inp" placeholder="Title, Amazon SKU or ASIN"></label>
+          <label for="amz-fstatus">Status
+            <select id="amz-fstatus"><option value="Active">Active</option><option value="all">All</option><option value="Inactive">Inactive</option><option value="Incomplete">Incomplete</option></select>
+          </label>
+          <label for="amz-fmap">Mapping
+            <select id="amz-fmap"><option value="unmapped">Not mapped</option><option value="all">All</option><option value="mapped">Mapped</option></select>
+          </label>
+          <label for="amz-fchan">Fulfillment
+            <select id="amz-fchan"><option value="all">All</option><option value="fba">FBA</option><option value="fbm">Merchant</option></select>
+          </label>
+        </div>
+      </div>
+      <div class="tbl-wrap tall"><table id="amz-table"></table></div>
+      <div class="row"><button class="btn" id="amz-more" hidden>Show more</button><span class="muted small" id="amz-count"></span></div>
+    </section>
+  </div>
+</div>
+
+<script>
+<!-- @inline js/shopify.js -->
+</script>
+<script>
+<!-- @inline js/product-sales.js -->
+</script>
+
+<script>
+<!-- @inline js/cost-mapping.js -->
+</script>
+
+<script>
+<!-- @inline js/amazon.js -->
+</script>
+

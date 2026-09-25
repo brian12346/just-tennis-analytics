@@ -1,0 +1,20 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# local data: exports, reports and snapshots never go in git
+data/
+*.csv
+*.jsonl
+!tests/fixtures/*.csv
+!tests/fixtures/*.jsonl
+
+# build output
+dashboard/dist/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
