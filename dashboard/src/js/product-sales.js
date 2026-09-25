@@ -25,35 +25,24 @@
     document.querySelectorAll("#ps-rangeseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.r === r)));
   }
 
-  const Q = (s, e) => `FROM sales SHOW net_items_sold, gross_sales, discounts, net_sales, cost_of_goods_sold, gross_profit, net_sales_without_cost_recorded GROUP BY product_type, product_vendor, product_title, product_id, sales_channel SINCE ${s} UNTIL ${e} ORDER BY net_sales DESC LIMIT 20000`;
-  function parse(payload) {
-    const p = payload || {}, cols = (p.columns || []).map(c => c.name), i = (n) => cols.indexOf(n);
-    return (p.rows || []).map(r => {
-      const n = (k) => Number(r[i(k)]) || 0;
-      const gross = n("gross_sales"), disc = n("discounts"), net = n("net_sales");
-      return { type: r[i("product_type")] || "", vendor: r[i("product_vendor")] || "", title: r[i("product_title")] || "", pid: i("product_id") >= 0 && r[i("product_id")] ? String(r[i("product_id")]) : "", chan: r[i("sales_channel")] || "(Unknown)",
-        units: n("net_items_sold"), gross, disc, ret: Math.round((net - gross - disc) * 100) / 100, net, cogs: n("cost_of_goods_sold"), gp: n("gross_profit"), nocost: n("net_sales_without_cost_recorded") };
+  // Product totals from Supabase (costs include ones entered on the cost-mapping and Shopify tabs).
+  async function fetchRange(st, en, refresh) {
+    const JT = window.JT, n = (x) => Number(x) || 0;
+    const r = await JT.rowsSplit(["product_type", "vendor", "product_title", "product_id::text", "sales_channel", "sum(units)", "sum(gross)", "sum(discounts)", "sum(net)", "sum(cogs)", "sum(gross_profit)", "sum(net_no_cost)"],
+      `from jt.v_product_sales_daily where day between ${JT.day(st)} and ${JT.day(en)} group by 1, 2, 3, 4, 5`, "product_title", 2, refresh);
+    return r.map(x => {
+      const gross = n(x[6]), disc = n(x[7]), net = n(x[8]);
+      return { type: x[0] || "", vendor: x[1] || "", title: x[2] || "", pid: x[3] && x[3] !== "0" ? x[3] : "", chan: x[4] || "(Unknown)",
+        units: n(x[5]), gross, disc, ret: Math.round((net - gross - disc) * 100) / 100, net, cogs: n(x[9]), gp: n(x[10]), nocost: n(x[11]) };
     });
   }
-  async function run(q, refresh) {
-    const opts = { cache: { staleTime: 300000, gcTime: 3600000, refresh: !!refresh } };
-    try { return await P.mcp.callTool("Shopify", "run-analytics-query", { query: q }, opts); }
-    catch (e) { if (e && e.retryable) { await new Promise(r => setTimeout(r, 800 + Math.random() * 800)); return await P.mcp.callTool("Shopify", "run-analytics-query", { query: q }, opts); } throw e; }
-  }
-  function errMsg(e) {
-    const c = e && e.code;
-    if (c === "server_not_connected") return "Shopify isn't connected for your account. Add it in claude.ai Settings → Connectors, then reload.";
-    if (c === "needs_reauth") return "Your Shopify connection expired. Reconnect it in claude.ai Settings → Connectors.";
-    if (c === "not_in_manifest") return "Shopify access is turned off for this page.";
-    if (c === "tool_error") return "Shopify returned an error: " + (e.message || "");
-    return "Shopify didn't respond. Press Refresh in a moment.";
-  }
+  const errMsg = (e) => window.JT.message(e);
 
   async function load(refresh) {
     if (!P.mcp) return;
     const id = ++P.reqId; P.loading = true; P.err = null; P.lyErr = null; render();
-    const cur = run(Q(P.start, P.end), refresh).then(r => { if (id === P.reqId) P.rows = parse(r.payload); }).catch(e => { if (id === P.reqId) { P.err = e; P.rows = null; } });
-    const ly = run(Q(lyDate(P.start), lyDate(P.end)), refresh).then(r => { if (id === P.reqId) P.ly = parse(r.payload); }).catch(e => { if (id === P.reqId) { P.lyErr = e; P.ly = null; } });
+    const cur = fetchRange(P.start, P.end, refresh).then(r => { if (id === P.reqId) P.rows = r; }).catch(e => { if (id === P.reqId) { P.err = e; P.rows = null; } });
+    const ly = fetchRange(lyDate(P.start), lyDate(P.end), refresh).then(r => { if (id === P.reqId) P.ly = r; }).catch(e => { if (id === P.reqId) { P.lyErr = e; P.ly = null; } });
     await cur; if (id === P.reqId) render();
     await ly; if (id !== P.reqId) return;
     P.loading = false; render();
@@ -111,7 +100,7 @@
   function render() {
     if ($("tab-psales").hidden) return;
     const st = $("ps-status"), note = $("ps-note");
-    if (!P.mcp) { st.textContent = ""; note.hidden = false; note.innerHTML = '<div class="note warn">Live Shopify data isn\'t available in this view. Open the dashboard in claude.ai.</div>'; return; }
+    if (!P.mcp) { st.textContent = ""; note.hidden = false; note.innerHTML = '<div class="note warn">Live data isn\'t available in this view. Open the dashboard in claude.ai.</div>'; return; }
     if (P.err) { st.textContent = ""; note.hidden = false; note.innerHTML = `<div class="note bad">${esc(errMsg(P.err))}</div>`; $("ps-table").innerHTML = ""; $("ps-kpis").innerHTML = ""; return; }
     note.hidden = true;
     if (!P.rows) { st.textContent = "Loading product sales…"; return; }
@@ -237,5 +226,5 @@
     db.collection("costalerts").orderBy("date", "desc").limit(14).onSnapshot(s => { CW.alerts = s.docs.map(d => d.data()); done(); }, done);
     db.collection("costlog").orderBy("date", "desc").limit(90).onSnapshot(s => { CW.log = s.docs.map(d => d.data()); done(); }, done);
   }).catch(() => {});
-  use("mcp").then(mcp => { P.mcp = mcp; if (mcp) load(false); else render(); }).catch(() => render());
+  window.JT.getMcp().then(mcp => { P.mcp = mcp; if (mcp) load(false); else render(); }).catch(() => render());
 })();

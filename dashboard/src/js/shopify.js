@@ -51,49 +51,28 @@
   }
 
   // ---------- MCP errors ----------
-  function mcpMessage(e) {
-    const code = e && e.code;
-    switch (code) {
-      case "server_not_connected": return "Shopify isn't connected for your account. Add it in claude.ai Settings → Connectors, then reload this page.";
-      case "needs_reauth": return "Your Shopify connection expired. Reconnect it in claude.ai Settings → Connectors, then press Refresh.";
-      case "selection_required": return "You have more than one Shopify connection. Pick one in the prompt, then press Refresh.";
-      case "not_in_manifest": return "Shopify access is turned off for this page. Allow Shopify in the page's connector settings, then reload.";
-      case "blocked_by_policy": case "approval_required": return "Your organization's policy blocks this Shopify request.";
-      case "server_unavailable": case "upstream_error": case "rate_limited": return "Shopify didn't respond. Press Refresh in a moment.";
-      case "tool_error": return "Shopify returned an error: " + (e.message || "unknown");
-      case "not_granted": case "capability_disabled": case "capability_removed": return "Live Shopify data isn't available in this view. Open the dashboard in claude.ai.";
-      default: return "Couldn't load from Shopify" + (e && e.message ? ": " + e.message : ".");
-    }
-  }
+  const mcpMessage = (e) => window.JT.message(e);
   const isDenial = (e) => ["needs_reauth","server_not_connected","not_in_manifest","blocked_by_policy","approval_required","selection_required","not_granted","capability_disabled"].includes(e && e.code);
 
-  async function call(tool, input, refresh) {
-    const opts = { cache: { staleTime: 300000, gcTime: 3600000, refresh: !!refresh } };
-    try {
-      return await state.mcp.callTool(SERVER, tool, input, opts);
-    } catch (e) {
-      if (e && e.retryable) {
-        await new Promise(r => setTimeout(r, Math.min(e.retryAfterMs || 0, 8000) + 600 + Math.random()*800));
-        return await state.mcp.callTool(SERVER, tool, input, opts);
-      }
-      throw e;
-    }
+  // ---------- loads (Supabase, kept current by the hourly GitHub sync) ----------
+  const JT = window.JT;
+  const num = (x) => Number(x) || 0;
+  // Date chunks of `days` so each reply stays small; run a few at once.
+  async function byChunks(days, fn) {
+    const chunks = [];
+    for (let s = state.start; s <= state.end; s = addDays(s, days)) { const e = addDays(s, days - 1); chunks.push([s, e < state.end ? e : state.end]); }
+    const out = []; let next = 0;
+    const worker = async () => { while (next < chunks.length) { const [s, e] = chunks[next++]; out.push(...await fn(s, e)); } };
+    await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, worker));
+    return out;
   }
+  const spanDays = () => Math.round((new Date(state.end) - new Date(state.start)) / 864e5) + 1;
 
-  // ---------- Shopify loads ----------
   async function loadDaily(refresh) {
-    const q = `FROM sales SHOW orders, gross_sales, discounts, sales_reversals, net_sales, shipping_charges, taxes, total_sales, cost_of_goods_sold, gross_profit, net_sales_without_cost_recorded TIMESERIES day SINCE ${state.start} UNTIL ${state.end}`;
-    const res = await call("run-analytics-query", { query: q }, refresh);
-    if (res.cache) state.fromCache = true;
-    const p = res.payload || {};
-    const cols = (p.columns || []).map(c => c.name);
-    const idx = (n) => cols.indexOf(n);
+    const r = await JT.rows(["day", "orders", "gross", "discounts", "returns", "net", "shipping", "taxes", "total", "cogs", "gross_profit", "net_no_cost"],
+      `from jt.shopify_daily where day between ${JT.day(state.start)} and ${JT.day(state.end)}`, refresh);
     const byDay = new Map();
-    for (const r of (p.rows || [])) {
-      const d = String(r[idx("day")]).slice(0,10);
-      const g = (n) => Number(r[idx(n)]) || 0;
-      byDay.set(d, { day:d, orders:g("orders"), gross:g("gross_sales"), discounts:g("discounts"), returns:g("sales_reversals"), net:g("net_sales"), shipping:g("shipping_charges"), taxes:g("taxes"), total:g("total_sales"), cogs:g("cost_of_goods_sold"), gp:g("gross_profit"), nocost:g("net_sales_without_cost_recorded") });
-    }
+    for (const x of r) byDay.set(x[0], { day:x[0], orders:num(x[1]), gross:num(x[2]), discounts:num(x[3]), returns:num(x[4]), net:num(x[5]), shipping:num(x[6]), taxes:num(x[7]), total:num(x[8]), cogs:num(x[9]), gp:num(x[10]), nocost:num(x[11]) });
     const out = [];
     for (let d = state.start; d <= state.end; d = addDays(d, 1)) {
       out.push(byDay.get(d) || { day:d, orders:0, gross:0, discounts:0, returns:0, net:0, shipping:0, taxes:0, total:0, cogs:0, gp:0, nocost:0 });
@@ -102,79 +81,49 @@
   }
 
   async function loadOrderCosts(refresh) {
-    const q = `FROM sales SHOW net_sales, cost_of_goods_sold, gross_profit, net_sales_without_cost_recorded GROUP BY order_name SINCE ${state.start} UNTIL ${state.end} ORDER BY order_name DESC LIMIT 20000`;
-    const res = await call("run-analytics-query", { query: q }, refresh);
-    const p = res.payload || {};
-    const cols = (p.columns || []).map(c => c.name);
-    const i = (n) => cols.indexOf(n);
+    const r = await JT.rowsSplit(["order_name", "sum(net)", "sum(cogs)", "sum(net_no_cost)"],
+      `from jt.shopify_sales where day between ${JT.day(state.start)} and ${JT.day(state.end)} group by order_name`,
+      "order_name", Math.max(1, Math.ceil(spanDays() / 90)), refresh);
     const map = new Map();
-    for (const r of (p.rows || [])) {
-      map.set(String(r[i("order_name")]), { net: Number(r[i("net_sales")]) || 0, cogs: Number(r[i("cost_of_goods_sold")]) || 0, gp: Number(r[i("gross_profit")]) || 0, nocost: Number(r[i("net_sales_without_cost_recorded")]) || 0 });
-    }
+    for (const [name, net, cogs, nc] of r) map.set(String(name), { net: num(net), cogs: num(cogs), gp: num(net) - num(cogs), nocost: num(nc) });
     return map;
   }
 
   // Sales without a cost, by the day Shopify records them (a return lands on the return day) and order.
   async function loadNoCostRows(refresh) {
-    const q = `FROM sales SHOW net_sales_without_cost_recorded, cost_of_goods_sold GROUP BY day, order_id SINCE ${state.start} UNTIL ${state.end} ORDER BY net_sales_without_cost_recorded DESC LIMIT 20000`;
-    const res = await call("run-analytics-query", { query: q }, refresh);
-    const p = res.payload || {}, cols = (p.columns || []).map(c => c.name), i = (n) => cols.indexOf(n);
-    if ((p.rows || []).length >= 20000) return null;   // too many rows to be sure returns are included; use the per-order method
+    const r = await JT.rows(["day", "order_id::text", "sum(net_no_cost)", "sum(cogs)"],
+      `from jt.shopify_sales where day between ${JT.day(state.start)} and ${JT.day(state.end)} and order_id <> 0 group by day, order_id having abs(sum(net_no_cost)) >= 0.005`, refresh);
     const by = new Map();   // order id -> [{day, nc, cogs}]
-    for (const r of (p.rows || [])) {
-      const nc = Number(r[i("net_sales_without_cost_recorded")]) || 0; if (Math.abs(nc) < 0.005) continue;
-      const sid = String(r[i("order_id")] || ""); if (!sid || sid === "0") continue;
-      const l = by.get(sid) || []; l.push({ day: String(r[i("day")]).slice(0, 10), nc, cogs: Number(r[i("cost_of_goods_sold")]) || 0 }); by.set(sid, l);
-    }
+    for (const [day, sid, nc, cogs] of r) { const l = by.get(sid) || []; l.push({ day, nc: num(nc), cogs: num(cogs) }); by.set(sid, l); }
     return by;
   }
 
-  const ORDERS_Q = `query Orders($first: Int!, $after: String, $q: String) { orders(first: $first, after: $after, query: $q, sortKey: CREATED_AT) { pageInfo { hasNextPage endCursor } nodes { id name createdAt cancelledAt test displayFinancialStatus displayFulfillmentStatus sourceName currentSubtotalPriceSet { shopMoney { amount } } totalDiscountsSet { shopMoney { amount } } totalShippingPriceSet { shopMoney { amount } } totalTaxSet { shopMoney { amount } } totalPriceSet { shopMoney { amount } } totalRefundedSet { shopMoney { amount } } currentTotalPriceSet { shopMoney { amount } } subtotalLineItemsQuantity } } }`;
-  const MAX_PAGES = 60;       // per chunk (3,000 orders)
-  const CHUNK_DAYS = 14, PARALLEL = 4;
-
-  function toOrder(n) {
-    const src = String(n.sourceName || "").toLowerCase();
-    const chan = src === "web" ? "web" : src === "pos" ? "pos" : "other";
-    return {
-      id: n.id, sid: String(n.id).split("/").pop(), name: n.name, key: orderKey(n.name), created: n.createdAt, day: laDay(n.createdAt),
-      chan, source: n.sourceName || "", cancelled: !!n.cancelledAt,
-      fin: n.displayFinancialStatus || "", ful: n.displayFulfillmentStatus || "",
-      subtotal: amt(n.currentSubtotalPriceSet), discounts: amt(n.totalDiscountsSet),
-      shipping: amt(n.totalShippingPriceSet), tax: amt(n.totalTaxSet),
-      total: amt(n.totalPriceSet), refunded: amt(n.totalRefundedSet), qty: n.subtotalLineItemsQuantity || 0,
-    };
-  }
-  async function loadChunk(s, e, refresh, sink, onPage) {
-    const endPlus = addDays(e, 1);
-    const q = `created_at:>=${s}T00:00:00${tzOff(s)} created_at:<${endPlus}T00:00:00${tzOff(endPlus)}`;
-    let after, pages = 0, more = true;
-    while (more && pages < MAX_PAGES) {
-      const input = { query: ORDERS_Q, variables: { q }, first: 50 };
-      if (after) input.after = after;
-      const res = await call("graphql_query", input, refresh);
-      const p = res.payload || {};
-      if (p.errors && p.errors.length) throw { code: "tool_error", message: p.errors[0].message };
-      const conn = (p.data || p).orders;
-      if (!conn) throw { code: "tool_error", message: "Unexpected response from Shopify." };
-      for (const n of conn.nodes || []) if (!n.test) sink.push(toOrder(n));
-      pages++;
-      more = !!(conn.pageInfo && conn.pageInfo.hasNextPage);
-      after = conn.pageInfo && conn.pageInfo.endCursor;
-      onPage && onPage(sink.length);
-    }
-    return more;
-  }
-  // Split the range into 2-week chunks and page through several at once, so long ranges (YTD) load in reasonable time.
+  const ORDER_COLS = ["order_id::text", "name", "created_at", "order_day", "source_name", "channel", "financial_status", "fulfillment_status", "cancelled_at is not null", "subtotal", "discounts", "shipping", "tax", "total", "refunded", "item_qty"];
+  const toOrder = (x) => ({ id: "gid://shopify/Order/" + x[0], sid: x[0], name: x[1], key: orderKey(x[1]), created: x[2], day: x[3], source: x[4], chan: x[5],
+    fin: x[6], ful: x[7], cancelled: !!x[8], subtotal: num(x[9]), discounts: num(x[10]), shipping: num(x[11]), tax: num(x[12]), total: num(x[13]), refunded: num(x[14]), qty: num(x[15]) });
   async function loadOrders(refresh, onPage) {
-    const chunks = [];
-    for (let s = state.start; s <= state.end; s = addDays(s, CHUNK_DAYS)) { const e = addDays(s, CHUNK_DAYS - 1); chunks.push([s, e < state.end ? e : state.end]); }
-    const all = []; let truncated = false, next = 0;
-    const worker = async () => { while (next < chunks.length) { const [s, e] = chunks[next++]; if (await loadChunk(s, e, refresh, all, onPage)) truncated = true; } };
-    await Promise.all(Array.from({ length: Math.min(PARALLEL, chunks.length) }, worker));
-    state.ordersTruncated = truncated;
-    const seen = new Set();
-    return all.filter(o => !seen.has(o.id) && seen.add(o.id)).sort((a, b) => a.created.localeCompare(b.created));
+    let n = 0;
+    const all = await byChunks(15, async (s, e) => {
+      const r = await JT.rows(ORDER_COLS, `from jt.shopify_orders where not test and order_day between ${JT.day(s)} and ${JT.day(e)}`, refresh);
+      n += r.length; onPage && onPage(n);
+      return r.map(toOrder);
+    });
+    state.ordersTruncated = false;
+    return all.sort((a, b) => a.created.localeCompare(b.created));
+  }
+
+  // ShipStation label costs for the orders in range (voided labels left out), plus when the last sync ran.
+  async function loadLabels(refresh) {
+    const [r, sync] = await Promise.all([
+      JT.rows(["l.order_id::text", "sum(l.cost)", "count(*)", "coalesce(json_agg(distinct l.service) filter (where l.service <> ''), '[]')"],
+        `from jt.shipstation_labels l join jt.shopify_orders o on o.order_id = l.order_id where not l.voided and o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)} group by l.order_id`, refresh),
+      JT.rows(["job", "finished_at", "ok"], "from jt.v_sync_status", refresh),
+    ]);
+    const bySid = new Map(); let labels = 0;
+    for (const [sid, cost, n, sv] of r) { bySid.set(sid, { cost: num(cost), labels: num(n), services: new Set(sv || []) }); labels += num(n); }
+    state.shipSid = bySid; state.shipLabels = labels; state.syncs = sync;
+    state.lastSync = (sync.find(x => x[0] === "shipstation_labels") || [])[1] || null;
+    state.dbReady = true;
   }
 
   async function loadAll(refresh) {
@@ -182,18 +131,20 @@
     state.loading = true; state.fromCache = false;
     $("refresh").disabled = true;
     setStatus("Loading daily sales…");
+    if (refresh) JT.overrides.reload();
     const dailyP = loadDaily(refresh).then(d => { state.daily = d; state.dailyErr = null; }).catch(e => { state.dailyErr = e; if (isDenial(e)) state.daily = null; });
     const ordersP = loadOrders(refresh, (n) => setStatus(`Loading orders… ${n} so far`)).then(o => { state.orders = o; state.ordersErr = null; }).catch(e => { state.ordersErr = e; if (isDenial(e)) state.orders = null; });
     const costsP = loadOrderCosts(refresh).then(c => { state.costs = c; state.costsErr = null; }).catch(e => { state.costsErr = e; if (isDenial(e)) state.costs = null; });
     const ncP = loadNoCostRows(refresh).then(r => { state.ncRows = r; }).catch(() => { state.ncRows = null; });
+    const shipP = loadLabels(refresh).catch(() => { state.dbReady = true; state.shipErr = true; });
     await dailyP; render();
-    await Promise.all([ordersP, costsP, ncP]);
+    await Promise.all([ordersP, costsP, ncP, shipP]);
     state.loading = false; state.loadedAt = new Date();
     $("refresh").disabled = false;
     render();
     const errs = [state.dailyErr, state.ordersErr, state.costsErr].filter(Boolean);
     if (errs.length) setStatus("");
-    else setStatus(`Updated ${state.loadedAt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})}${state.fromCache ? " (some results cached up to 5 min — Refresh for live)" : ""} · ${state.orders ? state.orders.length : 0} orders`);
+    else setStatus(`Updated ${state.loadedAt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})} · ${state.orders ? state.orders.length : 0} orders`);
   }
 
   function setStatus(t) { $("status").textContent = t; }
@@ -417,10 +368,11 @@
 
   function renderShipSummary() {
     const el = $("ss-summary");
-    if (!state.db) { el.textContent = "Saving uploads isn't available in this view."; return; }
-    if (!state.dbReady) { el.textContent = "Loading saved labels…"; return; }
-    const sync = state.lastSync ? ` · last ShipStation sync ${new Date(state.lastSync).toLocaleString("en-US",{timeZone:TZ,month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}` : "";
-    el.textContent = (state.shipLabels ? `${state.shipLabels.toLocaleString()} labels saved across ${state.shipDocs} ship dates` : "No labels saved yet") + sync;
+    if (!state.dbReady) { el.textContent = "Loading label costs…"; return; }
+    if (state.shipErr) { el.textContent = "Label costs couldn't load. Press Refresh."; return; }
+    const when = (t) => t ? new Date(t).toLocaleString("en-US",{timeZone:TZ,month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "never";
+    const sales = (state.syncs || []).find(x => x[0] === "shopify_sales");
+    el.textContent = `${state.shipLabels.toLocaleString()} ShipStation labels for orders in this range · labels synced ${when(state.lastSync)} · sales synced ${when(sales && sales[1])} (both sync hourly)`;
   }
 
   // ---------- CSV ----------
@@ -585,23 +537,15 @@
   $("f-nocost").addEventListener("change", renderOrders);
 
   // ---------- manual product cost entry ----------
-  const LINES_Q = `query OrderLines($id: ID!) { order(id: $id) { id name lineItems(first: 100) { nodes { id name title variantTitle sku quantity currentQuantity discountedUnitPriceAfterAllDiscountsSet { shopMoney { amount } } product { id } variant { id inventoryItem { id unitCost { amount } } } } } } }`;
-  const lid = (gid) => String(gid).split("/").pop();
-
   async function loadLines(sid) {
     state.lines.set(sid, { loading: true });
     renderOrders();
     try {
-      const res = await call("graphql_query", { query: LINES_Q, variables: { id: "gid://shopify/Order/" + sid } }, false);
-      const p = res.payload || {};
-      if (p.errors && p.errors.length) throw { code: "tool_error", message: p.errors[0].message };
-      const nodes = (((p.data || p).order || {}).lineItems || {}).nodes || [];
-      const items = nodes.map(n => {
-        const uc = n.variant && n.variant.inventoryItem && n.variant.inventoryItem.unitCost ? Number(n.variant.inventoryItem.unitCost.amount) : null;
-        return { id: lid(n.id), title: n.title || n.name, variant: n.variantTitle || "", sku: n.sku || "", qty: n.currentQuantity ?? n.quantity ?? 0, origQty: n.quantity ?? 0,
-          price: Number(n.discountedUnitPriceAfterAllDiscountsSet && n.discountedUnitPriceAfterAllDiscountsSet.shopMoney.amount) || 0,
-          unit: uc, custom: !n.variant, pid: n.product ? String(n.product.id).split("/").pop() : null, vid: n.variant ? String(n.variant.id).split("/").pop() : null };
-      });
+      const r = await JT.rows(["l.line_id::text", "l.title", "l.variant_title", "l.sku", "l.current_quantity", "l.quantity", "l.unit_price", "v.unit_cost", "l.product_id::text", "l.variant_id::text"],
+        `from jt.shopify_order_lines l left join jt.variants v on v.variant_id = l.variant_id where l.order_id = ${JT.int(sid)}`, true);
+      const items = r.sort((a, b) => a[0].localeCompare(b[0])).map(x => ({ id: x[0], title: x[1], variant: x[2] || "", sku: x[3] || "", qty: num(x[4]), origQty: num(x[5]),
+        price: num(x[6]), unit: x[7] == null ? null : Number(x[7]), custom: !x[9], pid: x[8] && x[8] !== "0" ? x[8] : null, vid: x[9] || null }));
+      if (!items.length) throw { code: "tool_error", message: "This order's items haven't synced yet. Try again after the next hourly sync." };
       state.lines.set(sid, { items });
     } catch (e) {
       state.lines.set(sid, { error: e });
@@ -651,8 +595,7 @@
   }
 
   async function saveOverride(sid, clear) {
-    const o = (state.orders || []).find(x => x.sid === sid); if (!o || !state.db) return;
-    const ref = state.db.collection("costoverrides").doc(sid);
+    const o = (state.orders || []).find(x => x.sid === sid); if (!o) return;
     let body = null;
     if (!clear) {
       const c = calc(o), L = state.lines.get(sid);
@@ -662,22 +605,22 @@
       const lines = {};
       for (const it of L.items) { const d = draftUnit(it); if (d != null) lines[it.id] = { unit: Math.round(d * 100) / 100, title: it.title.slice(0, 80), qty: it.qty }; }
       if (!Object.keys(lines).length) { note("orders-note", "warn", "Nothing to save. Enter a cost for at least one item."); return; }
-      body = { cost: c.total, lines, order: o.name, sid, updatedAt: new Date().toISOString() };
+      body = { order_id: sid, order_name: o.name, cost: c.total, shopify_cogs: c.base, lines, src: "shopify-tab" };
     }
     state.saving = true; renderOrders();
     try {
-      if (clear) await ref.delete(); else await ref.set(body);
-      if (clear) state.overrides.delete(sid); else state.overrides.set(sid, { cost: body.cost, lines: body.lines });
+      if (clear) await JT.deleteCostOverride(sid); else await JT.saveCostOverride(body);
+      JT.overrides.set(sid, clear ? null : { cost: body.cost, lines: body.lines, src: body.src, shopifyCogs: body.shopify_cogs });
       state.editing = null; state.drafts = {};
       note("orders-note", "", "");
     } catch (e) {
-      note("orders-note", "bad", e && e.code === "invalid_argument" ? "You don't have permission to save costs on this dashboard." : "Couldn't save that cost. Try again.");
+      note("orders-note", "bad", "Couldn't save that cost: " + esc(mcpMessage(e)));
     }
     state.saving = false; render();
   }
 
   function openEditor(sid) {
-    if (!state.db) { note("orders-note", "warn", "Saving costs isn't available in this view. Open the dashboard in claude.ai."); return; }
+    if (!state.mcp) { note("orders-note", "warn", "Saving costs isn't available in this view. Open the dashboard in claude.ai."); return; }
     state.editing = sid;
     const ov = state.overrides.get(sid); state.drafts = {};
     if (ov && ov.lines) for (const id in ov.lines) state.drafts[id] = String(ov.lines[id].unit);
@@ -721,50 +664,14 @@
   render();
 
 
-  // Saved order costs (db costoverrides). A query returns at most 1,000 docs, so read every doc once in pages
-  // ordered by order id, then keep a live window on the most recently updated ones for changes from other tabs.
-  window.watchCostOverrides = (() => {
-    let started = false, all = new Map(), live = new Map(), subs = [], ready = false;
-    const parse = (d) => { const b = d.data() || {}; return typeof b.cost === "number" ? { cost: b.cost, lines: b.lines || null, src: b.src || "", shopifyCogs: typeof b.shopifyCogs === "number" ? b.shopifyCogs : null } : null; };
-    const emit = () => { const mm = new Map(all); for (const [k, v] of live) mm.set(k, v); subs.forEach(f => { try { f(mm, ready); } catch (_) {} }); };
-    return (db, fn) => {
-      subs.push(fn);
-      if (started) { emit(); return; }
-      started = true;
-      const col = db.collection("costoverrides");
-      (async () => {
-        let last = null;
-        for (let i = 0; i < 10; i++) {
-          let q = col.orderBy("sid"); if (last) q = q.where("sid", ">", last);
-          const s = await q.limit(1000).get();
-          for (const d of s.docs) { const v = parse(d); if (v) all.set(d.id, v); }
-          if (s.docs.length < 1000) break;
-          last = (s.docs[s.docs.length - 1].data() || {}).sid; if (!last) break;
-        }
-        ready = true; emit();
-      })().catch(() => { ready = true; emit(); });
-      col.orderBy("updatedAt", "desc").limit(500).onSnapshot((snap) => {
-        const gone = [];
-        for (const ch of snap.docChanges()) if (ch.type === "removed") gone.push(ch.doc.id);
-        live = new Map(); for (const d of snap.docs) { const v = parse(d); if (v) { live.set(d.id, v); all.set(d.id, v); } }
-        emit();
-        // A doc leaves the window when it is deleted or just pushed out by newer ones: check which.
-        gone.forEach(id => col.doc(id).get().then(d => { if (!d.exists) { all.delete(id); emit(); } }).catch(() => {}));
-      }, () => {});
-    };
-  })();
   const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;
   if (!use) { setStatus(""); note("page-note", "warn", "Open this dashboard in claude.ai to load live Shopify data."); return; }
 
   use("downloads").then(d => { state.downloads = d; renderOrders(); }).catch(() => {});
-  use("db").then(db => {
-    state.db = db;
-    if (!db) { renderShipSummary(); $("drop").hidden = true; return; }
-    window.watchCostOverrides(db, (mm) => { state.overrides = mm; render(); });
-    db.collection("shipments").orderBy("date", "desc").limit(1000).onSnapshot(applyShipSnapshot, () => { state.dbReady = true; $("ss-summary").textContent = "Saved labels couldn't load. Reload the page."; });
-  }).catch(() => {});
-  use("mcp").then(mcp => {
-    if (!mcp) { setStatus(""); note("page-note", "warn", "Live Shopify data isn't available in this view. Open the dashboard in claude.ai."); return; }
+  $("drop").hidden = true;
+  JT.overrides.subscribe((mm) => { state.overrides = mm; render(); });
+  JT.getMcp().then(mcp => {
+    if (!mcp) { setStatus(""); note("page-note", "warn", "Live data isn't available in this view. Open the dashboard in claude.ai."); return; }
     state.mcp = mcp; loadAll(false);
-  }).catch(() => { setStatus(""); note("page-note", "warn", "Live Shopify data isn't available in this view."); });
+  }).catch(() => { setStatus(""); note("page-note", "warn", "Live data isn't available in this view."); });
 })();

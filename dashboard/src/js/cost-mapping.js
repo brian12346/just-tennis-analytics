@@ -2,7 +2,7 @@
   // ===================== Shopify cost mapping =====================
   // Finds order lines Shopify sold without a recorded cost (ShopifyQL net_sales_without_cost_recorded),
   // lets you type a unit cost per line, and saves an order cost override (db costoverrides/<order id>),
-  // the same record the Shopify tab's per-order cost editor uses.
+  // the same record the Shopify tab's per-order cost editor uses. Data comes from Supabase (jt schema).
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
@@ -29,23 +29,8 @@
   };
 
   function note(kind, html) { const n = $("cm-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; }
-  function errMsg(e) {
-    const c = e && e.code;
-    if (c === "server_not_connected") return "Shopify isn't connected for your account. Add it in claude.ai Settings → Connectors, then reload.";
-    if (c === "needs_reauth") return "Your Shopify connection expired. Reconnect it in claude.ai Settings → Connectors.";
-    if (c === "not_in_manifest") return "Shopify access is turned off for this page.";
-    if (c === "tool_error") return "Shopify returned an error: " + (e.message || "");
-    return "Shopify didn't respond. Press Refresh in a moment.";
-  }
-  async function tool(name, input, refresh) {
-    const opts = { cache: { staleTime: 300000, gcTime: 3600000, refresh: !!refresh } };
-    try { return await C.mcp.callTool("Shopify", name, input, opts); }
-    catch (e) { if (e && e.retryable) { await new Promise(r => setTimeout(r, 800 + Math.random() * 800)); return await C.mcp.callTool("Shopify", name, input, opts); } throw e; }
-  }
-  function table(payload) {
-    const p = payload || {}, cols = (p.columns || []).map(c => c.name);
-    return (p.rows || []).map(r => Object.fromEntries(cols.map((c, i) => [c, r[i]])));
-  }
+  const JT = window.JT, n0 = (x) => Number(x) || 0;
+  const errMsg = (e) => JT.message(e);
 
   function setRange(r) {
     const t = today(); C.preset = r;
@@ -57,58 +42,52 @@
   }
 
   // ---------- load ----------
-  const LINE_Q = (s, e) => `FROM sales SHOW net_items_sold, net_sales, cost_of_goods_sold, net_sales_without_cost_recorded GROUP BY order_id, order_name, product_title, product_variant_title, product_variant_sku, product_variant_id, product_id SINCE ${s} UNTIL ${e} ORDER BY net_sales_without_cost_recorded DESC LIMIT 6000`;
-  const ORDER_Q = (s, e) => `FROM sales SHOW net_sales, cost_of_goods_sold, net_sales_without_cost_recorded GROUP BY order_id, order_name SINCE ${s} UNTIL ${e} ORDER BY net_sales_without_cost_recorded DESC LIMIT 4000`;
-
   async function load(refresh) {
     if (!C.mcp) return;
     const id = ++C.reqId; C.loading = true; C.err = null; C.page = 0; C.vcostReady = false; render();
     try {
-      const [lr, or] = await Promise.all([tool("run-analytics-query", { query: LINE_Q(C.start, C.end) }, refresh), tool("run-analytics-query", { query: ORDER_Q(C.start, C.end) }, refresh)]);
+      const where = `from jt.shopify_sales s where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0`;
+      const [or, lr] = await Promise.all([
+        JT.rows(["s.order_id::text", "s.order_name", "sum(s.net)", "sum(s.cogs)", "sum(s.net_no_cost)"], `${where} group by s.order_id, s.order_name having sum(s.net_no_cost) > 0.005`, refresh),
+        JT.rowsSplit(["s.order_id::text", "s.variant_id::text", "s.product_id::text", "s.product_title", "s.variant_title", "s.sku", "sum(s.units)", "sum(s.net)", "sum(s.net_no_cost)", "max(v.unit_cost)", "bool_or(v.variant_id is not null)"],
+          `from jt.shopify_sales s left join jt.variants v on v.variant_id = s.variant_id where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0 group by s.order_id, s.variant_id, s.product_id, s.product_title, s.variant_title, s.sku having sum(s.net_no_cost) > 0.005`,
+          "s.order_id", 2, refresh),
+      ]);
       if (id !== C.reqId) return;
       const by = new Map();
-      for (const r of table(or.payload)) {
-        const nc = Number(r.net_sales_without_cost_recorded) || 0; if (nc <= 0.005) continue;
-        const sid = String(r.order_id || ""); if (!sid || sid === "0") continue;
-        by.set(sid, { sid, name: r.order_name || "", nocost: nc, cogs: Number(r.cost_of_goods_sold) || 0, net: Number(r.net_sales) || 0, items: [] });
-      }
-      for (const r of table(lr.payload)) {
-        const nc = Number(r.net_sales_without_cost_recorded) || 0; if (nc <= 0.005) continue;
-        const o = by.get(String(r.order_id || "")); if (!o) continue;
-        const vid = String(r.product_variant_id || "0");
-        o.items.push({ vid: vid === "0" ? "" : vid, pid: String(r.product_id || "0") === "0" ? "" : String(r.product_id), title: r.product_title || "", variant: r.product_variant_title || "", sku: r.product_variant_sku || "", qty: Number(r.net_items_sold) || 0, net: Number(r.net_sales) || 0, nocost: nc });
+      for (const [sid, name, net, cogs, nc] of or) by.set(sid, { sid, name: name || "", nocost: n0(nc), cogs: n0(cogs), net: n0(net), items: [] });
+      for (const [sid, vid, pid, title, variant, sku, units, net, nc, uc, known] of lr) {
+        const o = by.get(sid); if (!o) continue;
+        const v = vid === "0" ? "" : vid;
+        o.items.push({ vid: v, pid: pid === "0" ? "" : pid, title: title || "", variant: variant || "", sku: sku || "", qty: n0(units), net: n0(net), nocost: n0(nc) });
+        if (v && known) C.vcost.set(v, uc == null ? null : Number(uc));
+        else if (v) C.vcost.set(v, null);
       }
       C.orders = [...by.values()];
-      loadVariantCosts(id);
+      C.vcostReady = true;
     } catch (e) { if (id === C.reqId) { C.err = e; C.orders = null; } }
     if (id !== C.reqId) return;
     C.loading = false; render();
   }
 
   // Line items (names of custom items, line ids, current Shopify cost) for the orders on screen.
-  const ORD_Q = `query CM($ids: [ID!]!) { nodes(ids: $ids) { ... on Order { id name createdAt lineItems(first: 40) { nodes { id name title variantTitle sku quantity currentQuantity discountedUnitPriceAfterAllDiscountsSet { shopMoney { amount } } product { id } variant { id inventoryItem { unitCost { amount } } } } } } } }`;
   async function loadLines(sids, onProgress) {
     const need = sids.filter(s => !C.lines.has(s) || C.lines.get(s).error);
     if (!need.length) return;
     need.forEach(s => C.lines.set(s, { loading: true }));
-    const chunks = []; for (let i = 0; i < need.length; i += 10) chunks.push(need.slice(i, i + 10));
+    const chunks = []; for (let i = 0; i < need.length; i += 150) chunks.push(need.slice(i, i + 150));
     let done = 0;
-    await pool(chunks, 4, async (ch) => {
+    await pool(chunks, 3, async (ch) => {
       try {
-        const res = await tool("graphql_query", { query: ORD_Q, variables: { ids: ch.map(s => "gid://shopify/Order/" + s) } });
-        const p = res.payload || {};
-        if (p.errors && p.errors.length) throw { code: "tool_error", message: p.errors[0].message };
-        const nodes = ((p.data || p).nodes) || [];
-        for (const n of nodes) {
-          if (!n || !n.id) continue;
-          const items = ((n.lineItems || {}).nodes || []).map(li => ({
-            id: num(li.id), title: li.title || li.name || "Item", variant: li.variantTitle && li.variantTitle !== "Default Title" ? li.variantTitle : "", sku: li.sku || "",
-            qty: li.currentQuantity ?? li.quantity ?? 0, price: Number(li.discountedUnitPriceAfterAllDiscountsSet && li.discountedUnitPriceAfterAllDiscountsSet.shopMoney.amount) || 0,
-            unit: li.variant && li.variant.inventoryItem && li.variant.inventoryItem.unitCost ? Number(li.variant.inventoryItem.unitCost.amount) : null,
-            pid: li.product ? num(li.product.id) : "", vid: li.variant ? num(li.variant.id) : "", custom: !li.variant }));
-          C.lines.set(num(n.id), { created: n.createdAt, items });
+        const r = await JT.rows(["l.order_id::text", "o.created_at", "l.line_id::text", "l.title", "l.variant_title", "l.sku", "l.current_quantity", "l.unit_price", "v.unit_cost", "l.product_id::text", "l.variant_id::text"],
+          `from jt.shopify_order_lines l join jt.shopify_orders o on o.order_id = l.order_id left join jt.variants v on v.variant_id = l.variant_id where l.order_id in (${ch.map(JT.int).join(",")})`);
+        const by = new Map();
+        for (const x of r.sort((a, b) => a[2].localeCompare(b[2]))) {
+          const e = by.get(x[0]) || { created: x[1], items: [] }; by.set(x[0], e);
+          e.items.push({ id: x[2], title: x[3] || "Item", variant: x[4] && x[4] !== "Default Title" ? x[4] : "", sku: x[5] || "", qty: n0(x[6]), price: n0(x[7]),
+            unit: x[8] == null ? null : Number(x[8]), pid: x[9] && x[9] !== "0" ? x[9] : "", vid: x[10] || "", custom: !x[10] });
         }
-        ch.forEach(s => { if (C.lines.get(s).loading) C.lines.set(s, { error: { code: "tool_error", message: "order not found" } }); });
+        ch.forEach(s => C.lines.set(s, by.get(s) || { error: { code: "tool_error", message: "items haven't synced yet" } }));
       } catch (e) { ch.forEach(s => C.lines.set(s, { error: e })); }
       done += ch.length; if (onProgress) onProgress(done, need.length); else if (need.length > 20) soon();
     });
@@ -123,22 +102,6 @@
   let soonT = null;
   function soon() { if (soonT) return; soonT = setTimeout(() => { soonT = null; render(); }, 120); }
 
-  // Current Shopify cost of every variant in the list, so orders can be filtered before their items load.
-  const VAR_Q = `query CMV($ids: [ID!]!) { nodes(ids: $ids) { ... on ProductVariant { id inventoryItem { unitCost { amount } } } } }`;
-  async function loadVariantCosts(reqId) {
-    const vids = [...new Set((C.orders || []).flatMap(o => o.items.map(i => i.vid)).filter(v => v && !C.vcost.has(v)))];
-    const chunks = []; for (let i = 0; i < vids.length; i += 100) chunks.push(vids.slice(i, i + 100));
-    await pool(chunks, 3, async (ch) => {
-      try {
-        const res = await tool("graphql_query", { query: VAR_Q, variables: { ids: ch.map(v => "gid://shopify/ProductVariant/" + v) } });
-        const p = res.payload || {}; const nodes = ((p.data || p).nodes) || [];
-        ch.forEach(v => C.vcost.set(v, null));
-        for (const n of nodes) if (n && n.id) C.vcost.set(num(n.id), n.inventoryItem && n.inventoryItem.unitCost ? Number(n.inventoryItem.unitCost.amount) : null);
-      } catch (_) {}
-    });
-    if (reqId !== C.reqId) return;
-    C.vcostReady = true; render();
-  }
   // "ready": every item missing a cost is a product that has a cost in Shopify now; "none": at least one doesn't (or is a custom item).
   function costClass(o) {
     if (!o.items.length) return "none";
@@ -201,7 +164,7 @@
   function render() {
     if ($("tab-costmap").hidden) return;
     const st = $("cm-status");
-    if (!C.mcp) st.textContent = window.claude && window.claude.use ? "Connecting to Shopify…" : "Open this dashboard in claude.ai to load Shopify data.";
+    if (!C.mcp) st.textContent = window.claude && window.claude.use ? "Connecting to the database…" : "Open this dashboard in claude.ai to load data.";
     else if (C.loading) st.textContent = "Finding orders sold without a cost…";
     else if (C.err) st.textContent = errMsg(C.err);
     else if (C.orders) st.textContent = `${C.orders.length.toLocaleString()} orders with items sold without a cost · ${C.start} to ${C.end}` + (C.db ? "" : " · saving isn't available in this view");
@@ -315,35 +278,38 @@
   }
 
   // ---------- save ----------
-  async function saveOrder(o) {
-    const c = orderCalc(o); if (!c || !c.complete) return false;
+  function bodyFor(o) {
+    const c = orderCalc(o); if (!c || !c.complete) return null;
     const lines = {};
     for (const it of c.rows) lines[it.id] = { unit: Math.round(money(draftOf(o.sid, it)) * 100) / 100, title: it.title.slice(0, 80), qty: it.qty };
-    const body = { cost: c.total, lines, order: o.name, sid: o.sid, src: "costmap", shopifyCogs: Math.round(o.cogs * 100) / 100, updatedAt: new Date().toISOString() };
-    await C.db.collection("costoverrides").doc(o.sid).set(body);
-    C.overrides.set(o.sid, { cost: body.cost, lines, src: "costmap" });
-    for (const it of c.rows) delete C.drafts[dkey(o.sid, it.id)];
-    return true;
+    return { order_id: o.sid, order_name: o.name, cost: c.total, shopify_cogs: Math.round(o.cogs * 100) / 100, lines, src: "costmap", rows: c.rows };
   }
   async function saveMany(list) {
     if (!C.db || !list.length) return;
-    C.saving = true; if (list.length > 1) C.bulk = `Saving 0 of ${list.length}…`; render();
-    let ok = 0, fail = 0, full = false;
-    for (let i = 0; i < list.length && !full; i += 8) {
-      const rs = await Promise.allSettled(list.slice(i, i + 8).map(saveOrder));
-      rs.forEach(r => { if (r.status === "fulfilled" && r.value) ok++; else { fail++; if (r.reason && r.reason.code === "quota_exceeded") full = true; } });
-      if (list.length > 1) { C.bulk = `Saving ${ok + fail} of ${list.length}…`; const el = $("cm-bulk"); if (el && !el.hidden) el.innerHTML = `<span><b>${esc(C.bulk)}</b></span>`; else $("cm-status").textContent = C.bulk; }
+    const bodies = list.map(o => ({ o, b: bodyFor(o) })).filter(x => x.b);
+    C.saving = true; if (bodies.length > 1) C.bulk = `Saving 0 of ${bodies.length}…`; render();
+    let ok = 0, fail = 0, lastErr = null;
+    for (let i = 0; i < bodies.length; i += 50) {
+      const part = bodies.slice(i, i + 50);
+      try {
+        await JT.saveCostOverrides(part.map(({ b }) => { const { rows, ...rest } = b; return rest; }));
+        for (const { o, b } of part) {
+          JT.overrides.set(o.sid, { cost: b.cost, lines: b.lines, src: b.src, shopifyCogs: b.shopify_cogs });
+          for (const it of b.rows) delete C.drafts[dkey(o.sid, it.id)];
+        }
+        ok += part.length;
+      } catch (e) { fail += part.length; lastErr = e; }
+      if (bodies.length > 1) { C.bulk = `Saving ${ok + fail} of ${bodies.length}…`; const el = $("cm-bulk"); if (el && !el.hidden) el.innerHTML = `<span><b>${esc(C.bulk)}</b></span>`; else $("cm-status").textContent = C.bulk; }
     }
     C.saving = false; C.bulk = null;
-    note(full ? "bad" : fail ? "bad" : list.length > 1 ? "info" : "", full ? `Saved ${ok} orders, then the dashboard's storage filled up (5,000 records). Tell Claude so the costs can be stored more compactly.`
-      : fail ? `Saved ${ok} order${ok === 1 ? "" : "s"}. ${fail} couldn't be saved. Try again.` : list.length > 1 ? `Saved ${ok} orders.` : "");
+    note(fail ? "bad" : bodies.length > 1 ? "info" : "", fail ? `Saved ${ok} order${ok === 1 ? "" : "s"}. ${fail} couldn't be saved: ${esc(errMsg(lastErr))}` : bodies.length > 1 ? `Saved ${ok} orders.` : "");
     render();
   }
   async function undo(sid) {
     if (!C.db) return;
     C.saving = true; render();
-    try { await C.db.collection("costoverrides").doc(sid).delete(); C.overrides.delete(sid); }
-    catch (_) { note("bad", "Couldn't remove that cost. Try again."); }
+    try { await JT.deleteCostOverride(sid); JT.overrides.set(sid, null); }
+    catch (e) { note("bad", "Couldn't remove that cost: " + esc(errMsg(e))); }
     C.saving = false; render();
   }
 
@@ -406,9 +372,6 @@
   setRange("ytd");
   const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;
   if (!use) return;
-  use("db").then(db => {
-    C.db = db; if (!db) return;
-    if (window.watchCostOverrides) window.watchCostOverrides(db, (mm) => { C.overrides = mm; if (!C.saving) soon(); });
-  }).catch(() => {});
-  use("mcp").then(mcp => { C.mcp = mcp; if (!$("tab-costmap").hidden) load(false); else render(); }).catch(() => {});
+  JT.overrides.subscribe((mm) => { C.overrides = mm; if (!C.saving) soon(); });
+  JT.getMcp().then(mcp => { C.mcp = mcp; C.db = mcp; if (!$("tab-costmap").hidden) load(false); else render(); }).catch(() => {});
 })();
