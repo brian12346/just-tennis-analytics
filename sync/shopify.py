@@ -294,8 +294,17 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
            rows, ["variant_id"])
     upsert(conn, "jt.variant_cost_changes", ["changed_on", "variant_id", "old_cost", "new_cost", "price", "flag"],
            changes, ["changed_on", "variant_id"], update=["new_cost", "price", "flag"])
+    # Variants Shopify no longer has (deleted there): mark removed, keep the row for history. Skipped if this fetch
+    # returned under half of what we had, which would mean a partial fetch rather than a cleanup.
+    removed = restored = 0
+    with conn.cursor() as cur:
+        cur.execute("update jt.variants set removed_at = null where seen_at >= %s and removed_at is not null", (now,))
+        restored = cur.rowcount
+        if len(rows) >= 0.5 * len(prev):
+            cur.execute("update jt.variants set removed_at = now() where seen_at < %s and removed_at is null", (now,))
+            removed = cur.rowcount
     return {"variants": len(rows), "changes": len(changes), "baseline": baseline,
-            "no_cost": sum(1 for r in rows if r[10] is None)}
+            "no_cost": sum(1 for r in rows if r[10] is None), "removed": removed, "restored": restored}
 
 
 COST_UPDATE_M = """mutation($id: ID!, $input: InventoryItemInput!) {

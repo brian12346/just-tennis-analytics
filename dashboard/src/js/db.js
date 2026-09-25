@@ -143,6 +143,12 @@
       const out = await run(`select jt.queue_cost_updates(${q(JSON.stringify(list))}::jsonb) as n`, true);
       return (out[0] && out[0].n) || 0;
     },
+    // Ask for a catalog sync from Shopify now (the sync job runs in about 30 seconds). false = one was just started.
+    async requestCatalogSync() {
+      if (WEB) return WEB.write("jt_request_catalog_sync", {});
+      const out = await run(`select jt.request_catalog_sync() as ok`, true);
+      return !!(out[0] && out[0].ok);
+    },
     message(e) {
       const c = e && e.code, tag = c ? ` (${c})` : "";
       if (WEB && c === "not_allowed") return "This account doesn't have access to the dashboard. Sign out and use the right account.";

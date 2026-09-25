@@ -173,19 +173,19 @@
     const titleSql = (ws) => ws.slice(0, 5).map(w => `(product_title ilike ${like(w)} or variant_title ilike ${like(w)})`).join(" and ");
     try {
       const jobs = [];
-      if (skuLike) jobs.push(J.rows(COLS, `from jt.variants where sku ilike ${J.q(q.replace(/[^A-Za-z0-9\-_.()\/]/g, "") + "%")} order by sku limit 25`).then(addRows));
+      if (skuLike) jobs.push(J.rows(COLS, `from jt.variants where removed_at is null and sku ilike ${J.q(q.replace(/[^A-Za-z0-9\-_.()\/]/g, "") + "%")} order by sku limit 25`).then(addRows));
       if (words.length) {
         jobs.push((async () => {
           // Title words without the brand; the brand filters on the vendor field. Drop trailing words until something matches.
           for (let n = Math.min(words.length, 5); n >= 1; n--) {
             for (const vq of vendorSql ? [vendorSql, ""] : [""]) {
-              const r = await J.rows(COLS, `from jt.variants where ${titleSql(words.slice(0, n))}${vq} order by status, product_title, variant_title limit 150`);
+              const r = await J.rows(COLS, `from jt.variants where removed_at is null and ${titleSql(words.slice(0, n))}${vq} order by status, product_title, variant_title limit 150`);
               if (r.length) { addRows(r); return; }
             }
           }
         })());
       } else if (brands.length) {
-        jobs.push(J.rows(COLS, `from jt.variants where true${vendorSql} order by status, product_title limit 150`).then(addRows));
+        jobs.push(J.rows(COLS, `from jt.variants where removed_at is null${vendorSql} order by status, product_title limit 150`).then(addRows));
       }
       await Promise.all(jobs);
       // Rank variants that contain the gauge/size numbers from the search (e.g. "17", "16L") first.

@@ -178,6 +178,7 @@
       : "Type the cost of one unit. Enter moves to the next box. When you enter a cost, other empty rows with the same item fill in too.";
     $("cm-pfilters").hidden = C.mode !== "products"; $("cm-ofilters").hidden = C.mode === "products";
     $("cm-useshop").hidden = C.mode === "products";
+    $("cm-catsync").hidden = C.mode !== "products";
     if (C.mode === "products") { $("cm-bulk").hidden = true; renderProducts(); return; }
     const t = $("cm-table");
     const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("cmi-") && t.contains(ae) ? ae.id : null;
@@ -293,13 +294,15 @@
     if (!C.mcp || C.catLoading) return;
     C.catLoading = true; C.catErr = null; if (C.mode === "products") render();
     try {
-      const r = await JT.rowsSplit(["v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "v.product_type",
-        "v.status", "v.inventory_qty", "v.tracked", "v.price", "v.unit_cost", "u.new_cost", "u.status", "u.error"],
+      const [r, last] = await Promise.all([JT.rowsSplit(["v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "v.product_type",
+        "v.status", "v.inventory_qty", "v.tracked", "v.price", "v.unit_cost", "u.new_cost", "u.status", "u.error", "v.removed_at is not null"],
         `from jt.variants v left join lateral (select c.new_cost, c.status, c.error from jt.cost_updates c
            where c.variant_id = v.variant_id and c.status <> 'replaced' order by c.id desc limit 1) u on true
-         where true`, "v.variant_id", 4, refresh);   // "where true": the part filter must land here, not inside the join
+         where true`, "v.variant_id", 4, refresh),   // "where true": the part filter must land here, not inside the join
+        JT.rows(["finished_at"], "from jt.sync_runs where job = 'catalog' and ok order by started_at desc limit 1", refresh)]);
+      C.catSynced = last[0] ? last[0][0] : null;
       C.cat = r.map(x => ({ vid: x[0], pid: x[1] && x[1] !== "0" ? x[1] : "", title: x[2] || "", variant: x[3] || "", sku: x[4] || "", vendor: x[5] || "", ptype: x[6] || "",
-        status: x[7] || "", onhand: x[8] == null ? null : Number(x[8]), tracked: x[9], price: x[10] == null ? null : Number(x[10]), cost: x[11] == null ? null : Number(x[11]),
+        status: x[15] ? "REMOVED" : (x[7] || ""), onhand: x[8] == null ? null : Number(x[8]), tracked: x[9], price: x[10] == null ? null : Number(x[10]), cost: x[11] == null ? null : Number(x[11]),
         upd: x[13] === "pending" || x[13] === "failed" ? { cost: Number(x[12]), status: x[13], error: x[14] || "" } : null }));
       for (const v of C.cat) C.vcost.set(v.vid, v.cost);
     } catch (e) { C.catErr = e; }
@@ -321,7 +324,7 @@
   function productList() {
     const unc = uncostedByVariant(), st = $("cm-pstatus").value, cf = $("cm-pcost").value, sort = $("cm-psort").value;
     let list = (C.cat || []).map(v => ({ ...v, key: v.vid, unc: unc.get(v.vid) || null }));
-    if (st !== "all") list = list.filter(v => v.status === st || (v.unc && st === "ACTIVE"));   // sold-without-cost items always show under Active
+    if (st !== "all") list = list.filter(v => v.status === st || (v.unc && st === "ACTIVE" && v.status !== "REMOVED"));   // sold-without-cost items show under Active
     if (cf === "missing") list = list.filter(v => v.cost == null);
     else if (cf === "has") list = list.filter(v => v.cost != null);
     else if (cf === "sold") list = list.filter(v => v.unc);
@@ -368,7 +371,7 @@
       body += `<tr>
         <td class="l"><div class="iname">${name}</div>${v.variant || v.sku ? `<div class="small dim">${esc([v.variant, v.sku].filter(Boolean).join(" · "))}</div>` : ""}</td>
         <td class="l wrapc">${esc(v.vendor) || '<span class="dim">—</span>'}</td><td class="l wrapc">${esc(v.ptype) || '<span class="dim">—</span>'}</td>
-        <td class="l small">${esc(v.status.charAt(0) + v.status.slice(1).toLowerCase())}</td>
+        <td class="l small">${v.status === "REMOVED" ? '<span class="pill miss" title="Deleted in Shopify; kept here for sales history">Removed</span>' : esc(v.status.charAt(0) + v.status.slice(1).toLowerCase())}</td>
         <td>${v.onhand == null ? '<span class="dim">—</span>' : v.tracked === false ? '<span class="dim" title="Inventory not tracked in Shopify">not tracked</span>' : v.onhand.toLocaleString()}</td>
         <td>${v.price == null ? '<span class="dim">—</span>' : m(v.price)}</td>
         <td>${v.cost == null ? '<span class="pill miss">No cost</span>' : m(v.cost)}</td>
@@ -380,7 +383,8 @@
     t.innerHTML = head + `<tbody>${body}</tbody>`;
     $("cm-prev").hidden = C.page === 0;
     $("cm-next").hidden = C.page >= pages - 1;
-    $("cm-count").textContent = list.length ? `Products ${C.page * per + 1}–${Math.min(list.length, (C.page + 1) * per)} of ${list.length.toLocaleString()}` + (C.cat ? ` · ${C.cat.length.toLocaleString()} variants in Shopify` : "") : "";
+    $("cm-count").textContent = list.length ? `Products ${C.page * per + 1}–${Math.min(list.length, (C.page + 1) * per)} of ${list.length.toLocaleString()}` + (C.cat ? ` · ${C.cat.filter(v => v.status !== "REMOVED").length.toLocaleString()} variants in Shopify` : "")
+      + (C.catSynced ? ` · synced from Shopify ${new Date(C.catSynced).toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "") : "";
     saveProductsButton();
     if (activeId && $(activeId)) { const i = $(activeId); i.focus(); try { i.setSelectionRange(sel[0], sel[1]); } catch (_) {} }
   }
@@ -432,6 +436,33 @@
     note(qErr ? "bad" : partial ? "warn" : "info", parts.join(" "));
     render();
     if (queued) { setTimeout(() => loadCatalog(true), 20000); setTimeout(() => loadCatalog(true), 60000); }
+  }
+
+  // "Sync from Shopify": start the catalog job, wait for it to finish (about 30 seconds), reload the list.
+  async function syncCatalog() {
+    const btn = $("cm-catsync"); if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = "Syncing from Shopify…";
+    const t0 = new Date(Date.now() - 5000).toISOString();
+    try {
+      const started = await JT.requestCatalogSync();
+      note("info", started ? "Pulling the latest products from Shopify… (about 30 seconds)" : "A sync from Shopify is already running; waiting for it…");
+      let run = null;
+      for (let i = 0; i < 40 && !run; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const r = await JT.rows(["ok", "detail", "finished_at"], `from jt.sync_runs where job = 'catalog' and started_at > ${JT.q(t0)}::timestamptz and finished_at is not null order by started_at desc limit 1`, true);
+        if (r.length) run = r[0];
+      }
+      if (!run) note("warn", "The sync from Shopify is taking longer than usual. The list will update when it finishes; press Refresh in a minute.");
+      else if (!run[0]) note("bad", "The sync from Shopify failed: " + esc(String(run[1] || "").slice(-200)));
+      else {
+        const d = {}; String(run[1] || "").replace(/'(\w+)': (\w+)/g, (_, k, v) => { d[k] = v; });
+        note("info", `Synced ${Number(d.variants || 0).toLocaleString()} products from Shopify` +
+          (+d.removed ? ` · ${d.removed} no longer in Shopify (hidden; see Status: Removed from Shopify)` : "") +
+          (+d.restored ? ` · ${d.restored} back in Shopify` : "") + (+d.changes ? ` · ${d.changes} cost change${+d.changes > 1 ? "s" : ""}` : "") + ".");
+        C.cat = null; await loadCatalog(true);
+      }
+    } catch (e) { note("bad", "Couldn't start a sync from Shopify: " + esc(errMsg(e))); }
+    btn.disabled = false; btn.textContent = "Sync from Shopify";
   }
 
   // ---------- save ----------
@@ -490,6 +521,7 @@
   $("cm-saveall").addEventListener("click", () => C.mode === "products" ? saveProducts() : saveMany(readyOrders()));
   document.querySelectorAll("#cm-mode button").forEach(b => b.addEventListener("click", () => { C.mode = b.dataset.mode; C.page = 0; render(); }));
   ["cm-pstatus", "cm-pcost", "cm-psort"].forEach(id => $(id).addEventListener("change", () => { C.page = 0; render(); }));
+  $("cm-catsync").addEventListener("click", syncCatalog);
   $("cm-useshop").addEventListener("click", () => {
     const touched = new Set();
     document.querySelectorAll("#cm-table input.cmin").forEach(i => {

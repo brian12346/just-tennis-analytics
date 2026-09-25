@@ -94,7 +94,7 @@ def test_sales_daily_orders_and_catalog(conn):
     assert cur.fetchall() == [(2, None, 1), (18780475293981, 51062252273949, 0)]
 
     first = sh.sync_catalog(shop, conn, dt.date(2026, 9, 24))
-    assert first == {"variants": 2, "changes": 0, "baseline": True, "no_cost": 1}
+    assert first == {"variants": 2, "changes": 0, "baseline": True, "no_cost": 1, "removed": 0, "restored": 0}
     changed = [dict(VARIANTS[0], inventoryItem={"unitCost": {"amount": "6.83"}}), VARIANTS[1]]
     second = sh.sync_catalog(FakeShopify(changed), conn, dt.date(2026, 9, 25))
     assert second["changes"] == 1
@@ -149,3 +149,19 @@ def test_catalog_inventory_and_cost_updates(conn):
     assert cur.fetchone()[0] == D("9.50")
     cur.execute("select old_cost, new_cost, flag from jt.variant_cost_changes where variant_id = 5 and changed_on = '2026-09-25'")
     assert cur.fetchone() == (D("8.50"), D("9.50"), "set in dashboard")
+
+
+def test_catalog_marks_removed_variants(conn):
+    many = [dict(VARIANTS[0], id=f"gid://shopify/ProductVariant/{100 + i}") for i in range(10)]
+    sh.sync_catalog(FakeShopify(many), conn, dt.date(2026, 9, 24))
+    out = sh.sync_catalog(FakeShopify(many[:8]), conn, dt.date(2026, 9, 25))           # two deleted in Shopify
+    assert (out["removed"], out["restored"]) == (2, 0)
+    cur = conn.cursor()
+    cur.execute("select variant_id from jt.variants where removed_at is not null order by 1")
+    assert cur.fetchall() == [(108,), (109,)]
+    out = sh.sync_catalog(FakeShopify(many[:9]), conn, dt.date(2026, 9, 26))           # one came back
+    assert (out["removed"], out["restored"]) == (0, 1)
+    out = sh.sync_catalog(FakeShopify(many[:2]), conn, dt.date(2026, 9, 27))           # partial fetch: remove nothing
+    assert out["removed"] == 0
+    cur.execute("select count(*) from jt.variants where removed_at is not null")
+    assert cur.fetchone()[0] == 1

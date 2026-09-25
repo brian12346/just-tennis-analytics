@@ -23,7 +23,7 @@ def build(conn, day: dt.date, run_on: dt.date) -> dict:
     """Compute the three documents for sales `day`, with cost changes recorded on `run_on`."""
     with conn.cursor() as cur:
         cur.execute("""select variant_id, product_id, sku, coalesce(nullif(display_name, ''), product_title), price, unit_cost
-                       from jt.variants where status <> 'ARCHIVED' or status is null""")
+                       from jt.variants where removed_at is null and (status <> 'ARCHIVED' or status is null)""")
         variants = cur.fetchall()
         cur.execute("""select c.variant_id, v.product_id, coalesce(v.sku, ''), coalesce(nullif(v.display_name, ''), v.product_title, ''),
                               c.old_cost, c.new_cost, c.price, c.flag
