@@ -232,3 +232,8 @@ input.cmin{width:76px}
 
 .cmbulk[hidden]{display:none}
 #cm-pcost{width:auto;max-width:200px}
+
+/* Shopify tab: old range's numbers fade while a new range loads */
+#tab-shopify > section, #tab-shopify > .panel { transition: opacity .15s; }
+#tab-shopify.stale > section, #tab-shopify.stale > .panel { opacity: .3; pointer-events: none; }
+.build { font-size: 11px; color: var(--muted, #888); margin-right: 8px; }

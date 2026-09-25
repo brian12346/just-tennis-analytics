@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SRC = join(here, "src"), DIST = join(here, "dist");
@@ -20,6 +21,11 @@ let html = readFileSync(join(SRC, "index.html"), "utf8").replace(MARK, (_, rel) 
   return readFileSync(p, "utf8").replace(/\n+$/, "");
 });
 if (MARK.test(html)) { console.error("nested @inline markers are not supported"); process.exit(1); }
+
+// Version shown next to the account chip, so it's easy to tell which deploy the browser has.
+let sha = process.env.VERCEL_GIT_COMMIT_SHA || "";
+if (!sha) { try { sha = execSync("git rev-parse HEAD", { cwd: here, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch (_) {} }
+html = html.replace(/__BUILD__/g, (sha || "local").slice(0, 7));
 
 mkdirSync(join(DIST, "web"), { recursive: true });
 writeFileSync(join(DIST, "just-tennis-sales.html"), html);

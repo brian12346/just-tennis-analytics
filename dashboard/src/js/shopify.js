@@ -133,15 +133,19 @@
     const id = state.loadId = (state.loadId || 0) + 1, cur = () => id === state.loadId;
     state.loading = true; state.loadStarted = Date.now(); state.pending = null; state.fromCache = false;
     $("refresh").disabled = true;
-    setStatus("Loading daily sales…");
+    const label = state.start === state.end ? shortDay(state.start) : shortDay(state.start) + " – " + shortDay(state.end);
+    const range = state.start + "/" + state.end;
+    // Until the new range's numbers arrive, fade out the old ones so they can't be mistaken for the new range.
+    if (state.shownRange !== range) $("tab-shopify").classList.add("stale");
+    setStatus(`Loading ${label}…`);
     try {
       if (refresh) JT.overrides.reload();
       const dailyP = loadDaily(refresh).then(d => { if (cur()) { state.daily = d; state.dailyErr = null; } }).catch(e => { if (cur()) { state.dailyErr = e; if (isDenial(e)) state.daily = null; } });
-      const ordersP = loadOrders(refresh, (n) => cur() && setStatus(`Loading orders… ${n} so far`)).then(o => { if (cur()) { state.orders = o; state.ordersErr = null; } }).catch(e => { if (cur()) { state.ordersErr = e; if (isDenial(e)) state.orders = null; } });
+      const ordersP = loadOrders(refresh, (n) => cur() && setStatus(`Loading ${label} orders… ${n} so far`)).then(o => { if (cur()) { state.orders = o; state.ordersErr = null; } }).catch(e => { if (cur()) { state.ordersErr = e; if (isDenial(e)) state.orders = null; } });
       const costsP = loadOrderCosts(refresh).then(c => { if (cur()) { state.costs = c; state.costsErr = null; } }).catch(e => { if (cur()) { state.costsErr = e; if (isDenial(e)) state.costs = null; } });
       const ncP = loadNoCostRows(refresh).then(r => { if (cur()) state.ncRows = r; }).catch(() => { if (cur()) state.ncRows = null; });
       const shipP = loadLabels(refresh, cur).catch(() => { if (cur()) { state.dbReady = true; state.shipErr = true; } });
-      await dailyP; if (cur()) safeRender();
+      await dailyP; if (cur()) { safeRender(); state.shownRange = range; $("tab-shopify").classList.remove("stale"); }
       await Promise.all([ordersP, costsP, ncP, shipP]);
     } catch (e) { window.JT.showError && window.JT.showError(e); }
     finally { if (cur()) { state.loading = false; $("refresh").disabled = false; } }
@@ -150,7 +154,7 @@
     safeRender();
     const errs = [state.dailyErr, state.ordersErr, state.costsErr].filter(Boolean);
     if (errs.length) setStatus("");
-    else setStatus(`${state.start === state.end ? shortDay(state.start) : shortDay(state.start) + " – " + shortDay(state.end)} · Updated ${state.loadedAt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})} · ${state.orders ? state.orders.length : 0} orders`);
+    else setStatus(`${label} · Updated ${state.loadedAt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})} · ${state.orders ? state.orders.length : 0} orders`);
   }
 
   function setStatus(t) { $("status").textContent = t; }
