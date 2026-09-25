@@ -9,22 +9,49 @@
   const day = (d) => { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d))) throw new Error("bad date " + d); return "'" + d + "'::date"; };
   const int = (n) => { const s = String(n); if (!/^-?\d+$/.test(s)) throw new Error("bad id " + n); return s; };
 
-  function unwrap(res) {
-    let p = res && res.payload;
-    if (p && typeof p === "object" && typeof p.result === "string") p = p.result;
-    if (typeof p !== "string") {
-      const t = res && res.content && res.content.find(b => b.type === "text");
-      p = t ? t.text : "";
-      try { const j = JSON.parse(p); if (j && typeof j.result === "string") p = j.result; else if (j && j.error) throw { code: "tool_error", message: j.error.message || String(j.error) }; } catch (e) { if (e && e.code) throw e; }
-    }
-    const m = /<untrusted-data-[^>]*>\s*([\s\S]*?)\s*<\/untrusted-data-/.exec(p);
-    if (!m) {
-      if (/error/i.test(p)) throw { code: "tool_error", message: p.replace(/^.*?(ERROR:)/s, "$1").slice(0, 300) };
-      throw { code: "tool_error", message: "Unexpected reply from the database." };
-    }
-    try { return JSON.parse(m[1]); }
-    catch (_) { throw { code: "too_big", message: "The reply was cut off." }; }
+  // The connector's reply can arrive as an object, as JSON text, or as JSON text inside a string, depending on
+  // the viewer. Peel those layers off until the rows between the <untrusted-data-…> markers parse.
+  function texts(res) {
+    const out = [], seen = new Set();
+    const add = (v, depth) => {
+      if (v == null || depth > 3) return;
+      if (typeof v === "object") {
+        if (v.error) out.push({ error: v.error.message || String(v.error) });
+        if (typeof v.result === "string") add(v.result, depth + 1);
+        if (Array.isArray(v.content)) v.content.forEach(b => b && b.type === "text" && add(b.text, depth + 1));
+        return;
+      }
+      const t = String(v); if (seen.has(t)) return; seen.add(t); out.push(t);
+      const trimmed = t.trim();
+      if (trimmed[0] === "{" || trimmed[0] === "\"") { try { add(JSON.parse(trimmed), depth + 1); } catch (_) {} }
+    };
+    add(res && res.payload, 0); add(res && { content: res.content }, 0);
+    return out;
   }
+  function unwrap(res) {
+    const all = texts(res);
+    let sawBlock = false, longest = 0;
+    for (const t of all) {
+      if (typeof t !== "string") continue;
+      // the reply's intro sentence also names the marker, so take the block that closes with a matching tag
+      // and contains no other opening marker
+      const m = /<untrusted-data-([\w-]+)>((?:(?!<untrusted-data-)[\s\S])*?)<\/untrusted-data-\1>/.exec(t);
+      if (!m) continue;
+      sawBlock = true; longest = Math.max(longest, m[2].length);
+      const body = m[2].trim();
+      try { return JSON.parse(body); } catch (_) {}
+      try { return JSON.parse(JSON.parse('"' + body + '"')); } catch (_) {}   // still escaped one level
+    }
+    const err = all.find(t => t && t.error);
+    if (err) throw { code: "tool_error", message: err.error };
+    const txt = all.filter(t => typeof t === "string").join(" ");
+    if (!sawBlock && /error/i.test(txt)) throw { code: "tool_error", message: (txt.match(/ERROR:[^"\\]*/) || [txt])[0].slice(0, 300) };
+    // Only a long reply can have been cut off; anything else is a format we didn't expect.
+    if (sawBlock && longest > 100000) throw { code: "too_big", message: "The reply was cut off." };
+    console.warn("[JT] unexpected database reply", JSON.stringify(res && (res.payload ?? res.content)).slice(0, 500));
+    throw { code: "tool_error", message: "Couldn't read the database's reply." };
+  }
+
 
   // At most 2 calls in flight. The very first call runs alone, so the "allow Supabase" prompt
   // is answered before anything else is sent (calls made while it is open get refused).
@@ -82,7 +109,7 @@
       const f = n <= 1 ? from : `${head} ${hasWhere ? "and" : "where"} abs(hashtext((${key})::text)) % ${n} = ${i} ${rest.join("")}`;
       try { return await rows(select, f, refresh); }
       catch (e) {
-        if (!(e && e.code === "too_big") || n >= 64) throw e;
+        if (!(e && e.code === "too_big") || n >= 16) throw e;
         const [a, b] = await Promise.all([part(n * 2, i), part(n * 2, i + n)]);
         return a.concat(b);
       }
