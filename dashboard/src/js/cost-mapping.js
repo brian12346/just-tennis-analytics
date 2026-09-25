@@ -10,8 +10,7 @@
   const m = (n) => usd.format(Math.round((n || 0) * 100) / 100 || 0), m0 = (n) => usd0.format(n || 0);
   const money = (s) => { let t = String(s ?? "").trim(); if (!t) return null; t = t.replace(/[$,\s]/g, ""); if (!/^\d*\.?\d+$|^\d+\.$/.test(t)) return NaN; return Number(t); };
   const TZ = "America/Los_Angeles";
-  const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-  const addDays = (ds, n) => { const d = new Date(ds + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const today = window.JTDate.today, addDays = window.JTDate.addDays;
   const num = (g) => g ? String(g).split("/").pop() : "";
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
 
@@ -197,7 +196,7 @@
     else if (!pageOrders.length) body = `<tr><td class="l dim" colspan="8">${C.show === "open" && !C.q ? "Every order in this range has a cost. Nice." : "No orders match."}</td></tr>`;
     for (const o of pageOrders) {
       const L = C.lines.get(o.sid), saved = C.overrides.get(o.sid);
-      const created = L && L.created ? new Date(L.created).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: TZ }) : "";
+      const created = L && L.created ? window.JTDate.parseTime(L.created).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: TZ }) : "";
       const ordCell = (span) => `<td class="l ocell" rowspan="${span}"><a class="olink" href="${ADMIN}/orders/${encodeURIComponent(o.sid)}" target="_blank" rel="noopener">${esc(o.name)}</a><div class="small dim">${created}</div><div class="small dim">${m(o.nocost)} without cost</div></td>`;
       if (!L || L.loading) { body += `<tr class="ogrp">${ordCell(1)}<td class="l dim" colspan="7"><span class="skel">Loading items…</span></td></tr>`; continue; }
       if (L.error) { body += `<tr class="ogrp">${ordCell(1)}<td class="l" colspan="7"><span class="neg small">${esc(errMsg(L.error))}</span> <button class="mini" data-cm="retry" data-sid="${o.sid}">Try again</button></td></tr>`; continue; }
@@ -384,7 +383,7 @@
     $("cm-prev").hidden = C.page === 0;
     $("cm-next").hidden = C.page >= pages - 1;
     $("cm-count").textContent = list.length ? `Products ${C.page * per + 1}–${Math.min(list.length, (C.page + 1) * per)} of ${list.length.toLocaleString()}` + (C.cat ? ` · ${C.cat.filter(v => v.status !== "REMOVED").length.toLocaleString()} variants in Shopify` : "")
-      + (C.catSynced ? ` · synced from Shopify ${new Date(C.catSynced).toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "") : "";
+      + (C.catSynced ? ` · synced from Shopify ${window.JTDate.parseTime(C.catSynced).toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "") : "";
     saveProductsButton();
     if (activeId && $(activeId)) { const i = $(activeId); i.focus(); try { i.setSelectionRange(sel[0], sel[1]); } catch (_) {} }
   }

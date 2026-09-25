@@ -8,9 +8,7 @@
   const m = (n) => usd.format(n || 0);
   const m0 = (n) => usd0.format(n || 0);
   const pct = (n) => isFinite(n) ? (n*100).toFixed(1) + "%" : "—";
-  const dayFmt = new Intl.DateTimeFormat("en-CA",{timeZone:TZ,year:"numeric",month:"2-digit",day:"2-digit"});
-  const laDay = (d) => dayFmt.format(new Date(d));
-  const addDays = (ds, n) => { const d = new Date(ds + "T12:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); };
+  const laDay = window.JTDate.laDay, addDays = window.JTDate.addDays;
   const offFmt = new Intl.DateTimeFormat("en-US",{timeZone:TZ,timeZoneName:"shortOffset"});
   const tzOff = (ds) => {
     const p = offFmt.formatToParts(new Date(ds + "T12:00:00Z")).find(x => x.type === "timeZoneName");
@@ -380,7 +378,7 @@
     const el = $("ss-summary");
     if (!state.dbReady) { el.textContent = "Loading label costs…"; return; }
     if (state.shipErr) { el.textContent = "Label costs couldn't load. Press Refresh."; return; }
-    const when = (t) => t ? new Date(t).toLocaleString("en-US",{timeZone:TZ,month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "never";
+    const when = (t) => t && !isNaN(window.JTDate.parseTime(t)) ? window.JTDate.parseTime(t).toLocaleString("en-US",{timeZone:TZ,month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "never";
     const sales = (state.syncs || []).find(x => x[0] === "shopify_sales");
     el.textContent = `${state.shipLabels.toLocaleString()} ShipStation labels for orders in this range · labels synced ${when(state.lastSync)} · sales synced ${when(sales && sales[1])} (both sync hourly)`;
   }
@@ -407,7 +405,7 @@
     let mt = /^(\d{4})-(\d{2})-(\d{2})/.exec(t); if (mt) return `${mt[1]}-${mt[2]}-${mt[3]}`;
     mt = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.exec(t);
     if (mt) { let yy = mt[3].length === 2 ? "20" + mt[3] : mt[3]; return `${yy}-${mt[1].padStart(2,"0")}-${mt[2].padStart(2,"0")}`; }
-    const d = new Date(t); return isNaN(d) ? null : laDay(d);
+    return laDay(t);
   }
   function guess(headers) {
     const H = headers.map(h => h.toLowerCase().trim());
@@ -525,7 +523,7 @@
     for (const o of rows) {
       const s = shipFor(o);
       const k = costFor(o), c = s ? s.cost : 0;
-      lines.push([o.name, new Date(o.created).toLocaleString("en-US",{timeZone:TZ}), o.day, o.chan, o.source, o.fin, o.ful, o.cancelled, o.subtotal.toFixed(2), o.discounts.toFixed(2), o.shipping.toFixed(2), o.tax.toFixed(2), o.total.toFixed(2), o.refunded.toFixed(2), k ? k.net.toFixed(2) : "", k ? k.cogs.toFixed(2) : "", k ? k.gp.toFixed(2) : "", k ? k.nocost.toFixed(2) : "", k ? (k.manual ? "entered" : "shopify") : "", s ? c.toFixed(2) : "", s ? s.labels : "", s ? (o.shipping - c).toFixed(2) : "", k ? profitAfterShip(k.gp, o.shipping, c).toFixed(2) : "", s ? [...s.services].join("; ") : ""].map(q).join(","));
+      lines.push([o.name, window.JTDate.parseTime(o.created).toLocaleString("en-US",{timeZone:TZ}), o.day, o.chan, o.source, o.fin, o.ful, o.cancelled, o.subtotal.toFixed(2), o.discounts.toFixed(2), o.shipping.toFixed(2), o.tax.toFixed(2), o.total.toFixed(2), o.refunded.toFixed(2), k ? k.net.toFixed(2) : "", k ? k.cogs.toFixed(2) : "", k ? k.gp.toFixed(2) : "", k ? k.nocost.toFixed(2) : "", k ? (k.manual ? "entered" : "shopify") : "", s ? c.toFixed(2) : "", s ? s.labels : "", s ? (o.shipping - c).toFixed(2) : "", k ? profitAfterShip(k.gp, o.shipping, c).toFixed(2) : "", s ? [...s.services].join("; ") : ""].map(q).join(","));
     }
     try { await state.downloads.save({ filename: `just-tennis-orders_${state.start}_to_${state.end}.csv`, data: lines.join("\n") }); }
     catch (e) { if (e && e.code !== "cancelled" && e.code !== "declined") note("orders-note", "bad", "Download didn't start. Try again."); }

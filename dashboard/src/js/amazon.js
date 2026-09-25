@@ -400,7 +400,7 @@
   // Amazon sales & profit
   // =====================================================================
   const A = { months: new Map(), titles: {}, start: null, end: null, preset: "30", days: null, loading: false, err: null, skuShown: 100, oShown: 200, reqId: 0, uploading: false };
-  const addDays = (ds, n) => { const d = new Date(ds + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const addDays = window.JTDate.addDays;
   const shortDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
   const wkDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
   const m0f = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });

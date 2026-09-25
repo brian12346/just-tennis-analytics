@@ -127,9 +127,33 @@
   }
   const call = (fn, argSql) => run(`select jt.${fn}(${argSql}) as ok`);
 
+  // ---------- dates, the same in every browser ----------
+  // Pacific-time calendar day as YYYY-MM-DD, built from its parts (a locale's own date format varies by browser).
+  const dayParts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" });
+  function parseTime(v) {                      // Date from a Date, a number, or a database timestamp string
+    if (v instanceof Date) return v;
+    if (typeof v === "number") return new Date(v);
+    let s = String(v || "").trim().replace(" ", "T").replace(/(\.\d{3})\d+/, "$1").replace(/([+-]\d\d)$/, "$1:00");
+    return new Date(s);
+  }
+  function laDay(v) {
+    const d = parseTime(v == null ? Date.now() : v);
+    if (isNaN(d)) return null;
+    const p = {}; for (const x of dayParts.formatToParts(d)) p[x.type] = x.value;
+    return `${p.year}-${p.month}-${p.day}`;
+  }
+  function addDays(ds, n) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ds || ""));
+    const d = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + n, 12)) : new Date(NaN);
+    return isNaN(d) ? ds : d.toISOString().slice(0, 10);
+  }
+  window.JTDate = { parseTime, laDay, addDays, today: () => laDay(Date.now()) };
+
   // Anything that breaks on the page shows as a banner at the top instead of failing silently.
   function showError(e) {
-    const msg = (e && (e.message || e.reason && e.reason.message)) || String(e || "unknown error");
+    let msg = (e && (e.message || e.reason && e.reason.message)) || String(e || "unknown error");
+    const where = e && e.stack ? (String(e.stack).split("\n").find(l => /at /.test(l)) || "").trim().replace(/\(?(https?|file):[^)]*\)?/, "").trim() : "";
+    if (where) msg += " [" + where.slice(0, 60) + "]";
     console.error("[JT]", e);
     let el = document.getElementById("jt-err");
     if (!el) {

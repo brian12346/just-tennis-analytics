@@ -6,8 +6,7 @@
   const m = (n) => usd.format(n || 0), m0 = (n) => usd0.format(n || 0);
   const pct = (n) => isFinite(n) ? (n * 100).toFixed(1) + "%" : "—";
   const TZ = "America/Los_Angeles";
-  const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-  const addDays = (ds, n) => { const d = new Date(ds + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const today = window.JTDate.today, addDays = window.JTDate.addDays;
   const lyDate = (ds) => { const y = +ds.slice(0, 4) - 1; let md = ds.slice(5); if (md === "02-29") md = "02-28"; return y + "-" + md; };
   const shortDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
   const LABEL = { type: "Category", vendor: "Vendor", title: "Model" };
