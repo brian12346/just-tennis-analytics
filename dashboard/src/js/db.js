@@ -22,20 +22,47 @@
       if (/error/i.test(p)) throw { code: "tool_error", message: p.replace(/^.*?(ERROR:)/s, "$1").slice(0, 300) };
       throw { code: "tool_error", message: "Unexpected reply from the database." };
     }
-    return JSON.parse(m[1]);
+    try { return JSON.parse(m[1]); }
+    catch (_) { throw { code: "too_big", message: "The reply was cut off." }; }
+  }
+
+  // At most 3 calls in flight. The very first call runs alone, so the "allow Supabase" prompt
+  // is answered before anything else is sent (calls made while it is open get refused).
+  let active = 0, gate = null; const waiting = [];
+  const acquire = () => new Promise(r => { if (active < 3) { active++; r(); } else waiting.push(r); });
+  const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  async function once(mcp, sql, refresh) {
+    const opts = { cache: { staleTime: 120000, gcTime: 1800000, refresh: !!refresh } };
+    let last;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { return await mcp.callTool("Supabase", "execute_sql", { project_id: PROJECT, query: sql }, opts); }
+      catch (e) {
+        last = e;
+        if (!(e && e.retryable)) throw e;
+        await sleep(Math.min(Math.max(e.retryAfterMs || 0, 1500 * (attempt + 1)), 15000) + Math.random() * 500);
+      }
+    }
+    throw last;
   }
 
   async function run(sql, refresh) {
     const mcp = await getMcp();
     if (!mcp) throw { code: "not_granted", message: "Database access isn't available in this view." };
-    const opts = { cache: { staleTime: 120000, gcTime: 1800000, refresh: !!refresh } };
-    let res;
-    try { res = await mcp.callTool("Supabase", "execute_sql", { project_id: PROJECT, query: sql }, opts); }
-    catch (e) {
-      if (e && e.retryable) { await new Promise(r => setTimeout(r, 800 + Math.random() * 800)); res = await mcp.callTool("Supabase", "execute_sql", { project_id: PROJECT, query: sql }, opts); }
-      else throw e;
-    }
-    return unwrap(res);
+    let first = false;
+    if (!gate) { first = true; let done; gate = new Promise(r => { done = r; }); gate.done = done; }
+    else await gate.catch(() => {});
+    await acquire();
+    try {
+      const res = await once(mcp, sql, refresh);
+      if (first) gate.done();
+      return unwrap(res);
+    } catch (e) {
+      if (first) { gate.done(); gate = null; }   // let the next call try the prompt again
+      console.warn("[JT] database call failed", e && e.code, e && e.message);
+      throw e;
+    } finally { release(); }
   }
 
   // Rows as arrays: `select` is a list of SQL expressions, `from` the rest of the query (from/where/group by).
@@ -45,13 +72,21 @@
     const out = await run(sql, refresh);
     return (out[0] && out[0].j) || [];
   }
-  // Same, split into `parts` by a hash of `key` (run in parallel) to keep each reply small.
+  // Same, split into `parts` by a hash of `key` to keep each reply small; a part whose reply comes back
+  // cut off is split again (up to 64 parts).
   async function rowsSplit(select, from, key, parts, refresh) {
-    if (parts <= 1) return rows(select, from, refresh);
-    const hasWhere = /\bwhere\b/i.test(from.split(/\bgroup by\b/i)[0]);
     const [head, ...rest] = from.split(/(?=\bgroup by\b)/i);
-    const res = await Promise.all(Array.from({ length: parts }, (_, i) =>
-      rows(select, `${head} ${hasWhere ? "and" : "where"} abs(hashtext((${key})::text)) % ${parts} = ${i} ${rest.join("")}`, refresh)));
+    const hasWhere = /\bwhere\b/i.test(head);
+    const part = async (n, i) => {
+      const f = n <= 1 ? from : `${head} ${hasWhere ? "and" : "where"} abs(hashtext((${key})::text)) % ${n} = ${i} ${rest.join("")}`;
+      try { return await rows(select, f, refresh); }
+      catch (e) {
+        if (!(e && e.code === "too_big") || n >= 64) throw e;
+        const [a, b] = await Promise.all([part(n * 2, i), part(n * 2, i + n)]);
+        return a.concat(b);
+      }
+    };
+    const res = await Promise.all(Array.from({ length: Math.max(1, parts) }, (_, i) => part(Math.max(1, parts), i)));
     return [].concat(...res);
   }
   const call = (fn, argSql) => run(`select jt.${fn}(${argSql}) as ok`);
@@ -66,13 +101,17 @@
       return (out[0] && out[0].n) || 0;
     },
     message(e) {
-      const c = e && e.code;
+      const c = e && e.code, tag = c ? ` (${c})` : "";
       if (c === "server_not_connected") return "Supabase isn't connected for your account. Add it in claude.ai Settings → Connectors, then reload.";
-      if (c === "needs_reauth") return "Your Supabase connection expired. Reconnect it in claude.ai Settings → Connectors.";
-      if (c === "not_in_manifest") return "Database access is turned off for this page. Allow Supabase in the page's connector settings, then reload.";
-      if (c === "not_granted" || c === "capability_disabled") return "The database isn't available in this view. Open the dashboard in claude.ai.";
+      if (c === "needs_reauth") return "Your Supabase connection expired. Reconnect it in claude.ai Settings → Connectors, then press Refresh.";
+      if (c === "selection_required") return "You have more than one Supabase connection. Pick one in the prompt, then press Refresh.";
+      if (c === "not_in_manifest" || c === "consent_required") return "Supabase is turned off for this page. Allow it in the page's connector settings (or the prompt), then reload.";
+      if (c === "approval_required" || c === "blocked_by_policy") return "Your account's settings block Supabase queries from this page" + tag + ".";
+      if (c === "not_granted" || c === "capability_disabled" || c === "capability_removed") return "The database isn't available in this view. Open the dashboard in claude.ai.";
       if (c === "tool_error") return "Database error: " + (e.message || "unknown");
-      return "The database didn't respond. Press Refresh in a moment.";
+      if (c === "too_big") return "A result was too large to load. Try a shorter date range.";
+      if (c === "server_unavailable") return "Supabase didn't respond (busy or timed out). Press Refresh in a moment.";
+      return "The database didn't respond" + tag + (e && e.message && c !== "upstream_error" ? ": " + e.message : "") + ". Press Refresh in a moment.";
     },
   };
 

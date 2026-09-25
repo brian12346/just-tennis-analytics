@@ -69,8 +69,8 @@
   const spanDays = () => Math.round((new Date(state.end) - new Date(state.start)) / 864e5) + 1;
 
   async function loadDaily(refresh) {
-    const r = await JT.rows(["day", "orders", "gross", "discounts", "returns", "net", "shipping", "taxes", "total", "cogs", "gross_profit", "net_no_cost"],
-      `from jt.shopify_daily where day between ${JT.day(state.start)} and ${JT.day(state.end)}`, refresh);
+    const r = await JT.rowsSplit(["day", "orders", "gross", "discounts", "returns", "net", "shipping", "taxes", "total", "cogs", "gross_profit", "net_no_cost"],
+      `from jt.shopify_daily where day between ${JT.day(state.start)} and ${JT.day(state.end)}`, "day", 1, refresh);
     const byDay = new Map();
     for (const x of r) byDay.set(x[0], { day:x[0], orders:num(x[1]), gross:num(x[2]), discounts:num(x[3]), returns:num(x[4]), net:num(x[5]), shipping:num(x[6]), taxes:num(x[7]), total:num(x[8]), cogs:num(x[9]), gp:num(x[10]), nocost:num(x[11]) });
     const out = [];
@@ -91,8 +91,8 @@
 
   // Sales without a cost, by the day Shopify records them (a return lands on the return day) and order.
   async function loadNoCostRows(refresh) {
-    const r = await JT.rows(["day", "order_id::text", "sum(net_no_cost)", "sum(cogs)"],
-      `from jt.shopify_sales where day between ${JT.day(state.start)} and ${JT.day(state.end)} and order_id <> 0 group by day, order_id having abs(sum(net_no_cost)) >= 0.005`, refresh);
+    const r = await JT.rowsSplit(["day", "order_id::text", "sum(net_no_cost)", "sum(cogs)"],
+      `from jt.shopify_sales where day between ${JT.day(state.start)} and ${JT.day(state.end)} and order_id <> 0 group by day, order_id having abs(sum(net_no_cost)) >= 0.005`, "order_id", 1, refresh);
     const by = new Map();   // order id -> [{day, nc, cogs}]
     for (const [day, sid, nc, cogs] of r) { const l = by.get(sid) || []; l.push({ day, nc: num(nc), cogs: num(cogs) }); by.set(sid, l); }
     return by;
@@ -104,7 +104,7 @@
   async function loadOrders(refresh, onPage) {
     let n = 0;
     const all = await byChunks(15, async (s, e) => {
-      const r = await JT.rows(ORDER_COLS, `from jt.shopify_orders where not test and order_day between ${JT.day(s)} and ${JT.day(e)}`, refresh);
+      const r = await JT.rowsSplit(ORDER_COLS, `from jt.shopify_orders where not test and order_day between ${JT.day(s)} and ${JT.day(e)}`, "order_id", 1, refresh);
       n += r.length; onPage && onPage(n);
       return r.map(toOrder);
     });
@@ -115,8 +115,8 @@
   // ShipStation label costs for the orders in range (voided labels left out), plus when the last sync ran.
   async function loadLabels(refresh) {
     const [r, sync] = await Promise.all([
-      JT.rows(["l.order_id::text", "sum(l.cost)", "count(*)", "coalesce(json_agg(distinct l.service) filter (where l.service <> ''), '[]')"],
-        `from jt.shipstation_labels l join jt.shopify_orders o on o.order_id = l.order_id where not l.voided and o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)} group by l.order_id`, refresh),
+      JT.rowsSplit(["l.order_id::text", "sum(l.cost)", "count(*)", "coalesce(json_agg(distinct l.service) filter (where l.service <> ''), '[]')"],
+        `from jt.shipstation_labels l join jt.shopify_orders o on o.order_id = l.order_id where not l.voided and o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)} group by l.order_id`, "l.order_id", 1, refresh),
       JT.rows(["job", "finished_at", "ok"], "from jt.v_sync_status", refresh),
     ]);
     const bySid = new Map(); let labels = 0;

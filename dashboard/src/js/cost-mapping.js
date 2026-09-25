@@ -48,7 +48,7 @@
     try {
       const where = `from jt.shopify_sales s where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0`;
       const [or, lr] = await Promise.all([
-        JT.rows(["s.order_id::text", "s.order_name", "sum(s.net)", "sum(s.cogs)", "sum(s.net_no_cost)"], `${where} group by s.order_id, s.order_name having sum(s.net_no_cost) > 0.005`, refresh),
+        JT.rowsSplit(["s.order_id::text", "s.order_name", "sum(s.net)", "sum(s.cogs)", "sum(s.net_no_cost)"], `${where} group by s.order_id, s.order_name having sum(s.net_no_cost) > 0.005`, "s.order_id", 1, refresh),
         JT.rowsSplit(["s.order_id::text", "s.variant_id::text", "s.product_id::text", "s.product_title", "s.variant_title", "s.sku", "sum(s.units)", "sum(s.net)", "sum(s.net_no_cost)", "max(v.unit_cost)", "bool_or(v.variant_id is not null)"],
           `from jt.shopify_sales s left join jt.variants v on v.variant_id = s.variant_id where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0 group by s.order_id, s.variant_id, s.product_id, s.product_title, s.variant_title, s.sku having sum(s.net_no_cost) > 0.005`,
           "s.order_id", 2, refresh),
@@ -79,8 +79,8 @@
     let done = 0;
     await pool(chunks, 3, async (ch) => {
       try {
-        const r = await JT.rows(["l.order_id::text", "o.created_at", "l.line_id::text", "l.title", "l.variant_title", "l.sku", "l.current_quantity", "l.unit_price", "v.unit_cost", "l.product_id::text", "l.variant_id::text"],
-          `from jt.shopify_order_lines l join jt.shopify_orders o on o.order_id = l.order_id left join jt.variants v on v.variant_id = l.variant_id where l.order_id in (${ch.map(JT.int).join(",")})`);
+        const r = await JT.rowsSplit(["l.order_id::text", "o.created_at", "l.line_id::text", "l.title", "l.variant_title", "l.sku", "l.current_quantity", "l.unit_price", "v.unit_cost", "l.product_id::text", "l.variant_id::text"],
+          `from jt.shopify_order_lines l join jt.shopify_orders o on o.order_id = l.order_id left join jt.variants v on v.variant_id = l.variant_id where l.order_id in (${ch.map(JT.int).join(",")})`, "l.order_id", 1);
         const by = new Map();
         for (const x of r.sort((a, b) => a[2].localeCompare(b[2]))) {
           const e = by.get(x[0]) || { created: x[1], items: [] }; by.set(x[0], e);
