@@ -26,22 +26,23 @@
     catch (_) { throw { code: "too_big", message: "The reply was cut off." }; }
   }
 
-  // At most 3 calls in flight. The very first call runs alone, so the "allow Supabase" prompt
+  // At most 2 calls in flight. The very first call runs alone, so the "allow Supabase" prompt
   // is answered before anything else is sent (calls made while it is open get refused).
   let active = 0, gate = null; const waiting = [];
-  const acquire = () => new Promise(r => { if (active < 3) { active++; r(); } else waiting.push(r); });
+  const acquire = () => new Promise(r => { if (active < 2) { active++; r(); } else waiting.push(r); });
   const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   async function once(mcp, sql, refresh) {
-    const opts = { cache: { staleTime: 120000, gcTime: 1800000, refresh: !!refresh } };
+    // Data syncs hourly, so a result stays good for 30 minutes (Refresh bypasses this).
+    const opts = { cache: { staleTime: 1800000, gcTime: 21600000, refresh: !!refresh } };
     let last;
     for (let attempt = 0; attempt < 3; attempt++) {
       try { return await mcp.callTool("Supabase", "execute_sql", { project_id: PROJECT, query: sql }, opts); }
       catch (e) {
         last = e;
         if (!(e && e.retryable)) throw e;
-        await sleep(Math.min(Math.max(e.retryAfterMs || 0, 1500 * (attempt + 1)), 15000) + Math.random() * 500);
+        await sleep(Math.min(Math.max(e.retryAfterMs || 0, attempt ? 12000 : 4000), 30000) + Math.random() * 1000);   // Supabase throttles bursts
       }
     }
     throw last;
@@ -110,7 +111,8 @@
       if (c === "not_granted" || c === "capability_disabled" || c === "capability_removed") return "The database isn't available in this view. Open the dashboard in claude.ai.";
       if (c === "tool_error") return "Database error: " + (e.message || "unknown");
       if (c === "too_big") return "A result was too large to load. Try a shorter date range.";
-      if (c === "server_unavailable") return "Supabase didn't respond (busy or timed out). Press Refresh in a moment.";
+      if (/\b429\b|rate.?limit|too many/i.test((e && e.message) || "") || c === "rate_limited") return "Supabase is limiting requests right now (too many in a short time). Wait a minute, then press Refresh.";
+      if (c === "server_unavailable") return "Supabase didn't respond (busy or timed out). Wait a minute, then press Refresh.";
       return "The database didn't respond" + tag + (e && e.message && c !== "upstream_error" ? ": " + e.message : "") + ". Press Refresh in a moment.";
     },
   };
@@ -119,7 +121,7 @@
   const subs = new Set();
   let cur = new Map(), loading = null;
   async function loadOverrides(refresh) {
-    const r = await rowsSplit(["order_id::text", "cost", "shopify_cogs", "lines", "src"], "from jt.cost_overrides", "order_id", 2, refresh);
+    const r = await rowsSplit(["order_id::text", "cost", "shopify_cogs", "lines", "src"], "from jt.cost_overrides", "order_id", 1, refresh);
     const mm = new Map();
     for (const [id, cost, sc, lines, src] of r) mm.set(id, { cost: Number(cost), lines: lines || null, src: src || "", shopifyCogs: sc == null ? null : Number(sc) });
     cur = mm; subs.forEach(f => { try { f(cur, true); } catch (_) {} });

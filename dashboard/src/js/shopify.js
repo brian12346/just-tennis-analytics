@@ -103,7 +103,7 @@
     fin: x[6], ful: x[7], cancelled: !!x[8], subtotal: num(x[9]), discounts: num(x[10]), shipping: num(x[11]), tax: num(x[12]), total: num(x[13]), refunded: num(x[14]), qty: num(x[15]) });
   async function loadOrders(refresh, onPage) {
     let n = 0;
-    const all = await byChunks(15, async (s, e) => {
+    const all = await byChunks(60, async (s, e) => {
       const r = await JT.rowsSplit(ORDER_COLS, `from jt.shopify_orders where not test and order_day between ${JT.day(s)} and ${JT.day(e)}`, "order_id", 1, refresh);
       n += r.length; onPage && onPage(n);
       return r.map(toOrder);

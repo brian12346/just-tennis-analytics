@@ -29,7 +29,7 @@
   async function fetchRange(st, en, refresh) {
     const JT = window.JT, n = (x) => Number(x) || 0;
     const r = await JT.rowsSplit(["product_type", "vendor", "product_title", "product_id::text", "sales_channel", "sum(units)", "sum(gross)", "sum(discounts)", "sum(net)", "sum(cogs)", "sum(gross_profit)", "sum(net_no_cost)"],
-      `from jt.v_product_sales_daily where day between ${JT.day(st)} and ${JT.day(en)} group by 1, 2, 3, 4, 5`, "product_title", 2, refresh);
+      `from jt.v_product_sales_daily where day between ${JT.day(st)} and ${JT.day(en)} group by 1, 2, 3, 4, 5`, "product_title", 1, refresh);
     return r.map(x => {
       const gross = n(x[6]), disc = n(x[7]), net = n(x[8]);
       return { type: x[0] || "", vendor: x[1] || "", title: x[2] || "", pid: x[3] && x[3] !== "0" ? x[3] : "", chan: x[4] || "(Unknown)",
