@@ -6,7 +6,7 @@
 //
 // index.html holds the page shell; each <!-- @inline path --> marker is replaced with that file's contents.
 // The two outputs are the same page: it detects where it runs (inside Claude or on the web) at load time.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +30,13 @@ const web = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#F3F5F2">
 ${html}`.replace(/<\/style>\n/, "</style>\n</head>\n<body>\n") + "\n</body>\n</html>\n";
 writeFileSync(join(DIST, "web", "index.html"), web);
+// Tab icon (a tennis ball) served next to the page.
+for (const [from, to] of [["favicon.svg", "favicon.svg"], ["icon-32.png", "icon-32.png"], ["icon-32.png", "favicon.ico"], ["icon-180.png", "apple-touch-icon.png"]])
+  copyFileSync(join(SRC, "icon", from), join(DIST, "web", to));
 console.log(`built dashboard/dist/just-tennis-sales.html and dashboard/dist/web/index.html (${Math.round(html.length / 1024)} KB)`);
