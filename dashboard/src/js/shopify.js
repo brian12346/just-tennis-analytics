@@ -127,7 +127,9 @@
   }
 
   async function loadAll(refresh) {
-    if (!state.mcp || state.loading) return;
+    if (!state.mcp) return;
+    // A new range picked while a load is running: finish this one, then load the new range.
+    if (state.loading) { state.pending = { refresh: !!refresh || !!(state.pending && state.pending.refresh) }; setStatus("Loading…"); return; }
     state.loading = true; state.fromCache = false;
     $("refresh").disabled = true;
     setStatus("Loading daily sales…");
@@ -140,6 +142,7 @@
     await dailyP; render();
     await Promise.all([ordersP, costsP, ncP, shipP]);
     state.loading = false; state.loadedAt = new Date();
+    if (state.pending) { const p = state.pending; state.pending = null; $("refresh").disabled = false; return loadAll(p.refresh); }
     $("refresh").disabled = false;
     render();
     const errs = [state.dailyErr, state.ordersErr, state.costsErr].filter(Boolean);
