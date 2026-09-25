@@ -40,11 +40,14 @@
   function setRange(days) {
     const today = laDay(Date.now());
     let start;
-    if (days === "mtd") start = today.slice(0,8) + "01";
+    let end = today;
+    if (days === "today") start = today;
+    else if (days === "yesterday") { start = addDays(today, -1); end = start; }
+    else if (days === "mtd") start = today.slice(0,8) + "01";
     else if (days === "ytd") start = today.slice(0,5) + "01-01";
     else start = addDays(today, -(Number(days) - 1));
-    state.start = start; state.end = today;
-    $("d-start").value = start; $("d-end").value = today;
+    state.start = start; state.end = end;
+    $("d-start").value = start; $("d-end").value = end;
     document.querySelectorAll("#rangeseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.days === String(days))));
   }
 
