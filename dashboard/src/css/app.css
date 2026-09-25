@@ -218,3 +218,17 @@ body.signed-out .wrap{visibility:hidden}
 
 #cm-pfilters[hidden],#cm-ofilters[hidden]{display:none}
 .cmt .pill.warn{background:var(--warn-bg);color:var(--warn)}
+
+/* cost mapping table: fit the panel instead of scrolling sideways */
+table.cmt th{white-space:normal;line-height:1.25;vertical-align:bottom}
+table.cmt th,table.cmt td{padding:6px 7px}
+table.cmt td .iname{min-width:150px;max-width:280px}
+table.cmt .wrapc{white-space:normal;min-width:70px;max-width:120px}
+table.cmt td.statc{white-space:normal;min-width:110px;max-width:170px}
+table.cmt td.statc .pill{white-space:normal}
+table.cmt td.ocell{min-width:90px}
+table.cmt td.acell{min-width:100px}
+input.cmin{width:76px}
+
+.cmbulk[hidden]{display:none}
+#cm-pcost{width:auto;max-width:200px}

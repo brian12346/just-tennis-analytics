@@ -190,7 +190,7 @@
     renderBulk(list);
     if (C.mcp && pageOrders.some(o => !C.lines.has(o.sid))) loadLines(pageOrders.map(o => o.sid));
 
-    const head = `<thead><tr><th class="l">Order</th><th class="l">Item</th><th>Qty</th><th>Sold for</th><th>Shopify cost now</th><th>Your cost each</th><th>Line cost</th><th class="l"></th></tr></thead>`;
+    const head = `<thead><tr><th class="l">Order</th><th class="l">Item</th><th>Qty</th><th>Sold for</th><th>Shopify cost</th><th>Your cost</th><th>Line cost</th><th class="l"></th></tr></thead>`;
     let body = "";
     if (!C.orders) body = `<tr><td class="l dim" colspan="8">${C.loading ? '<span class="skel">Loading…</span>' : C.err ? esc(errMsg(C.err)) : ""}</td></tr>`;
     else if (!pageOrders.length) body = `<tr><td class="l dim" colspan="8">${C.show === "open" && !C.q ? "Every order in this range has a cost. Nice." : "No orders match."}</td></tr>`;
@@ -352,7 +352,7 @@
     if (C.page >= pages) C.page = pages - 1;
     const page = list.slice(C.page * per, (C.page + 1) * per);
     const cols = 11;
-    const head = `<thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Category</th><th class="l">Status</th><th>On hand</th><th>Price</th><th>Shopify cost</th><th>Margin</th><th>Sold without cost</th><th>New cost each</th><th class="l"></th></tr></thead>`;
+    const head = `<thead><tr><th class="l">Product</th><th class="l wrapc">Vendor</th><th class="l wrapc">Category</th><th class="l">Status</th><th>On hand</th><th>Price</th><th>Shopify cost</th><th>Margin</th><th>Sold - no cost</th><th>New cost</th><th class="l"></th></tr></thead>`;
     let body = "";
     if (!C.cat) body = `<tr><td class="l dim" colspan="${cols}">${C.catErr ? esc(errMsg(C.catErr)) : '<span class="skel">Loading the Shopify catalog…</span>'}</td></tr>`;
     else if (!page.length) body = `<tr><td class="l dim" colspan="${cols}">No products match.</td></tr>`;
@@ -367,7 +367,7 @@
         : u ? `<span class="small dim">${u.open.size.toLocaleString()} order${u.open.size > 1 ? "s" : ""} need${u.open.size > 1 ? "" : "s"} a cost</span>` : "";
       body += `<tr>
         <td class="l"><div class="iname">${name}</div>${v.variant || v.sku ? `<div class="small dim">${esc([v.variant, v.sku].filter(Boolean).join(" · "))}</div>` : ""}</td>
-        <td class="l">${esc(v.vendor) || '<span class="dim">—</span>'}</td><td class="l">${esc(v.ptype) || '<span class="dim">—</span>'}</td>
+        <td class="l wrapc">${esc(v.vendor) || '<span class="dim">—</span>'}</td><td class="l wrapc">${esc(v.ptype) || '<span class="dim">—</span>'}</td>
         <td class="l small">${esc(v.status.charAt(0) + v.status.slice(1).toLowerCase())}</td>
         <td>${v.onhand == null ? '<span class="dim">—</span>' : v.tracked === false ? '<span class="dim" title="Inventory not tracked in Shopify">not tracked</span>' : v.onhand.toLocaleString()}</td>
         <td>${v.price == null ? '<span class="dim">—</span>' : m(v.price)}</td>
@@ -375,7 +375,7 @@
         <td class="${mg != null && mg < 0 ? "neg" : "dim"}">${mg == null ? "—" : (mg * 100).toFixed(1) + "%"}</td>
         <td>${u ? `${m(u.nocost)}<div class="small dim">${Math.round(u.qty * 100) / 100} sold</div>` : '<span class="dim">—</span>'}</td>
         <td><input id="cmp-${esc(v.key)}" class="cmin cmp ${bad ? "bad" : n != null ? "ok" : ""}" data-p="${esc(v.key)}" type="text" inputmode="decimal" placeholder="${v.cost != null ? v.cost.toFixed(2) : "0.00"}" aria-label="New cost each for ${esc(v.title)}" value="${esc(typed)}"></td>
-        <td class="l" id="cmps-${esc(v.key)}">${stat}</td></tr>`;
+        <td class="l statc" id="cmps-${esc(v.key)}">${stat}</td></tr>`;
     }
     t.innerHTML = head + `<tbody>${body}</tbody>`;
     $("cm-prev").hidden = C.page === 0;
