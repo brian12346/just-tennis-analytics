@@ -127,7 +127,26 @@
   }
   const call = (fn, argSql) => run(`select jt.${fn}(${argSql}) as ok`);
 
+  // Anything that breaks on the page shows as a banner at the top instead of failing silently.
+  function showError(e) {
+    const msg = (e && (e.message || e.reason && e.reason.message)) || String(e || "unknown error");
+    console.error("[JT]", e);
+    let el = document.getElementById("jt-err");
+    if (!el) {
+      el = document.createElement("div"); el.id = "jt-err"; el.setAttribute("role", "alert");
+      el.style.cssText = "position:sticky;top:0;z-index:60;margin:0 0 8px;padding:8px 12px;border-radius:8px;background:var(--bad-bg);color:var(--bad);font-size:13px;display:flex;gap:10px;align-items:center";
+      (document.querySelector(".wrap") || document.body).prepend(el);
+    }
+    el.innerHTML = "";
+    const t = document.createElement("span"); t.textContent = "Something went wrong: " + String(msg).slice(0, 240) + ". Reload the page; if it keeps happening, tell Claude this message.";
+    const x = document.createElement("button"); x.className = "mini"; x.textContent = "Dismiss"; x.onclick = () => el.remove();
+    el.append(t, x);
+  }
+  window.addEventListener("error", (ev) => { if (ev && ev.error) showError(ev.error); });
+  window.addEventListener("unhandledrejection", (ev) => { const r = ev && ev.reason; if (r && r.code && /^(not_granted|capability_disabled|cancelled)$/.test(r.code)) return; showError(r && r.message ? r : { message: (r && (r.code || r.message)) || "request failed" }); });
+
   window.JT = {
+    showError,
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB,
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
     deleteCostOverride: (orderId) => WEB ? WEB.write("jt_delete_cost_override", { p_order_id: Number(int(orderId)) }) : call("delete_cost_override", int(orderId)),

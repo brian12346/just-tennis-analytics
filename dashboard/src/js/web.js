@@ -32,7 +32,10 @@
   async function boot() {
     try {
       const mod = await import(LIB);
-      sb = mod.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
+      // lock: run auth steps directly. The default browser lock can leave requests waiting forever after the tab
+      // sleeps or refreshes its session, which froze the page ("nothing happens" on clicks).
+      sb = mod.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false,
+        lock: async (_name, _timeout, fn) => fn() } });
     } catch (e) { showLogin("Couldn't load the sign-in library. Check your connection and reload."); return; }
     const { data } = await sb.auth.getSession();
     if (data && data.session) signedIn(data.session); else showLogin();
@@ -61,11 +64,16 @@
     if (/fetch|network/i.test(m)) return { code: "server_unavailable", message: m, retryable: true };
     return { code: "tool_error", message: m };
   };
+  // Every request gives up after 30 seconds, so nothing can hang the page.
   async function rpc(fn, args) {
     await ready;
-    const { data, error } = await sb.rpc(fn, args);
-    if (error) throw toErr(error);
-    return data;
+    let timer;
+    const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej({ code: "server_unavailable", message: "The database took too long to answer.", retryable: true }), 30000); });
+    try {
+      const { data, error } = await Promise.race([sb.rpc(fn, args), timeout]);
+      if (error) throw toErr(error);
+      return data;
+    } finally { clearTimeout(timer); }
   }
   // Reads are kept for 30 minutes (data syncs hourly); Refresh or any save clears them.
   const cache = new Map();

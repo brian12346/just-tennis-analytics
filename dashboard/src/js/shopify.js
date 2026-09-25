@@ -126,25 +126,32 @@
     state.dbReady = true;
   }
 
+  // Render without letting a display error stop loading (it's shown on the page instead).
+  function safeRender() { try { render(); } catch (e) { window.JT.showError && window.JT.showError(e); } }
   async function loadAll(refresh) {
     if (!state.mcp) return;
-    // A new range picked while a load is running: finish this one, then load the new range.
-    if (state.loading) { state.pending = { refresh: !!refresh || !!(state.pending && state.pending.refresh) }; setStatus("Loading…"); return; }
-    state.loading = true; state.fromCache = false;
+    // A range picked while a load is running: finish that load, then load the new range.
+    // A load running over 40 seconds is abandoned (its results are ignored) and the new one starts now.
+    if (state.loading && Date.now() - state.loadStarted < 40000) { state.pending = { refresh: !!refresh || !!(state.pending && state.pending.refresh) }; setStatus("Loading…"); return; }
+    const id = state.loadId = (state.loadId || 0) + 1, cur = () => id === state.loadId;
+    state.loading = true; state.loadStarted = Date.now(); state.pending = null; state.fromCache = false;
     $("refresh").disabled = true;
     setStatus("Loading daily sales…");
-    if (refresh) JT.overrides.reload();
-    const dailyP = loadDaily(refresh).then(d => { state.daily = d; state.dailyErr = null; }).catch(e => { state.dailyErr = e; if (isDenial(e)) state.daily = null; });
-    const ordersP = loadOrders(refresh, (n) => setStatus(`Loading orders… ${n} so far`)).then(o => { state.orders = o; state.ordersErr = null; }).catch(e => { state.ordersErr = e; if (isDenial(e)) state.orders = null; });
-    const costsP = loadOrderCosts(refresh).then(c => { state.costs = c; state.costsErr = null; }).catch(e => { state.costsErr = e; if (isDenial(e)) state.costs = null; });
-    const ncP = loadNoCostRows(refresh).then(r => { state.ncRows = r; }).catch(() => { state.ncRows = null; });
-    const shipP = loadLabels(refresh).catch(() => { state.dbReady = true; state.shipErr = true; });
-    await dailyP; render();
-    await Promise.all([ordersP, costsP, ncP, shipP]);
-    state.loading = false; state.loadedAt = new Date();
-    if (state.pending) { const p = state.pending; state.pending = null; $("refresh").disabled = false; return loadAll(p.refresh); }
-    $("refresh").disabled = false;
-    render();
+    try {
+      if (refresh) JT.overrides.reload();
+      const dailyP = loadDaily(refresh).then(d => { if (cur()) { state.daily = d; state.dailyErr = null; } }).catch(e => { if (cur()) { state.dailyErr = e; if (isDenial(e)) state.daily = null; } });
+      const ordersP = loadOrders(refresh, (n) => cur() && setStatus(`Loading orders… ${n} so far`)).then(o => { if (cur()) { state.orders = o; state.ordersErr = null; } }).catch(e => { if (cur()) { state.ordersErr = e; if (isDenial(e)) state.orders = null; } });
+      const costsP = loadOrderCosts(refresh).then(c => { if (cur()) { state.costs = c; state.costsErr = null; } }).catch(e => { if (cur()) { state.costsErr = e; if (isDenial(e)) state.costs = null; } });
+      const ncP = loadNoCostRows(refresh).then(r => { if (cur()) state.ncRows = r; }).catch(() => { if (cur()) state.ncRows = null; });
+      const shipP = loadLabels(refresh).catch(() => { if (cur()) { state.dbReady = true; state.shipErr = true; } });
+      await dailyP; if (cur() && !state.pending) safeRender();
+      await Promise.all([ordersP, costsP, ncP, shipP]);
+    } catch (e) { window.JT.showError && window.JT.showError(e); }
+    finally { if (cur()) { state.loading = false; $("refresh").disabled = false; } }
+    if (!cur()) return;                                   // a newer load took over
+    state.loadedAt = new Date();
+    if (state.pending) { const p = state.pending; state.pending = null; return loadAll(p.refresh); }
+    safeRender();
     const errs = [state.dailyErr, state.ordersErr, state.costsErr].filter(Boolean);
     if (errs.length) setStatus("");
     else setStatus(`Updated ${state.loadedAt.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"})} · ${state.orders ? state.orders.length : 0} orders`);
