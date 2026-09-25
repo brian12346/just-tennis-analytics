@@ -39,15 +39,7 @@
     if (c === "server_not_connected") return "Shopify isn't connected for your account. Add it in claude.ai Settings → Connectors.";
     if (c === "needs_reauth") return "Reconnect Shopify in claude.ai Settings → Connectors.";
     if (c === "not_in_manifest") return "Shopify access is turned off for this page.";
-    if (c === "tool_error") return "Shopify returned an error: " + (e.message || "");
-    return "Shopify didn't respond. Try again in a moment.";
-  }
-  async function call(query, variables, first) {
-    const input = { query, variables }; if (first) input.first = first;
-    const res = await S.mcp.callTool(SERVER, "graphql_query", input, { cache: { staleTime: 120000, gcTime: 600000 } });
-    const p = res.payload || {};
-    if (p.errors && p.errors.length) throw { code: "tool_error", message: p.errors[0].message };
-    return p.data || p;
+    return window.JT.message(e);
   }
 
   const gidNum = (g) => g ? String(g).split("/").pop() : "";
@@ -129,23 +121,22 @@
     S.maps = mp; S.mapsReady = true; refreshCosts(); render(); renderSales();
   }
   let costBusy = false;
+  // Current Shopify cost of each mapped variant, from the catalog synced nightly into Supabase (jt.variants).
+  const gidV = (n) => "gid://shopify/ProductVariant/" + n, gidP = (n) => "gid://shopify/Product/" + n;
   async function refreshCosts() {
     if (!S.mcp || costBusy) return;
     const ids = [...new Set([...S.maps.values()].filter(x => x.kind === "shopify" && x.variantId && !S.costs.has(x.variantId)).map(x => x.variantId))];
     if (!ids.length) return;
     costBusy = true;
     try {
-      for (let i = 0; i < ids.length; i += 50) {
-        const d = await call(`query($ids:[ID!]!){ nodes(ids:$ids){ ... on ProductVariant { id sku displayName product { id } inventoryItem { unitCost { amount } } } } }`, { ids: ids.slice(i, i + 50) });
-        for (const n of d.nodes || []) if (n && n.id) S.costs.set(n.id, { cost: n.inventoryItem && n.inventoryItem.unitCost ? Number(n.inventoryItem.unitCost.amount) : null, displayName: n.displayName, sku: n.sku, pid: n.product ? n.product.id : null });
-      }
+      const nums = ids.map(g => gidNum(g)).filter(n => /^\d+$/.test(n));
+      const r = await window.JT.rows(["variant_id::text", "sku", "display_name", "product_id::text", "unit_cost"], `from jt.variants where variant_id in (${nums.join(",")})`);
+      for (const [v, sku, dn, pid, uc] of r) S.costs.set(gidV(v), { cost: uc == null ? null : Number(uc), displayName: dn, sku, pid: gidP(pid) });
     } catch (_) { /* fall back to cost saved with the mapping */ }
     costBusy = false; render(); renderSales();
   }
 
-  // ---------- Shopify search ----------
-  const PQ = `query P($first: Int!, $q: String) { products(first: $first, query: $q, sortKey: RELEVANCE) { nodes { id title vendor status variants(first: 50) { nodes { id sku title displayName inventoryItem { unitCost { amount } } } } } } }`;
-  const VQ = `query V($first: Int!, $q: String) { productVariants(first: $first, query: $q) { nodes { id sku title displayName product { id title vendor status } inventoryItem { unitCost { amount } } } } }`;
+  // ---------- Shopify catalog search (jt.variants) ----------
   // Brands: Amazon titles lead with the brand, Shopify titles don't (it's the vendor field instead).
   const BRANDS = ["head", "yonex", "wilson", "babolat", "tecnifibre", "luxillon", "dunlop", "selkirk", "joola", "solinco", "new balance", "lacoste", "penn", "pro penn", "propenn",
     "k swiss", "k-swiss", "kswiss", "diadem", "crbn", "slazenger", "tifosi", "gearbox", "tenx", "road to pro", "engage", "kirschbaum", "gexco", "gamma", "prince", "asics", "adidas",
@@ -173,24 +164,28 @@
     const { brands, words, nums } = tokens(q);
     const found = new Map();
     const add = (v, p) => { if (!found.has(v.id)) found.set(v.id, { id: v.id, pid: p.id || null, sku: v.sku || "", name: v.displayName || ((p.title || "") + (v.title && v.title !== "Default Title" ? " - " + v.title : "")), vendor: p.vendor || "", status: p.status || "", cost: v.inventoryItem && v.inventoryItem.unitCost ? Number(v.inventoryItem.unitCost.amount) : null }); };
-    const vendorQ = brands.length ? " (" + brands.map(b => `vendor:"${b}"`).join(" OR ") + ")" : "";
-    const titleQ = (ws) => ws.slice(0, 5).map(w => `title:*${w.replace(/[^a-z0-9\-]/g, "")}*`).join(" ");
+    const J = window.JT;
+    const COLS = ["variant_id::text", "product_id::text", "sku", "display_name", "product_title", "variant_title", "vendor", "status", "unit_cost"];
+    const addRows = (rows) => rows.forEach(x => add({ id: gidV(x[0]), sku: x[2], displayName: x[3], title: x[5], inventoryItem: x[8] == null ? null : { unitCost: { amount: x[8] } } },
+      { id: gidP(x[1]), title: x[4], vendor: x[6], status: x[7] }));
+    const like = (w) => J.q("%" + w.replace(/[%_\\]/g, m => "\\" + m) + "%");
+    const vendorSql = brands.length ? " and (" + brands.map(b => `vendor ilike ${J.q(b)}`).join(" or ") + ")" : "";
+    const titleSql = (ws) => ws.slice(0, 5).map(w => `(product_title ilike ${like(w)} or variant_title ilike ${like(w)})`).join(" and ");
     try {
       const jobs = [];
-      if (skuLike) jobs.push(call(VQ, { q: `sku:${q.replace(/[^A-Za-z0-9\-_.()\/]/g, "")}*` }, 25).then(d => (d.productVariants.nodes || []).forEach(v => add(v, v.product || {}))));
+      if (skuLike) jobs.push(J.rows(COLS, `from jt.variants where sku ilike ${J.q(q.replace(/[^A-Za-z0-9\-_.()\/]/g, "") + "%")} order by sku limit 25`).then(addRows));
       if (words.length) {
         jobs.push((async () => {
           // Title words without the brand; the brand filters on the vendor field. Drop trailing words until something matches.
           for (let n = Math.min(words.length, 5); n >= 1; n--) {
-            for (const vq of vendorQ ? [vendorQ, ""] : [""]) {
-              const d = await call(PQ, { q: titleQ(words.slice(0, n)) + vq }, 12);
-              const ps = d.products.nodes || [];
-              if (ps.length) { ps.forEach(p => (p.variants.nodes || []).forEach(v => add(v, p))); return; }
+            for (const vq of vendorSql ? [vendorSql, ""] : [""]) {
+              const r = await J.rows(COLS, `from jt.variants where ${titleSql(words.slice(0, n))}${vq} order by status, product_title, variant_title limit 150`);
+              if (r.length) { addRows(r); return; }
             }
           }
         })());
       } else if (brands.length) {
-        jobs.push(call(PQ, { q: vendorQ.trim() }, 12).then(d => (d.products.nodes || []).forEach(p => (p.variants.nodes || []).forEach(v => add(v, p)))));
+        jobs.push(J.rows(COLS, `from jt.variants where true${vendorSql} order by status, product_title limit 150`).then(addRows));
       }
       await Promise.all(jobs);
       // Rank variants that contain the gauge/size numbers from the search (e.g. "17", "16L") first.

@@ -129,7 +129,7 @@ table.lines tr.need input{border-color:var(--warn)}
 .tabs button{border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);font-weight:600;font-family:var(--display);font-size:16px;letter-spacing:.01em;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--sales)}
 #tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap{display:flex;flex-direction:column;gap:18px}
-#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden]{display:none}
+#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#move-bar[hidden]{display:none!important}
 /* product sales */
 .tbl-wrap.xl{max-height:720px}
 .tree{display:inline-flex;align-items:center;gap:4px;white-space:normal}
@@ -202,3 +202,16 @@ input.cmin:focus{outline:2px solid var(--sales);outline-offset:1px}
 .skel{color:var(--faint)}
 @media (max-width:560px){ h1{font-size:24px} .kpi .v{font-size:24px} }
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+
+/* web version: sign-in screen and account chip */
+.login{position:fixed;inset:0;z-index:50;background:var(--ground);display:flex;align-items:center;justify-content:center;padding:16px}
+.login[hidden]{display:none}
+.login-card{width:100%;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;display:flex;flex-direction:column;gap:12px}
+.login-card h1{font-family:var(--display);font-size:26px;margin:0 0 4px}
+.login-card label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.login-card input{font:inherit;color:var(--ink);background:var(--ground);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.login-card .btn{padding:9px 12px}
+body.signed-out .wrap{visibility:hidden}
+.tabs{align-items:center}
+.acct{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.acct[hidden]{display:none}

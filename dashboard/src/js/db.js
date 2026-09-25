@@ -1,7 +1,9 @@
 (() => {
   // Shared Supabase access for every tab: runs SQL through the viewer's Supabase connector (execute_sql).
   // Reads come back as JSON; large reads are split into parts so each response stays small.
+  // On the web version (js/web.js) the same queries go to Supabase's jt_sql function instead.
   const PROJECT = "ppmzrlqvrhzfxobvnlon";
+  const WEB = window.JTWeb || null;
   let mcpP = null;
   const getMcp = () => mcpP || (mcpP = (window.claude && window.claude.use ? window.claude.use("mcp") : Promise.resolve(null)).catch(() => null));
 
@@ -76,6 +78,12 @@
   }
 
   async function run(sql, refresh) {
+    if (WEB) {
+      await acquire();
+      try { return await WEB.sql(sql, refresh); }
+      catch (e) { console.warn("[JT] database call failed", e && e.code, e && e.message); throw e; }
+      finally { release(); }
+    }
     const mcp = await getMcp();
     if (!mcp) throw { code: "not_granted", message: "Database access isn't available in this view." };
     let first = false;
@@ -120,16 +128,20 @@
   const call = (fn, argSql) => run(`select jt.${fn}(${argSql}) as ok`);
 
   window.JT = {
-    PROJECT, q, day, int, run, rows, rowsSplit, getMcp,
-    saveCostOverride: (body) => call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
-    deleteCostOverride: (orderId) => call("delete_cost_override", int(orderId)),
+    PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB,
+    saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
+    deleteCostOverride: (orderId) => WEB ? WEB.write("jt_delete_cost_override", { p_order_id: Number(int(orderId)) }) : call("delete_cost_override", int(orderId)),
     // many at once (one database call); returns how many were saved
     async saveCostOverrides(bodies) {
+      if (WEB) return WEB.write("jt_save_cost_overrides", { p: bodies });
       const out = await run(`with s as (select jt.save_cost_override(x) from jsonb_array_elements(${q(JSON.stringify(bodies))}::jsonb) x) select count(*)::int as n from s`);
       return (out[0] && out[0].n) || 0;
     },
     message(e) {
       const c = e && e.code, tag = c ? ` (${c})` : "";
+      if (WEB && c === "not_allowed") return "This account doesn't have access to the dashboard. Sign out and use the right account.";
+      if (WEB && c === "needs_reauth") return "Your sign-in expired. Reload the page and sign in again.";
+      if (WEB && c === "not_in_manifest") return "This needs live Shopify access, which only the Claude version of the dashboard has.";
       if (c === "server_not_connected") return "Supabase isn't connected for your account. Add it in claude.ai Settings → Connectors, then reload.";
       if (c === "needs_reauth") return "Your Supabase connection expired. Reconnect it in claude.ai Settings → Connectors, then press Refresh.";
       if (c === "selection_required") return "You have more than one Supabase connection. Pick one in the prompt, then press Refresh.";

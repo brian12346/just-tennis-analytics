@@ -18,7 +18,7 @@ synced into Postgres once and the dashboard reads summarized views, so it loads 
 | `db/migrations/` | Database schema. Numbered SQL files, applied once each, in order. Never edit an applied file: add `003_...sql`. |
 | `sync/` | Python sync jobs: `shopify.py` (daily totals, sales by order/variant, orders + line items, catalog costs), `shipstation.py` (labels), `amazon.py` (report uploads), `run.py` (command line), `migrate.py`. |
 | `scripts/import_artifact_export.py` | One-time import of the data saved in the old artifact dashboard. |
-| `dashboard/src/` | Dashboard source: `index.html` shell, `css/app.css`, one JS file per tab. `python dashboard/build.py` writes `dashboard/dist/just-tennis-sales.html`. |
+| `dashboard/src/` | Dashboard source: `index.html` shell, `css/app.css`, one JS file per tab. `node dashboard/build.mjs` writes `dashboard/dist/just-tennis-sales.html` (Claude artifact) and `dashboard/dist/web/index.html` (web, see `docs/web.md`). |
 | `tests/` | `pytest`: parsers, and the profit math in the views against a real Postgres. |
 | `.github/workflows/` | `sync.yml` (scheduled syncs), `ci.yml` (tests on every push). |
 | `docs/` | `setup.md` (first-time setup), `data-model.md` (tables, views, cost rules). |
@@ -38,7 +38,7 @@ Check job health with `select * from jt.v_sync_status;`.
 
 ## Making changes
 
-1. Branch, edit, `pytest -q` (set `TEST_DATABASE_URL` to a throwaway database), `python dashboard/build.py`.
+1. Branch, edit, `pytest -q` (set `TEST_DATABASE_URL` to a throwaway database), `node dashboard/build.mjs`.
 2. Commit and push; CI runs the tests.
 3. Merge to `main`. New migrations are applied automatically at the start of the next sync.
 4. Republish `dashboard/dist/just-tennis-sales.html` to the dashboard artifact (ask Claude to do it).

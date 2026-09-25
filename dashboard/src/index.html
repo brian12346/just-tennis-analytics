@@ -6,6 +6,16 @@
 <!-- @inline css/app.css -->
 </style>
 
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-card">
+    <span class="eyebrow">Just Tennis</span>
+    <h1>Sales dashboard</h1>
+    <label>Email<input type="email" id="login-email" autocomplete="username" required></label>
+    <label>Password<input type="password" id="login-pass" autocomplete="current-password" required></label>
+    <button class="btn primary" id="login-go" type="submit">Sign in</button>
+    <p id="login-msg" class="muted small" role="status"></p>
+  </form>
+</div>
 <div class="wrap">
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
@@ -13,7 +23,13 @@
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
+    <span id="acct" class="acct" hidden><span id="whoami"></span><button class="mini" id="signout" type="button">Sign out</button></span>
   </nav>
+  <div id="move-bar" class="note warn" hidden style="margin:0 0 12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <span><b>Moving to dashboard.andersenlifestyle.com:</b> copy the Amazon and cost-check data stored in this page to Supabase (one time, about a minute).</span>
+    <button class="btn primary" id="move-go">Copy Amazon data to Supabase</button>
+    <span id="move-status"></span>
+  </div>
   <div id="tab-shopify">
   <header class="top">
     <div class="title">
@@ -316,6 +332,9 @@
 </div>
 
 <script>
+<!-- @inline js/web.js -->
+</script>
+<script>
 <!-- @inline js/db.js -->
 </script>
 <script>
@@ -331,5 +350,8 @@
 
 <script>
 <!-- @inline js/amazon.js -->
+</script>
+<script>
+<!-- @inline js/move.js -->
 </script>
 
