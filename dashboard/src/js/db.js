@@ -156,6 +156,71 @@
     },
   };
 
+  // ---------- document storage (Amazon data, mappings, cost check), shared by both versions ----------
+  // Supabase table jt.docs, one row per document. Offers the calls the tabs were written against
+  // (collection/doc, where/orderBy/limit, get/set/update/delete, onSnapshot).
+  const listeners = new Map(), timers = new Map();
+  const changed = (c) => {        // after writes, refresh open views of that collection once things settle
+    clearTimeout(timers.get(c));
+    timers.set(c, setTimeout(() => (listeners.get(c) || new Set()).forEach(f => f()), 600));
+  };
+  const listen = (c, f) => { const set = listeners.get(c) || new Set(); set.add(f); listeners.set(c, set); return () => set.delete(f); };
+  async function docSet(c, id, body) {
+    if (WEB) await WEB.write("jt_doc_set", { p_collection: c, p_id: String(id), p_data: body });
+    else await run(`insert into jt.docs (collection, id, data) values (${q(c)}, ${q(id)}, ${q(JSON.stringify(body))}::jsonb)
+      on conflict (collection, id) do update set data = excluded.data, updated_at = now() returning 1 as ok`, true);
+    changed(c);
+  }
+  async function docDelete(c, id) {
+    if (WEB) await WEB.write("jt_doc_delete", { p_collection: c, p_id: String(id) });
+    else await run(`delete from jt.docs where collection = ${q(c)} and id = ${q(id)} returning 1 as ok`, true);
+    changed(c);
+  }
+  const OPS = { "==": "=", "<": "<", "<=": "<=", ">": ">", ">=": ">=", "!=": "<>" };
+  const snapOf = (rs) => {
+    const docs = (rs || []).map(r => ({ id: r.id, exists: true, data: () => r.data }));
+    return { docs, size: docs.length, empty: !docs.length, docChanges: () => [] };
+  };
+  function docRef(c, id) {
+    return {
+      id,
+      async get() {
+        const r = await run(`select id, data from jt.docs where collection = ${q(c)} and id = ${q(id)}`, true);
+        return r[0] ? { exists: true, id, data: () => r[0].data } : { exists: false, id, data: () => undefined };
+      },
+      set: (body) => docSet(c, id, body),
+      async update(body) { const cur = await this.get(); await docSet(c, id, Object.assign({}, cur.exists ? cur.data() : {}, body)); },
+      delete: () => docDelete(c, id),
+      onSnapshot(cb, err) { const f = () => this.get().then(cb, e => err && err(e)); f(); return listen(c, f); },
+    };
+  }
+  function query(c, wh, ord, lim) {
+    const api = {
+      where: (f, op, v) => query(c, wh.concat([[f, op, v]]), ord, lim),
+      orderBy: (f, dir) => query(c, wh, [f, dir === "desc" ? "desc" : "asc"], lim),
+      limit: (n) => query(c, wh, ord, n),
+      async get() {
+        let s = `select id, data from jt.docs where collection = ${q(c)}`;
+        for (const [f, op, v] of wh) {
+          if (!OPS[op]) throw { code: "bad_request", message: "unsupported filter " + op };
+          s += ` and (data ->> ${q(f)}) ${OPS[op]} ${q(String(v))}`;
+        }
+        s += ord ? ` order by data ->> ${q(ord[0])} ${ord[1]}` : " order by id";
+        if (lim) s += ` limit ${int(lim)}`;
+        return snapOf(await run(s, true));
+      },
+      onSnapshot(cb, err) { const f = () => api.get().then(cb, e => err && err(e)); f(); return listen(c, f); },
+      doc: (id) => docRef(c, id),
+    };
+    return api;
+  }
+  const store = {
+    collection: (c) => query(c, [], null, null),
+    doc: (path) => { const i = String(path).lastIndexOf("/"); return docRef(path.slice(0, i), path.slice(i + 1)); },
+  };
+  // Resolves once the database is reachable (after sign-in on the web; once the connector answers inside Claude).
+  window.JT.docStore = () => WEB ? WEB.ready.then(() => store) : getMcp().then(m => m ? store : null);
+
   // ---------- saved order costs, shared by the Shopify and cost-mapping tabs ----------
   const subs = new Set();
   let cur = new Map(), loading = null;

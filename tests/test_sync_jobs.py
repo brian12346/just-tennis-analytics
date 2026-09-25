@@ -94,3 +94,28 @@ def test_sales_daily_orders_and_catalog(conn):
     assert second["changes"] == 1
     cur.execute("select changed_on, variant_id, old_cost, new_cost from jt.variant_cost_changes")
     assert cur.fetchone() == (dt.date(2026, 9, 25), 5, D("8.50"), D("6.83"))
+
+
+def test_cost_watch_docs(conn):
+    from sync import cost_watch
+    shop, day = FakeShopify(), dt.date(2026, 9, 10)
+    sh.sync_sales(shop, conn, day, day)
+    sh.sync_catalog(shop, conn, dt.date(2026, 9, 10))                                   # baseline
+    changed = [dict(VARIANTS[0], inventoryItem={"unitCost": {"amount": "20"}}), VARIANTS[1]]
+    sh.sync_catalog(FakeShopify(changed), conn, dt.date(2026, 9, 11))                   # 8.50 -> 20 (above 13.99 price)
+    cur = conn.cursor()
+    cur.execute("""insert into jt.docs (collection, id, data) values
+                   ('amzmonths', '2026-09', '{"month": "2026-09", "skus": {"A1": [2, 30.5], "B2": [1, 10]}}'),
+                   ('amzmap', 's_B2', '{"sku": "B2"}')""")
+    out = cost_watch.run(conn, day, dt.date(2026, 9, 11))
+    assert out["changes"] == 1 and out["flagged"] == 1 and out["no_cost_variants"] == 1
+    cur.execute("select collection, id, data from jt.docs where collection in ('costs', 'costalerts', 'costlog') order by 1, 2")
+    docs = {(c, i): d for c, i, d in cur.fetchall()}
+    assert set(docs) == {("costalerts", "2026-09-10"), ("costlog", "2026-09-10"), ("costs", "catalog")}
+    ch = docs[("costlog", "2026-09-10")]["changes"][0]
+    assert (ch["vid"], ch["old"], ch["new"], ch["flag"]) == ("5", 8.5, 20.0, "cost above price")
+    al = docs[("costalerts", "2026-09-10")]
+    assert al["missingTotal"] == 25.0 and al["missing"][0]["orders"] == ["#1"]      # the two custom items on order #1
+    assert al["amazon"] == {"month": "2026-09", "unmappedSkus": 1, "unmappedSales": 30.5, "top": [["A1", 2, 30.5]]}
+    cat = docs[("costs", "catalog")]
+    assert cat["noCostCount"] == 1 and cat["abovePriceCount"] == 1 and cat["abovePrice"][0]["vid"] == "5"

@@ -1,7 +1,7 @@
 """Command line for every sync job.
 
   python -m sync.run hourly                    # recent sales, orders and labels (GitHub Actions, every hour)
-  python -m sync.run nightly                   # catalog costs + a 35-day re-sync to catch returns and edits
+  python -m sync.run nightly                   # catalog costs + cost check + a 35-day re-sync to catch returns and edits
   python -m sync.run backfill --since 2025-01-01
   python -m sync.run shopify-sales --since 2026-09-01 [--until 2026-09-24]
   python -m sync.run shopify-daily | shopify-orders | catalog | labels  (same --since/--until)
@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "labels", "amazon-transactions", "amazon-listings"])
+                                    "catalog", "cost-watch", "labels", "amazon-transactions", "amazon-listings"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -64,6 +64,11 @@ def main(argv: list[str] | None = None) -> None:
             run("shopify_orders", lambda: sh.sync_orders(shop, conn, _utc(since - dt.timedelta(days=1))))
         if a.job in ("nightly", "catalog"):
             run("catalog", lambda: sh.sync_catalog(shop, conn, today))
+
+    if a.job in ("nightly", "cost-watch"):
+        # after the catalog sync: yesterday's sales without cost + this morning's cost changes -> jt.docs
+        from . import cost_watch
+        run("cost_watch", lambda: cost_watch.run(conn, today - dt.timedelta(days=1), today))
 
     if a.job in ("hourly", "nightly", "backfill", "labels"):
         from .shipstation import sync_labels

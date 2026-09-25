@@ -7,8 +7,11 @@ The same page as the Claude artifact, served by Vercel from this repo. It detect
 | Sign-in | your claude.ai account | Supabase Auth (email + password), only accounts listed in `jt.app_users` |
 | Database reads | Supabase connector (`execute_sql`) | `public.jt_sql(q)`: read-only (runs as role `jt_reader`), refuses anyone not in `jt.app_users` |
 | Saves | connector | `public.jt_save_cost_overrides`, `jt_delete_cost_override`, `jt_doc_set`, `jt_doc_delete` |
-| Amazon data, cost-check log | Claude page storage (copied to `jt.docs`) | `jt.docs` |
+| Amazon data, mappings, cost check | `jt.docs` (same table; both versions stay in step) | `jt.docs` |
 | Shopify product search / current cost (Amazon tabs) | `jt.variants` (nightly catalog sync) | same |
+
+The daily cost check (`sync/cost_watch.py`) runs in the nightly GitHub sync after the catalog sync and writes
+`costs/catalog`, `costalerts/<day>` and `costlog/<day>` into `jt.docs`. Run it by hand with job `cost-watch`.
 
 Nothing in schema `jt` is exposed through Supabase's API; the browser only holds the publishable key, which grants nothing
 by itself. See `db/migrations/004_web_access.sql`.

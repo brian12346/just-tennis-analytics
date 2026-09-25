@@ -206,7 +206,7 @@
   // ---------- editor ----------
   function openEditor(sku) {
     const l = allListings().find(x => x.sku === sku); if (!l) return;
-    if (!S.db) { note("warn", "Saving mappings isn't available in this view. Open the dashboard in claude.ai."); return; }
+    if (!S.db) { note("warn", "Saving mappings isn't available until the database connects. Reload the page."); return; }
     const mp = S.maps.get(sku);
     S.open = sku; S.results = null; S.searchErr = null;
     S.mode = mp && mp.kind === "manual" ? "manual" : "shopify";
@@ -333,7 +333,7 @@
   function render() {
     if ($("tab-amzmap").hidden) return;
     const st = $("amz-status");
-    if (!S.db) st.textContent = "Mappings need the dashboard's saved data. Open it in claude.ai.";
+    if (!S.db) st.textContent = "Mappings need the database. Reload the page, or sign in again.";
     else if (!S.listReady) st.textContent = "Loading listings…";
     else if (!allListings().length) st.textContent = "No listings yet. Upload your All Listings report (Inventory → Inventory Reports → All Listings Report).";
     else st.textContent = `${S.listings.length.toLocaleString()} listings from ${S.listMeta ? S.listMeta.file : "report"}${S.listMeta && S.listMeta.uploadedAt ? " · uploaded " + new Date(S.listMeta.uploadedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""}`;
@@ -474,7 +474,7 @@
     if ($("tab-amazon").hidden) return;
     const st = $("az-status");
     const b = dataBounds();
-    if (!S.db) { st.textContent = "Amazon data needs the dashboard's saved data. Open it in claude.ai."; return; }
+    if (!S.db) { st.textContent = "Amazon data needs the database. Reload the page, or sign in again."; return; }
     if (!b) { st.textContent = A.monthsReady ? "No Amazon data yet. Upload a Transaction report (Payments → Reports Repository → Transaction)." : "Loading Amazon data…"; ["az-kpis","az-chart","az-daily","az-skus","az-orders"].forEach(id => $(id).innerHTML = ""); return; }
     if (A.err) { st.textContent = ""; azNote("bad", "Couldn't load Amazon days. Reload the page."); return; }
     st.textContent = A.loading ? "Loading…" : `Data loaded ${shortDay(b.first)} – ${shortDay(b.last)}, ${b.last.slice(0, 4)} · showing ${shortDay(A.start)} – ${shortDay(A.end)}${A.days && A.days.length > 100 ? " · large range, may be slow" : ""}`;
@@ -699,7 +699,7 @@
   const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;
   showTab((location.hash || "").replace("#", ""));
   if (!use) { render(); return; }
-  use("db").then(db => {
+  window.JT.docStore().then(db => {
     S.db = db; if (!db) { render(); return; }
     db.collection("amzlistings").onSnapshot(applyListings, () => { S.listReady = true; render(); });
     db.collection("amzmap").limit(1000).onSnapshot(applyMaps, () => { S.mapsReady = true; render(); });

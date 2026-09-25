@@ -157,7 +157,7 @@
   function renderCW() {
     if ($("tab-psales").hidden) return;
     const box = $("cw-alert"), tbl = $("cw-changes");
-    if (!CW.db) { box.innerHTML = '<div class="note info">Cost watch needs the dashboard\'s saved data. Open it in claude.ai.</div>'; tbl.innerHTML = ""; return; }
+    if (!CW.db) { box.innerHTML = '<div class="note info">Cost watch needs the database. Reload the page, or sign in again.</div>'; tbl.innerHTML = ""; return; }
     if (!CW.ready) { box.innerHTML = '<div class="skel">Loading…</div>'; return; }
     const a = CW.alerts[0];
     if (!a) { box.innerHTML = '<div class="note info">No daily check has run yet. The first one runs tomorrow morning.</div>'; }
@@ -218,7 +218,7 @@
   const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;
   if (!use) { render(); renderCW(); return; }
   use("downloads").then(d => { P.downloads = d; render(); }).catch(() => {});
-  use("db").then(db => {
+  window.JT.docStore().then(db => {
     CW.db = db; if (!db) { renderCW(); return; }
     let n = 0; const done = () => { if (++n >= 3) CW.ready = true; renderCW(); };
     db.doc("settings/costs").onSnapshot(d => { CW.set = d.exists ? { historyStart: null, overrides: {}, ...d.data() } : { historyStart: null, overrides: {} }; renderCW(); }, () => {});
