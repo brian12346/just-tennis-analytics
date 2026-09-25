@@ -137,6 +137,12 @@
       const out = await run(`with s as (select jt.save_cost_override(x) from jsonb_array_elements(${q(JSON.stringify(bodies))}::jsonb) x) select count(*)::int as n from s`);
       return (out[0] && out[0].n) || 0;
     },
+    // New unit costs for Shopify variants: [{variant_id, cost}] -> queued, then written to Shopify by the sync
+    async queueCostUpdates(list) {
+      if (WEB) return WEB.write("jt_queue_cost_updates", { p: list });
+      const out = await run(`select jt.queue_cost_updates(${q(JSON.stringify(list))}::jsonb) as n`, true);
+      return (out[0] && out[0].n) || 0;
+    },
     message(e) {
       const c = e && e.code, tag = c ? ` (${c})` : "";
       if (WEB && c === "not_allowed") return "This account doesn't have access to the dashboard. Sign out and use the right account.";

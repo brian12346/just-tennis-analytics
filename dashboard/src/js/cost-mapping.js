@@ -174,9 +174,10 @@
 
     document.querySelectorAll("#cm-mode button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === C.mode)));
     $("cm-hint").textContent = C.mode === "products"
-      ? "One cost per product: it's used for every order below that has this product without a cost. Orders with other uncosted items stay open in the Orders view."
+      ? "Every product in Shopify. A new cost is saved to the product in Shopify, and also fills this date range's orders that sold it without a cost."
       : "Type the cost of one unit. Enter moves to the next box. When you enter a cost, other empty rows with the same item fill in too.";
-    $("cm-sort").querySelectorAll("option").forEach(op => { if (op.value !== "amt") op.disabled = C.mode === "products"; });
+    $("cm-pfilters").hidden = C.mode !== "products"; $("cm-ofilters").hidden = C.mode === "products";
+    $("cm-useshop").hidden = C.mode === "products";
     if (C.mode === "products") { $("cm-bulk").hidden = true; renderProducts(); return; }
     const t = $("cm-table");
     const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("cmi-") && t.contains(ae) ? ae.id : null;
@@ -285,99 +286,152 @@
     touched.forEach(refreshOrder);
   }
 
-  // ---------- products view ----------
-  const pkey = (i) => i.vid || "custom";
-  // Products sold without a cost in the orders the Show filter selects; custom items share one row.
-  function productList() {
-    let orders = C.orders || [];
-    if (C.show === "open") orders = orders.filter(o => !C.overrides.has(o.sid));
-    else if (C.show === "saved") orders = orders.filter(o => C.overrides.has(o.sid));
-    const by = new Map();
-    for (const o of orders) for (const i of o.items) {
-      const k = pkey(i);
-      const p = by.get(k) || { key: k, vid: i.vid, pid: i.pid, title: i.vid ? i.title : "Custom items", variant: i.vid ? i.variant : "", sku: i.vid ? i.sku : "",
-        vendor: i.vid ? i.vendor : "", ptype: i.vid ? i.ptype : "", sids: new Set(), open: new Set(), qty: 0, nocost: 0 };
-      p.sids.add(o.sid); if (!C.overrides.has(o.sid)) p.open.add(o.sid);
-      p.qty += i.qty; p.nocost += i.nocost;
-      by.set(k, p);
-    }
-    let list = [...by.values()];
-    if (C.has !== "all" && C.vcostReady) list = list.filter(p => (p.vid && C.vcost.get(p.vid) != null) === (C.has === "ready"));
-    const q = C.q.trim().toLowerCase();
-    if (q) list = list.filter(p => [p.title, p.variant, p.sku, p.vendor, p.ptype].join(" ").toLowerCase().includes(q));
-    return list.sort((a, b) => (a.key === "custom") - (b.key === "custom") || b.nocost - a.nocost);
+  // ---------- products view: the whole Shopify catalog (jt.variants, synced nightly) ----------
+  // A cost typed here is sent to Shopify (jt.cost_updates -> sync job cost-updates, seconds) and also fills the
+  // orders in this date range that sold the product without a cost.
+  async function loadCatalog(refresh) {
+    if (!C.mcp || C.catLoading) return;
+    C.catLoading = true; C.catErr = null; if (C.mode === "products") render();
+    try {
+      const r = await JT.rowsSplit(["v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "v.product_type",
+        "v.status", "v.inventory_qty", "v.tracked", "v.price", "v.unit_cost", "u.new_cost", "u.status", "u.error"],
+        `from jt.variants v left join lateral (select c.new_cost, c.status, c.error from jt.cost_updates c
+           where c.variant_id = v.variant_id and c.status <> 'replaced' order by c.id desc limit 1) u on true
+         where true`, "v.variant_id", 4, refresh);   // "where true": the part filter must land here, not inside the join
+      C.cat = r.map(x => ({ vid: x[0], pid: x[1] && x[1] !== "0" ? x[1] : "", title: x[2] || "", variant: x[3] || "", sku: x[4] || "", vendor: x[5] || "", ptype: x[6] || "",
+        status: x[7] || "", onhand: x[8] == null ? null : Number(x[8]), tracked: x[9], price: x[10] == null ? null : Number(x[10]), cost: x[11] == null ? null : Number(x[11]),
+        upd: x[13] === "pending" || x[13] === "failed" ? { cost: Number(x[12]), status: x[13], error: x[14] || "" } : null }));
+      for (const v of C.cat) C.vcost.set(v.vid, v.cost);
+    } catch (e) { C.catErr = e; }
+    C.catLoading = false; render();
   }
-  const pcostOf = (p) => { const v = money(C.pcost[p.key]); return v == null || Number.isNaN(v) || v < 0 ? null : v; };
-  const readyProducts = () => productList().filter(p => p.key !== "custom" && p.open.size && pcostOf(p) != null);
+  // Uncosted sales in open orders, by variant (from the orders list for this date range).
+  function uncostedByVariant() {
+    const by = new Map();
+    for (const o of C.orders || []) {
+      if (C.overrides.has(o.sid)) continue;
+      for (const i of o.items) {
+        if (!i.vid) continue;
+        const u = by.get(i.vid) || { open: new Set(), qty: 0, nocost: 0 };
+        u.open.add(o.sid); u.qty += i.qty; u.nocost += i.nocost; by.set(i.vid, u);
+      }
+    }
+    return by;
+  }
+  function productList() {
+    const unc = uncostedByVariant(), st = $("cm-pstatus").value, cf = $("cm-pcost").value, sort = $("cm-psort").value;
+    let list = (C.cat || []).map(v => ({ ...v, key: v.vid, unc: unc.get(v.vid) || null }));
+    if (st !== "all") list = list.filter(v => v.status === st || (v.unc && st === "ACTIVE"));   // sold-without-cost items always show under Active
+    if (cf === "missing") list = list.filter(v => v.cost == null);
+    else if (cf === "has") list = list.filter(v => v.cost != null);
+    else if (cf === "sold") list = list.filter(v => v.unc);
+    else if (cf === "above") list = list.filter(v => v.cost != null && v.price != null && v.cost > v.price);
+    const q = C.q.trim().toLowerCase();
+    if (q) list = list.filter(v => [v.title, v.variant, v.sku, v.vendor, v.ptype].join(" ").toLowerCase().includes(q));
+    const name = (v) => (v.title + " " + v.variant).toLowerCase();
+    const cmp = {
+      need: (a, b) => (b.unc ? b.unc.nocost : 0) - (a.unc ? a.unc.nocost : 0) || (a.cost == null ? 0 : 1) - (b.cost == null ? 0 : 1) || name(a).localeCompare(name(b)),
+      title: (a, b) => name(a).localeCompare(name(b)),
+      vendor: (a, b) => a.vendor.localeCompare(b.vendor) || name(a).localeCompare(name(b)),
+      onhand: (a, b) => (b.onhand ?? -1e9) - (a.onhand ?? -1e9),
+      cost: (a, b) => (b.cost ?? -1) - (a.cost ?? -1),
+    }[sort] || ((a, b) => 0);
+    return list.sort(cmp);
+  }
+  const pcostOf = (key) => { const v = money(C.pcost[key]); return v == null || Number.isNaN(v) || v < 0 ? null : Math.round(v * 100) / 100; };
+  const typedProducts = () => (C.cat || []).filter(v => pcostOf(v.vid) != null);
 
   function renderProducts() {
     const t = $("cm-table");
     const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("cmp-") && t.contains(ae) ? ae.id : null;
     const sel = activeId ? [ae.selectionStart, ae.selectionEnd] : null;
-    const list = productList();
+    if (!C.cat && !C.catLoading && !C.catErr) loadCatalog(false);
+    const list = C.cat ? productList() : [];
     const per = C.perPage || Math.max(1, list.length);
     const pages = Math.max(1, Math.ceil(list.length / per));
     if (C.page >= pages) C.page = pages - 1;
     const page = list.slice(C.page * per, (C.page + 1) * per);
-    const head = `<thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Category</th><th>Orders</th><th>Qty</th><th>Sales without cost</th><th>Shopify cost now</th><th>Your cost each</th><th>Est. cost</th><th class="l"></th></tr></thead>`;
+    const cols = 11;
+    const head = `<thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Category</th><th class="l">Status</th><th>On hand</th><th>Price</th><th>Shopify cost</th><th>Margin</th><th>Sold without cost</th><th>New cost each</th><th class="l"></th></tr></thead>`;
     let body = "";
-    if (!C.orders) body = `<tr><td class="l dim" colspan="10">${C.loading ? '<span class="skel">Loading…</span>' : C.err ? esc(errMsg(C.err)) : ""}</td></tr>`;
-    else if (!page.length) body = `<tr><td class="l dim" colspan="10">${C.show === "open" && !C.q ? "Every order in this range has a cost. Nice." : "No products match."}</td></tr>`;
-    for (const p of page) {
-      const now = p.vid ? C.vcost.get(p.vid) : null, typed = C.pcost[p.key] ?? "", v = money(typed), bad = Number.isNaN(v) || v < 0;
-      const each = v != null && !bad ? v : now;
-      const name = p.pid ? `<a class="olink" href="${ADMIN}/products/${encodeURIComponent(p.pid)}${p.vid ? "/variants/" + encodeURIComponent(p.vid) : ""}" target="_blank" rel="noopener">${esc(p.title || "(untitled)")}</a>` : esc(p.title);
-      const status = p.key === "custom" ? '<span class="small dim">Different items: enter per order in the Orders view</span>'
-        : !p.open.size ? '<span class="pill ok">All saved</span>'
-        : `<span class="small dim">${p.open.size.toLocaleString()} order${p.open.size > 1 ? "s" : ""} need${p.open.size > 1 ? "" : "s"} a cost</span>`;
-      const input = p.key === "custom" || !p.open.size ? '<span class="dim">—</span>'
-        : `<input id="cmp-${esc(p.key)}" class="cmin cmp ${bad ? "bad" : v != null ? "ok" : ""}" data-p="${esc(p.key)}" type="text" inputmode="decimal" placeholder="${now != null ? now.toFixed(2) : "0.00"}" aria-label="Cost each for ${esc(p.title)}" value="${esc(typed)}">`;
+    if (!C.cat) body = `<tr><td class="l dim" colspan="${cols}">${C.catErr ? esc(errMsg(C.catErr)) : '<span class="skel">Loading the Shopify catalog…</span>'}</td></tr>`;
+    else if (!page.length) body = `<tr><td class="l dim" colspan="${cols}">No products match.</td></tr>`;
+    for (const v of page) {
+      const typed = C.pcost[v.key] ?? "", n = money(typed), bad = Number.isNaN(n) || n < 0;
+      const eff = v.upd && v.upd.status === "pending" ? v.upd.cost : v.cost;
+      const mg = eff != null && v.price ? (v.price - eff) / v.price : null;
+      const name = v.pid ? `<a class="olink" href="${ADMIN}/products/${encodeURIComponent(v.pid)}/variants/${encodeURIComponent(v.vid)}" target="_blank" rel="noopener">${esc(v.title || "(untitled)")}</a>` : esc(v.title);
+      const u = v.unc;
+      const stat = v.upd && v.upd.status === "pending" ? `<span class="pill warn">Updating Shopify → ${m(v.upd.cost)}</span>`
+        : v.upd && v.upd.status === "failed" ? `<span class="pill miss" title="${esc(v.upd.error)}">Shopify update failed</span> <span class="small neg">${esc(v.upd.error.slice(0, 80))}</span>`
+        : u ? `<span class="small dim">${u.open.size.toLocaleString()} order${u.open.size > 1 ? "s" : ""} need${u.open.size > 1 ? "" : "s"} a cost</span>` : "";
       body += `<tr>
-        <td class="l"><div class="iname">${name}</div>${p.variant || p.sku ? `<div class="small dim">${esc([p.variant, p.sku].filter(Boolean).join(" · "))}</div>` : ""}</td>
-        <td class="l">${esc(p.vendor) || '<span class="dim">—</span>'}</td><td class="l">${esc(p.ptype) || '<span class="dim">—</span>'}</td>
-        <td>${p.sids.size.toLocaleString()}</td><td>${Math.round(p.qty * 100) / 100}</td><td>${m(p.nocost)}</td>
-        <td>${now == null ? '<span class="dim">—</span>' : p.open.size && p.key !== "custom" ? `<button class="linkbtn" data-cm="puse" data-p="${esc(p.key)}" title="Use this cost">${m(now)}</button>` : m(now)}</td>
-        <td>${input}</td>
-        <td id="cmpe-${esc(p.key)}">${each != null && p.key !== "custom" ? m(each * p.qty) : '<span class="dim">—</span>'}</td>
-        <td class="l">${status}</td></tr>`;
+        <td class="l"><div class="iname">${name}</div>${v.variant || v.sku ? `<div class="small dim">${esc([v.variant, v.sku].filter(Boolean).join(" · "))}</div>` : ""}</td>
+        <td class="l">${esc(v.vendor) || '<span class="dim">—</span>'}</td><td class="l">${esc(v.ptype) || '<span class="dim">—</span>'}</td>
+        <td class="l small">${esc(v.status.charAt(0) + v.status.slice(1).toLowerCase())}</td>
+        <td>${v.onhand == null ? '<span class="dim">—</span>' : v.tracked === false ? '<span class="dim" title="Inventory not tracked in Shopify">not tracked</span>' : v.onhand.toLocaleString()}</td>
+        <td>${v.price == null ? '<span class="dim">—</span>' : m(v.price)}</td>
+        <td>${v.cost == null ? '<span class="pill miss">No cost</span>' : m(v.cost)}</td>
+        <td class="${mg != null && mg < 0 ? "neg" : "dim"}">${mg == null ? "—" : (mg * 100).toFixed(1) + "%"}</td>
+        <td>${u ? `${m(u.nocost)}<div class="small dim">${Math.round(u.qty * 100) / 100} sold</div>` : '<span class="dim">—</span>'}</td>
+        <td><input id="cmp-${esc(v.key)}" class="cmin cmp ${bad ? "bad" : n != null ? "ok" : ""}" data-p="${esc(v.key)}" type="text" inputmode="decimal" placeholder="${v.cost != null ? v.cost.toFixed(2) : "0.00"}" aria-label="New cost each for ${esc(v.title)}" value="${esc(typed)}"></td>
+        <td class="l" id="cmps-${esc(v.key)}">${stat}</td></tr>`;
     }
     t.innerHTML = head + `<tbody>${body}</tbody>`;
     $("cm-prev").hidden = C.page === 0;
     $("cm-next").hidden = C.page >= pages - 1;
-    $("cm-count").textContent = list.length ? `Products ${C.page * per + 1}–${Math.min(list.length, (C.page + 1) * per)} of ${list.length.toLocaleString()}` : "";
+    $("cm-count").textContent = list.length ? `Products ${C.page * per + 1}–${Math.min(list.length, (C.page + 1) * per)} of ${list.length.toLocaleString()}` + (C.cat ? ` · ${C.cat.length.toLocaleString()} variants in Shopify` : "") : "";
     saveProductsButton();
     if (activeId && $(activeId)) { const i = $(activeId); i.focus(); try { i.setSelectionRange(sel[0], sel[1]); } catch (_) {} }
   }
   function saveProductsButton() {
-    const r = readyProducts(), sa = $("cm-saveall");
-    const n = new Set(r.flatMap(p => [...p.open])).size;
+    const r = typedProducts(), sa = $("cm-saveall");
     sa.disabled = !r.length || C.saving || !C.db;
-    sa.textContent = C.saving ? (C.bulk || "Saving…") : r.length ? `Save ${r.length} product cost${r.length > 1 ? "s" : ""} (${n.toLocaleString()} order${n > 1 ? "s" : ""})` : "Save product costs";
+    sa.textContent = C.saving ? (C.bulk || "Saving…") : r.length ? `Save ${r.length} cost${r.length > 1 ? "s" : ""} to Shopify` : "Save costs to Shopify";
   }
-  // Apply each typed product cost to its open orders, then save every order that is now fully costed.
+  // Send typed costs to Shopify, then use them for this range's orders that sold the product without a cost.
   async function saveProducts() {
-    const prods = readyProducts(); if (!prods.length || !C.db) return;
-    const cost = new Map(prods.map(p => [p.key, pcostOf(p)]));
-    const sids = [...new Set(prods.flatMap(p => [...p.open]))];
-    C.saving = true; C.bulk = "Loading order items…"; saveProductsButton();
-    await loadLines(sids, (d, n) => { C.bulk = `Loading order items… ${d} of ${n}`; saveProductsButton(); });
-    const touched = [];
-    for (const sid of sids) {
-      const o = (C.orders || []).find(x => x.sid === sid); if (!o) continue;
-      for (const it of needRows(o) || []) {
-        const k = dkey(sid, it.id);
-        if (it.vid && cost.has(it.vid) && (C.drafts[k] == null || C.drafts[k] === "")) C.drafts[k] = cost.get(it.vid).toFixed(2);
-      }
-      touched.push(o);
+    const prods = typedProducts(); if (!prods.length || !C.db) return;
+    const cost = new Map(prods.map(v => [v.vid, pcostOf(v.vid)]));
+    C.saving = true; C.bulk = "Sending costs to Shopify…"; saveProductsButton();
+    const changed = prods.filter(v => v.cost == null || Math.abs(v.cost - cost.get(v.vid)) >= 0.005);
+    let queued = 0, qErr = null;
+    if (changed.length) {
+      try { queued = await JT.queueCostUpdates(changed.map(v => ({ variant_id: Number(v.vid), cost: cost.get(v.vid) }))); }
+      catch (e) { qErr = e; }
+      if (!qErr) for (const v of changed) v.upd = { cost: cost.get(v.vid), status: "pending", error: "" };
     }
-    const complete = touched.filter(o => (orderCalc(o) || {}).complete), partial = touched.length - complete.length;
+    // Orders in this range that sold these products without a cost.
+    const unc = uncostedByVariant();
+    const sids = [...new Set(prods.flatMap(v => unc.has(v.vid) ? [...unc.get(v.vid).open] : []))];
+    let complete = [], partial = 0;
+    if (sids.length) {
+      C.bulk = "Loading order items…"; saveProductsButton();
+      await loadLines(sids, (d, n) => { C.bulk = `Loading order items… ${d} of ${n}`; saveProductsButton(); });
+      const touched = [];
+      for (const sid of sids) {
+        const o = (C.orders || []).find(x => x.sid === sid); if (!o) continue;
+        for (const it of needRows(o) || []) {
+          const k = dkey(sid, it.id);
+          if (it.vid && cost.has(it.vid) && (C.drafts[k] == null || C.drafts[k] === "")) C.drafts[k] = cost.get(it.vid).toFixed(2);
+        }
+        touched.push(o);
+      }
+      complete = touched.filter(o => (orderCalc(o) || {}).complete); partial = touched.length - complete.length;
+    }
     C.saving = false; C.bulk = null;
-    await saveMany(complete);
-    for (const p of prods) if (![...p.open].some(sid => !C.overrides.has(sid))) delete C.pcost[p.key];
-    const failed = complete.filter(o => !C.overrides.has(o.sid)).length;
-    if (!failed) note(partial ? "warn" : "info", `Saved ${complete.length.toLocaleString()} order${complete.length === 1 ? "" : "s"}.` +
-      (partial ? ` ${partial.toLocaleString()} order${partial > 1 ? "s have" : " has"} other items without a cost: the costs you entered are filled in there, so finish ${partial > 1 ? "them" : "it"} in the Orders view (Show: Needs cost).` : ""));
+    if (complete.length) await saveMany(complete);
+    const failedOrders = complete.filter(o => !C.overrides.has(o.sid)).length;
+    if (!qErr) for (const v of prods) delete C.pcost[v.vid];
+    const parts = [];
+    if (qErr) parts.push(`Couldn't send costs to Shopify: ${esc(errMsg(qErr))}`);
+    else if (queued) parts.push(`Sent ${queued} cost${queued > 1 ? "s" : ""} to Shopify; the update runs now and shows as done here within a minute.`);
+    else if (changed.length === 0) parts.push("Those costs already match Shopify.");
+    if (complete.length && !failedOrders) parts.push(`Saved ${complete.length.toLocaleString()} past order${complete.length > 1 ? "s" : ""} that sold without a cost.`);
+    if (partial) parts.push(`${partial.toLocaleString()} order${partial > 1 ? "s have" : " has"} other items without a cost: finish ${partial > 1 ? "them" : "it"} in the Orders view.`);
+    note(qErr ? "bad" : partial ? "warn" : "info", parts.join(" "));
     render();
+    if (queued) { setTimeout(() => loadCatalog(true), 20000); setTimeout(() => loadCatalog(true), 60000); }
   }
 
   // ---------- save ----------
@@ -424,7 +478,7 @@
     document.querySelectorAll("#cm-rangeseg button").forEach(b => b.setAttribute("aria-pressed", "false"));
     load(false);
   }));
-  $("cm-refresh").addEventListener("click", () => { C.lines.clear(); C.vcost.clear(); C.vcostReady = false; load(true); });
+  $("cm-refresh").addEventListener("click", () => { C.lines.clear(); C.vcost.clear(); C.vcostReady = false; load(true); if (C.cat || C.mode === "products") { C.cat = null; loadCatalog(true); } });
   $("cm-show").addEventListener("change", (e) => { C.show = e.target.value; C.page = 0; render(); });
   $("cm-has").addEventListener("change", (e) => { C.has = e.target.value; C.page = 0; render(); });
   $("cm-per").addEventListener("change", (e) => { C.perPage = Number(e.target.value); C.page = 0; render(); });
@@ -435,13 +489,8 @@
   $("cm-next").addEventListener("click", () => { C.page++; render(); $("cm-table").closest(".tbl-wrap").scrollTop = 0; });
   $("cm-saveall").addEventListener("click", () => C.mode === "products" ? saveProducts() : saveMany(readyOrders()));
   document.querySelectorAll("#cm-mode button").forEach(b => b.addEventListener("click", () => { C.mode = b.dataset.mode; C.page = 0; render(); }));
+  ["cm-pstatus", "cm-pcost", "cm-psort"].forEach(id => $(id).addEventListener("change", () => { C.page = 0; render(); }));
   $("cm-useshop").addEventListener("click", () => {
-    if (C.mode === "products") {
-      let n = 0;
-      for (const p of productList()) if (p.key !== "custom" && p.open.size && p.vid && C.vcost.get(p.vid) != null && !String(C.pcost[p.key] ?? "").trim()) { C.pcost[p.key] = C.vcost.get(p.vid).toFixed(2); n++; }
-      note(n ? "info" : "", n ? `Filled ${n} product${n > 1 ? "s" : ""} with the current Shopify cost. Review, then press Save.` : "No empty products here have a current Shopify cost.");
-      render(); return;
-    }
     const touched = new Set();
     document.querySelectorAll("#cm-table input.cmin").forEach(i => {
       const k = i.dataset.k, sid = k.split("|")[0];
@@ -458,11 +507,9 @@
   tbl.addEventListener("input", (ev) => {
     const i = ev.target;
     if (i.classList && i.classList.contains("cmp")) {
-      const key = i.dataset.p; C.pcost[key] = i.value;
-      const p = productList().find(x => x.key === key), v = money(i.value), bad = Number.isNaN(v) || v < 0;
+      C.pcost[i.dataset.p] = i.value;
+      const v = money(i.value), bad = Number.isNaN(v) || v < 0;
       i.classList.toggle("bad", bad); i.classList.toggle("ok", v != null && !bad);
-      const now = p && p.vid ? C.vcost.get(p.vid) : null, each = v != null && !bad ? v : now, cell = $("cmpe-" + key);
-      if (cell && p) cell.innerHTML = each != null ? m(each * p.qty) : '<span class="dim">—</span>';
       saveProductsButton(); return;
     }
     if (!i.classList || !i.classList.contains("cmin")) return;
@@ -483,7 +530,6 @@
     if (a === "save") { const o = (C.orders || []).find(x => x.sid === sid); if (o) saveMany([o]); }
     else if (a === "undo") undo(sid);
     else if (a === "retry") { C.lines.delete(sid); render(); }
-    else if (a === "puse") { const key = b.dataset.p, p = productList().find(x => x.key === key); if (p && p.vid && C.vcost.get(p.vid) != null) { C.pcost[key] = C.vcost.get(p.vid).toFixed(2); render(); } }
     else if (a === "use") { const k = b.dataset.k, o = (C.orders || []).find(x => x.sid === k.split("|")[0]), it = o && (needRows(o) || []).find(x => dkey(o.sid, x.id) === k); if (it) { C.drafts[k] = it.unit.toFixed(2); refreshOrder(o.sid); const inp = $(`cmi-${o.sid}-${it.id}`); if (inp) { inp.value = C.drafts[k]; fillSame(inp); } } }
   });
 

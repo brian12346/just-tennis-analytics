@@ -10,7 +10,7 @@ About 30 minutes. Steps 1–4 are clicks in web pages; Claude can do steps 5–7
 ## 2. Shopify app (read-only)
 1. Shopify admin → Settings → Apps → Develop apps → **Build apps in Dev Dashboard**.
 2. Create app `Just Tennis Analytics`. Under the app's version, choose Admin API scopes:
-   `read_orders`, `read_all_orders`, `read_products`, `read_inventory`, `read_reports`.
+   `read_orders`, `read_all_orders`, `read_products`, `read_inventory`, `write_inventory` (lets the dashboard save product costs to Shopify), `read_reports`.
    Under API access, request **protected customer data** access (needed for Shopify Analytics queries).
 3. Release the version and install the app on **justtennis-822**.
 4. App → Settings: copy **Client ID** and **Client secret** (`SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`).

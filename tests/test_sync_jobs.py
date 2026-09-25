@@ -45,7 +45,7 @@ VARIANTS = [
     {"id": "gid://shopify/ProductVariant/5", "sku": "HG17", "title": "Default Title", "displayName": "Hyper G Set",
      "price": "13.99", "updatedAt": "2026-09-01T00:00:00Z",
      "product": {"id": "gid://shopify/Product/9", "title": "Hyper G Set", "vendor": "Solinco", "productType": "String", "status": "ACTIVE"},
-     "inventoryItem": {"unitCost": {"amount": "8.5"}}},
+     "inventoryQuantity": 14, "inventoryItem": {"id": "gid://shopify/InventoryItem/705", "tracked": True, "unitCost": {"amount": "8.5"}}},
     {"id": "gid://shopify/ProductVariant/6", "sku": "", "title": "Black", "displayName": "Bag - Black", "price": "40",
      "updatedAt": None, "product": {"id": "gid://shopify/Product/10", "title": "Bag", "vendor": "", "productType": "", "status": "ACTIVE"},
      "inventoryItem": {"unitCost": None}},
@@ -55,6 +55,7 @@ VARIANTS = [
 class FakeShopify:
     def __init__(self, variants=VARIANTS):
         self.variants = variants
+        self.cost_calls = []
 
     def shopifyql(self, q):
         if "TIMESERIES day" in q:
@@ -68,6 +69,11 @@ class FakeShopify:
             return {"orders": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [ORDER]}}
         if query is sh.MORE_LINES_Q:
             return {"order": {"lineItems": MORE}}
+        if query is sh.COST_UPDATE_M:
+            self.cost_calls.append(variables)
+            if variables["id"].endswith("/999"):
+                return {"inventoryItemUpdate": {"inventoryItem": None, "userErrors": [{"field": ["id"], "message": "Inventory item does not exist"}]}}
+            return {"inventoryItemUpdate": {"inventoryItem": {"id": variables["id"], "unitCost": {"amount": variables["input"]["cost"]}}, "userErrors": []}}
         if query is sh.VARIANTS_Q:
             return {"productVariants": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": self.variants}}
         raise AssertionError("unexpected query")
@@ -119,3 +125,27 @@ def test_cost_watch_docs(conn):
     assert al["amazon"] == {"month": "2026-09", "unmappedSkus": 1, "unmappedSales": 30.5, "top": [["A1", 2, 30.5]]}
     cat = docs[("costs", "catalog")]
     assert cat["noCostCount"] == 1 and cat["abovePriceCount"] == 1 and cat["abovePrice"][0]["vid"] == "5"
+
+
+def test_catalog_inventory_and_cost_updates(conn):
+    shop = FakeShopify()
+    sh.sync_catalog(shop, conn, dt.date(2026, 9, 24))
+    cur = conn.cursor()
+    cur.execute("select variant_id, inventory_item_id, inventory_qty, tracked from jt.variants order by variant_id")
+    assert cur.fetchall() == [(5, 705, 14, True), (6, None, None, None)]
+    cur.execute("insert into jt.variants (variant_id, product_id, inventory_item_id, unit_cost) values (7, 11, 999, 1)")
+    cur.execute("""select jt.queue_cost_updates('[{"variant_id": 5, "cost": 9.99}, {"variant_id": 6, "cost": 3},
+                                                  {"variant_id": 7, "cost": 2}, {"variant_id": 404, "cost": 1}]')""")
+    assert cur.fetchone()[0] == 3                                                # unknown variant 404 is skipped
+    cur.execute("""select jt.queue_cost_updates('[{"variant_id": 5, "cost": 9.5}]')""")   # newer request wins
+    conn.commit()
+    assert sh.apply_cost_updates(shop, conn, dt.date(2026, 9, 25)) == 1
+    assert shop.cost_calls == [{"id": "gid://shopify/InventoryItem/999", "input": {"cost": "2.00"}},   # queue order
+                               {"id": "gid://shopify/InventoryItem/705", "input": {"cost": "9.50"}}]
+    cur.execute("select variant_id, new_cost, status, left(error, 20) from jt.cost_updates order by id")
+    assert cur.fetchall() == [(5, D("9.99"), "replaced", ""), (6, D("3.00"), "failed", "no Shopify inventory"),
+                              (7, D("2.00"), "failed", "Inventory item does "), (5, D("9.50"), "done", "")]
+    cur.execute("select unit_cost from jt.variants where variant_id = 5")
+    assert cur.fetchone()[0] == D("9.50")
+    cur.execute("select old_cost, new_cost, flag from jt.variant_cost_changes where variant_id = 5 and changed_on = '2026-09-25'")
+    assert cur.fetchone() == (D("8.50"), D("9.50"), "set in dashboard")

@@ -215,3 +215,6 @@ body.signed-out .wrap{visibility:hidden}
 .tabs{align-items:center}
 .acct{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
 .acct[hidden]{display:none}
+
+#cm-pfilters[hidden],#cm-ofilters[hidden]{display:none}
+.cmt .pill.warn{background:var(--warn-bg);color:var(--warn)}

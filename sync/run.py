@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "labels", "amazon-transactions", "amazon-listings"])
+                                    "catalog", "cost-watch", "cost-updates", "labels", "amazon-transactions", "amazon-listings"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -64,6 +64,11 @@ def main(argv: list[str] | None = None) -> None:
             run("shopify_orders", lambda: sh.sync_orders(shop, conn, _utc(since - dt.timedelta(days=1))))
         if a.job in ("nightly", "catalog"):
             run("catalog", lambda: sh.sync_catalog(shop, conn, today))
+
+    if a.job in ("hourly", "nightly", "cost-updates"):
+        # costs typed in the dashboard -> Shopify (a save starts job cost-updates right away; hourly catches any missed)
+        from . import shopify as sh2
+        run("cost_updates", lambda: sh2.apply_cost_updates(shopify(), conn, today))
 
     if a.job in ("nightly", "cost-watch"):
         # after the catalog sync: yesterday's sales without cost + this morning's cost changes -> jt.docs

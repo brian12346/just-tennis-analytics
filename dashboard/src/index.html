@@ -198,20 +198,33 @@
           <button data-mode="orders" aria-pressed="true">Orders</button>
           <button data-mode="products" aria-pressed="false">Products</button>
         </div>
-        <div class="filters">
+        <div class="filters" id="cm-pfilters" hidden>
+          <label for="cm-pstatus">Status
+            <select id="cm-pstatus"><option value="ACTIVE">Active</option><option value="DRAFT">Draft</option><option value="ARCHIVED">Archived</option><option value="all">All</option></select>
+          </label>
+          <label for="cm-pcost">Cost
+            <select id="cm-pcost"><option value="all">Any</option><option value="missing">No cost in Shopify</option><option value="has">Has a cost</option><option value="sold">Sold without cost (this range)</option><option value="above">Cost above price</option></select>
+          </label>
+          <label for="cm-psort">Sort
+            <select id="cm-psort"><option value="need">Needs cost first</option><option value="title">Product</option><option value="vendor">Vendor</option><option value="onhand">On hand</option><option value="cost">Cost (high first)</option></select>
+          </label>
+        </div>
+        <div class="filters" id="cm-ofilters">
           <label for="cm-show">Show
             <select id="cm-show"><option value="open">Needs cost</option><option value="saved">Saved</option><option value="all">All</option></select>
           </label>
           <label for="cm-has">Shopify cost now
             <select id="cm-has"><option value="all">Any</option><option value="ready">Has a cost in Shopify</option><option value="none">No cost in Shopify</option></select>
           </label>
-          <label for="cm-per">Per page
-            <select id="cm-per"><option value="40">40</option><option value="200">200</option><option value="0">All</option></select>
-          </label>
           <label for="cm-sort">Sort
             <select id="cm-sort"><option value="amt">Largest first</option><option value="new">Newest first</option><option value="old">Oldest first</option></select>
           </label>
-          <label for="cm-q">Search <input id="cm-q" class="inp" type="search" placeholder="Order #, item or SKU"></label>
+        </div>
+        <div class="filters">
+          <label for="cm-per">Per page
+            <select id="cm-per"><option value="40">40</option><option value="200">200</option><option value="0">All</option></select>
+          </label>
+          <label for="cm-q">Search <input id="cm-q" class="inp" type="search" placeholder="Order #, product, SKU or vendor"></label>
         </div>
       </div>
       <div class="cmbulk" id="cm-bulk" hidden></div>
