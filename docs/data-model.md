@@ -44,7 +44,7 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   matched Shopify variant. Drafts can be edited; `jt.apply_invoice(id)` locks one and queues its updates.
 - `jt.vendor_items` — remembered matches (vendor + normalized item code → variant), filled when an invoice is applied
   and used first when matching the next invoice from that vendor.
-- `jt.price_rules` — suggested-price rule per vendor (`*` = default): target margin, or null to keep each item's
+- `jt.price_rules` — (not used yet: price updates from invoices are turned off in the dashboard) suggested-price rule per vendor (`*` = default): target margin, or null to keep each item's
   current margin; rounding `.99` / `.95` / `.00` / `none`.
 - Applying queues rows in `jt.cost_updates` (new cost and/or `new_price`, `invoice_id`); the sync job `cost-updates`
   writes costs with `inventoryItemUpdate` (write_inventory) and prices with `productVariantsBulkUpdate` (write_products).

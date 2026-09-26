@@ -319,7 +319,6 @@
       if (l.update_cost == null) l.update_cost = true;
       if (l.match_how === "title" && !l._reviewed) l.update_cost = false;   // a guess: tick it once it's confirmed
       const v = l.variant_id && I.idx.byVid.get(String(l.variant_id));
-      if (l.new_price == null && v) { l.new_price = suggest(l, v, ed.vendor); l._suggested = l.new_price; }
     }
   }
   async function onFile(file) {
@@ -367,7 +366,7 @@
              subtotal: ed.subtotal, notes: ed.notes || "",
              lines: ed.lines.map(l => ({ item_code: l.item_code || "", upc: l.upc || "", description: l.description || "", qty: l.qty, unit_cost: l.unit_cost, amount: l.amount,
                                          variant_id: l.variant_id || null, match_how: l.match_how || "", update_cost: !!l.update_cost,
-                                         new_price: l.update_price && l.new_price > 0 ? l.new_price : null })) };
+                                         new_price: null })) };   // prices aren't changed from invoices (for now)
   }
   async function save(andApply) {
     const ed = I.ed; if (!ed || ed.status === "applied") return;
@@ -377,8 +376,7 @@
       ed.id = String(await JT.invoices.save(bodyOf(ed)));
       if (andApply) {
         const n = await JT.invoices.apply(ed.id);
-        const c = ed.lines.filter(l => l.variant_id && l.update_cost && l.unit_cost != null).length, p = ed.lines.filter(l => l.variant_id && l.update_price && l.new_price > 0).length;
-        note("info", `Applied. ${n} product${n === 1 ? "" : "s"} queued for Shopify (${c} cost${c === 1 ? "" : "s"}, ${p} price${p === 1 ? "" : "s"}). The sync writes them within about a minute; this invoice shows each one's result.`);
+        note("info", `Applied. ${n} product cost${n === 1 ? "" : "s"} queued for Shopify. The sync writes them within about a minute; this invoice shows each one's result.`);
         ed.status = "applied";
         await Promise.all([loadList(true), loadUpdates(ed.id), loadCatalog(true)]);
       } else {
@@ -410,7 +408,7 @@
     const newCost = l.unit_cost;
     const chg = v && v.cost > 0 && newCost != null ? (newCost - v.cost) / v.cost : null;
     const priceNow = v ? v.price : null;
-    const priceAfter = l.update_price && l.new_price > 0 ? l.new_price : priceNow;
+    const priceAfter = priceNow;
     const marginAfter = priceAfter > 0 && newCost != null ? (priceAfter - newCost) / priceAfter : null;
     const inp = (f, val, cls = "", ph = "") => ro ? esc(val ?? "") : `<input class="inp ${cls}" data-f="${f}" data-i="${i}" value="${esc(val ?? "")}" placeholder="${ph}">`;
     const how = { remembered: "remembered", sku: "SKU", upc: "UPC", title: "guess — check", manual: "picked" }[l.match_how] || "";
@@ -429,9 +427,7 @@
     const dupOf = v ? I.ed.lines.findIndex((o, j) => j !== i && String(o.variant_id) === String(v.vid)) : -1;
     if (dupOf >= 0 && !(I.searchLine === i && !ro)) match += `<br><span class="small up">Same product as line ${dupOf + 1} — the later line's cost wins</span>`;
     const costCell = v ? `${m(v.cost)}${chg != null && Math.abs(chg) >= 0.0005 ? `<br><span class="small ${chg > 0 ? "up" : "down"}">${chg > 0 ? "+" : ""}${pct(chg)}</span>` : ""}` : "—";
-    const priceCell = !v ? "—" : ro
-      ? (upd && upd.new_price != null ? `${m(+upd.new_price)} <span class="dim small">(was ${m(priceNow)})</span>` : m(priceNow))
-      : `<label class="small" style="display:flex;gap:4px;align-items:center"><input type="checkbox" data-chk="update_price" data-i="${i}" ${l.update_price ? "checked" : ""}><input class="inp num" data-f="new_price" data-i="${i}" value="${l.new_price != null ? l.new_price.toFixed(2) : ""}" placeholder="${priceNow != null ? priceNow.toFixed(2) : ""}" style="width:70px"></label><span class="dim small">now ${m(priceNow)}${l._suggested != null && l.new_price === l._suggested ? " · suggested" : ""}</span>`;
+    const priceCell = v ? m(priceNow) : "—";
     const mCell = marginAfter != null ? `<br><span class="small ${marginAfter < 0.2 ? "up" : "dim"}">margin ${pct(marginAfter)}</span>` : "";
     const status = ro ? (upd ? (upd.status === "done" ? '<span class="pill ok">In Shopify</span>' : upd.status === "failed" ? `<span class="pill miss" title="${esc(upd.error)}">Failed</span><br><span class="small dim">${esc(upd.error).slice(0, 80)}</span>` : upd.status === "pending" ? '<span class="pill warn">Queued</span>' : `<span class="pill">${esc(upd.status)}</span>`) : '<span class="dim">—</span>')
       : `<input type="checkbox" data-chk="update_cost" data-i="${i}" ${l.update_cost ? "checked" : ""} ${v ? "" : "disabled"} title="Write this cost to Shopify">`;
@@ -442,7 +438,7 @@
       <td class="w-n">${m(l.amount != null ? l.amount : l.qty != null && l.unit_cost != null ? l.qty * l.unit_cost : null)}</td>
       <td class="l match">${match}</td>
       <td>${costCell}</td>
-      <td class="l">${priceCell}${mCell}</td>
+      <td>${priceCell}${mCell}</td>
       <td>${status}</td>
       ${ro ? "" : `<td><button class="linkbtn small" data-del="${i}" title="Remove this line">✕</button></td>`}`;
   }
@@ -457,7 +453,7 @@
     const lines = ed.lines.map((l, i) => ({ l, i }));
     const shown = lines.filter(({ l }) => ed.filter === "all" || (ed.filter === "unmatched" ? !l.variant_id : ed.filter === "check" ? l.match_how === "title" && !l._reviewed : ed.filter === "changed" ? (() => { const v = l.variant_id && I.idx.byVid.get(String(l.variant_id)); return v && l.unit_cost != null && (v.cost == null || Math.abs(v.cost - l.unit_cost) >= 0.005); })() : true));
     const nMatched = ed.lines.filter(l => l.variant_id).length, nGuess = ed.lines.filter(l => l.match_how === "title" && !l._reviewed).length;
-    const nCost = ed.lines.filter(l => l.variant_id && l.update_cost && l.unit_cost != null).length, nPrice = ed.lines.filter(l => l.variant_id && l.update_price && l.new_price > 0).length;
+    const nCost = ed.lines.filter(l => l.variant_id && l.update_cost && l.unit_cost != null).length, nPrice = 0;
     const sum = ed.lines.reduce((a, l) => a + (l.amount != null ? l.amount : (l.qty || 0) * (l.unit_cost || 0)), 0);
     const r = ruleFor(ed.vendor), own = I.rules.has(ed.vendor);
     const vendorOpts = I.vendors.map(v => `<option value="${esc(v)}" ${v === ed.vendor ? "selected" : ""}>${esc(v)}</option>`).join("");
@@ -473,14 +469,7 @@
           <span class="small ${ed.subtotal != null && Math.abs(ed.subtotal - sum) > 0.05 ? "up" : "dim"}">Lines add up to ${m(sum)}${ed.subtotal != null && Math.abs(ed.subtotal - sum) > 0.05 ? " — some lines may be missing" : ""}</span></label>
         <label>File <span class="dim">${esc(ed.file_name || "—")}</span></label>
       </div>
-      ${ro ? "" : `<div class="invbar">
-        <span class="small muted">Suggested prices for <b>${esc(ed.vendor || "this vendor")}</b>${own ? "" : " (default rule)"}:</span>
-        <label class="small">Target margin <input id="inv-margin" class="inp num sm" style="width:64px" value="${r.margin != null ? (r.margin * 100).toFixed(1) : ""}" placeholder="keep"> %</label>
-        <label class="small">Round to <select id="inv-round" class="inp sm">${[".99", ".95", ".00", "none"].map(x => `<option ${x === r.rounding ? "selected" : ""}>${x}</option>`).join("")}</select></label>
-        <button class="mini" id="inv-rule" ${ed.vendor ? "" : "disabled"}>Save rule for ${esc(ed.vendor || "vendor")}</button>
-        <button class="mini" id="inv-resuggest">Recalculate suggestions</button>
-        <span class="small dim">Blank margin keeps each item's current margin when its cost changes. Prices only change in Shopify for lines you tick.</span>
-      </div>`}
+
       <div class="invbar">
         <div class="seg" id="inv-filter" role="group" aria-label="Show lines">
           ${[["all", `All ${ed.lines.length}`], ["unmatched", `Not matched ${ed.lines.length - nMatched}`], ["check", `Guesses to check ${nGuess}`], ["changed", "Cost changes"]].map(([k, t]) => `<button data-filter="${k}" aria-pressed="${ed.filter === k}">${t}</button>`).join("")}
@@ -498,7 +487,7 @@
         <span class="dbtns"><button class="mini primary" id="inv-yes">Yes, apply</button><button class="mini" id="inv-no-apply">Cancel</button></span></div>` : ""}
       ${ed.showRaw && ed.raw ? `<pre class="invraw">${esc(ed.raw.map(r => r.cells.join("  |  ")).join("\n"))}</pre>` : ""}
       <div class="tbl-wrap tall"><table class="invt">
-        <thead><tr><th class="l">Item code / UPC</th><th class="l">Description</th><th>Qty</th><th>Unit cost</th><th>Amount</th><th class="l">Shopify product</th><th>Cost now</th><th class="l">Retail price</th><th>${ro ? "Shopify" : "Update cost"}</th>${ro ? "" : "<th></th>"}</tr></thead>
+        <thead><tr><th class="l">Item code / UPC</th><th class="l">Description</th><th>Qty</th><th>Unit cost</th><th>Amount</th><th class="l">Shopify product</th><th>Cost now</th><th>Price</th><th>${ro ? "Shopify" : "Update cost"}</th>${ro ? "" : "<th></th>"}</tr></thead>
         <tbody>${shown.map(({ l, i }) => `<tr class="${!l.variant_id ? "nomatch" : l.match_how === "title" && !l._reviewed ? "guess" : ""} ${!ro && l.variant_id && !l.update_cost && !l.update_price ? "skip" : ""}">${lineCells(l, i, ro)}</tr>`).join("") || `<tr><td class="l muted" colspan="10">No lines here.</td></tr>`}</tbody>
       </table></div>`;
     if (keep) {
@@ -553,7 +542,7 @@
         if (l.match_how !== "manual") { l.variant_id = null; l.match_how = ""; const hit = matchLine(l, ed.vendor); if (hit) { l.variant_id = hit.v.vid; l.match_how = hit.how; } }
         renderEditor();
       }
-      if (t.dataset.f === "unit_cost") { const l = ed.lines[+t.dataset.i]; if (!l.update_price || l.new_price === l._suggested) { const v = l.variant_id && I.idx.byVid.get(String(l.variant_id)); l.new_price = suggest(l, v, ed.vendor); l._suggested = l.new_price; } renderEditor(); }
+      if (t.dataset.f === "unit_cost") renderEditor();
     });
     box.addEventListener("keydown", (e) => {
       if (e.target.id === "inv-sq" && e.key === "Escape") { I.searchLine = null; renderEditor(); }
@@ -570,7 +559,6 @@
       if (t.dataset.pick) {
         const l = ed.lines[+t.dataset.i], v = I.idx.byVid.get(t.dataset.pick);
         l.variant_id = v.vid; l.match_how = "manual"; l._reviewed = true; l.update_cost = true;
-        l.new_price = suggest(l, v, ed.vendor); l._suggested = l.new_price; l.update_price = false;
         I.searchLine = null; renderEditor(); return;
       }
       if (t.dataset.del != null) { ed.lines.splice(+t.dataset.del, 1); I.searchLine = null; renderEditor(); return; }
