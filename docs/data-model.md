@@ -54,3 +54,13 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   writes costs with `inventoryItemUpdate` (write_inventory) and prices with `productVariantsBulkUpdate` (write_products).
 - Matching order: remembered code → exact SKU → UPC (`jt.variants.barcode`, from the catalog sync) → SKU containing the
   code (same vendor) → title words (same vendor, shown as a guess to confirm).
+
+## Amazon matching tab
+
+- Suggests a Shopify variant for each unmapped Amazon listing (`dashboard/src/js/amz-match.js`): Shopify SKU written in
+  the listing, brand, product words weighted by rarity, and attributes that must agree (pack size, string gauge / mm,
+  grip size, colour, junior length, racquet model number / year, product kind). "2 Packs of <string>" = 2 units.
+- Approve writes `amzmap/<sku>` (same shape as the Amazon mapping tab, plus `via: "match"`); Deny adds the variant to
+  `amzdeny/<sku>.variants` so the next guess shows; "No match" sets `amzdeny/<sku>.none`.
+- Checked against the 85 hand-made mappings (Sep 25): top guess agreed on 77; most of the rest are duplicate products
+  in Shopify (e.g. two Hyper-G set products).

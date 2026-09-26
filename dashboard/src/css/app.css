@@ -128,8 +128,8 @@ table.lines tr.need input{border-color:var(--warn)}
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:-4px;overflow-x:auto}
 .tabs button{border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);font-weight:600;font-family:var(--display);font-size:16px;letter-spacing:.01em;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--sales)}
-#tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices{display:flex;flex-direction:column;gap:18px}
-#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
+#tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices,#tab-amzmatch{display:flex;flex-direction:column;gap:18px}
+#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#am-note[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
 /* product sales */
 .tbl-wrap.xl{max-height:720px}
 .tree{display:inline-flex;align-items:center;gap:4px;white-space:normal}
@@ -284,3 +284,28 @@ pre.invraw{max-height:280px;overflow:auto;font-size:11px;background:var(--ground
 .modal-card{background:var(--panel);color:var(--ink);border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.35);width:min(1320px,100%);padding:18px 20px;display:flex;flex-direction:column;gap:10px}
 body.modal-open{overflow:hidden}
 .invhead textarea.inp{width:100%;min-height:34px;resize:vertical;font:inherit}
+
+/* Amazon matching */
+#tab-amzmatch .controls .inp[type=search]{min-width:220px}
+.amrow{display:grid;grid-template-columns:minmax(0,1fr) 28px minmax(0,1.15fr) 170px;gap:12px;align-items:start;padding:12px 10px;border-top:1px solid var(--line)}
+.amrow:first-child{border-top:0}
+.amrow.cur{background:var(--sales-soft);border-radius:10px}
+.amrow.done{opacity:.55}
+.amrow .arrow{color:var(--faint);font-size:18px;text-align:center;padding-top:6px}
+.amrow .amz b,.amrow .shop b{display:block;font-size:13px;line-height:1.35}
+.amrow .meta{font-size:12px;color:var(--muted);margin-top:3px}
+.amrow .acts{display:flex;flex-direction:column;gap:6px}
+.amrow .acts .row2{display:flex;gap:6px}
+.amrow .acts .btn{padding:6px 10px}
+.amrow .alts{margin-top:6px;display:flex;flex-direction:column;gap:3px}
+.amrow .alts button{text-align:left;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;padding:4px 6px;font-size:12px;cursor:pointer}
+.amrow .alts button:hover{border-color:var(--sales)}
+.amrow .units{display:inline-flex;gap:4px;align-items:center;font-size:12px}
+.amrow .units input{width:48px}
+.pill.conf-high{background:var(--good-bg);color:var(--good)}
+.pill.conf-medium{background:var(--warn-bg);color:var(--warn)}
+.pill.conf-low{background:var(--bad-bg);color:var(--bad)}
+@media (max-width:900px){.amrow{grid-template-columns:1fr}.amrow .arrow{display:none}}
+.tabs{flex-wrap:wrap;row-gap:2px}
+.acct,.build{white-space:nowrap}
+#am-scope{min-width:170px}

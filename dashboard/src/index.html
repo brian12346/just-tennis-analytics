@@ -23,6 +23,7 @@
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
+    <button role="tab" data-tab="amzmatch" aria-selected="false">Amazon matching</button>
     <button role="tab" data-tab="invoices" aria-selected="false">Invoices</button>
     <span id="acct" class="acct" hidden><span class="build" title="Dashboard version">v __BUILD__</span><span id="whoami"></span><button class="mini" id="signout" type="button">Sign out</button></span>
   </nav>
@@ -308,6 +309,34 @@
       <div class="row"><button class="btn" id="az-omore" hidden>Show more</button><span class="muted small" id="az-ocount"></span></div>
     </section>
   </div>
+  <div id="tab-amzmatch" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Amazon listings → Shopify products · suggested matches to approve</span>
+        <h1>Amazon matching</h1>
+      </div>
+      <div class="controls">
+        <input id="am-q" class="inp" type="search" placeholder="Search listing, ASIN, SKU" aria-label="Search listings">
+        <div class="seg" id="am-conf" role="group" aria-label="Confidence">
+          <button data-c="all" aria-pressed="true">All</button><button data-c="high" aria-pressed="false">Likely</button><button data-c="medium" aria-pressed="false">Maybe</button><button data-c="low" aria-pressed="false">Unsure</button>
+        </div>
+        <label class="small muted">Show <select id="am-scope" class="inp sm"><option value="selling">Listings with sales</option><option value="active">All active listings</option><option value="all">All listings</option><option value="denied">No match in Shopify</option></select></label>
+        <button class="btn" id="am-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="am-status" aria-live="polite">Loading listings and the product catalog…</div>
+    <div id="am-note" hidden></div>
+    <section class="kpis" id="am-kpis" aria-label="Matching progress"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Suggested matches</h2>
+        <span class="right dbtns"><button class="btn" id="am-bulk" disabled>Approve all "Likely" on this page</button></span>
+      </div>
+      <p class="small muted" style="margin:0 0 8px">Approve a guess to save it as the listing's cost source (same as the Amazon mapping tab). Deny shows the next guess. Keys: <b>A</b> approve · <b>D</b> deny · <b>N</b> no match · <b>↓/↑</b> move.</p>
+      <div id="am-list"></div>
+      <div class="row"><button class="btn" id="am-prev" hidden>Previous</button><button class="btn" id="am-next" hidden>Next page</button><span class="muted small" id="am-count"></span></div>
+    </section>
+  </div>
   <div id="tab-invoices" hidden>
     <header class="top">
       <div class="title">
@@ -388,6 +417,12 @@
 
 <script>
 <!-- @inline js/amazon.js -->
+</script>
+<script>
+<!-- @inline js/amz-match.js -->
+</script>
+<script>
+<!-- @inline js/amz-review.js -->
 </script>
 <script>
 <!-- @inline js/invoices.js -->
