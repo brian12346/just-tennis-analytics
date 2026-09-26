@@ -24,7 +24,14 @@
     guesses: new Map(),      // sku -> guess result (without denied variants)
     state: new Map(),        // sku -> {done:"approved"|"none", units, pick}
     conf: "all", scope: "selling", q: "", page: 0, cur: 0, busy: new Set(), search: null,
+    mode: "vendors",         // "vendors" (step 1) | "products" (step 2)
+    vend: new Map(),         // sku -> confirmed vendor ("-" = not sold in Shopify)
+    vguess: new Map(),       // sku -> guessed vendor ("" = unknown)
+    vendors: [],             // Shopify vendor names
+    vf: "all", vs: "guessed", sel: new Set(), vsaving: false,
   };
+  const NONE = "-";
+  const PER_V = 100;
   const note = (kind, html) => { const n = $("am-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
   const setStatus = (t) => { $("am-status").textContent = t; };
 
@@ -34,7 +41,7 @@
     A.loading = true; A.err = null; setStatus("Loading listings and the product catalog…"); render();
     try {
       A.db = await JT.docStore();
-      const [ls, mp, dn, cat] = await Promise.all([
+      const [ls, mp, dn, cat, av] = await Promise.all([
         JT.rowsSplit(["l.sku", "l.asin", "l.title", "l.status", "coalesce(s.units, 0)", "coalesce(s.sales, 0)"],
           `from (select distinct on (r->>0) r->>0 as sku, r->>1 as asin, r->>2 as title, r->>6 as status
                  from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'amzlistings' order by r->>0, d.id desc) l
@@ -45,7 +52,9 @@
         JT.rows(["data->>'sku'", "coalesce(data->'variants', '[]'::jsonb)", "coalesce((data->>'none')::boolean, false)"], "from jt.docs where collection = 'amzdeny'", refresh),
         JT.rowsSplit(["variant_id::text", "product_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "status", "product_type", "price", "unit_cost", "coalesce(barcode, '')", "product_title", "variant_title"],
           "from jt.variants where removed_at is null", "variant_id", 4, refresh),
+        JT.rows(["sku", "vendor"], "from jt.amazon_vendors", refresh),
       ]);
+      A.vend = new Map(av.map(([k, v]) => [k, v]));
       A.listings = ls.map(x => ({ sku: x[0], asin: x[1], title: x[2] || "", status: x[3] || "", units: +x[4] || 0, sales: +x[5] || 0 }));
       A.maps = new Map(mp.map(([k, d]) => [k, d]));
       A.deny = new Map(dn.map(([k, v, none]) => [k, { variants: new Set((v || []).map(String)), none: !!none }]));
@@ -53,6 +62,9 @@
         price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8], barcode: x[9] || "", product: x[10] || "", variant: x[11] || "" }));
       A.ix = MT.buildIndex(catalog); A.byVid = new Map(catalog.map(v => [v.vid, v]));
       A.guesses.clear();
+      A.vendors = [...new Set(catalog.map(v => v.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      A.vguess = new Map(A.listings.map(l => [l.sku, (MT.brandsOf(l.title, l.sku)[0]) || ""]));
+      fillVendorSelects();
       setStatus(`${A.listings.length.toLocaleString()} Amazon listings · ${catalog.length.toLocaleString()} Shopify variants`);
     } catch (e) { A.err = e; setStatus(""); note("bad", esc(JT.message(e))); }
     finally { A.loading = false; render(); }
@@ -62,7 +74,8 @@
     let g = A.guesses.get(l.sku);
     if (!g) {
       const d = A.deny.get(l.sku);
-      g = MT.guess(A.ix, l, { limit: 14 });
+      const cv = A.vend.get(l.sku);
+      g = MT.guess(A.ix, l, { limit: 14, vendor: cv && cv !== NONE ? cv : undefined });
       if (d && d.variants.size) {
         g.top = g.top.filter(c => !d.variants.has(c.v.vid));
         // confidence again without the denied ones
@@ -78,6 +91,7 @@
 
   function inScope(l) {
     const d = A.deny.get(l.sku);
+    if (A.vend.get(l.sku) === NONE && A.scope !== "denied") return false;
     if (A.scope === "denied") return !!(d && d.none);
     if (A.maps.has(l.sku) && !st(l.sku).done) return false;
     if (d && d.none && !st(l.sku).done) return false;
@@ -91,6 +105,68 @@
     let rows = A.listings.filter(l => inScope(l) && (!q || (l.title + " " + l.asin + " " + l.sku).toLowerCase().includes(q)));
     if (A.conf !== "all" && A.scope !== "denied") rows = rows.filter(l => st(l.sku).done || guessFor(l).conf === A.conf);
     return rows.sort((a, b) => b.sales - a.sales || a.sku.localeCompare(b.sku));
+  }
+
+  // ---------- step 1: vendors ----------
+  const vendorOf = (l) => A.vend.has(l.sku) ? A.vend.get(l.sku) : (A.vguess.get(l.sku) || "");
+  function fillVendorSelects() {
+    const counts = new Map(); let unk = 0;
+    for (const l of A.listings || []) { if (!scopeV(l)) continue; const v = vendorOf(l); if (!v) unk++; else counts.set(v, (counts.get(v) || 0) + 1); }
+    const opts = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    $("am-vf").innerHTML = `<option value="all">All vendors</option><option value="">Unknown (${unk})</option>` +
+      opts.map(([v, n]) => `<option value="${esc(v)}">${v === NONE ? "Not sold in Shopify" : esc(v)} (${n})</option>`).join("");
+    $("am-vf").value = A.vf === "all" || A.vf === "" || counts.has(A.vf) ? A.vf : "all";
+    $("am-setv").innerHTML = `<option value="">Vendor for ticked…</option>` + vendorOptions("");
+  }
+  function vendorOptions(cur) {
+    return A.vendors.map(v => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("") +
+      `<option value="${NONE}" ${cur === NONE ? "selected" : ""}>— not sold in Shopify —</option>`;
+  }
+  function scopeV(l) {
+    if (A.scope === "selling") return l.sales > 0;
+    if (A.scope === "active") return /active/i.test(l.status) || l.sales > 0;
+    if (A.scope === "denied") return A.vend.get(l.sku) === NONE;
+    return true;
+  }
+  function visibleV() {
+    if (!A.listings) return [];
+    const q = A.q.trim().toLowerCase();
+    return A.listings.filter(l => scopeV(l) && (!q || (l.title + " " + l.asin + " " + l.sku).toLowerCase().includes(q))
+      && (A.vf === "all" || vendorOf(l) === A.vf)
+      && (A.vs === "all" || (A.vs === "confirmed" ? A.vend.has(l.sku) : !A.vend.has(l.sku))))
+      .sort((a, b) => b.sales - a.sales || a.sku.localeCompare(b.sku));
+  }
+  async function saveVendors(list, msg) {
+    if (!list.length) return;
+    A.vsaving = true; render();
+    try {
+      for (let i = 0; i < list.length; i += 500) await JT.setAmazonVendors(list.slice(i, i + 500));
+      for (const { sku, vendor } of list) { if (vendor) A.vend.set(sku, vendor); else A.vend.delete(sku); A.guesses.delete(sku); }
+      if (msg) note("info", msg); else note(null);
+    } catch (e) { note("bad", "Couldn't save: " + esc(JT.message(e))); }
+    finally { A.vsaving = false; fillVendorSelects(); render(); }
+  }
+  let vRows = [];
+  function renderVendors() {
+    const list = $("am-list");
+    const rows = visibleV();
+    const pages = Math.max(1, Math.ceil(rows.length / PER_V)); if (A.page >= pages) A.page = pages - 1;
+    vRows = rows.slice(A.page * PER_V, A.page * PER_V + PER_V);
+    list.innerHTML = vRows.length ? `<div class="tbl-wrap"><table class="amv"><thead><tr><th><input type="checkbox" id="am-selall" aria-label="Tick all on this page"></th><th class="l">Amazon listing</th><th>Sales</th><th class="l">Shopify vendor</th><th class="l"></th></tr></thead><tbody>${
+      vRows.map((l, i) => { const conf = A.vend.has(l.sku), v = vendorOf(l);
+        return `<tr class="${conf ? "conf" : "guess"}"><td><input type="checkbox" data-sel="${i}" ${A.sel.has(l.sku) ? "checked" : ""}></td>
+          <td class="l"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.title || l.sku)}</a><div class="meta">${esc(l.asin)} · <span class="mono">${esc(l.sku)}</span>${/active/i.test(l.status) ? "" : " · " + esc((l.status || "inactive").toLowerCase())}</div></td>
+          <td>${l.sales ? m0(l.sales) : '<span class="dim">—</span>'}</td>
+          <td class="l"><select class="inp sm" data-v="${i}" ${A.vsaving ? "disabled" : ""}><option value="" ${v ? "" : "selected"}>— unknown —</option>${vendorOptions(v)}</select></td>
+          <td class="l">${conf ? '<span class="pill ok">Confirmed</span>' : v ? '<span class="pill warn">Guess</span>' : '<span class="pill miss">Unknown</span>'}</td></tr>`; }).join("")}</tbody></table></div>`
+      : `<div class="muted" style="padding:12px">${A.vs === "guessed" ? "Nothing left to confirm here." : "No listings here."}</div>`;
+    $("am-prev").hidden = A.page === 0; $("am-next").hidden = A.page >= pages - 1;
+    $("am-count").textContent = rows.length ? `${A.page * PER_V + 1}–${A.page * PER_V + vRows.length} of ${rows.length.toLocaleString()}` : "";
+    const guessesShown = rows.filter(l => !A.vend.has(l.sku) && vendorOf(l));
+    const b = $("am-confirm"); b.disabled = !guessesShown.length || A.vsaving;
+    b.textContent = guessesShown.length ? `Confirm ${guessesShown.length.toLocaleString()} guess${guessesShown.length === 1 ? "" : "es"} shown` : "Confirm guesses shown";
+    $("am-setsel").disabled = !A.sel.size || !$("am-setv").value || A.vsaving;
+    $("am-setsel").textContent = A.sel.size ? `Set ${A.sel.size} ticked` : "Set ticked";
   }
 
   // ---------- saving ----------
@@ -132,6 +208,17 @@
   // ---------- rendering ----------
   function renderKpis() {
     const el = $("am-kpis"); if (!el || !A.listings) { if (el) el.innerHTML = ""; return; }
+    if (A.mode === "vendors") {
+      const sc = A.listings.filter(scopeV), tot = sc.reduce((a, l) => a + l.sales, 0);
+      const conf = sc.filter(l => A.vend.has(l.sku)), guess = sc.filter(l => !A.vend.has(l.sku) && A.vguess.get(l.sku)), unk = sc.length - conf.length - guess.length;
+      const cs = conf.reduce((a, l) => a + l.sales, 0);
+      el.innerHTML = [
+        { l: "Vendor confirmed", v: conf.length.toLocaleString() + " of " + sc.length.toLocaleString(), s: tot ? `${(cs / tot * 100).toFixed(1)}% of these listings' Amazon sales` : "listings" },
+        { l: "Guessed, to confirm", v: guess.length.toLocaleString(), s: "from the brand in the title or seller SKU" },
+        { l: "Unknown vendor", v: unk.toLocaleString(), s: "pick one, or “not sold in Shopify”" },
+      ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
+      return;
+    }
     const selling = A.listings.filter(l => l.sales > 0);
     const total = selling.reduce((a, l) => a + l.sales, 0);
     const mapped = selling.filter(l => A.maps.has(l.sku));
@@ -189,8 +276,12 @@
   function render() {
     if ($("tab-amzmatch").hidden) return;
     renderKpis();
+    const vm = A.mode === "vendors";
+    $("am-vfilters").hidden = !vm; $("am-vbar").hidden = !vm; $("am-conf").hidden = vm; $("am-pbar").hidden = vm;
+    $("am-h2").textContent = vm ? "Vendor for each Amazon listing" : "Suggested product matches";
     const list = $("am-list");
     if (!A.listings) { list.innerHTML = `<div class="muted">${A.loading ? "Loading…" : ""}</div>`; return; }
+    if (vm) { renderVendors(); return; }
     const rows = visible();
     const pages = Math.max(1, Math.ceil(rows.length / PER)); if (A.page >= pages) A.page = pages - 1;
     pageRows = rows.slice(A.page * PER, A.page * PER + PER);
@@ -219,7 +310,21 @@
   }
   function bind() {
     const list = $("am-list");
+    $("am-mode").addEventListener("click", (e) => { const b = e.target.closest("button[data-m]"); if (!b) return; A.mode = b.dataset.m; A.page = 0; A.cur = 0; A.sel.clear(); document.querySelectorAll("#am-mode button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); note(null); render(); });
+    $("am-vf").addEventListener("change", (e) => { A.vf = e.target.value; A.page = 0; A.sel.clear(); render(); });
+    $("am-vs").addEventListener("change", (e) => { A.vs = e.target.value; A.page = 0; A.sel.clear(); render(); });
+    $("am-setv").addEventListener("change", () => render());
+    $("am-setsel").addEventListener("click", () => { const v = $("am-setv").value; if (!v) return; const l = [...A.sel].map(sku => ({ sku, vendor: v })); A.sel.clear(); saveVendors(l, `Set ${l.length} listing${l.length === 1 ? "" : "s"} to ${v === NONE ? "not sold in Shopify" : v}.`); });
+    $("am-confirm").addEventListener("click", () => { const l = visibleV().filter(x => !A.vend.has(x.sku) && vendorOf(x)).map(x => ({ sku: x.sku, vendor: vendorOf(x) })); saveVendors(l, `Confirmed ${l.length.toLocaleString()} vendor${l.length === 1 ? "" : "s"}.`); });
+    list.addEventListener("change", (e) => {
+      if (A.mode !== "vendors") return;
+      const t = e.target;
+      if (t.dataset.v != null) { const l = vRows[+t.dataset.v]; saveVendors([{ sku: l.sku, vendor: t.value }]); }
+      if (t.dataset.sel != null) { const l = vRows[+t.dataset.sel]; if (t.checked) A.sel.add(l.sku); else A.sel.delete(l.sku); render(); }
+      if (t.id === "am-selall") { for (const l of vRows) { if (t.checked) A.sel.add(l.sku); else A.sel.delete(l.sku); } render(); }
+    });
     list.addEventListener("click", (e) => {
+      if (A.mode !== "products") return;
       const b = e.target.closest("button"); const r = rowOf(e.target); if (!r) return;
       A.cur = r.i;
       if (!b) { render(); return; }
@@ -228,12 +333,12 @@
     });
     list.addEventListener("input", (e) => {
       if (e.target.id === "am-sq") { A.search.q = e.target.value; clearTimeout(list._t); list._t = setTimeout(render, 200); }
-      if (e.target.dataset.units != null) { const l = pageRows[+e.target.dataset.units]; st(l.sku).units = e.target.value; }
+      if (A.mode === "products" && e.target.dataset.units != null) { const l = pageRows[+e.target.dataset.units]; st(l.sku).units = e.target.value; }
     });
-    list.addEventListener("change", (e) => { if (e.target.dataset.units != null) render(); });
+    list.addEventListener("change", (e) => { if (A.mode === "products" && e.target.dataset.units != null) render(); });
     list.addEventListener("keydown", (e) => { if (e.target.id === "am-sq" && e.key === "Escape") { A.search = null; render(); } });
     $("am-q").addEventListener("input", (e) => { A.q = e.target.value; A.page = 0; A.cur = 0; clearTimeout($("am-q")._t); $("am-q")._t = setTimeout(render, 200); });
-    $("am-scope").addEventListener("change", (e) => { A.scope = e.target.value; A.page = 0; A.cur = 0; render(); });
+    $("am-scope").addEventListener("change", (e) => { A.scope = e.target.value; A.page = 0; A.cur = 0; A.sel.clear(); fillVendorSelects(); render(); });
     $("am-conf").addEventListener("click", (e) => { const b = e.target.closest("button[data-c]"); if (!b) return; A.conf = b.dataset.c; A.page = 0; A.cur = 0; document.querySelectorAll("#am-conf button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); render(); });
     $("am-refresh").addEventListener("click", () => { A.state.clear(); load(true); });
     $("am-prev").addEventListener("click", () => { A.page--; A.cur = 0; render(); window.scrollTo({ top: $("am-list").offsetTop - 120 }); });
@@ -244,7 +349,7 @@
       note("info", `Approved ${todo.length} likely match${todo.length === 1 ? "" : "es"}. Each one has an Undo button.`);
     });
     document.addEventListener("keydown", (e) => {
-      if ($("tab-amzmatch").hidden || !pageRows.length) return;
+      if ($("tab-amzmatch").hidden || A.mode !== "products" || !pageRows.length) return;
       if (/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "") || e.metaKey || e.ctrlKey || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k === "a") { e.preventDefault(); act("approve", A.cur); }

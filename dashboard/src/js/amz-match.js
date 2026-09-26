@@ -18,7 +18,7 @@
     ["Lacoste", ["lacoste"]], ["K Swiss", ["kswiss", "k-swiss"]], ["New Balance", ["newbalance"]], ["Gamma", ["gamma"]],
     ["Penn", ["penn"]], ["ProPenn", ["propenn"]], ["Kirschbaum", ["kirschbaum"]], ["Gosen", ["gosen"]], ["Match Tuff", ["matchtuff", "ezscore"]],
     ["Paddletek", ["paddletek"]], ["Engage Pickleball", ["engage"]], ["CRBN", ["crbn"]], ["Gearbox", ["gearbox"]], ["Six Zero", ["sixzero"]],
-    ["Franklin", ["franklin"]], ["Onix", ["onix"]], ["Pro Kennex", ["prokennex"]], ["Slazenger", ["slazenger"]], ["Gexco", ["gexco"]],
+    ["Franklin", ["franklin"]], ["Just Tennis", ["vibraworm", "jtvw", "jtworms"]], ["Road To Pro", ["rtp"]], ["Onix", ["onix"]], ["Pro Kennex", ["prokennex"]], ["Slazenger", ["slazenger"]], ["Gexco", ["gexco"]],
   ];
   const COLORS = [
     ["white", ["white", "wht", "wh", "w"]], ["black", ["black", "blk", "bk", "bl"]], ["green", ["green", "grn", "gr"]],
@@ -121,7 +121,9 @@
     const w = words(title); const n = norm(sku).toLowerCase(); const t = lower(title).replace(/[^a-z]/g, "");
     const out = BRANDS.filter(([b, al]) => al.some(a => a.length >= 4 && (w.includes(a) || (a.length >= 6 && t.includes(a))))).map(x => x[0]);
     if (out.length) return out;
-    return BRANDS.filter(([b, al]) => al.some(a => a.length === 3 && (n.startsWith(a) || n.slice(2).startsWith(a) || n.slice(3).startsWith(a)))).map(x => x[0]).slice(0, 1);
+    // seller SKU prefix: "HEAD-...", "WIL-...", "001HED...", "06YNX...", "JT-WORMS..."
+    const pre = n.replace(/^\d+/, "");
+    return BRANDS.filter(([b, al]) => al.some(a => a.length >= 3 && pre.startsWith(a))).map(x => x[0]).slice(0, 1);
   }
   const brandOf = (title, sku) => brandsOf(title, sku)[0] || null;
 
@@ -200,7 +202,7 @@
     const title = listing.title || "", sku = listing.sku || "";
     const text = title + " " + sku.replace(/[()\-_]/g, " ");
     const L = {
-      brand: brandOf(title, sku), brands: new Set(brandsOf(title, sku)), tok: tokens(title), pack: packOf(title) || packOf(sku.replace(/(\d)PK/i, "$1 pk")), gauge: gaugeOfListing(title, sku),
+      brand: opts.vendor || brandOf(title, sku), brands: new Set(opts.vendor ? [opts.vendor] : brandsOf(title, sku)), tok: tokens(title), pack: packOf(title) || packOf(sku.replace(/(\d)PK/i, "$1 pk")), gauge: gaugeOfListing(title, sku),
       cat: catOfListing(title), models: modelsOf(title), nums: modelNums(title), years: new Set((title.match(/\b20[12]\d\b/g) || [])), jr: jrLenOf(title, sku), sport: new Set((lower(title).match(new RegExp(SPORT.source, "g")) || []).map(x => x === "junior" ? "jr" : x)),
       grip: gripOf(title, sku), colors: colorsOf(title, sku), mult: multOf(title, sku), code: norm(title + " " + sku),
     };
@@ -272,5 +274,5 @@
     return { listing: L, units, conf, top };
   }
 
-  window.JTMatch = { buildIndex, guess, _t: { packOf, gaugeOf, gripOf, gripOfVariant, colorsOf, brandOf, multOf, tokens } };
+  window.JTMatch = { buildIndex, guess, brandsOf, _t: { brandsOf, packOf, gaugeOf, gripOf, gripOfVariant, colorsOf, brandOf, multOf, tokens } };
 })();

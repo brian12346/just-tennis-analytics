@@ -213,6 +213,12 @@
         return run(`select jt.save_price_rule(${q(JSON.stringify(body))}::jsonb) as ok`, true);
       },
     },
+    // Amazon listing vendors (Amazon matching tab): [{sku, vendor}], vendor "" clears
+    async setAmazonVendors(list) {
+      if (WEB) return WEB.write("jt_set_amazon_vendors", { p: list });
+      const out = await run(`select jt.set_amazon_vendors(${q(JSON.stringify(list))}::jsonb) as n`, true);
+      return (out[0] && out[0].n) || 0;
+    },
     // Ask for a catalog sync from Shopify now (the sync job runs in about 30 seconds). false = one was just started.
     async requestCatalogSync() {
       if (WEB) return WEB.write("jt_request_catalog_sync", {});

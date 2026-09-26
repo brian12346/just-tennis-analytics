@@ -312,14 +312,14 @@
   <div id="tab-amzmatch" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Amazon listings → Shopify products · suggested matches to approve</span>
+        <span class="eyebrow">Amazon listings → Shopify · step 1 vendor, step 2 product</span>
         <h1>Amazon matching</h1>
       </div>
       <div class="controls">
-        <input id="am-q" class="inp" type="search" placeholder="Search listing, ASIN, SKU" aria-label="Search listings">
-        <div class="seg" id="am-conf" role="group" aria-label="Confidence">
-          <button data-c="all" aria-pressed="true">All</button><button data-c="high" aria-pressed="false">Likely</button><button data-c="medium" aria-pressed="false">Maybe</button><button data-c="low" aria-pressed="false">Unsure</button>
+        <div class="seg" id="am-mode" role="group" aria-label="Step">
+          <button data-m="vendors" aria-pressed="true">1 · Vendors</button><button data-m="products" aria-pressed="false">2 · Products</button>
         </div>
+        <input id="am-q" class="inp" type="search" placeholder="Search listing, ASIN, SKU" aria-label="Search listings">
         <label class="small muted">Show <select id="am-scope" class="inp sm"><option value="selling">Listings with sales</option><option value="active">All active listings</option><option value="all">All listings</option><option value="denied">No match in Shopify</option></select></label>
         <button class="btn" id="am-refresh">Refresh</button>
       </div>
@@ -329,10 +329,27 @@
     <section class="kpis" id="am-kpis" aria-label="Matching progress"></section>
     <section class="panel">
       <div class="panel-head">
-        <h2>Suggested matches</h2>
-        <span class="right dbtns"><button class="btn" id="am-bulk" disabled>Approve all "Likely" on this page</button></span>
+        <h2 id="am-h2">Suggested matches</h2>
+        <div class="filters" id="am-vfilters">
+          <label for="am-vf">Vendor <select id="am-vf" class="inp sm"></select></label>
+          <label for="am-vs">Status <select id="am-vs" class="inp sm"><option value="guessed">Needs confirming</option><option value="confirmed">Confirmed</option><option value="all">All</option></select></label>
+        </div>
+        <div class="seg" id="am-conf" role="group" aria-label="Confidence" hidden>
+          <button data-c="all" aria-pressed="true">All</button><button data-c="high" aria-pressed="false">Likely</button><button data-c="medium" aria-pressed="false">Maybe</button><button data-c="low" aria-pressed="false">Unsure</button>
+        </div>
       </div>
-      <p class="small muted" style="margin:0 0 8px">Approve a guess to save it as the listing's cost source (same as the Amazon mapping tab). Deny shows the next guess. Keys: <b>A</b> approve · <b>D</b> deny · <b>N</b> no match · <b>↓/↑</b> move.</p>
+      <div class="cmbar" id="am-vbar">
+        <span class="muted small" id="am-vhint">Pick the Shopify vendor for each Amazon listing. Changing a vendor saves it. Confirm the guesses in bulk once a page looks right.</span>
+        <span class="dbtns right">
+          <select id="am-setv" class="inp sm" aria-label="Vendor for ticked listings"></select>
+          <button class="btn" id="am-setsel" disabled>Set ticked</button>
+          <button class="btn primary" id="am-confirm" disabled>Confirm guesses shown</button>
+        </span>
+      </div>
+      <div class="cmbar" id="am-pbar" hidden>
+        <span class="muted small">Approve a guess to save it as the listing's cost source (same as the Amazon mapping tab). Deny shows the next guess. Keys: <b>A</b> approve · <b>D</b> deny · <b>N</b> no match · <b>↓/↑</b> move. Guesses only use the listing's vendor from step 1.</span>
+        <span class="dbtns right"><button class="btn" id="am-bulk" disabled>Approve all "Likely" on this page</button></span>
+      </div>
       <div id="am-list"></div>
       <div class="row"><button class="btn" id="am-prev" hidden>Previous</button><button class="btn" id="am-next" hidden>Next page</button><span class="muted small" id="am-count"></span></div>
     </section>

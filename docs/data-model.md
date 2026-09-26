@@ -57,6 +57,11 @@ corrections while costs were being cleaned up). Changes take effect the day afte
 
 ## Amazon matching tab
 
+- Step 1 · Vendors: each Amazon listing gets a Shopify vendor (`jt.amazon_vendors`, written with
+  `jt.set_amazon_vendors`; `-` = not sold in Shopify). Guessed from the brand in the title or the seller-SKU prefix,
+  confirmed one by one or in bulk per vendor filter.
+- Step 2 · Products: guesses only consider the confirmed vendor's Shopify products.
+
 - Suggests a Shopify variant for each unmapped Amazon listing (`dashboard/src/js/amz-match.js`): Shopify SKU written in
   the listing, brand, product words weighted by rarity, and attributes that must agree (pack size, string gauge / mm,
   grip size, colour, junior length, racquet model number / year, product kind). "2 Packs of <string>" = 2 units.
