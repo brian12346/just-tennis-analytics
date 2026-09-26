@@ -40,6 +40,10 @@ corrections while costs were being cleaned up). Changes take effect the day afte
 
 ## Vendor invoices (Invoices tab)
 
+- The tab is a board: one swimlane per stage (`jt.invoices.stage`; lane keys and names in `dashboard/src/js/invoices.js`,
+  STAGES). Cards move by drag and drop or the Stage menu in the invoice popup (`jt.update_invoice_card`, allowed even
+  after costs were applied). `stage_at` = when it entered its current stage; `po_no` = PO / booking reference.
+
 - `jt.invoices`, `jt.invoice_lines` — invoices uploaded as PDFs (read in the browser with pdf.js), with each line's
   matched Shopify variant. Drafts can be edited; `jt.apply_invoice(id)` locks one and queues its updates.
 - `jt.vendor_items` — remembered matches (vendor + normalized item code → variant), filled when an invoice is applied

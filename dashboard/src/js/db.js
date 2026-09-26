@@ -204,6 +204,10 @@
         const out = await run(`select jt.delete_invoice(${int(id)}) as ok`, true);
         return !!(out[0] && out[0].ok);
       },
+      async updateCard(body) {
+        if (WEB) return WEB.write("jt_update_invoice_card", { p: body });
+        return run(`select jt.update_invoice_card(${q(JSON.stringify(body))}::jsonb) as ok`, true);
+      },
       async saveRule(body) {
         if (WEB) return WEB.write("jt_save_price_rule", { p: body });
         return run(`select jt.save_price_rule(${q(JSON.stringify(body))}::jsonb) as ok`, true);

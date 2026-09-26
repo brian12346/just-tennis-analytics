@@ -14,6 +14,22 @@
   const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/";
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
 
+  // Board lanes, in workflow order. Keys are stored in jt.invoices.stage; names can change freely.
+  const STAGES = [
+    ["booked", "Booking Orders Placed"],
+    ["new", "New Invoices"],
+    ["errors", "Invoices with Errors"],
+    ["needs_products", "Invoiced - Needs Shopify Products"],
+    ["needs_po", "Shipped - Items Received - Needs Shopify PO"],
+    ["shopify", "Shipped - Shopify"],
+    ["sellerboard", "Invoiced - Seller Board"],
+    ["ready_qb", "Ready for QB"],
+    ["processed", "Processed"],
+  ];
+  const STAGE_NAME = new Map(STAGES);
+  const stageOf = (k) => STAGE_NAME.has(k) ? k : "new";
+  const DONE_SHOWN = 12;   // newest cards shown in Processed until "show all"
+
   const I = {
     ready: false, loading: false, err: null, shown: false,
     list: null,                 // [{id, vendor, invoice_no, date, file, subtotal, status, created, applied, lines, matched, total}]
@@ -24,11 +40,16 @@
     remembered: new Map(),      // vendor|CODE -> variant id
     ed: null,                   // invoice being edited: {id, vendor, invoice_no, invoice_date, file_name, subtotal, status, lines:[...], raw}
     searchLine: null, searchQ: "",
-    busy: "", show: "all", q: "",
+    busy: "", q: "", showAllDone: false, drag: null,
     updates: new Map(),         // for an applied invoice: variant id -> {status, error, new_cost, new_price}
   };
 
-  function note(kind, html) { const n = $("inv-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; }
+  function note(kind, html) {
+    const n = $(I.ed ? "inv-mnote" : "inv-note");
+    for (const id of ["inv-note", "inv-mnote"]) if ($(id) !== n || !html) { $(id).hidden = true; $(id).innerHTML = ""; }
+    if (!html) return;
+    n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`;
+  }
   const setStatus = (t) => { $("inv-status").textContent = t; };
 
   // ---------- loading ----------
@@ -36,11 +57,12 @@
     const r = await JT.rows(["i.id::text", "i.vendor", "i.invoice_no", "i.invoice_date::text", "i.file_name", "i.subtotal", "i.status",
       "i.created_at", "i.applied_at", "(select count(*) from jt.invoice_lines l where l.invoice_id = i.id)",
       "(select count(*) from jt.invoice_lines l where l.invoice_id = i.id and l.variant_id is not null)",
-      "(select sum(coalesce(l.amount, l.qty * l.unit_cost)) from jt.invoice_lines l where l.invoice_id = i.id)"],
-      "from jt.invoices i order by coalesce(i.invoice_date, i.created_at::date) desc, i.id desc limit 500", refresh);
+      "(select sum(coalesce(l.amount, l.qty * l.unit_cost)) from jt.invoice_lines l where l.invoice_id = i.id)",
+      "i.stage", "i.stage_at", "i.po_no", "left(i.notes, 140)"],
+      "from jt.invoices i order by i.stage_at desc, i.id desc limit 2000", refresh);
     const done = () => setStatus(`${I.list.length} invoice${I.list.length === 1 ? "" : "s"}${I.cat ? ` · ${I.cat.length.toLocaleString()} Shopify variants loaded for matching` : ""}`);
     setTimeout(done, 0);
-    I.list = r.map(x => ({ id: x[0], vendor: x[1], invoice_no: x[2], date: x[3], file: x[4], subtotal: x[5], status: x[6], created: x[7], applied: x[8], lines: +x[9], matched: +x[10], total: x[11] }));
+    I.list = r.map(x => ({ id: x[0], vendor: x[1], invoice_no: x[2], date: x[3], file: x[4], subtotal: x[5], status: x[6], created: x[7], applied: x[8], lines: +x[9], matched: +x[10], total: x[11], stage: stageOf(x[12]), stage_at: x[13], po_no: x[14] || "", notes: x[15] || "" }));
   }
   async function loadCatalog(refresh) {
     if (!refresh && I.cat && Date.now() - I.catAt < 1800000) return;
@@ -70,13 +92,13 @@
   }
   async function refresh(force) {
     if (I.loading) return;
-    I.loading = true; I.err = null; setStatus("Loading invoices and the product catalog…"); renderList();
+    I.loading = true; I.err = null; setStatus("Loading invoices and the product catalog…"); renderBoard();
     try {
       await Promise.all([loadList(force), loadCatalog(force)]);
       I.ready = true;
       setStatus(`${I.list.length} invoice${I.list.length === 1 ? "" : "s"} · ${I.cat.length.toLocaleString()} Shopify variants loaded for matching`);
     } catch (e) { I.err = e; setStatus(""); note("bad", esc(JT.message(e))); }
-    finally { I.loading = false; renderList(); renderEditor(); }
+    finally { I.loading = false; renderBoard(); renderEditor(); }
   }
 
   // ---------- reading the PDF ----------
@@ -326,12 +348,12 @@
     if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { note("warn", "That isn't a PDF. Choose the invoice's PDF file."); return; }
     if (!I.ready) await refresh(false);
     if (!I.cat) return;
-    note(null); I.busy = "Reading " + file.name + "…"; renderEditor();
+    note(null); I.ed = null; I.busy = "Reading " + file.name + "…"; renderEditor();
     try {
       const rows = await pdfRows(await file.arrayBuffer());
       const inv = parseInvoice(rows);
       I.ed = { id: null, status: "draft", vendor: inv.vendor, invoice_no: inv.invoice_no, invoice_date: inv.invoice_date, file_name: file.name,
-               subtotal: inv.subtotal, notes: "", lines: inv.lines.map(l => Object.assign(blankLine(), l)), raw: rows, filter: "all" };
+               subtotal: inv.subtotal, notes: "", po_no: "", stage: "new", dirty: true, lines: inv.lines.map(l => Object.assign(blankLine(), l)), raw: rows, filter: "all" };
       prepareLines(I.ed);
       if (!rows.length) note("warn", "This PDF has no text in it (it's probably a scan or photo), so no lines could be read. Add the lines by hand with <b>Add line</b>, or ask the vendor for a digital invoice.");
       else if (!inv.lines.length) note("warn", "No item lines were recognised in this PDF. Add them with <b>Add line</b>, and use <b>Show PDF text</b> to see what was read. Send Claude a sample of this vendor's invoice to teach the reader its layout.");
@@ -340,30 +362,30 @@
     } catch (e) {
       console.error("[JT] invoice read failed", e);
       note("bad", "Couldn't read that PDF" + (e && e.message ? ": " + esc(e.message) : "") + ".");
-    } finally { I.busy = ""; renderEditor(); if (I.ed) $("inv-edit").scrollIntoView({ behavior: "smooth", block: "start" }); }
+    } finally { I.busy = ""; renderEditor(); }
   }
   async function openInvoice(id) {
-    note(null); I.busy = "Opening invoice…"; renderEditor();
+    note(null); I.ed = null; I.busy = "Opening invoice…"; renderEditor();
     try {
       if (!I.cat) await loadCatalog(false);
       const [h, ls] = await Promise.all([
-        JT.rows(["id::text", "vendor", "invoice_no", "invoice_date::text", "file_name", "subtotal", "status", "notes"], `from jt.invoices where id = ${JT.int(id)}`, true),
+        JT.rows(["id::text", "vendor", "invoice_no", "invoice_date::text", "file_name", "subtotal", "status", "notes", "stage", "po_no"], `from jt.invoices where id = ${JT.int(id)}`, true),
         JT.rows(["line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "update_cost", "new_price"], `from jt.invoice_lines where invoice_id = ${JT.int(id)} order by line_no`, true),
       ]);
       if (!h[0]) throw { code: "tool_error", message: "That invoice no longer exists." };
-      const [iid, vendor, no, date, file, sub, status, notes] = h[0];
-      I.ed = { id: iid, vendor, invoice_no: no, invoice_date: date || "", file_name: file, subtotal: sub == null ? null : +sub, status, notes, raw: null, filter: "all",
+      const [iid, vendor, no, date, file, sub, status, notes, stage, po] = h[0];
+      I.ed = { id: iid, vendor, invoice_no: no, invoice_date: date || "", file_name: file, subtotal: sub == null ? null : +sub, status, notes, stage: stageOf(stage), po_no: po || "", raw: null, filter: "all",
                lines: ls.map(x => ({ item_code: x[1], upc: x[2], description: x[3], qty: x[4] == null ? null : +x[4], unit_cost: x[5] == null ? null : +x[5], amount: x[6] == null ? null : +x[6],
                                      variant_id: x[7], match_how: x[8], update_cost: !!x[9], new_price: x[10] == null ? null : +x[10], update_price: x[10] != null, _reviewed: true })) };
       I.updates = new Map();
       if (status === "applied") await loadUpdates(iid);
       else prepareLines(I.ed);
     } catch (e) { note("bad", esc(JT.message(e))); }
-    finally { I.busy = ""; renderEditor(); if (I.ed) $("inv-edit").scrollIntoView({ behavior: "smooth", block: "start" }); }
+    finally { I.busy = ""; renderEditor(); }
   }
   function bodyOf(ed) {
     return { id: ed.id, vendor: ed.vendor || "", invoice_no: ed.invoice_no || "", invoice_date: ed.invoice_date || "", file_name: ed.file_name || "",
-             subtotal: ed.subtotal, notes: ed.notes || "",
+             subtotal: ed.subtotal, notes: ed.notes || "", po_no: ed.po_no || "", stage: ed.stage || "new",
              lines: ed.lines.map(l => ({ item_code: l.item_code || "", upc: l.upc || "", description: l.description || "", qty: l.qty, unit_cost: l.unit_cost, amount: l.amount,
                                          variant_id: l.variant_id || null, match_how: l.match_how || "", update_cost: !!l.update_cost,
                                          new_price: null })) };   // prices aren't changed from invoices (for now)
@@ -373,34 +395,75 @@
     if (!ed.vendor) { note("warn", "Pick the vendor first — matches are remembered per vendor."); return; }
     I.busy = andApply ? "Applying…" : "Saving…"; renderEditor();
     try {
-      ed.id = String(await JT.invoices.save(bodyOf(ed)));
+      ed.id = String(await JT.invoices.save(bodyOf(ed))); ed.dirty = false;
       if (andApply) {
         const n = await JT.invoices.apply(ed.id);
         note("info", `Applied. ${n} product cost${n === 1 ? "" : "s"} queued for Shopify. The sync writes them within about a minute; this invoice shows each one's result.`);
         ed.status = "applied";
         await Promise.all([loadList(true), loadUpdates(ed.id), loadCatalog(true)]);
       } else {
-        note("info", "Draft saved.");
+        note("info", "Saved.");
         await loadList(true);
       }
     } catch (e) {
       const msg = (e && e.message) || "";
-      if (/invoices_vendor_no_idx|duplicate key/i.test(msg)) note("bad", `Invoice ${esc(ed.invoice_no)} from ${esc(ed.vendor)} is already saved. Open it from the list below instead.`);
+      if (/invoices_vendor_no_idx|duplicate key/i.test(msg)) note("bad", `Invoice ${esc(ed.invoice_no)} from ${esc(ed.vendor)} is already saved. Open its card on the board instead.`);
       else note("bad", esc(JT.message(e)));
-    } finally { I.busy = ""; renderEditor(); renderList(); }
+    } finally { I.busy = ""; renderEditor(); renderBoard(); }
+  }
+
+  function newCard(stage) {
+    note(null);
+    I.ed = { id: null, status: "draft", vendor: "", invoice_no: "", invoice_date: window.JTDate.today(), file_name: "", subtotal: null, notes: "", po_no: "",
+             stage: stageOf(stage), dirty: false, lines: [], raw: null, filter: "all" };
+    renderEditor();
+    const v = $("inv-vendor"); if (v) v.focus();
+  }
+  // Stage / PO / notes of an applied invoice (its lines are locked).
+  async function saveCard() {
+    const ed = I.ed; if (!ed || !ed.id) return;
+    I.busy = "Saving…"; renderEditor();
+    try { await JT.invoices.updateCard({ id: Number(ed.id), stage: ed.stage, notes: ed.notes || "", po_no: ed.po_no || "" }); ed.dirty = false; note("info", "Saved."); await loadList(true); }
+    catch (e) { note("bad", esc(JT.message(e))); }
+    finally { I.busy = ""; renderEditor(); renderBoard(); }
   }
 
   // ---------- rendering ----------
-  function renderList() {
-    const t = $("inv-list"); if (!t) return;
-    if (!I.list) { t.innerHTML = `<tbody><tr><td class="l muted">${I.loading ? "Loading…" : "—"}</td></tr></tbody>`; return; }
-    const qs = I.q.toLowerCase();
-    const rows = I.list.filter(x => (I.show === "all" || x.status === I.show) && (!qs || (x.vendor + " " + x.invoice_no + " " + x.file).toLowerCase().includes(qs)));
-    if (!rows.length) { t.innerHTML = `<tbody><tr><td class="l muted">${I.list.length ? "No invoices match." : "No invoices yet. Drop a PDF above to add the first one."}</td></tr></tbody>`; return; }
-    t.innerHTML = `<thead><tr><th class="l">Date</th><th class="l">Vendor</th><th class="l">Invoice #</th><th>Lines</th><th>Matched</th><th>Total</th><th class="l">Status</th><th class="l">File</th><th></th></tr></thead><tbody>${
-      rows.map(x => `<tr><td class="l">${esc(x.date || "")}</td><td class="l">${esc(x.vendor)}</td><td class="l mono">${esc(x.invoice_no)}</td><td>${x.lines}</td><td>${x.matched}/${x.lines}</td><td>${m(x.total == null ? null : +x.total)}</td>
-        <td class="l">${x.status === "applied" ? '<span class="pill ok">Applied</span>' : '<span class="pill warn">Draft</span>'}</td><td class="l dim small">${esc(x.file)}</td>
-        <td><button class="mini" data-open="${esc(x.id)}">${x.status === "applied" ? "View" : "Open"}</button></td></tr>`).join("")}</tbody>`;
+  const daysSince = (t) => { const d = window.JTDate.parseTime(t); return isNaN(d) ? null : Math.floor((Date.now() - d) / 864e5); };
+  function cardHtml(x) {
+    const days = daysSince(x.stage_at);
+    const ref = [x.invoice_no ? "#" + x.invoice_no : "", x.po_no ? "PO " + x.po_no : ""].filter(Boolean).join(" · ") || (x.file || "no invoice # yet");
+    const unmatched = x.lines - x.matched;
+    return `<div class="icard" draggable="true" data-card="${esc(x.id)}" title="${esc(x.notes)}">
+      <div class="ic-top"><b>${esc(x.vendor || "No vendor")}</b><span>${x.total == null ? "" : m(+x.total)}</span></div>
+      <div class="mono dim">${esc(ref)}</div>
+      <div class="dim">${esc(x.date || "no date")} · ${x.lines} line${x.lines === 1 ? "" : "s"}${days != null ? ` · ${days === 0 ? "today" : days + "d here"}` : ""}</div>
+      <div class="pills">${x.status === "applied" ? '<span class="pill ok">Costs in Shopify</span>' : x.lines ? '<span class="pill warn">Costs not applied</span>' : ""}${unmatched > 0 ? `<span class="pill miss">${unmatched} not matched</span>` : ""}</div>
+    </div>`;
+  }
+  function renderBoard() {
+    const b = $("inv-board"); if (!b) return;
+    if (I.drag) { I.renderLater = true; return; }          // don't replace the cards while one is being dragged
+    if (!I.list) { b.innerHTML = `<div class="muted">${I.loading ? "Loading…" : ""}</div>`; return; }
+    const qs = I.q.trim().toLowerCase();
+    const hit = (x) => !qs || [x.vendor, x.invoice_no, x.po_no, x.file, x.notes].join(" ").toLowerCase().includes(qs);
+    b.innerHTML = STAGES.map(([k, name]) => {
+      let cards = I.list.filter(x => x.stage === k && hit(x));
+      const total = cards.length;
+      const cut = k === "processed" && !I.showAllDone && !qs && cards.length > DONE_SHOWN;
+      if (cut) cards = cards.slice(0, DONE_SHOWN);
+      return `<div class="lane" data-stage="${k}">
+        <div class="lane-h"><b>${esc(name)}</b><span class="meta"><span class="cnt">${total}</span><button class="mini" data-new="${k}" title="Add a card to this stage">+ Add</button></span></div>
+        <div class="lane-cards">${cards.map(cardHtml).join("") || '<span class="empty">Drop cards here</span>'}${cut ? `<button class="mini" id="inv-alldone">Show all ${total}</button>` : ""}</div>
+      </div>`;
+    }).join("");
+  }
+  async function moveCard(id, stage) {
+    const x = I.list && I.list.find(c => c.id === id); if (!x || x.stage === stage) return;
+    const was = [x.stage, x.stage_at];
+    x.stage = stage; x.stage_at = new Date().toISOString(); renderBoard();
+    try { await JT.invoices.updateCard({ id: Number(id), stage }); }
+    catch (e) { [x.stage, x.stage_at] = was; renderBoard(); note("bad", "Couldn't move the card: " + esc(JT.message(e))); }
   }
 
   function lineCells(l, i, ro) {
@@ -443,11 +506,19 @@
       ${ro ? "" : `<td><button class="linkbtn small" data-del="${i}" title="Remove this line">✕</button></td>`}`;
   }
 
+  function showModal(on) {
+    $("inv-modal").hidden = !on; document.body.classList.toggle("modal-open", on);
+  }
+  function closeModal(force) {
+    const ed = I.ed;
+    if (ed && ed.dirty && !force) { ed.confirmClose = true; renderEditor(); return; }
+    I.ed = null; I.searchLine = null; I.busy = ""; note(null); showModal(false); $("inv-edit").innerHTML = "";
+  }
   function renderEditor() {
     const box = $("inv-edit"); if (!box) return;
-    if (I.busy && !I.ed) { box.hidden = false; box.innerHTML = `<div class="muted">${esc(I.busy)}</div>`; return; }
-    const ed = I.ed; if (!ed) { box.hidden = true; box.innerHTML = ""; return; }
-    box.hidden = false;
+    if (I.busy && !I.ed) { showModal(true); box.innerHTML = `<div class="panel-head"><h2>Invoice</h2><button class="mini" id="inv-close">Close</button></div><div class="muted">${esc(I.busy)}</div>`; return; }
+    const ed = I.ed; if (!ed) { showModal(false); box.innerHTML = ""; return; }
+    showModal(true);
     const ro = ed.status === "applied";
     const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, f: document.activeElement.dataset.f, i: document.activeElement.dataset.i, s: document.activeElement.selectionStart } : null;
     const lines = ed.lines.map((l, i) => ({ l, i }));
@@ -458,8 +529,12 @@
     const r = ruleFor(ed.vendor), own = I.rules.has(ed.vendor);
     const vendorOpts = I.vendors.map(v => `<option value="${esc(v)}" ${v === ed.vendor ? "selected" : ""}>${esc(v)}</option>`).join("");
     box.innerHTML = `
-      <div class="panel-head"><h2>${ro ? "Invoice" : ed.id ? "Draft invoice" : "New invoice"} ${ed.invoice_no ? "· " + esc(ed.invoice_no) : ""}</h2>
-        <div class="right"><button class="mini" id="inv-close">Close</button></div></div>
+      <div class="panel-head"><h2>${esc(ed.vendor || (ed.id ? "Invoice" : "New invoice"))} ${ed.invoice_no ? "· " + esc(ed.invoice_no) : ""} ${ro ? '<span class="pill ok">Costs in Shopify</span>' : ""}</h2>
+        <div class="right" style="display:flex;gap:8px;align-items:center">
+          <label class="small muted">Stage <select id="inv-stage" class="inp sm">${STAGES.map(([k, n]) => `<option value="${k}" ${k === ed.stage ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
+          ${ro && ed.dirty ? '<button class="mini primary" id="inv-savecard">Save</button>' : ""}
+          <button class="mini" id="inv-close" title="Close (Esc)">Close</button></div></div>
+      ${ed.confirmClose ? `<div class="note warn">You have unsaved changes. <span class="dbtns"><button class="mini primary" id="inv-save-close">Save and close</button><button class="mini" id="inv-discard">Discard</button><button class="mini" id="inv-keep">Keep editing</button></span></div>` : ""}
       ${I.busy ? `<div class="note info">${esc(I.busy)}</div>` : ""}
       <div class="invhead">
         <label>Vendor ${ro ? `<b>${esc(ed.vendor)}</b>` : `<select id="inv-vendor" class="inp"><option value="">— pick the vendor —</option>${vendorOpts}${ed.vendor && !I.vendors.includes(ed.vendor) ? `<option selected>${esc(ed.vendor)}</option>` : ""}</select>`}</label>
@@ -467,6 +542,8 @@
         <label>Invoice date ${ro ? `<b>${esc(ed.invoice_date)}</b>` : `<input id="inv-date" class="inp" type="date" value="${esc(ed.invoice_date)}">`}</label>
         <label>Subtotal on invoice ${ro ? `<b>${m(ed.subtotal)}</b>` : `<input id="inv-sub" class="inp num" value="${ed.subtotal != null ? ed.subtotal.toFixed(2) : ""}">`}
           <span class="small ${ed.subtotal != null && Math.abs(ed.subtotal - sum) > 0.05 ? "up" : "dim"}">Lines add up to ${m(sum)}${ed.subtotal != null && Math.abs(ed.subtotal - sum) > 0.05 ? " — some lines may be missing" : ""}</span></label>
+        <label>PO # <input id="inv-po" class="inp mono" value="${esc(ed.po_no || "")}"></label>
+        <label style="grid-column:span 2">Notes <textarea id="inv-notes" class="inp" rows="1">${esc(ed.notes || "")}</textarea></label>
         <label>File <span class="dim">${esc(ed.file_name || "—")}</span></label>
       </div>
 
@@ -479,7 +556,7 @@
           ${ed.raw ? `<button class="btn" id="inv-raw">${ed.showRaw ? "Hide" : "Show"} PDF text</button>` : ""}
           ${ro ? `<button class="btn" id="inv-recheck">Refresh results</button>` : `
             ${ed.id ? `<button class="btn" id="inv-delete">Delete draft</button>` : ""}
-            <button class="btn" id="inv-save">Save draft</button>
+            <button class="btn" id="inv-save">Save</button>
             <button class="btn primary" id="inv-apply" ${nCost + nPrice ? "" : "disabled"}>Apply to Shopify: ${nCost} cost${nCost === 1 ? "" : "s"}${nPrice ? `, ${nPrice} price${nPrice === 1 ? "" : "s"}` : ""}</button>`}
         </span>
       </div>
@@ -498,22 +575,49 @@
 
   // ---------- events ----------
   function bindOnce() {
-    const drop = $("inv-drop"), file = $("inv-file");
+    const file = $("inv-file"), board = $("inv-board"), tab = $("tab-invoices");
     file.addEventListener("change", () => { onFile(file.files[0]); file.value = ""; });
-    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
-    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); onFile(e.dataTransfer.files[0]); });
     $("inv-refresh").addEventListener("click", () => refresh(true));
-    $("inv-show").addEventListener("change", (e) => { I.show = e.target.value; renderList(); });
-    $("inv-q").addEventListener("input", (e) => { I.q = e.target.value; renderList(); });
-    document.getElementById("tab-invoices").addEventListener("click", (e) => {
-      const o = e.target.closest("[data-open]"); if (o) { openInvoice(o.dataset.open); }
+    $("inv-q").addEventListener("input", (e) => { I.q = e.target.value; renderBoard(); });
+    $("inv-new").addEventListener("click", () => newCard("new"));
+    // a PDF dropped anywhere on the tab is uploaded
+    const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+    tab.addEventListener("dragover", (e) => { if (isFile(e) && !I.ed) { e.preventDefault(); board.classList.add("filedrop"); } });
+    tab.addEventListener("dragleave", (e) => { if (!tab.contains(e.relatedTarget)) board.classList.remove("filedrop"); });
+    tab.addEventListener("drop", (e) => { if (isFile(e)) { e.preventDefault(); board.classList.remove("filedrop"); if (!I.ed) onFile(e.dataTransfer.files[0]); } });
+    // cards: open on click, drag between lanes
+    tab.addEventListener("click", (e) => {
+      const o = e.target.closest("[data-open]"); if (o) { openInvoice(o.dataset.open); return; }
+      const c = e.target.closest(".icard"); if (c) { openInvoice(c.dataset.card); return; }
+      const n = e.target.closest("[data-new]"); if (n) { newCard(n.dataset.new); return; }
+      if (e.target.id === "inv-alldone") { I.showAllDone = true; renderBoard(); }
     });
-    $("inv-list").addEventListener("click", () => {});
+    board.addEventListener("dragstart", (e) => {
+      const c = e.target.closest && e.target.closest(".icard"); if (!c) return;
+      I.drag = c.dataset.card; c.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", "jt-card:" + c.dataset.card);
+    });
+    board.addEventListener("dragend", () => { I.drag = null; board.querySelectorAll(".dragging,.lane.over").forEach(x => x.classList.remove("dragging", "over")); if (I.renderLater) { I.renderLater = false; renderBoard(); } });
+    board.addEventListener("dragover", (e) => {
+      if (!I.drag) return; const lane = e.target.closest(".lane"); if (!lane) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      board.querySelectorAll(".lane.over").forEach(x => x !== lane && x.classList.remove("over")); lane.classList.add("over");
+    });
+    board.addEventListener("drop", (e) => {
+      if (!I.drag) return; const lane = e.target.closest(".lane"); if (!lane) return;
+      e.preventDefault(); e.stopPropagation(); const id = I.drag; I.drag = null; lane.classList.remove("over");
+      moveCard(id, lane.dataset.stage);
+    });
+    // popup: Esc or a click outside closes it
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && I.ed && !$("inv-modal").hidden && e.target.id !== "inv-sq") closeModal(false); });
+    $("inv-modal").addEventListener("mousedown", (e) => { if (e.target.id === "inv-modal") closeModal(false); });
     const box = $("inv-edit");
     box.addEventListener("input", (e) => {
       const t = e.target, ed = I.ed; if (!ed) return;
       if (t.id === "inv-sq") { I.searchQ = t.value; renderEditor(); return; }
+      if (!ed.dirty) { ed.dirty = true; if (ed.status === "applied") renderEditor(); }
+      if (t.id === "inv-po") { ed.po_no = t.value; return; }
+      if (t.id === "inv-notes") { ed.notes = t.value; return; }
       if (t.dataset.f) {
         const l = ed.lines[+t.dataset.i], f = t.dataset.f;
         if (["qty", "unit_cost", "new_price"].includes(f)) {
@@ -530,6 +634,8 @@
     });
     box.addEventListener("change", (e) => {
       const t = e.target, ed = I.ed; if (!ed) return;
+      if (t.id !== "inv-sq") ed.dirty = true;
+      if (t.id === "inv-stage") { ed.stage = t.value; renderEditor(); return; }
       if (t.id === "inv-vendor") {
         ed.vendor = t.value;
         for (const l of ed.lines) { if (l.match_how !== "manual" && l.match_how !== "remembered") { l.variant_id = null; l.match_how = ""; } l.new_price = null; l.update_price = false; }
@@ -550,8 +656,13 @@
     });
     box.addEventListener("click", async (e) => {
       const t = e.target.closest("button"); if (!t) return;
+      if (t.id === "inv-close" && !I.ed) { closeModal(true); return; }
       const ed = I.ed; if (!ed) return;
-      if (t.id === "inv-close") { I.ed = null; I.searchLine = null; note(null); renderEditor(); return; }
+      if (t.id === "inv-close") { closeModal(false); return; }
+      if (t.id === "inv-discard") { closeModal(true); return; }
+      if (t.id === "inv-keep") { ed.confirmClose = false; renderEditor(); return; }
+      if (t.id === "inv-save-close") { ed.confirmClose = false; if (ed.status === "applied") await saveCard(); else await save(false); if (I.ed && !I.ed.dirty) closeModal(true); return; }
+      if (t.id === "inv-savecard") { saveCard(); return; }
       if (t.dataset.filter) { ed.filter = t.dataset.filter; renderEditor(); return; }
       if (t.dataset.search != null) { I.searchLine = +t.dataset.search; const l = ed.lines[I.searchLine]; I.searchQ = l.item_code || l.description.split(/\s+/).slice(0, 4).join(" "); renderEditor(); const s = $("inv-sq"); if (s) { s.focus(); s.select(); } return; }
       if (t.dataset.cancel != null) { I.searchLine = null; renderEditor(); return; }
@@ -561,7 +672,8 @@
         l.variant_id = v.vid; l.match_how = "manual"; l._reviewed = true; l.update_cost = true;
         I.searchLine = null; renderEditor(); return;
       }
-      if (t.dataset.del != null) { ed.lines.splice(+t.dataset.del, 1); I.searchLine = null; renderEditor(); return; }
+      if (t.dataset.pick || t.dataset.unmatch != null || t.id === "inv-add") ed.dirty = true;
+      if (t.dataset.del != null) { ed.dirty = true; ed.lines.splice(+t.dataset.del, 1); I.searchLine = null; renderEditor(); return; }
       if (t.id === "inv-add") { ed.lines.push(Object.assign(blankLine(), { _reviewed: true })); ed.filter = "all"; renderEditor(); const ins = box.querySelectorAll('[data-f="item_code"]'); if (ins.length) ins[ins.length - 1].focus(); return; }
       if (t.id === "inv-raw") { ed.showRaw = !ed.showRaw; renderEditor(); return; }
       if (t.id === "inv-save") { save(false); return; }
@@ -572,8 +684,8 @@
       if (t.id === "inv-delete") {
         if (!ed.confirmDel) { ed.confirmDel = true; t.textContent = "Click again to delete"; return; }
         I.busy = "Deleting…"; renderEditor();
-        try { await JT.invoices.remove(ed.id); I.ed = null; note("info", "Draft deleted."); await loadList(true); } catch (err) { note("bad", esc(JT.message(err))); }
-        I.busy = ""; renderEditor(); renderList(); return;
+        try { await JT.invoices.remove(ed.id); closeModal(true); note("info", "Draft deleted."); await loadList(true); } catch (err) { note("bad", esc(JT.message(err))); }
+        I.busy = ""; renderEditor(); renderBoard(); return;
       }
       if (t.id === "inv-rule" || t.id === "inv-resuggest") {
         const mg = numOf($("inv-margin").value), rd = $("inv-round").value;
@@ -590,7 +702,7 @@
 
   // ---------- boot ----------
   bindOnce();
-  window.invShow = () => { if (!I.shown) { I.shown = true; refresh(false); } else { renderList(); renderEditor(); } };
+  window.invShow = () => { if (!I.shown) { I.shown = true; refresh(false); } else { renderBoard(); renderEditor(); } };
   window.JTInvoices = { parseInvoice, findQtyPrice, roundPrice, parseDate, pdfRows, _state: I };   // for tests
   if ((location.hash || "") === "#invoices") setTimeout(() => window.invShow(), 0);
 })();

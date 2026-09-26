@@ -129,7 +129,7 @@ table.lines tr.need input{border-color:var(--warn)}
 .tabs button{border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);font-weight:600;font-family:var(--display);font-size:16px;letter-spacing:.01em;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--sales)}
 #tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices{display:flex;flex-direction:column;gap:18px}
-#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#inv-edit[hidden],#move-bar[hidden]{display:none!important}
+#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
 /* product sales */
 .tbl-wrap.xl{max-height:720px}
 .tree{display:inline-flex;align-items:center;gap:4px;white-space:normal}
@@ -259,3 +259,28 @@ table.invt tr.skip td{opacity:.55}
 .mres button:hover{border-color:var(--sales)}
 .up{color:var(--bad)}.down{color:var(--good,#1f7a4d)}
 pre.invraw{max-height:280px;overflow:auto;font-size:11px;background:var(--ground);padding:8px;border-radius:8px;white-space:pre-wrap}
+
+/* invoices board: one swimlane per stage, cards wrap inside the lane */
+#tab-invoices .controls .inp{min-width:240px}
+.board{display:flex;flex-direction:column;gap:10px}
+.board.filedrop{outline:2px dashed var(--sales);outline-offset:6px;border-radius:10px}
+.lane{display:grid;grid-template-columns:230px 1fr;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 12px;min-height:48px}
+.lane.over{border-color:var(--sales);background:var(--sales-soft)}
+.lane-h{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.lane-h .meta{display:flex;gap:6px;align-items:center;flex:none}
+.lane-h b{font-size:13px;line-height:1.25}
+.lane-h .cnt{font-size:12px;color:var(--muted);min-width:18px;text-align:right}
+.lane-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;align-content:start}
+.lane-cards .empty{color:var(--faint);font-size:12px;align-self:center}
+.icard{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:var(--ground);cursor:pointer;display:flex;flex-direction:column;gap:3px;font-size:12px;user-select:none}
+.icard:hover{border-color:var(--sales)}
+.icard.dragging{opacity:.4}
+.icard .ic-top{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.icard .ic-top b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.icard .pills{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px}
+@media (max-width:760px){.lane{grid-template-columns:1fr}}
+/* invoice popup */
+.modal{position:fixed;inset:0;z-index:80;background:rgba(10,14,12,.45);display:flex;align-items:flex-start;justify-content:center;padding:28px 16px;overflow:auto}
+.modal-card{background:var(--panel);color:var(--ink);border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.35);width:min(1320px,100%);padding:18px 20px;display:flex;flex-direction:column;gap:10px}
+body.modal-open{overflow:hidden}
+.invhead textarea.inp{width:100%;min-height:34px;resize:vertical;font:inherit}

@@ -311,35 +311,26 @@
   <div id="tab-invoices" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Vendor invoices · product costs in Shopify</span>
+        <span class="eyebrow">Vendor invoices · drag a card to move it between stages</span>
         <h1>Invoices</h1>
       </div>
       <div class="controls">
+        <input id="inv-q" class="inp" type="search" placeholder="Search vendor, invoice #, PO, notes" aria-label="Search invoices">
+        <button class="btn" id="inv-new">Add by hand</button>
+        <label class="btn primary" for="inv-file">Upload invoice PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
         <button class="btn" id="inv-refresh">Refresh</button>
       </div>
     </header>
     <div class="status" id="inv-status" aria-live="polite">Loading invoices…</div>
     <div id="inv-note" hidden></div>
+    <div class="board" id="inv-board"></div>
 
-    <div class="drop" id="inv-drop">
-      <p>Drop a vendor invoice PDF here. Its lines are read out of the PDF and matched to your Shopify products by item code, UPC and remembered matches. Check the lines, then apply: the new costs are written to Shopify within a minute.</p>
-      <label class="btn primary" for="inv-file">Choose PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
-    </div>
-
-    <section class="panel" id="inv-edit" hidden></section>
-
-    <section class="panel">
-      <div class="panel-head">
-        <h2>Uploaded invoices</h2>
-        <div class="filters">
-          <label for="inv-show">Show
-            <select id="inv-show"><option value="all">All</option><option value="draft">Drafts</option><option value="applied">Applied</option></select>
-          </label>
-          <label for="inv-q">Search <input id="inv-q" class="inp" type="search" placeholder="Vendor or invoice #"></label>
-        </div>
+    <div class="modal" id="inv-modal" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-label="Invoice">
+        <div id="inv-mnote" hidden></div>
+        <section id="inv-edit"></section>
       </div>
-      <div class="tbl-wrap"><table id="inv-list"></table></div>
-    </section>
+    </div>
   </div>
   <div id="tab-amzmap" hidden>
     <header class="top">
