@@ -23,6 +23,7 @@
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
+    <button role="tab" data-tab="invoices" aria-selected="false">Invoices</button>
     <span id="acct" class="acct" hidden><span class="build" title="Dashboard version">v __BUILD__</span><span id="whoami"></span><button class="mini" id="signout" type="button">Sign out</button></span>
   </nav>
   <div id="tab-shopify">
@@ -307,6 +308,39 @@
       <div class="row"><button class="btn" id="az-omore" hidden>Show more</button><span class="muted small" id="az-ocount"></span></div>
     </section>
   </div>
+  <div id="tab-invoices" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Vendor invoices · costs and prices in Shopify</span>
+        <h1>Invoices</h1>
+      </div>
+      <div class="controls">
+        <button class="btn" id="inv-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="inv-status" aria-live="polite">Loading invoices…</div>
+    <div id="inv-note" hidden></div>
+
+    <div class="drop" id="inv-drop">
+      <p>Drop a vendor invoice PDF here. Its lines are read out of the PDF and matched to your Shopify products by item code, UPC and remembered matches. Check the lines, then apply: new costs (and any prices you approve) are written to Shopify within a minute.</p>
+      <label class="btn primary" for="inv-file">Choose PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
+    </div>
+
+    <section class="panel" id="inv-edit" hidden></section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Uploaded invoices</h2>
+        <div class="filters">
+          <label for="inv-show">Show
+            <select id="inv-show"><option value="all">All</option><option value="draft">Drafts</option><option value="applied">Applied</option></select>
+          </label>
+          <label for="inv-q">Search <input id="inv-q" class="inp" type="search" placeholder="Vendor or invoice #"></label>
+        </div>
+      </div>
+      <div class="tbl-wrap"><table id="inv-list"></table></div>
+    </section>
+  </div>
   <div id="tab-amzmap" hidden>
     <header class="top">
       <div class="title">
@@ -363,6 +397,9 @@
 
 <script>
 <!-- @inline js/amazon.js -->
+</script>
+<script>
+<!-- @inline js/invoices.js -->
 </script>
 <script>
 <!-- @inline js/move.js -->

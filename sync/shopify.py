@@ -244,7 +244,7 @@ def sync_orders(shop: Shopify, conn, updated_since: dt.datetime) -> int:
 VARIANTS_Q = """query($first: Int!, $after: String) {
   productVariants(first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
-    nodes { id sku title displayName price updatedAt inventoryQuantity
+    nodes { id sku barcode title displayName price updatedAt inventoryQuantity
             product { id title vendor productType status }
             inventoryItem { id tracked unitCost { amount } } }
   }
@@ -272,7 +272,7 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
                          "" if v.get("title") == "Default Title" else (v.get("title") or ""), v.get("displayName") or "",
                          p.get("vendor") or "", p.get("productType") or "", p.get("status") or "", price, cost,
                          v.get("updatedAt"), now, gid_num(inv.get("id")) if inv.get("id") else None,
-                         v.get("inventoryQuantity"), inv.get("tracked")))
+                         v.get("inventoryQuantity"), inv.get("tracked"), (v.get("barcode") or "").strip()))
             if baseline:
                 continue
             if vid not in prev:
@@ -290,7 +290,7 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
         after = page["pageInfo"]["endCursor"]
     upsert(conn, "jt.variants", ["variant_id", "product_id", "sku", "product_title", "variant_title", "display_name",
                                  "vendor", "product_type", "status", "price", "unit_cost", "updated_at", "seen_at",
-                                 "inventory_item_id", "inventory_qty", "tracked"],
+                                 "inventory_item_id", "inventory_qty", "tracked", "barcode"],
            rows, ["variant_id"])
     upsert(conn, "jt.variant_cost_changes", ["changed_on", "variant_id", "old_cost", "new_cost", "price", "flag"],
            changes, ["changed_on", "variant_id"], update=["new_cost", "price", "flag"])
@@ -315,34 +315,64 @@ COST_UPDATE_M = """mutation($id: ID!, $input: InventoryItemInput!) {
 }"""
 
 
-def apply_cost_updates(shop: Shopify, conn, today: dt.date) -> int:
-    """Write costs typed in the dashboard (jt.cost_updates, status pending) to Shopify.
+PRICE_UPDATE_M = """mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+    productVariants { id price }
+    userErrors { field message }
+  }
+}"""
 
-    On success the catalog copy is updated at once and the change is logged in jt.variant_cost_changes.
-    Needs the app's write_inventory scope; a rejected update is marked failed with Shopify's message.
+
+def apply_cost_updates(shop: Shopify, conn, today: dt.date) -> int:
+    """Write costs and prices set in the dashboard (jt.cost_updates, status pending) to Shopify.
+
+    A row carries a new cost, a new retail price, or both (prices come from approved invoice lines).
+    On success the catalog copy is updated at once and cost changes are logged in jt.variant_cost_changes.
+    Costs need the app's write_inventory scope, prices write_products; a rejected update is marked failed
+    with Shopify's message.
     """
     with conn.cursor() as cur:
-        cur.execute("""select u.id, u.variant_id, coalesce(u.inventory_item_id, v.inventory_item_id), v.unit_cost, u.new_cost, v.price
+        cur.execute("""select u.id, u.variant_id, coalesce(u.inventory_item_id, v.inventory_item_id), v.unit_cost, u.new_cost, v.price,
+                              u.new_price, coalesce(u.product_id, v.product_id)
                        from jt.cost_updates u left join jt.variants v using (variant_id)
                        where u.status = 'pending' order by u.id""")
         todo = cur.fetchall()
     done = 0
-    for uid, vid, item_id, old, new, price in todo:
-        err = ""
-        try:
-            if not item_id:
-                raise RuntimeError("no Shopify inventory item for this variant yet (it appears after the nightly catalog sync)")
-            out = shop.graphql(COST_UPDATE_M, {"id": f"gid://shopify/InventoryItem/{item_id}", "input": {"cost": str(new)}})
-            errs = out["inventoryItemUpdate"]["userErrors"]
-            if errs:
-                raise RuntimeError("; ".join(e["message"] for e in errs))
-        except Exception as e:  # noqa: BLE001 - record and carry on with the rest
-            err = str(e)[:500]
+    for uid, vid, item_id, old, new, price, new_price, pid in todo:
+        errs, cost_ok, price_ok = [], False, False
+        if new is not None:
+            try:
+                if not item_id:
+                    raise RuntimeError("no Shopify inventory item for this variant yet (it appears after the nightly catalog sync)")
+                out = shop.graphql(COST_UPDATE_M, {"id": f"gid://shopify/InventoryItem/{item_id}", "input": {"cost": str(new)}})
+                ue = out["inventoryItemUpdate"]["userErrors"]
+                if ue:
+                    raise RuntimeError("; ".join(e["message"] for e in ue))
+                cost_ok = True
+            except Exception as e:  # noqa: BLE001 - record and carry on with the rest
+                errs.append("cost: " + str(e)[:240])
+        if new_price is not None:
+            try:
+                if not pid:
+                    raise RuntimeError("no Shopify product for this variant")
+                out = shop.graphql(PRICE_UPDATE_M, {"productId": f"gid://shopify/Product/{pid}",
+                                                    "variants": [{"id": f"gid://shopify/ProductVariant/{vid}", "price": str(new_price)}]})
+                ue = out["productVariantsBulkUpdate"]["userErrors"]
+                if ue:
+                    raise RuntimeError("; ".join(e["message"] for e in ue))
+                price_ok = True
+            except Exception as e:  # noqa: BLE001
+                errs.append("price: " + str(e)[:240])
         with conn.cursor() as cur:
-            if err:
-                cur.execute("update jt.cost_updates set status = 'failed', error = %s, applied_at = now() where id = %s", (err, uid))
+            if errs:
+                cur.execute("update jt.cost_updates set status = 'failed', error = %s, applied_at = now() where id = %s", ("; ".join(errs)[:500], uid))
             else:
                 cur.execute("update jt.cost_updates set status = 'done', error = '', applied_at = now() where id = %s", (uid,))
+                done += 1
+            if price_ok:
+                cur.execute("update jt.variants set price = %s where variant_id = %s", (new_price, vid))
+                price = new_price
+            if cost_ok:
                 cur.execute("update jt.variants set unit_cost = %s where variant_id = %s", (new, vid))
                 if old is None or float(old) != float(new):
                     flag = "cost above price" if price is not None and new > price else "set in dashboard"
@@ -350,6 +380,5 @@ def apply_cost_updates(shop: Shopify, conn, today: dt.date) -> int:
                                    values (%s, %s, %s, %s, %s, %s)
                                    on conflict (changed_on, variant_id) do update set new_cost = excluded.new_cost, price = excluded.price, flag = excluded.flag""",
                                 (today, vid, old, new, price, flag))
-                done += 1
         conn.commit()
     return done

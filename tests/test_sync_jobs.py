@@ -56,6 +56,7 @@ class FakeShopify:
     def __init__(self, variants=VARIANTS):
         self.variants = variants
         self.cost_calls = []
+        self.price_calls = []
 
     def shopifyql(self, q):
         if "TIMESERIES day" in q:
@@ -74,6 +75,9 @@ class FakeShopify:
             if variables["id"].endswith("/999"):
                 return {"inventoryItemUpdate": {"inventoryItem": None, "userErrors": [{"field": ["id"], "message": "Inventory item does not exist"}]}}
             return {"inventoryItemUpdate": {"inventoryItem": {"id": variables["id"], "unitCost": {"amount": variables["input"]["cost"]}}, "userErrors": []}}
+        if query is sh.PRICE_UPDATE_M:
+            self.price_calls.append(variables)
+            return {"productVariantsBulkUpdate": {"productVariants": [], "userErrors": []}}
         if query is sh.VARIANTS_Q:
             return {"productVariants": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": self.variants}}
         raise AssertionError("unexpected query")
@@ -143,8 +147,8 @@ def test_catalog_inventory_and_cost_updates(conn):
     assert shop.cost_calls == [{"id": "gid://shopify/InventoryItem/999", "input": {"cost": "2.00"}},   # queue order
                                {"id": "gid://shopify/InventoryItem/705", "input": {"cost": "9.50"}}]
     cur.execute("select variant_id, new_cost, status, left(error, 20) from jt.cost_updates order by id")
-    assert cur.fetchall() == [(5, D("9.99"), "replaced", ""), (6, D("3.00"), "failed", "no Shopify inventory"),
-                              (7, D("2.00"), "failed", "Inventory item does "), (5, D("9.50"), "done", "")]
+    assert cur.fetchall() == [(5, D("9.99"), "replaced", ""), (6, D("3.00"), "failed", "cost: no Shopify inv"),
+                              (7, D("2.00"), "failed", "cost: Inventory item"), (5, D("9.50"), "done", "")]
     cur.execute("select unit_cost from jt.variants where variant_id = 5")
     assert cur.fetchone()[0] == D("9.50")
     cur.execute("select old_cost, new_cost, flag from jt.variant_cost_changes where variant_id = 5 and changed_on = '2026-09-25'")
@@ -165,3 +169,29 @@ def test_catalog_marks_removed_variants(conn):
     assert out["removed"] == 0
     cur.execute("select count(*) from jt.variants where removed_at is not null")
     assert cur.fetchone()[0] == 1
+
+
+def test_invoice_apply_queues_cost_and_price(conn):
+    shop = FakeShopify()
+    sh.sync_catalog(shop, conn, dt.date(2026, 9, 24))
+    cur = conn.cursor()
+    inv = {"vendor": "Solinco", "invoice_no": "A-77", "invoice_date": "2026-09-20", "lines": [
+        {"item_code": "hg-17", "description": "Hyper-G 17", "qty": 12, "unit_cost": 9.125, "amount": 109.5,
+         "variant_id": 5, "match_how": "sku", "update_cost": True, "new_price": 15.99},
+        {"item_code": "ZZ", "description": "not in Shopify", "qty": 1, "unit_cost": 4}]}
+    import json
+    cur.execute("select jt.save_invoice(%s::jsonb)", (json.dumps(inv),))
+    iid = cur.fetchone()[0]
+    cur.execute("select jt.apply_invoice(%s)", (iid,))
+    assert cur.fetchone()[0] == 1                                    # the unmatched line queues nothing
+    cur.execute("select item_code, variant_id from jt.vendor_items")
+    assert cur.fetchall() == [("HG17", 5)]                           # remembered for the next invoice
+    conn.commit()
+    assert sh.apply_cost_updates(shop, conn, dt.date(2026, 9, 25)) == 1
+    assert shop.cost_calls[-1]["input"] == {"cost": "9.13"}
+    assert shop.price_calls == [{"productId": "gid://shopify/Product/9",
+                                 "variants": [{"id": "gid://shopify/ProductVariant/5", "price": "15.99"}]}]
+    cur.execute("select unit_cost, price from jt.variants where variant_id = 5")
+    assert cur.fetchone() == (D("9.13"), D("15.99"))
+    cur.execute("select status from jt.invoices where id = %s", (iid,))
+    assert cur.fetchone()[0] == "applied"

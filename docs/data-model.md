@@ -37,3 +37,16 @@ An order whose no-cost items were all returned nets to zero and is not flagged.
 change counts as *real*; then sales before the change keep the old cost. A change is real when its `kind` is
 `'real'`, or when `kind` is empty and it was made on/after `settings.costs.history_start` (earlier edits were
 corrections while costs were being cleaned up). Changes take effect the day after they were detected.
+
+## Vendor invoices (Invoices tab)
+
+- `jt.invoices`, `jt.invoice_lines` — invoices uploaded as PDFs (read in the browser with pdf.js), with each line's
+  matched Shopify variant. Drafts can be edited; `jt.apply_invoice(id)` locks one and queues its updates.
+- `jt.vendor_items` — remembered matches (vendor + normalized item code → variant), filled when an invoice is applied
+  and used first when matching the next invoice from that vendor.
+- `jt.price_rules` — suggested-price rule per vendor (`*` = default): target margin, or null to keep each item's
+  current margin; rounding `.99` / `.95` / `.00` / `none`.
+- Applying queues rows in `jt.cost_updates` (new cost and/or `new_price`, `invoice_id`); the sync job `cost-updates`
+  writes costs with `inventoryItemUpdate` (write_inventory) and prices with `productVariantsBulkUpdate` (write_products).
+- Matching order: remembered code → exact SKU → UPC (`jt.variants.barcode`, from the catalog sync) → SKU containing the
+  code (same vendor) → title words (same vendor, shown as a guess to confirm).

@@ -17,7 +17,8 @@
 
   // ---------- tabs ----------
   function showTab(t) {
-    if (!["amzmap", "amazon", "psales", "costmap"].includes(t)) t = "shopify";
+    if (!["amzmap", "amazon", "psales", "costmap", "invoices"].includes(t)) t = "shopify";
+    $("tab-invoices").hidden = t !== "invoices";
     $("tab-psales").hidden = t !== "psales";
     $("tab-costmap").hidden = t !== "costmap";
     $("tab-shopify").hidden = t !== "shopify";
@@ -25,7 +26,7 @@
     $("tab-amzmap").hidden = t !== "amzmap";
     document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
     try { history.replaceState(null, "", "#" + t); } catch (_) {}
-    if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else window.dispatchEvent(new Event("resize"));
+    if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else if (t === "invoices") { if (window.invShow) window.invShow(); } else window.dispatchEvent(new Event("resize"));
   }
   document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 

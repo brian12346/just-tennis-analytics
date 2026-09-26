@@ -187,6 +187,28 @@
       const out = await run(`select jt.queue_cost_updates(${q(JSON.stringify(list))}::jsonb) as n`, true);
       return (out[0] && out[0].n) || 0;
     },
+    // Vendor invoices (Invoices tab): save a draft (returns its id), apply it (queues Shopify cost/price updates), delete a draft
+    invoices: {
+      async save(body) {
+        if (WEB) return Number(await WEB.write("jt_save_invoice", { p: body }));
+        const out = await run(`select jt.save_invoice(${q(JSON.stringify(body))}::jsonb) as id`, true);
+        return Number(out[0] && out[0].id);
+      },
+      async apply(id) {
+        if (WEB) return Number(await WEB.write("jt_apply_invoice", { p_id: Number(int(id)) }));
+        const out = await run(`select jt.apply_invoice(${int(id)}) as n`, true);
+        return Number(out[0] && out[0].n) || 0;
+      },
+      async remove(id) {
+        if (WEB) return !!(await WEB.write("jt_delete_invoice", { p_id: Number(int(id)) }));
+        const out = await run(`select jt.delete_invoice(${int(id)}) as ok`, true);
+        return !!(out[0] && out[0].ok);
+      },
+      async saveRule(body) {
+        if (WEB) return WEB.write("jt_save_price_rule", { p: body });
+        return run(`select jt.save_price_rule(${q(JSON.stringify(body))}::jsonb) as ok`, true);
+      },
+    },
     // Ask for a catalog sync from Shopify now (the sync job runs in about 30 seconds). false = one was just started.
     async requestCatalogSync() {
       if (WEB) return WEB.write("jt_request_catalog_sync", {});
