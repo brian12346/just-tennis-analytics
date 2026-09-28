@@ -48,7 +48,7 @@
            left join (select distinct on (k) k as sku, sum((v->>0)::numeric) over (partition by k) as units, sum((v->>1)::numeric) over (partition by k) as sales
                       from jt.docs d, jsonb_each(d.data->'skus') e(k, v) where d.collection = 'amzmonths') s using (sku)
            where true`, "l.sku", 2, refresh),   // no "group by" here: the reply may be split by a filter added at the end
-        JT.rows(["data->>'sku'", "data"], "from jt.docs where collection = 'amzmap'", refresh),
+        JT.rowsSplit(["data->>'sku'", "data"], "from jt.docs where collection = 'amzmap'", "id", 4, refresh),
         JT.rows(["data->>'sku'", "coalesce(data->'variants', '[]'::jsonb)", "coalesce((data->>'none')::boolean, false)"], "from jt.docs where collection = 'amzdeny'", refresh),
         JT.rowsSplit(["variant_id::text", "product_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "status", "product_type", "price", "unit_cost", "coalesce(barcode, '')", "product_title", "variant_title"],
           "from jt.variants where removed_at is null", "variant_id", 4, refresh),

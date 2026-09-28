@@ -704,7 +704,18 @@
   window.JT.docStore().then(db => {
     S.db = db; if (!db) { render(); return; }
     db.collection("amzlistings").onSnapshot(applyListings, () => { S.listReady = true; render(); });
-    db.collection("amzmap").limit(1000).onSnapshot(applyMaps, () => { S.mapsReady = true; render(); });
+    // All mappings (there are well over 1,000 now; the old query stopped at 1,000, so sales of the rest showed as
+    // unmapped). Read in parts so a big reply is never cut off; re-read whenever a mapping is saved anywhere on the page.
+    let mapsLoad = 0;
+    const loadMaps = async () => {
+      const id = ++mapsLoad;
+      try {
+        const r = await window.JT.rowsSplit(["id", "data"], "from jt.docs where collection = 'amzmap'", "id", 4, true);
+        if (id !== mapsLoad) return;
+        applyMaps({ docs: r.map(([i, d]) => ({ id: i, data: () => d })) });
+      } catch (e) { S.mapsReady = true; render(); }
+    };
+    db.collection("amzmap").limit(1).onSnapshot(() => loadMaps(), () => loadMaps());
     db.collection("amzmonths").limit(120).onSnapshot(applyMonths, () => { A.monthsReady = true; renderSales(); });
     // Cost history: only changes treated as real price changes keep the old cost for earlier sales.
     // Changes before the "clean costs" date (db settings/costs.historyStart) are corrections and apply to all history.
