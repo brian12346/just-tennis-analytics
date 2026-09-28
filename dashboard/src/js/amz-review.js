@@ -42,12 +42,15 @@
     try {
       A.db = await JT.docStore();
       const [ls, mp, dn, cat, av] = await Promise.all([
-        JT.rowsSplit(["l.sku", "l.asin", "l.title", "l.status", "coalesce(s.units, 0)", "coalesce(s.sales, 0)"],
+        // Listings from the All Listings report, plus seller SKUs that sold (Transaction reports) but are no longer
+        // in that report — old or deleted listings still need a mapping for their past sales.
+        JT.rowsSplit(["sku", "coalesce(l.asin, '')", "coalesce(l.title, t.title, '')", "coalesce(l.status, 'Not in listings report')", "coalesce(s.units, 0)", "coalesce(s.sales, 0)"],
           `from (select distinct on (r->>0) r->>0 as sku, r->>1 as asin, r->>2 as title, r->>6 as status
                  from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'amzlistings' order by r->>0, d.id desc) l
-           left join (select distinct on (k) k as sku, sum((v->>0)::numeric) over (partition by k) as units, sum((v->>1)::numeric) over (partition by k) as sales
+           full join (select distinct on (k) k as sku, sum((v->>0)::numeric) over (partition by k) as units, sum((v->>1)::numeric) over (partition by k) as sales
                       from jt.docs d, jsonb_each(d.data->'skus') e(k, v) where d.collection = 'amzmonths') s using (sku)
-           where true`, "l.sku", 2, refresh),   // no "group by" here: the reply may be split by a filter added at the end
+           left join (select distinct on (key) key as sku, value as title from jt.docs d, jsonb_each_text(d.data->'titles') where d.collection = 'amzmeta') t using (sku)
+           where true`, "sku", 2, refresh),   // no "group by" here: the reply may be split by a filter added at the end
         JT.rowsSplit(["data->>'sku'", "data"], "from jt.docs where collection = 'amzmap'", "id", 4, refresh),
         JT.rows(["data->>'sku'", "coalesce(data->'variants', '[]'::jsonb)", "coalesce((data->>'none')::boolean, false)"], "from jt.docs where collection = 'amzdeny'", refresh),
         JT.rowsSplit(["variant_id::text", "product_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "status", "product_type", "price", "unit_cost", "coalesce(barcode, '')", "product_title", "variant_title"],
@@ -75,7 +78,8 @@
     if (!g) {
       const d = A.deny.get(l.sku);
       const cv = A.vend.get(l.sku);
-      g = MT.guess(A.ix, l, { limit: 14, vendor: cv && cv !== NONE ? cv : undefined });
+      const probe = l.title ? l : { sku: l.sku, title: skuWords(l.sku) };
+      g = MT.guess(A.ix, probe, { limit: 14, vendor: cv && cv !== NONE ? cv : undefined });
       if (d && d.variants.size) {
         g.top = g.top.filter(c => !d.variants.has(c.v.vid));
         // confidence again without the denied ones
@@ -87,6 +91,11 @@
     }
     return g;
   }
+  // "WIL-BLADE16X19(03)V9-FBM" -> "WIL BLADE 16X19 (03) V9": something to guess from when a listing has no title
+  function skuWords(sku) {
+    return String(sku || "").replace(/-(FBA|FBM)\b.*$/i, "").replace(/[-_]/g, " ").replace(/([A-Za-z]{3,})(\d)/g, "$1 $2").replace(/\(/g, " (").replace(/\s+/g, " ").trim();
+  }
+  const amzLink = (l, inner) => l.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${inner}</a>` : inner;
   const st = (sku) => { let s = A.state.get(sku); if (!s) { s = {}; A.state.set(sku, s); } return s; };
 
   function inScope(l) {
@@ -155,7 +164,7 @@
     list.innerHTML = vRows.length ? `<div class="tbl-wrap"><table class="amv"><thead><tr><th><input type="checkbox" id="am-selall" aria-label="Tick all on this page"></th><th class="l">Amazon listing</th><th>Sales</th><th class="l">Shopify vendor</th><th class="l"></th></tr></thead><tbody>${
       vRows.map((l, i) => { const conf = A.vend.has(l.sku), v = vendorOf(l);
         return `<tr class="${conf ? "conf" : "guess"}"><td><input type="checkbox" data-sel="${i}" ${A.sel.has(l.sku) ? "checked" : ""}></td>
-          <td class="l"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.title || l.sku)}</a><div class="meta">${esc(l.asin)} · <span class="mono">${esc(l.sku)}</span>${/active/i.test(l.status) ? "" : " · " + esc((l.status || "inactive").toLowerCase())}</div></td>
+          <td class="l">${amzLink(l, esc(l.title || l.sku))}<div class="meta">${l.asin ? esc(l.asin) + " · " : ""}<span class="mono">${esc(l.sku)}</span>${/active/i.test(l.status) ? "" : " · " + esc((l.status || "inactive").toLowerCase())}</div></td>
           <td>${l.sales ? m0(l.sales) : '<span class="dim">—</span>'}</td>
           <td class="l"><select class="inp sm" data-v="${i}" ${A.vsaving ? "disabled" : ""}><option value="" ${v ? "" : "selected"}>— unknown —</option>${vendorOptions(v)}</select></td>
           <td class="l">${conf ? '<span class="pill ok">Confirmed</span>' : v ? '<span class="pill warn">Guess</span>' : '<span class="pill miss">Unknown</span>'}</td></tr>`; }).join("")}</tbody></table></div>`
@@ -238,8 +247,8 @@
   }
   function rowHtml(l, i) {
     const s = st(l.sku), busy = A.busy.has(l.sku);
-    const amz = `<div class="amz"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener"><b>${esc(l.title || l.sku)}</b></a>
-      <div class="meta">${esc(l.asin)} · <span class="mono">${esc(l.sku)}</span>${l.sales ? ` · ${m0(l.sales)} · ${l.units.toLocaleString()} sold` : " · no sales yet"}${/active/i.test(l.status) ? "" : " · " + esc(l.status.toLowerCase() || "inactive")}</div></div>`;
+    const amz = `<div class="amz">${amzLink(l, `<b>${esc(l.title || l.sku)}</b>`)}
+      <div class="meta">${l.asin ? esc(l.asin) + " · " : ""}<span class="mono">${esc(l.sku)}</span>${l.sales ? ` · ${m0(l.sales)} · ${l.units.toLocaleString()} sold` : " · no sales yet"}${/active/i.test(l.status) ? "" : " · " + esc(l.status.toLowerCase() || "inactive")}</div></div>`;
     if (s.done === "approved") {
       const v = s.pick ? s.pick.v : A.byVid.get(String(A.maps.get(l.sku).variantId).split("/").pop());
       return `<div class="amrow done" data-i="${i}">${amz}<div class="arrow">→</div><div class="shop">${v ? shopLine(v) : "—"}<div class="meta">× ${s.units || 1} per Amazon sale</div></div>
