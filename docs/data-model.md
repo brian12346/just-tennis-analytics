@@ -193,3 +193,11 @@ Incoming Inventory shows on the Prep center tab (one set of orders, same stages)
   written with `jt.invoice_file_put`; `jt.invoices.file_parts` says how many parts are stored.
 - `jt.po_delete` deletes a draft order and its draft invoice when no other order uses it.
 - `match_how` values: remembered, sku, upc, manual, confirmed (sure); skupart, guess-high/medium/low (to check); skip.
+
+## Assigning prep stock to a listing later (migration 021)
+
+Stock can come into the prep center for "any listing" (receiving a PO line left on "any ASIN", or a count) and be
+earmarked later: Prep center → Stock → **Assign** splits a row's units across the product's mapped listings (ASIN,
+pack size), or moves earmarked units to another listing / back to any. `jt.prep_assign(p)` =
+`{variant_id, from_sku, moves: [{to_sku, qty}], note}`, in Shopify units (a 2-pack listing takes 2 per Amazon unit);
+logged as two `prep_moves` of kind `assign`. PO lines pick the listing by ASIN, and can still be changed at receive time.

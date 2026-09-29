@@ -372,3 +372,23 @@ def test_purchase_order_save(conn):
     assert call("po_delete", {"id": oid}) is True
     cur.execute("select count(*) from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0] == 0
     cur.execute("select count(*) from jt.invoice_files where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 0
+
+
+def test_prep_assign(conn):
+    import pytest
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost) values (921, 92, 5)")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    call("prep_adjust", {"lines": [{"variant_id": 921, "qty": 30}]})
+    # 10 to the single listing, 12 (6 two-packs) to the 2-pack listing; 8 stay unassigned
+    assert call("prep_assign", {"variant_id": 921, "moves": [{"to_sku": "ONE-FBA", "qty": 10}, {"to_sku": "TWO-FBA", "qty": 12}], "by": "t"}) == 22
+    cur.execute("select amazon_sku, qty from jt.prep_items where variant_id = 921 order by 1"); assert cur.fetchall() == [("", 8), ("ONE-FBA", 10), ("TWO-FBA", 12)]
+    cur.execute("select amazon_sku, qty_change, note from jt.prep_moves where kind = 'assign' order by id")
+    assert cur.fetchall() == [("", -10, "to ONE-FBA"), ("ONE-FBA", 10, "from any listing"), ("", -12, "to TWO-FBA"), ("TWO-FBA", 12, "from any listing")]
+    # back to any listing; the emptied row goes away
+    call("prep_assign", {"variant_id": 921, "from_sku": "ONE-FBA", "moves": [{"to_sku": "", "qty": 10}]})
+    cur.execute("select amazon_sku, qty from jt.prep_items where variant_id = 921 order by 1"); assert cur.fetchall() == [("", 18), ("TWO-FBA", 12)]
+    cur.execute("savepoint a")
+    with pytest.raises(Exception, match="only 12"):
+        call("prep_assign", {"variant_id": 921, "from_sku": "TWO-FBA", "moves": [{"to_sku": "", "qty": 13}]})
+    cur.execute("rollback to savepoint a")

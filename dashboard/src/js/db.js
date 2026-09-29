@@ -269,6 +269,12 @@
         const out = await run(`select jt.prep_ship(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
         return Number(out[0] && out[0].n) || 0;
       },
+      // earmark prep-center units for Amazon listings: {variant_id, from_sku, moves: [{to_sku, qty}], note}
+      async assign(body) {
+        if (WEB) return Number(await WEB.write("jt_prep_assign", { p: body }));
+        const out = await run(`select jt.prep_assign(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
+        return Number(out[0] && out[0].n) || 0;
+      },
       // shipments: open -> started -> shipped (stock leaves the prep center when shipped)
       async saveShipment(body) {
         if (WEB) return Number(await WEB.write("jt_prep_shipment_save", { p: body }));

@@ -71,7 +71,7 @@
         JT.rowsSplit(["variant_id::text", "product_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "status", "product_type", "price", "unit_cost",
           "coalesce(barcode, '')", "product_title", "variant_title", "inventory_qty"], "from jt.variants where removed_at is null", "variant_id", 4, refresh),
         JT.rows(["vendor", "item_code", "variant_id::text"], "from jt.vendor_items", refresh),
-        JT.rowsSplit(["data->>'sku'", "(regexp_match(data->>'variantId', '(\\d+)$'))[1]", "coalesce(data->>'units', '1')", "coalesce(data->>'asin', '')"],
+        JT.rowsSplit(["data->>'sku'", "(regexp_match(data->>'variantId', '(\\d+)$'))[1]", "coalesce(data->>'units', '1')", "coalesce(data->>'asin', '')", "coalesce(data->>'title', '')"],
           "from jt.docs where collection = 'amzmap' and data->>'kind' = 'shopify'", "id", 2, refresh),
       ]);
       S.cat = cat.map(x => ({ vid: x[0], pid: x[1], sku: x[2] || "", title: x[3] || "", vendor: x[4] || "", status: x[5] || "", type: x[6] || "", price: x[7] == null ? null : +x[7],
@@ -83,9 +83,9 @@
       S.vendors = [...new Set(S.cat.map(v => v.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
       S.remembered = new Map(rem.map(([v, c, id]) => [v.toLowerCase() + "|" + c, id]));
       S.listings = new Map(); S.byAmz = new Map();
-      for (const [sku, vid, units, asin] of maps) {
+      for (const [sku, vid, units, asin, title] of maps) {
         if (!vid) continue;
-        const l = S.listings.get(vid) || []; l.push({ sku, units: +units || 1 }); S.listings.set(vid, l);
+        const l = S.listings.get(vid) || []; l.push({ sku, units: +units || 1, asin, title }); S.listings.set(vid, l);
         S.byAmz.set(sku.toLowerCase(), { vid, asku: sku }); if (asin) S.byAmz.set(asin.toLowerCase(), { vid, asku: "" });
       }
       S.ix = window.JTMatch ? window.JTMatch.buildIndex(S.cat.map(v => ({ ...v }))) : null;
@@ -425,11 +425,13 @@
     const rows = ed.rows.filter(r => ed.filter === "all" || (ed.filter === "none" ? !r.vid && !r.skip : ed.filter === "check" ? needsCheck(r) : ed.filter === "notoninv" ? !r.src : true));
     let units = 0, total = 0; for (const r of ed.rows) if (r.vid) { units += Number(r.qty) || 0; total += lineAmt(r); }
     const firstOfKey = new Set(); { const seen = new Set(); for (const r of ed.rows) if (r.vid) { const k = keyOf(r); if (!seen.has(k)) { seen.add(k); firstOfKey.add(r.id); } } }
+    const lbl = (l) => window.JTListingLabel ? window.JTListingLabel(l) : l.sku;
     const destSel = (r) => {
-      if (!editLines) return r.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep center</span>${r.asku ? `<div class="meta mono">${esc(r.asku)}</div>` : ""}`;
-      const ls = r.vid ? S.listings.get(r.vid) || [] : [];
+      const canPick = editLines || (ed.recv && PRE.includes(ed.status) && !(ed.received.get(keyOf(r))));   // choose the listing when receiving
+      if (!canPick) return r.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep center</span>${r.asku ? `<div class="meta mono">${esc(lbl((S.listings.get(r.vid) || []).find(l => l.sku === r.asku) || { sku: r.asku }))}</div>` : '<div class="meta">any ASIN</div>'}`;
+      const ls = (r.vid ? S.listings.get(r.vid) || [] : []).slice().sort((a, b) => a.units - b.units || String(a.asin).localeCompare(String(b.asin)));
       const val = r.dest === "shopify" ? "@shopify" : r.asku || "";
-      return `<select class="inp sm" data-f="dest" data-k="${r.id}" style="width:auto;max-width:150px"><option value="@shopify" ${val === "@shopify" ? "selected" : ""}>Shopify store</option><option value="" ${val === "" ? "selected" : ""}>Prep center (any listing)</option>${ls.map(l => `<option value="${esc(l.sku)}" ${val === l.sku ? "selected" : ""}>Prep · ${esc(l.sku)}${l.units !== 1 ? " ×" + l.units : ""}</option>`).join("")}${r.asku && !ls.some(l => l.sku === r.asku) ? `<option selected value="${esc(r.asku)}">Prep · ${esc(r.asku)}</option>` : ""}</select>`;
+      return `<select class="inp sm" data-f="dest" data-k="${r.id}" style="width:auto;max-width:190px"><option value="@shopify" ${val === "@shopify" ? "selected" : ""}>Shopify store</option><option value="" ${val === "" ? "selected" : ""}>Prep center · any ASIN (assign later)</option>${ls.map(l => `<option value="${esc(l.sku)}" ${val === l.sku ? "selected" : ""} title="${esc(l.title || "")}">Prep · ${esc(lbl(l))}</option>`).join("")}${r.asku && !ls.some(l => l.sku === r.asku) ? `<option selected value="${esc(r.asku)}">Prep · ${esc(r.asku)}</option>` : ""}</select>`;
     };
     const matchCell = (r) => {
       const v = variant(r.vid);
@@ -508,7 +510,7 @@
           ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order${inv && inv.status !== "applied" ? " and its invoice" : ""}? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
           ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to packing slip? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
           ${ed.confirm === "shipped" ? `<div class="note warn">Mark this order shipped out? Stock doesn't change — for prep-center stock use Create Amazon shipment instead. <span class="dbtns"><button class="mini primary" data-pact="do-shipped">Yes, mark shipped</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
-          <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. Prep-center lines go into the prep center; Shopify-store lines are recorded." : `${n0(units)} units · ${m(total)}${inv && inv.subtotal != null ? ` · invoice subtotal ${m(inv.subtotal)}` : ""}`}</span>
+          <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived, and pick the ASIN for prep-center lines — or leave it on any ASIN and assign it later on the Prep center tab. Shopify-store lines are recorded." : `${n0(units)} units · ${m(total)}${inv && inv.subtotal != null ? ` · invoice subtotal ${m(inv.subtotal)}` : ""}`}</span>
             <span class="dbtns right">${footButtons(ed, got, ro, c)}</span></div>
         </section>
         ${pdfOn ? `<aside class="panel po-pdf"><div class="panel-head"><h2>Invoice PDF</h2><button class="mini" data-pact="pdf">Hide</button></div><div id="pe-pdf" class="pdfpages"></div></aside>` : ""}
@@ -701,7 +703,8 @@
       if (t.id === "pe-invdate") { ed.inv.date = t.value; ed.dirty = true; return; }
       if (t.id === "pe-dest") { if (t.value !== "mixed") { ed.dest = t.value; for (const r of ed.rows) { r.dest = t.value; if (t.value === "shopify") r.asku = ""; } ed.dirty = true; render(); } return; }
       const r = t.dataset.k && ed.rows.find(x => x.id === t.dataset.k); if (!r) return;
-      if (t.dataset.f === "dest") { if (t.value === "@shopify") { r.dest = "shopify"; r.asku = ""; } else { r.dest = "prep"; r.asku = t.value; }
+      if (t.dataset.f === "dest") { const oldK = keyOf(r); if (t.value === "@shopify") { r.dest = "shopify"; r.asku = ""; } else { r.dest = "prep"; r.asku = t.value; }
+        if (ed.recv && oldK !== keyOf(r) && oldK in ed.recv) { ed.recv[keyOf(r)] = ed.recv[oldK]; delete ed.recv[oldK]; }
         const ds = new Set(ed.rows.filter(x => x.vid).map(x => x.dest)); ed.dest = ds.size > 1 ? "mixed" : [...ds][0] || ed.dest; ed.dirty = true; render(); return; }
       if (t.dataset.f === "alt" && t.value) { r.vid = t.value; r.how = "manual"; r.conf = "sure"; r.confirmed = true; ed.dirty = true; render(); return; }
     });

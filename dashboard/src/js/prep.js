@@ -118,6 +118,9 @@
     }
     return t;
   }
+  // how a mapped Amazon listing reads in pickers: ASIN, pack size, seller SKU
+  const listingLabel = (l) => [l.asin || "no ASIN", (l.units || 1) !== 1 ? (l.units + "-pack") : "", l.sku].filter(Boolean).join(" · ");
+  window.JTListingLabel = listingLabel;
   const okey = (vid, asku, dest) => vid + "|" + (asku || "") + "|" + (dest || "prep");
   // On The List, shared with the Inventory value and Amazon inventory tabs ("+ List" buttons)
   const listed = (vid, asku, dest) => cache && cache.list ? cache.list.find(i => !i.closed && i.vid === String(vid) && i.asku === (asku || "") && i.dest === (dest || "prep")) || null : null;
@@ -217,7 +220,7 @@
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
             <td>${r.amzPrice == null ? dash : m(r.amzPrice)}</td><td>${r.amzValue == null ? dash : m0(r.amzValue)}</td>
             <td class="l small">${when(r.upd)}${r.note ? `<div class="meta">${esc(r.note)}</div>` : ""}</td>
-            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${listed(r.vid, r.asku, "prep") ? '<span class="pill ok" title="On The List">On list</span>' : `<button class="mini" data-act="list" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Put on On The List to re-order">+ List</button>`}</span></td></tr>`;
+            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}${listed(r.vid, r.asku, "prep") ? '<span class="pill ok" title="On The List">On list</span>' : `<button class="mini" data-act="list" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Put on On The List to re-order">+ List</button>`}</span></td></tr>`;
         }).join("") || `<tr><td class="l muted" colspan="9">No products match.</td></tr>`}</tbody>
         <tfoot><tr><td class="l">Total · ${rows.length.toLocaleString()} products</td><td></td><td>${n0(t.units)}</td><td></td><td>${m0(t.cost)}</td><td></td><td>${m0(t.amz)}</td><td></td><td></td></tr></tfoot></table></div>`;
     }
@@ -495,7 +498,7 @@
     const listingSel = (l) => { const ls = cache.byVariant.get(l.vid) || [];
       if (l.dest === "shopify") return editLines ? `<select class="inp sm" data-odest="${esc(l.key)}" style="width:auto"><option value="prep">Prep center</option><option value="shopify" selected>Shopify store</option></select>` : '<span class="pill pos">Shopify store</span>';
       if (!editLines) return l.asku ? `<span class="mono">${esc(l.asku)}</span>` : '<span class="dim">Any listing</span>';
-      return `<select class="inp sm" data-osku="${esc(l.key)}" style="width:auto;max-width:190px"><option value="">Any listing</option>${ls.map(x => `<option value="${esc(x.sku)}" ${x.sku === l.asku ? "selected" : ""}>${esc(x.sku)}${x.units !== 1 ? " ×" + x.units : ""}</option>`).join("")}${l.asku && !ls.some(x => x.sku === l.asku) ? `<option selected>${esc(l.asku)}</option>` : ""}<option value="@shopify">→ Shopify store instead</option></select>`; };
+      return `<select class="inp sm" data-osku="${esc(l.key)}" style="width:auto;max-width:190px"><option value="">Any listing (assign later)</option>${ls.map(x => `<option value="${esc(x.sku)}" ${x.sku === l.asku ? "selected" : ""} title="${esc(x.title || "")}">${esc(listingLabel(x))}</option>`).join("")}${l.asku && !ls.some(x => x.sku === l.asku) ? `<option selected>${esc(l.asku)}</option>` : ""}<option value="@shopify">→ Shopify store instead</option></select>`; };
     let recvUnits = 0; if (M.recv) for (const k in M.recv) recvUnits += Number(M.recv[k]) || 0;
     const head = `<tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th>${got || M.recv ? "<th>Received</th>" : ""}${M.recv ? "<th>Arrived now</th>" : ""}<th>Unit cost</th><th>Ext.</th>${editLines ? "<th></th>" : ""}</tr>`;
     const rowsH = M.lines.map(l => { const q = Number(l.ordered) || 0, c = l.cost !== "" ? Number(l.cost) : l.shopCost;
@@ -800,7 +803,7 @@
     const list = d.moves.filter(x => P.moveKind === "all" || x[1] === P.moveKind || x[1] === "un" + P.moveKind);
     document.querySelectorAll("#prep-mkind button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.k === P.moveKind)));
     if (!d.moves.length) { el.innerHTML = `<div class="muted small" style="padding:8px 2px">No activity yet. Counts, shipments to Amazon and the starting inventory will be listed here.</div>`; return; }
-    const KIND = { adjust: '<span class="pill pos">Count</span>', ship: '<span class="pill web">Shipped</span>', seed: '<span class="pill ok">Starting stock</span>', receive: '<span class="pill other">Received</span>', unship: '<span class="pill warn">Un-shipped</span>', unreceive: '<span class="pill warn">Un-received</span>' };
+    const KIND = { adjust: '<span class="pill pos">Count</span>', ship: '<span class="pill web">Shipped</span>', seed: '<span class="pill ok">Starting stock</span>', receive: '<span class="pill other">Received</span>', unship: '<span class="pill warn">Un-shipped</span>', unreceive: '<span class="pill warn">Un-received</span>', assign: '<span class="pill manual">Assigned</span>' };
     el.innerHTML = `<div class="tbl-wrap tall"><table class="prepm"><thead><tr><th class="l">When</th><th class="l">What</th><th class="l">Product</th><th>Change</th><th>After</th><th class="l">Shipment</th><th class="l">By</th><th class="l">Note</th></tr></thead><tbody>${
       list.map(x => { const [at, kind, vid, asku, chg, after, shipment, dest, nt, by, title, sku] = x;
         return `<tr><td class="l small">${when(at)}</td><td class="l">${KIND[kind] || esc(kind)}</td>
@@ -811,6 +814,45 @@
   }
 
   // ---------- modals: count stock / ship to Amazon ----------
+  // Earmark prep-center units for Amazon listings (or move them between listings / back to "any listing").
+  function openAssign(vid, sku) {
+    const r = cache && cache.rows.find(x => x.vid === vid && x.asku === (sku || "")); if (!r) return;
+    P.modal = { kind: "assign", vid, from: r.asku, qty: {}, note: "" };
+    renderModal(); setTimeout(() => { const i = document.querySelector("#prep-modal input[data-aq]"); if (i) i.focus(); }, 0);
+  }
+  function assignHtml(M) {
+    const r = cache.rows.find(x => x.vid === M.vid && x.asku === M.from); if (!r) return "";
+    const ls = r.listings.slice(), have = r.qty;
+    if (M.from && !ls.some(l => l.sku === M.from) && r.target) ls.push({ ...r.target, sku: M.from });
+    const targets = [...(M.from ? [{ sku: "", any: true }] : []), ...ls.filter(l => l.sku !== M.from).sort((a, b) => (a.units || 1) - (b.units || 1) || String(a.asin).localeCompare(String(b.asin)))];
+    const onHandFor = (sku) => { const x = cache.rows.find(y => y.vid === M.vid && y.asku === sku); return x ? x.qty : 0; };
+    let total = 0, bad = 0, odd = 0;
+    for (const t of targets) { const v = M.qty[t.sku] ?? ""; if (v === "") continue; const q = Number(v); if (!Number.isInteger(q) || q < 0) { bad++; continue; } total += q; if (q % (t.units || 1)) odd++; }
+    const over = total > have;
+    const fromTxt = M.from ? `<span class="mono">${esc(M.from)}</span>` : "any listing";
+    return `<div class="panel-head"><h2>Assign to Amazon listings</h2><button class="mini" data-act="close">Close</button></div>
+      <div class="pickbox"><b>${esc(r.title)}</b> <span class="mono dim">${esc(r.sku)}</span> · ${esc(r.vendor)} · <b>${n0(have)}</b> in the prep center for ${fromTxt}</div>
+      <p class="muted small" style="margin:0">Quantities are Shopify units (single items). A 2-pack listing takes 2 per Amazon unit. Whatever you don't assign stays where it is${M.from ? "" : " — for any listing, to assign later"}.</p>
+      ${targets.length ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Amazon listing</th><th>In prep now</th><th>Assign</th><th>Amazon units</th></tr></thead><tbody>${targets.map(t => {
+        const v = M.qty[t.sku] ?? "", q = Number(v), u = t.units || 1, b2 = v !== "" && (!Number.isInteger(q) || q < 0);
+        return `<tr><td class="l">${t.any ? "<b>Any listing</b><div class=\"meta\">not earmarked — assign later</div>" : `${t.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(t.asin)}" target="_blank" rel="noopener">${esc(t.asin)}</a>` : '<span class="dim">no ASIN</span>'}${u !== 1 ? ` <span class="pill warn">${u}-pack</span>` : ""}<div class="meta">${esc((t.title || "").slice(0, 80))}</div><div class="meta mono">${esc(t.sku)}</div>`}</td>
+          <td>${n0(onHandFor(t.sku))}</td>
+          <td><input class="inp num sm ${b2 ? "bad" : v !== "" && q % u ? "warnin" : ""}" data-aq="${esc(t.sku)}" value="${esc(v)}" inputmode="numeric" placeholder="0" style="width:80px"><div class="meta"><button class="linkbtn small" data-aall="${esc(t.sku)}">all ${n0(Math.floor(Math.max(0, have - total + (Number(v) || 0)) / u) * u)}</button></div></td>
+          <td>${v !== "" && !b2 && q ? (q % u ? `<span class="warnt">${(q / u).toFixed(1)}</span>` : n0(q / u)) : '<span class="dim">—</span>'}</td></tr>`; }).join("")}</tbody></table></div>`
+        : `<div class="note warn">No Amazon listing is mapped to this product. Map one on the Amazon mapping tab first.</div>`}
+      <label class="stack" for="pm-anote">Note (optional)<input id="pm-anote" class="inp" value="${esc(M.note)}" placeholder="e.g. building 2-packs for FBA"></label>
+      <div class="row"><span class="small ${over ? "neg" : "muted"}">${over ? `That's ${n0(total)} — only ${n0(have)} are there.` : `${n0(total)} of ${n0(have)} assigned${odd ? ` · <span class="warnt">a pack listing isn't a whole number of packs</span>` : ""}`}</span>
+        <span class="dbtns right"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="save-assign" ${!total || over || bad || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Assign"}</button></span></div>`;
+  }
+  async function saveAssign() {
+    const M = P.modal; if (!M || M.kind !== "assign") return;
+    const moves = Object.entries(M.qty).map(([to_sku, v]) => ({ to_sku, qty: Number(v) || 0 })).filter(x => x.qty > 0);
+    P.busy = true; renderModal();
+    try {
+      const n = await JT.prep.assign({ variant_id: Number(M.vid), from_sku: M.from, moves, note: M.note || "" });
+      P.busy = false; P.modal = null; note("info", `Assigned ${n0(n)} unit${n === 1 ? "" : "s"}.`); await load(true); render();
+    } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't assign: " + esc(JT.message(e))); }
+  }
   function openCount(vid, sku, back, fallback) {
     const r = vid && cache ? cache.rows.find(x => x.vid === vid && x.asku === (sku || "")) : null;
     const pick = r ? { vid: r.vid, sku: r.sku, title: r.title, vendor: r.vendor, cost: r.cost } : fallback || null;
@@ -882,6 +924,8 @@
         </div>
         <div class="row">${want != null && !bad ? `<span class="${want - cur < 0 ? "neg" : "pos"}">${want - cur > 0 ? "+" : ""}${n0(want - cur)} units${M.pick.cost != null ? " · " + m0((want - cur) * M.pick.cost) + " at cost" : ""}</span>` : ""}
           <span class="dbtns right"><button class="btn" data-act="close">${M.back ? "Back to shipment" : "Cancel"}</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Save count"}</button></span></div>` : ""}`;
+    } else if (M.kind === "assign") {
+      html = assignHtml(M);
     } else if (M.kind === "order") {
       html = orderModalHtml(M);
     } else {
@@ -1027,6 +1071,7 @@
       const b = e.target.closest("[data-act]"); if (!b || b.closest("#prep-modal")) return;
       if (b.dataset.act === "count") openCount(b.dataset.vid, b.dataset.sku);
       if (b.dataset.act === "ship") openShip(b.dataset.vid, b.dataset.sku);
+      if (b.dataset.act === "assign") openAssign(b.dataset.vid, b.dataset.sku);
       if (b.dataset.act === "list") { b.disabled = true; addToList({ variant_id: Number(b.dataset.vid), amazon_sku: b.dataset.sku || "", dest: "prep", source: "prep" })
         .then(() => note("info", "Added to On The List."), (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); }); }
     });
@@ -1035,6 +1080,7 @@
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && P.modal && !P.busy) closeModal(); });
     box.addEventListener("input", (e) => {
       const M = P.modal, t = e.target; if (!M) return;
+      if (M.kind === "assign") { if (t.dataset.aq != null) { M.qty[t.dataset.aq] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 250); } else if (t.id === "pm-anote") M.note = t.value; return; }
       if (t.id === "pm-q") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-qty") { M.qty = t.value.trim(); renderModal(); return; }
       if (t.id === "pm-note") { M.note = t.value; return; }
@@ -1061,6 +1107,13 @@
       if (b.dataset.pick) { const v = cat.find(x => x.vid === b.dataset.pick); M.pick = { vid: v.vid, sku: v.sku, title: v.title, vendor: v.vendor, cost: v.cost }; M.asku = ""; renderModal(); setTimeout(() => { const i = $("pm-qty"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "repick") { M.pick = null; M.qty = ""; renderModal(); setTimeout(() => { const i = $("pm-q"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "save-count") return saveCount();
+      if (M.kind === "assign") {
+        if (b.dataset.act === "save-assign") return saveAssign();
+        if (b.dataset.aall != null) { const r = cache.rows.find(x => x.vid === M.vid && x.asku === M.from), t = (r.listings.find(l => l.sku === b.dataset.aall) || {}), u = t.units || 1;
+          let other = 0; for (const [k, v] of Object.entries(M.qty)) if (k !== b.dataset.aall) other += Number(v) || 0;
+          M.qty[b.dataset.aall] = String(Math.floor(Math.max(0, r.qty - other) / u) * u); renderModal(); return; }
+        return;
+      }
       if (b.dataset.fix) return applyFix(b.dataset);
       if (b.dataset.dest) { M.dest = b.dataset.dest; M.confirm = false; renderModal(); return; }
       if (b.dataset.add) return addLine(b.dataset.add);
