@@ -232,3 +232,9 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - `jt.invoices` payment columns: `paid_on` (null means unpaid), `pay_method` (ach, check, credit_card, wire, cash, other), `pay_ref`, `paid_from` and `paid_amount`.
   - Set them with `jt.invoice_set_payment(inv, p)`, which changes only the keys given.
   - `jt.po_save` applies each invoice's payment fields. This works on applied invoices and on complete POs too.
+
+### Shopify PO link (025)
+
+- `jt.prep_orders.shopify_po_url` (text, '' = not linked): the same PO in Shopify admin. Shopify's API can't create POs, so they're kept in step by hand and this is the cross-reference.
+- The dashboard accepts a pasted admin link or just the PO number, and flags non-draft POs that aren't linked.
+- Invoices are added from inside a PO (the list page no longer has an upload button).

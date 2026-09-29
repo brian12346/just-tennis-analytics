@@ -17,6 +17,9 @@
   const JT = window.JT, IP = window.JTInvParse;
   const norm = IP.norm;
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
+  // the Shopify PO link: a pasted admin link, or just the PO's number from its admin URL
+  const shopUrl = (v) => { v = String(v || "").trim(); if (!v) return ""; if (/^#?\d+$/.test(v)) return `${ADMIN}/purchase_orders/${v.replace("#", "")}`;
+    if (/^(admin\.shopify\.com|[\w-]+\.myshopify\.com)\//i.test(v)) return "https://" + v; return v; };
   const TZ = "America/Los_Angeles";
   const today = () => window.JTDate.today();
   const when = (t) => { const d = window.JTDate.parseTime(t); return !t || isNaN(d) ? "" : d.toLocaleDateString("en-US", { timeZone: TZ, month: "short", day: "numeric" }); };
@@ -70,12 +73,12 @@
       `(select coalesce(sum(il.qty), 0) ${IL} and il.variant_id is not null)`,
       "(select count(*) from jt.prep_order_lines l where l.order_id = o.id and l.backorder and l.qty_received < l.qty_ordered)",
       "(select min(l.eta)::text from jt.prep_order_lines l where l.order_id = o.id and l.backorder and l.qty_received < l.qty_ordered)",
-      `(select count(*) ${IV} and ii.paid_on is null)`, `(select min(ii.due_date)::text ${IV} and ii.paid_on is null)`, `(select sum(coalesce(ii.total, ii.subtotal)) ${IV} and ii.paid_on is null)`],
+      `(select count(*) ${IV} and ii.paid_on is null)`, `(select min(ii.due_date)::text ${IV} and ii.paid_on is null)`, `(select sum(coalesce(ii.total, ii.subtotal)) ${IV} and ii.paid_on is null)`, "o.shopify_po_url"],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
-      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29] }))
+      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "" }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
   }
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
@@ -223,7 +226,7 @@
   const variant = (vid) => vid && S.byVid ? S.byVid.get(String(vid)) : null;
   const cur = (ed) => ed.cur >= 0 ? ed.invoices[ed.cur] || null : null;
   function blankEd() {
-    return { id: null, status: "draft", vendor: "", po: "", kind: "order", placeBy: "", expected: "", note: "", shortOk: false, stageAt: {}, created: null, shipments: [],
+    return { id: null, status: "draft", vendor: "", po: "", kind: "order", placeBy: "", expected: "", note: "", shortOk: false, shopifyUrl: "", stageAt: {}, created: null, shipments: [],
       lines: [], invoices: [], cur: -1, removed: [], dest: "shopify", add: "", recv: null, confirm: false, dirty: false, search: null, showPdf: false, boPrompt: false };
   }
   const blankInv = () => ({ id: null, no: "", date: "", due: "", total: null, terms: "", subtotal: null, fileName: "", parts: 0, status: "draft", notes: "", file: null, raw: null, rows: [], filter: "all", isNew: true,
@@ -234,7 +237,7 @@
     try {
       await catalog();
       const [h, ol, sh, ivs, lp] = await Promise.all([
-        JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by"],
+        JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
@@ -247,7 +250,7 @@
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
-        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
+        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
         notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
@@ -441,6 +444,9 @@
     if (late2.length) out.push({ lvl: "warn", kind: "overdue", title: `${late2.length === 1 ? "Invoice " + esc(late2[0].no || "") + " is" : late2.length + " invoices are"} past due and not marked paid`,
       text: late2.map(v => `${esc(v.no || "invoice")}: due ${shortDate(v.due)}${v.total != null ? " · " + m(v.total) : ""}`).join(" · ") + ". Pay it, or mark it paid if it already was.",
       fixes: [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(late2[0])) }] });
+    if (ed.id && ed.status !== "draft" && !ed.shopifyUrl.trim()) out.push({ lvl: "info", kind: "noshopify", title: "Not linked to a Shopify PO",
+      text: "Create the same PO in Shopify (Products → Purchase orders) and paste its link here, so the two stay in step.",
+      fixes: [{ label: "Paste the link", fix: "focus", arg: "pe-shopify" }, { label: "Shopify purchase orders", href: `${ADMIN}/purchase_orders/new` }] });
     if (ed.status === "received") out.push({ lvl: "info", kind: "toqb", title: "Received — enter the bills in QuickBooks",
       text: "Use the For QuickBooks box on each invoice, then mark this PO QB ready.", fixes: [{ label: "Mark QB ready", fix: "onext" }] });
     if (ed.status === "qb_ready") out.push(unpaid.length
@@ -479,6 +485,7 @@
     if (["ordered", "invoiced"].includes(o.status) && o.expected && o.expected < today()) f.push(["warn", "late"]);
     if (ORDER.indexOf(o.status) >= 2 && !o.nInv) f.push(["warn", "no invoice"]);
     if (o.status === "draft" && o.kind === "booking" && o.placeBy && o.placeBy < today()) f.push(["warn", "past place-by"]);
+    if (o.status !== "draft" && !o.shopifyUrl) f.push(["info", "not in Shopify"]);
     if (o.nBack) f.push([o.backEta && o.backEta < today() ? "warn" : "info", `${o.nBack} backordered${o.backEta ? " · ETA " + shortDate(o.backEta) : ""}`]);
     if (o.status === "partial" && !o.nBack) f.push(["info", "rest not backordered"]);
     if (o.nUnpaid && o.unpaidDue && o.unpaidDue < today()) f.push(["warn", "bill overdue"]);
@@ -521,14 +528,14 @@
       list.map(o => {
         const fl = listFlags(o), got = GOT.includes(o.status);
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
-        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</td>
+        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${o.shopifyUrl ? `<div><a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a></div>` : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
           <td class="l"><span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span></td>
           <td>${n0(o.nLines)}</td><td>${n0(o.units)}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
           <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null || o.due ? `<div class="meta">${o.invTotal != null ? m(o.invTotal) : ""}${o.nUnpaid && o.unpaidDue ? ` · due ${shortDate(o.unpaidDue)}` : ""}</div>` : ""}<div>${!o.nUnpaid ? '<span class="pill ok">Paid</span>' : o.unpaidDue && o.unpaidDue < today() ? `<span class="pill miss">${o.nUnpaid < o.nInv ? o.nUnpaid + " " : ""}Overdue</span>` : `<span class="pill warn">${o.nUnpaid < o.nInv ? o.nUnpaid + " " : ""}Unpaid</span>`}</div>` : '<span class="dim">—</span>'}</td>
           <td class="l small">${dates}</td>
           <td class="l">${fl.map(f => `<span class="pill ${f[0] === "info" ? "pos" : "miss"}">${esc(f[1])}</span>`).join("")}</td></tr>`;
-      }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open purchase orders. Start one with New PO, or upload a vendor invoice PDF." : "No purchase orders match."}</td></tr>`}</tbody>`;
+      }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open purchase orders. Start one with New PO, then add the vendor's invoices to it." : "No purchase orders match."}</td></tr>`}</tbody>`;
   }
 
   // ---------- rendering: editor ----------
@@ -583,6 +590,7 @@
           <label class="stack">Type<span class="seg"><button data-pkind="order" aria-pressed="${ed.kind !== "booking"}" ${ed.status !== "draft" ? "disabled" : ""}>Order</button><button data-pkind="booking" aria-pressed="${ed.kind === "booking"}" ${ed.status !== "draft" ? "disabled" : ""}>Booking</button></span></label>
           ${ed.kind === "booking" ? `<label class="stack" for="pe-placeby">Place by<input id="pe-placeby" class="inp" type="date" value="${esc(ed.placeBy)}" ${ed.status !== "draft" ? "disabled" : ""}></label>` : ""}
           <label class="stack" for="pe-exp">Expected<input id="pe-exp" class="inp" type="date" value="${esc(ed.expected)}" ${ro ? "disabled" : ""}></label>
+          <label class="stack" for="pe-shopify"><span>Shopify PO${shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? ` <a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open ↗</a>` : ` <a class="small dim" href="${ADMIN}/purchase_orders" target="_blank" rel="noopener">Shopify POs ↗</a>`}</span><input id="pe-shopify" class="inp" value="${esc(ed.shopifyUrl)}" placeholder="optional · paste the link from Shopify" autocomplete="off"></label>
           <label class="stack" for="pe-dest">Receive into<select id="pe-dest" class="inp" ${ro ? "disabled" : ""}><option value="shopify" ${ed.dest === "shopify" ? "selected" : ""}>Shopify store</option><option value="prep" ${ed.dest === "prep" ? "selected" : ""}>Prep center (Amazon)</option>${ed.dest === "mixed" ? '<option value="mixed" selected>Mixed (set per line)</option>' : ""}</select></label>
           <label class="stack" for="pe-note" style="grid-column:1 / -1">Note<input id="pe-note" class="inp" value="${esc(ed.note)}" ${ro ? "disabled" : ""} placeholder="e.g. ships in two drops"></label>
         </div>
@@ -617,7 +625,7 @@
     const iv = cur(ed);
     const chips = ed.invoices.map((v, i) => { const c = count(v), bad = c.check + c.none;
       return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}${v.due ? " · due " + shortDate(v.due) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${v.isNew ? '<span class="pill warn">new</span>' : v.paidOn ? '<span class="pill ok">Paid</span>' : overdue(v) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</button>`; }).join("");
-    const head = `<div class="panel-head"><h2>Invoices</h2><span class="muted small">${ed.invoices.length ? `${ed.invoices.length} on this PO` : "none yet"} · a vendor can bill in parts</span></div>
+    const head = `<div class="panel-head"><h2>Invoices</h2><span class="muted small">${ed.invoices.length ? `${ed.invoices.length} on this PO` : "none yet"} · a vendor can bill in parts</span>${!ro ? `<label class="btn ${ed.invoices.length ? "" : "primary"} right" for="pe-file">Upload invoice PDF</label>` : ""}</div>
       <div class="ivchips">${chips}${!ro ? `<label class="ivchip add" for="pe-file"><b>+ Add invoice</b><span>upload the PDF or drop it here</span></label>` : ""}</div>`;
     if (!iv) return `<section class="panel po-inv" id="pe-drop">${head}</section>`;
     const lock = ro || iv.status === "applied", c = count(iv);
@@ -745,7 +753,7 @@
           dest: l ? l.dest : "prep", amazon_sku: l && l.dest === "prep" ? l.asku || "" : "", account: r.account || "inventory" }; }) }));
     const remember = [];
     for (const iv of ed.invoices) for (const r of iv.rows) if (r.src.item_code && r.vid && isSure(r) && r.how !== "sku") remember.push({ item_code: r.src.item_code, variant_id: Number(r.vid) });
-    return { order: { id: ed.id ? Number(ed.id) : null, vendor: ed.vendor.trim(), po_no: ed.po.trim(), kind: ed.kind, place_by: ed.placeBy || "", expected_on: ed.expected || "", note: ed.note, short_ok: !!ed.shortOk },
+    return { order: { id: ed.id ? Number(ed.id) : null, vendor: ed.vendor.trim(), po_no: ed.po.trim(), kind: ed.kind, place_by: ed.placeBy || "", expected_on: ed.expected || "", note: ed.note, short_ok: !!ed.shortOk, shopify_po_url: shopUrl(ed.shopifyUrl) },
       lines, invoices, remove_invoices: ed.removed.map(Number), remember };
   }
   function problems(ed) {
@@ -755,6 +763,7 @@
     if (under) return `${esc((variant(under.vid) || {}).title || "A product")}: ${n0(under.received)} were already received, so the PO can't order fewer.`;
     for (const iv of ed.invoices) { const b = iv.rows.find(r => r.qty !== "" && isNaN(Number(r.qty)) || r.cost !== "" && !(Number(r.cost) >= 0)); if (b) return `Check the quantity and cost on invoice ${esc(iv.no || "")}: ${esc(b.src.description || b.src.item_code)}.`; }
     if (!ed.vendor.trim()) return "Enter the vendor.";
+    if (ed.shopifyUrl.trim() && !/^https:\/\/\S+$/i.test(shopUrl(ed.shopifyUrl))) return "The Shopify PO needs to be a link (https://admin.shopify.com/…/purchase_orders/…) or the PO's number from that link.";
     const seen = new Set(); for (const l of ed.lines) { const k = keyOf(l); if (seen.has(k)) return `${esc((variant(l.vid) || {}).title || "A product")} is on the PO twice for the same place. Take one off.`; seen.add(k); }
     return "";
   }
@@ -901,7 +910,6 @@
     const tab = $("tab-po"), box = $("po-edit-view");
     $("po-new").addEventListener("click", () => { if (S.ed && S.ed.dirty) return leave(); note("", ""); openPO(null); });
     $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), S.cat ? catalog(true) : null]); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
-    $("po-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; readPdf(f); });
     $("po-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderList, 150); });
     $("po-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; renderList(); });
     $("po-stage").addEventListener("click", (e) => { const b = e.target.closest("button[data-st]"); if (b) { S.stage = b.dataset.st; renderList(); } });
@@ -909,9 +917,9 @@
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     // a PDF dropped anywhere on the tab
     const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
-    tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); tab.classList.add("filedrop"); } });
+    tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (S.ed) tab.classList.add("filedrop"); } });
     tab.addEventListener("dragleave", (e) => { if (!tab.contains(e.relatedTarget)) tab.classList.remove("filedrop"); });
-    tab.addEventListener("drop", (e) => { if (isFile(e)) { e.preventDefault(); tab.classList.remove("filedrop"); readPdf(e.dataTransfer.files[0]); } });
+    tab.addEventListener("drop", (e) => { if (isFile(e) && !S.ed) { e.preventDefault(); note("info", "Open the purchase order (or create it with New PO), then drop the invoice PDF on it."); return; } if (isFile(e)) { e.preventDefault(); tab.classList.remove("filedrop"); readPdf(e.dataTransfer.files[0]); } });
     $("po-note").addEventListener("click", (e) => { const b = e.target.closest("[data-pact]"); if (b) act(b.dataset.pact); });
     box.addEventListener("change", (e) => {
       const ed = S.ed, t = e.target; if (!ed) return;
@@ -941,6 +949,7 @@
       const iv = cur(ed);
       if (t.id === "pe-po") { ed.po = t.value; ed.dirty = true; return; }
       if (t.id === "pe-note") { ed.note = t.value; ed.dirty = true; return; }
+      if (t.id === "pe-shopify") { ed.shopifyUrl = t.value; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 600); return; }
       if (t.id === "pe-invno" && iv) { iv.no = t.value; ed.dirty = true; return; }
       if (t.id === "pe-invterms" && iv) { iv.terms = t.value; ed.dirty = true; return; }
       if (t.id === "pe-payref" && iv) { iv.payRef = t.value; ed.dirty = true; return; }

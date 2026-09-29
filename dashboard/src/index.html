@@ -529,13 +529,12 @@
   <div id="tab-po" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Vendor orders · build a PO, fill it from the invoice PDF</span>
+        <span class="eyebrow">Vendor orders · create the PO, then add its invoices</span>
         <h1>Purchase orders</h1>
       </div>
       <div class="controls">
         <button class="btn" id="po-refresh">Refresh</button>
-        <button class="btn" id="po-new">New PO</button>
-        <label class="btn primary" for="po-file">Upload invoice PDF<input type="file" id="po-file" accept=".pdf,application/pdf" hidden></label>
+        <button class="btn primary" id="po-new">New PO</button>
       </div>
     </header>
     <div class="status" id="po-status" aria-live="polite">Loading purchase orders…</div>

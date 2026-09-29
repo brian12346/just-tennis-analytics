@@ -368,6 +368,13 @@ def test_purchase_order_save(conn):
     inv2 = dict(inv, id=iid, lines=inv["lines"][:1])
     r2 = call("po_save", {"order": dict(order, id=oid), "lines": lines, "invoices": [inv2], "remember": []})
     assert r2 == {"order_id": oid, "invoice_ids": [iid]}
+    # the Shopify PO link: set, kept when not sent, cleared with ''
+    url = "https://admin.shopify.com/store/x/purchase_orders/123"
+    call("po_save", {"order": dict(order, id=oid, shopify_po_url=url), "invoices": []})
+    call("po_save", {"order": dict(order, id=oid), "invoices": []})
+    cur.execute("select shopify_po_url from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == url
+    call("po_save", {"order": dict(order, id=oid, shopify_po_url=""), "invoices": []})
+    cur.execute("select shopify_po_url from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == ""
     cur.execute("select count(*) from jt.invoice_lines where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 1
     # the PDF in two parts; part 0 replaces an older file
     call("invoice_file_put", {"invoice_id": iid, "part": 0, "parts": 2, "data": "QUJD", "name": "h.pdf", "type": "application/pdf", "size": 6})
