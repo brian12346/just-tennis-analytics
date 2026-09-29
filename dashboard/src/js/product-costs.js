@@ -138,15 +138,15 @@
     const gm = totPrice ? (totPrice - totCost) / totPrice : null;
     const when = P.asOf ? P.asOf.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
     const snap = fd && fd.meta.snapshot ? new Date(fd.meta.snapshot + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
-    $("pc-inv-scope").innerHTML = (scoped ? `Filtered to ${scope} · total ${m0(all.cost + (allF ? allF.cost : 0))} at cost` : "Every product with stock, in your Shopify locations and at Amazon FBA")
-      + (when ? ` · Shopify as of ${when}` : "") + (snap ? ` · FBA report of ${snap}` : "");
-    const goFba = `<button class="linkbtn small" data-go-fba>open FBA inventory</button>`;
+    $("pc-inv-scope").innerHTML = (scoped ? `Filtered to ${scope} · total ${m0(all.cost + (allF ? allF.cost : 0))} at cost` : "Every product with stock, in your Shopify locations and at Amazon (FBA + AWD)")
+      + (when ? ` · Shopify as of ${when}` : "") + (snap ? ` · FBA report of ${snap}` : "") + (fd && fd.awdMeta && fd.awdMeta.snapshot ? ` · AWD report of ${new Date(fd.awdMeta.snapshot + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}` : "");
+    const goFba = `<button class="linkbtn small" data-go-fba>open Amazon inventory</button>`;
     el.innerHTML = [
-      { c: "cost", l: "Total inventory at cost", v: m0(totCost), s: f ? `Shopify ${m0(t.cost)} · Amazon FBA ${m0(f.cost)}` : "Shopify only · FBA loading…" },
+      { c: "cost", l: "Total inventory at cost", v: m0(totCost), s: f ? `Shopify ${m0(t.cost)} · Amazon ${m0(f.cost)}` : "Shopify only · Amazon loading…" },
       { l: "Shopify at cost", v: m0(t.cost), s: `${Math.round(t.units).toLocaleString()} units · ${m0(t.price)} at Shopify price` },
-      { l: "Amazon FBA at cost", v: f ? m0(f.cost) : "—", s: f ? `${Math.round(f.units).toLocaleString()} units incl. ${Math.round(f.inbound).toLocaleString()} inbound · ${m0(f.price)} at Amazon price · ${goFba}` : `No FBA report loaded · ${goFba}` },
+      { l: "Amazon (FBA + AWD) at cost", v: f ? m0(f.cost) : "—", s: f ? `FBA ${m0(f.fbaCost)} · AWD ${m0(f.awdCost)} · ${Math.round(f.units).toLocaleString()} units incl. inbound · ${m0(f.price)} at Amazon price · ${goFba}` : `No Amazon report loaded · ${goFba}` },
       { c: "sales", l: "Total at retail", v: m0(totPrice), s: gm == null ? "" : `${m0(totPrice - totCost)} margin in stock (${pct(gm)})` },
-      { l: "Not valued", v: (t.noCost + t.neg + (f ? f.noCost : 0)).toLocaleString(), s: `Shopify: ${t.noCost} with no cost, ${t.neg} negative on-hand${f ? ` · FBA: ${f.noCost} SKUs not costed (${Math.round(f.noCostUnits).toLocaleString()} units)` : ""}` },
+      { l: "Not valued", v: (t.noCost + t.neg + (f ? f.noCost : 0)).toLocaleString(), s: `Shopify: ${t.noCost} with no cost, ${t.neg} negative on-hand${f ? ` · Amazon: ${f.noCost} SKUs not costed (${Math.round(f.noCostUnits).toLocaleString()} units)` : ""}` },
     ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
 

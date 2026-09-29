@@ -21,7 +21,7 @@
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
     <button role="tab" data-tab="costs" aria-selected="false">Product costs</button>
-    <button role="tab" data-tab="fba" aria-selected="false">FBA inventory</button>
+    <button role="tab" data-tab="fba" aria-selected="false">Amazon inventory</button>
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
@@ -175,20 +175,23 @@
   <div id="tab-fba" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Amazon FBA · units at Amazon, costed through your Shopify products</span>
-        <h1>FBA inventory</h1>
+        <span class="eyebrow">Amazon FBA + AWD · units at Amazon, costed through your Shopify products</span>
+        <h1>Amazon inventory</h1>
       </div>
       <div class="controls">
+        <div class="seg" id="fba-where" role="group" aria-label="Where">
+          <button data-w="all" aria-pressed="true">All</button><button data-w="fba" aria-pressed="false">FBA</button><button data-w="awd" aria-pressed="false">AWD</button>
+        </div>
         <div class="seg" id="fba-inb" role="group" aria-label="Units counted">
           <button data-inb="0" aria-pressed="false">At Amazon</button><button data-inb="1" aria-pressed="true">+ Inbound</button>
         </div>
-        <label class="btn" for="fba-file">Upload FBA Inventory report<input type="file" id="fba-file" accept=".csv,.txt,text/csv,text/plain" hidden></label>
+        <label class="btn" for="fba-file">Upload FBA or AWD report<input type="file" id="fba-file" accept=".csv,.txt,text/csv,text/plain" hidden></label>
         <button class="btn" id="fba-refresh">Refresh</button>
       </div>
     </header>
     <div class="status" id="fba-status" aria-live="polite">Loading FBA inventory…</div>
     <div id="fba-note" hidden></div>
-    <section class="kpis" id="fba-kpis" aria-label="FBA inventory totals"></section>
+    <section class="kpis" id="fba-kpis" aria-label="Amazon inventory totals"></section>
     <section class="panel">
       <div class="panel-head"><h2>Inventory at cost by vendor</h2><span class="muted small">Click a vendor to filter the list below.</span></div>
       <div class="vbars" id="fba-vbars"></div>

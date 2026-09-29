@@ -367,3 +367,4 @@ table.fbat td.l a{overflow-wrap:anywhere}
 table.fbat tr.flag-bad td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
 table.fbat tr.flag-warn td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
 .pill.warn{background:var(--warn-bg);color:var(--warn)}
+table.fbat td .meta .awd{color:var(--sales)}

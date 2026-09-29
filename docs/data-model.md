@@ -80,7 +80,7 @@ corrections while costs were being cleaned up). Changes take effect the day afte
 - The "Costs" switch (Shopify and Product sales tabs) flips to "As recorded on each order" (per viewer, stored in the
   browser). Amazon profit uses current costs for all history while `settings/costs.historyStart` is null (cleanup mode).
 
-## FBA inventory (FBA inventory tab)
+## Amazon inventory tab (FBA + AWD)
 
 - Upload: Seller Central → Reports → Fulfillment → Inventory → **FBA Inventory** (CSV). Stored in `jt.docs` collection `fbainv`
   (`c000`, `c001`, … 150 rows each; the latest upload replaces the previous one). Rows with no units anywhere are dropped.
@@ -94,3 +94,9 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   median FBA fee of SKUs with the same storage type. Profit = price − fees − cost (storage fees not included).
 - The Product costs tab adds FBA at cost to the inventory total (Shopify and FBA shown separately). Shopify's on-hand
   counts don't include FBA units, so the two don't overlap.
+- AWD: Seller Central AWD inventory report (CSV with "Timestamp / Merchant ID" lines, then one row per SKU), uploaded with the
+  same button (the columns tell the reports apart). Stored in `jt.docs` collection `awdinv`; row
+  `[sku, fnsku, asin, name, inboundToAwd, availableInAwd, reservedInAwd, researching, outboundToFba]`.
+  AWD units valued = available + researching (+ inbound to AWD). Reserved-in-AWD and outbound-to-FBA units are left out because the
+  FBA report already counts them as FBA inbound (checked on the Sep 28/29 reports: they match FBA inbound SKU by SKU).
+  All / FBA / AWD switch on the tab; Product costs shows Amazon at cost split FBA vs AWD.
