@@ -135,7 +135,7 @@ no Amazon listing mapped, started without a shipment ID, started 7+ days ago and
 Cards turn amber (warning) or red (blocking); the shipment popup lists each exception with fix buttons.
 New checks are one more entry in `issuesOf`.
 
-## New Inventory: vendor orders (migration 015)
+## Incoming Inventory: vendor orders (migration 015)
 
 - `jt.prep_orders` (vendor, PO #, status draft → ordered → invoice → packing_slip → received → shipped, linked
   `invoice_id` on `jt.invoices`, `expected_on`, `short_ok`, `stage_at` = when each status was reached) and

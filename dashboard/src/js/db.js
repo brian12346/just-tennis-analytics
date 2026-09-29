@@ -259,7 +259,7 @@
         if (WEB) return WEB.write("jt_prep_shipment_delete", { p: { id } });
         return run(`select jt.prep_shipment_delete(${q(JSON.stringify({ id }))}::jsonb) as ok`, true);
       },
-      // New Inventory: vendor orders coming in (draft -> ordered -> invoice -> packing_slip -> received -> shipped)
+      // Incoming Inventory: vendor orders coming in (draft -> ordered -> invoice -> packing_slip -> received -> shipped)
       async saveOrder(body) {
         if (WEB) return Number(await WEB.write("jt_prep_order_save", { p: body }));
         const out = await run(`select jt.prep_order_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
