@@ -118,3 +118,11 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   with no argument, fills every ASIN whose mapped SKUs agree. A trigger on `jt.docs` runs it whenever a mapping is saved
   (hand-made sibling mappings are never overwritten; automatic copies follow changes) and whenever a listings / FBA / AWD /
   prep-center file is loaded. Backup of the mappings before the first fill: `jt.docs amzmapbak/before-asin-fill-2026-09-29`.
+
+## Prep center shipments (migration 014)
+
+- `jt.prep_shipments` (name, dest FBA/AWD, status open → started → shipped, who/when) and `jt.prep_shipment_lines`
+  (variant, Amazon SKU, qty). Open and started shipments can be edited or deleted; units are reserved in the UI
+  ("in shipments") but only leave the prep center when the shipment is marked shipped (`jt.prep_shipment_status` calls
+  `jt.prep_ship`, which fails if a line is short). Shipped is final; moves carry `shipment_id`.
+- Web wrappers: `public.jt_prep_shipment_save / jt_prep_shipment_status / jt_prep_shipment_delete`.

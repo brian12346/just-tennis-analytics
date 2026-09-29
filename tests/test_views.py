@@ -180,3 +180,31 @@ def test_asin_mapping_fill(conn):
     m("A-FBA", 12)                       # a change follows to the automatic copies
     cur.execute("select data->>'variantId' from jt.docs where collection = 'amzmap' and id = 's_A-FBM'")
     assert cur.fetchone()[0] == "gid://shopify/ProductVariant/12"
+
+
+def test_prep_shipment_workflow(conn):
+    import pytest
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost) values (601, 60, 5), (602, 60, 7)")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    call("prep_adjust", {"lines": [{"variant_id": 601, "amazon_sku": "X-FBA", "qty": 50}, {"variant_id": 602, "qty": 8}]})
+    sid = call("prep_shipment_save", {"name": "FBA1", "dest": "fba", "by": "b@x.com",
+                                      "lines": [{"variant_id": 601, "amazon_sku": "X-FBA", "qty": 20}, {"variant_id": 602, "qty": 3}]})
+    assert call("prep_shipment_status", {"id": sid, "status": "started"}) == "started"
+    cur.execute("select sum(qty) from jt.prep_items"); assert cur.fetchone()[0] == 58          # nothing leaves until shipped
+    call("prep_shipment_save", {"id": sid, "name": "FBA1", "dest": "FBA", "lines": [{"variant_id": 601, "amazon_sku": "X-FBA", "qty": 20}, {"variant_id": 602, "qty": 9}]})
+    cur.execute("savepoint s")
+    with pytest.raises(Exception, match="only 8"):
+        call("prep_shipment_status", {"id": sid, "status": "shipped"})
+    cur.execute("rollback to savepoint s")
+    call("prep_shipment_save", {"id": sid, "lines": [{"variant_id": 601, "amazon_sku": "X-FBA", "qty": 20}, {"variant_id": 602, "qty": 8}]})
+    assert call("prep_shipment_status", {"id": sid, "status": "shipped", "by": "b@x.com"}) == "shipped"
+    cur.execute("select variant_id, qty from jt.prep_items order by 1"); assert cur.fetchall() == [(601, 30)]
+    cur.execute("select count(*), min(shipment_id), min(shipment) from jt.prep_moves where kind = 'ship'"); assert cur.fetchone() == (2, sid, "FBA1")
+    cur.execute("select status, shipped_by from jt.prep_shipments where id = %s", (sid,)); assert cur.fetchone() == ("shipped", "b@x.com")
+    cur.execute("savepoint t")
+    with pytest.raises(Exception, match="already shipped"):
+        call("prep_shipment_save", {"id": sid, "lines": []})
+    cur.execute("rollback to savepoint t")
+    other = call("prep_shipment_save", {"name": "", "lines": [{"variant_id": 601, "amazon_sku": "X-FBA", "qty": 1}]})
+    assert call("prep_shipment_delete", {"id": other}) is True

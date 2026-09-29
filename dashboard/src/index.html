@@ -187,6 +187,15 @@
     </header>
     <div class="status" id="prep-status" aria-live="polite">Loading the prep center…</div>
     <div id="prep-note" hidden></div>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Shipments</h2>
+        <div class="seg" id="prep-shview" role="group" aria-label="Which shipments">
+          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped · last 60 days <span class="cnt">0</span></button>
+        </div>
+      </div>
+      <div class="shipgrid" id="prep-ships"></div>
+    </section>
     <section class="kpis" id="prep-kpis" aria-label="Prep center totals"></section>
     <section class="panel">
       <div class="panel-head">

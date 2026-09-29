@@ -389,3 +389,25 @@ table.prept tr.picked td{background:var(--sales-soft)}
 #prep-unloaded summary{cursor:pointer}
 .addbox{display:flex;flex-direction:column;gap:6px;border:1px dashed var(--line);border-radius:10px;padding:10px 12px}
 .addbox .inp{width:100%;max-width:360px}
+
+.shipgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.shipcard{border:1px solid var(--line);border-left:4px solid var(--faint);border-radius:10px;padding:10px 12px;background:var(--ground);display:flex;flex-direction:column;gap:6px;cursor:pointer;text-align:left;font:inherit;color:var(--ink);min-height:132px}
+.shipcard:hover,.shipcard:focus-visible{border-color:var(--sales)}
+.shipcard.started{border-left-color:var(--sales)}
+.shipcard.shipped{border-left-color:var(--good);opacity:.9}
+.shipcard .sc-top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.shipcard .sc-top b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.shipcard .sc-mid{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.shipcard .sc-lines{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:1px}
+.shipcard .sc-lines div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shipcard .sc-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto}
+.shipcard.newcard{border-style:dashed;border-left-width:1px;align-items:center;justify-content:center;background:transparent;color:var(--sales)}
+.shipcard.newcard .plus{font-size:26px;line-height:1}
+#prep-shview .cnt{font-size:11px;opacity:.75;margin-left:2px}
+.steps{display:inline-flex;gap:6px;align-items:center;font-size:12px;margin-left:auto;margin-right:8px}
+.steps .step{padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.steps .step.done{color:var(--good);border-color:var(--good-bg);background:var(--good-bg)}
+.steps .step.on{color:#fff;background:var(--sales);border-color:var(--sales)}
+.steps .step-sep{color:var(--faint)}
+.inp.warnin{border-color:var(--warn);background:var(--warn-bg)}
+.warnt{color:var(--warn)}
