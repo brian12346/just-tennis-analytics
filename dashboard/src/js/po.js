@@ -223,6 +223,10 @@
   //             (auto: added because an invoice had a product the PO didn't; follows that invoice's quantity)
   // ed.invoices each attached invoice: {id, no, date, due, total, terms, subtotal, fileName, parts, status, notes, file, raw, rows, filter, isNew}
   //   rows      the invoice's lines: {id, src: {item_code, upc, description, qty, unit_cost, amount}, vid, how, conf, alts, confirmed, skip, account, charge, qty, cost}
+  // receiving happens right on the PO once it's invoiced (or partly received)
+  const receiving = (ed) => !!ed.id && !ed.recv && ["invoiced", "partial"].includes(ed.status);
+  const rqDef = (ed, p) => ed.invoices.length ? p.toReceive : Math.max(0, p.ordered - p.received);
+  const rqVal = (ed, l, p) => { const k = keyOf(l); return ed.rq && k in ed.rq ? ed.rq[k] : String(rqDef(ed, p)); };
   const newDest = (ed) => ed.dest === "both" ? ed.addTo || "shopify" : ed.dest === "prep" ? "prep" : "shopify";
   const DESTN = { shopify: "Shopify store", prep: "Prep center" };
   // two lines for the same product and place become one
@@ -571,7 +575,8 @@
     const found = !ro && !ed.recv && ed.add.trim() ? findProducts(ed.add) : [];
     const lbl = (l) => window.JTListingLabel ? window.JTListingLabel(l) : l.sku;
     const both = ed.dest === "both" || new Set(ed.lines.map(l => l.dest)).size > 1;
-    const NC = ed.recv ? 11 : 10;
+    const rcv = receiving(ed), anyInv = ed.invoices.length > 0;
+    const NC = ed.recv || rcv ? 11 : 10;
     const canSplit = (l) => !ro && !ed.recv && !(l.received > 0) && (Number(l.qty) || 0) > 1;
     const destSel = (l) => {
       const canPick = !ro && !(l.received > 0) && (!ed.recv || PRE.includes(ed.status) || true);
@@ -592,6 +597,10 @@
         <td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td>
         <td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}</td>
         ${ed.recv ? `<td><input class="inp num sm" data-f="recv" data-k="${l.id}" value="${esc(ed.recv[keyOf(l)] ?? "")}" inputmode="numeric" placeholder="0" style="width:64px"></td>` : ""}
+        ${rcv ? `<td class="rcv">${p.ordered - p.received > 0 || p.toReceive > 0 ? (() => { const val = rqVal(ed, l, p), bad = val !== "" && !(Number.isInteger(Number(val)) && Number(val) >= 0);
+            return `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"><button class="mini primary" data-pact="rq-go" data-k="${l.id}">Receive</button></div>`
+              + (anyInv && !p.invoiced && !p.received ? '<div class="meta">not on an invoice yet</div>' : anyInv && val !== String(p.toReceive) ? `<div class="meta warnt">invoice: ${n0(p.toReceive)}</div>` : ""); })()
+          : '<span class="pill ok">All in</span>'}</td>` : ""}
         <td class="l small"><span class="pill ${p.st[1]}">${esc(p.st[0])}</span>${p.open > 0 && (p.invoiced || p.received) ? `<div class="meta">${n0(p.open)} still to come</div>` : ""}</td>
         <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : '<span class="dim">—</span>'}</td>
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">${chg != null && Math.abs(chg) >= 0.0005 ? `<div class="meta ${chg > 0 ? "neg" : "pos"}">${pct(chg)} vs Shopify</div>` : ""}` : m(l.cost === "" ? v && v.cost : Number(l.cost))}</td>
@@ -633,11 +642,11 @@
       </section>
       ${iss.length ? `<section class="po-issues">${window.JTIssues.issuesHtml(iss)}</section>` : ""}
       <section class="panel po-lines">
-        <div class="panel-head"><h2>Products on this PO</h2><span class="muted small">what was ordered · receiving is against these</span></div>
+        <div class="panel-head"><h2>Products on this PO</h2><span class="muted small">${receiving(ed) ? "receiving: enter what arrived for each product and press Receive — it starts from the invoice" : "what was ordered · receiving is against these"}</span></div>
         ${openLines.length && !ro && !ed.recv && ed.invoices.length ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
-        ${ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th><th>Invoiced</th><th>Received</th>${ed.recv ? "<th>Arrived now</th>" : ""}<th class="l">Status</th><th class="l">Backorder · ETA</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
+        ${ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th><th>Invoiced</th><th>Received</th>${ed.recv ? "<th>Arrived now</th>" : rcv ? "<th>Receive</th>" : ""}<th class="l">Status</th><th class="l">Backorder · ETA</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
         ${!ro && !ed.recv ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
           ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}
@@ -768,7 +777,9 @@
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     out.push(`<button class="btn ${ed.dirty && !NEXT[ed.status] ? "primary" : ""}" data-pact="save" ${busy}>Save</button>`);
     if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
-    if (ed.lines.length && !["qb_ready", "complete"].includes(ed.status)) out.push(`<button class="btn ${["invoiced", "partial"].includes(ed.status) ? "primary" : ""}" data-pact="recv" ${busy}>${got ? "Receive more…" : "Receive…"}</button>`);
+    if (receiving(ed) && ed.lines.length) { const pr = progress(ed), u = ed.lines.reduce((a, l) => { const v = Number(rqVal(ed, l, pr.get(l.id))); return a + (Number.isInteger(v) && v > 0 && (pr.get(l.id).ordered - pr.get(l.id).received > 0 || pr.get(l.id).toReceive > 0) ? v : 0); }, 0);
+      out.push(`<button class="btn primary" data-pact="rq-all" ${busy || !u ? "disabled" : ""}>Receive all${u ? ` (${n0(u)} units)` : ""}</button>`); }
+    else if (ed.lines.length && !["qb_ready", "complete"].includes(ed.status)) out.push(`<button class="btn" data-pact="recv" ${busy}>${got ? "Receive more…" : "Receive…"}</button>`);
     if (ed.status === "partial") out.push(`<button class="btn" data-pact="short" ${busy}>Close short</button>`);
     if (got && ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn" data-pact="amzship">Create Amazon shipment</button>`);
     return out.join("");
@@ -836,10 +847,10 @@
     try { await JT.prep.setOrderStatus(Number(ed.id), status); S.busy = ""; await loadOrders(true); await openPO(ed.id); note("info", msg || `Moved to ${STAGE.get(status).toLowerCase()}.`); }
     catch (e) { S.busy = ""; if (S.ed) S.ed.confirm = false; render(); note("bad", "Couldn't change the stage: " + esc(JT.message(e))); }
   }
-  async function receiveNow() {
-    const ed = S.ed; if (!ed || !ed.recv) return;
+  async function receiveNow(obj) {
+    const ed = S.ed; obj = obj || (ed && ed.recv); if (!ed || !obj) return;
     const lines = [];
-    for (const [k, v] of Object.entries(ed.recv)) {
+    for (const [k, v] of Object.entries(obj)) {
       if (v == null || v === "") continue;
       const q = Number(v); if (!Number.isInteger(q) || q < 0) { note("bad", "Received quantities must be whole numbers."); return; }
       const [vid, asku, dest] = k.split("|");
@@ -935,6 +946,14 @@
       render(); return;
     }
     if (a === "recv-cancel") { ed.recv = null; render(); return; }
+    if (a === "rq-go" && l) { const p = progress(ed).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, l, p) }); }
+    if (a === "rq-all") {
+      const n = allChecks(ed);
+      if (n) { note("warn", `Confirm or change the ${n} guessed product${n === 1 ? "" : "s"} on the invoices before receiving everything, so the right stock comes in. (Receive on a line works for the ones you're sure of.)`); const i = ed.invoices.findIndex(v => count(v).check); if (i >= 0) { ed.cur = i; ed.invoices[i].filter = "check"; } render(); return; }
+      const pr = progress(ed), o = {};
+      for (const x of ed.lines) { const p = pr.get(x.id); if (p.ordered - p.received > 0 || p.toReceive > 0) o[keyOf(x)] = rqVal(ed, x, p); }
+      return receiveNow(o);
+    }
     if (a === "recv-go") return receiveNow();
     if (a === "amzship") { if (window.JTPrepTab && window.JTPrepTab.shipFromOrder) window.JTPrepTab.shipFromOrder(ed.id); return; }
   }
@@ -1030,6 +1049,7 @@
       if (t.dataset.f === "qty" && l) { l.qty = t.value.trim(); l.auto = false; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "cost" && l) { l.cost = t.value.trim().replace(/^\$/, ""); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "recv" && l) { ed.recv[keyOf(l)] = t.value.trim(); }
+      if (t.dataset.f === "rq" && l) { ed.rq = ed.rq || {}; ed.rq[keyOf(l)] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 500); }
       if ((t.dataset.f === "spS" || t.dataset.f === "spP") && ed.split) {
         const tot = ed.split.total, v2 = t.value.trim(), n = Number(v2);
         if (t.dataset.f === "spS") { ed.split.s = v2; if (Number.isInteger(n) && n >= 0 && n <= tot) { ed.split.p = String(tot - n); const o = box.querySelector('[data-f="spP"]'); if (o) o.value = ed.split.p; } }
@@ -1044,6 +1064,7 @@
       if (e.target.id === "pe-sq" && e.key === "Enter") { e.preventDefault(); const b = box.querySelector(".mres button[data-ppick]"); if (b) b.click(); }
       if (e.target.id === "pe-sq" && e.key === "Escape") { ed.search = null; render(); }
       const f = e.target.dataset && e.target.dataset.f;
+      if (f === "rq" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); act("rq-go", e.target.dataset.k); return; }
       if (e.key === "Enter" && ["qty", "cost", "iqty", "icost", "recv"].includes(f)) {
         e.preventDefault(); const ins = [...box.querySelectorAll(`input[data-f="${f}"]`)], i = ins.indexOf(e.target); clearTimeout(box._t); render();
         const nx = ins[i + 1] && box.querySelector(`input[data-f="${f}"][data-k="${ins[i + 1].dataset.k}"]`); if (nx) { nx.focus(); nx.select(); }

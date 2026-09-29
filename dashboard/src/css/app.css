@@ -662,3 +662,6 @@ html{scroll-padding-top:130px}
 .dchip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
 .dchip.shopify{border-left:4px solid var(--founders-rock,#3B7EA1)}
 .dchip.prep{border-left:4px solid var(--brand-gold,#FDB515)}
+.po-t td.rcv .rq{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.po-t td.rcv .meta.warnt{color:var(--warn, #9a6700)}
+.po-t td.nowrap{white-space:nowrap}
