@@ -530,6 +530,12 @@ html{scroll-padding-top:130px}
 .qb{border:1px solid var(--line);border-radius:var(--radius-md);padding:12px 14px;display:flex;flex-direction:column;gap:10px;background:var(--surface-sunken)}
 .qb-head{display:flex;gap:10px;align-items:baseline}
 .qb-head .mini{margin-left:auto}
+.pay{border:1px solid var(--line);border-radius:var(--radius-md);padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.pay.paid{border-color:var(--good-bg)}
+.pay.late{border-color:var(--bad, #c0392b)}
+.pay-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.pay-head .dbtns{margin-left:auto}
+.steps.seven .step{padding:2px 6px}
 .qb-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px 16px;margin:0}
 .qb-meta dt{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .qb-meta dd{margin:2px 0 0;font-weight:600}

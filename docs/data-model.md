@@ -220,3 +220,15 @@ from ordered vs. invoiced (matched, confirmed lines on the order's invoices) vs.
 ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the PO is added as a line.
 `jt.po_save` now takes `{order, lines, invoices: [...], remove_invoices, remember}` and returns
 `{order_id, invoice_ids}`; lines can be changed at any stage but shipped, and a received line can't be removed.
+
+### PO stages and invoice payments (024)
+
+- `jt.prep_orders.status`: draft → ordered → invoiced → partial → received → qb_ready → complete.
+  - Receiving sets partial or received by itself. Received means every line arrived in full, or the PO was closed short (`short_ok`).
+  - QB ready and complete are set by hand. Complete requires QB ready.
+  - Stepping back from partial or received to an earlier stage takes the received units back out.
+  - Old stages were mapped: invoice and packing_slip became invoiced, and shipped became complete.
+  - Outgoing Amazon shipments no longer change a PO's stage.
+- `jt.invoices` payment columns: `paid_on` (null means unpaid), `pay_method` (ach, check, credit_card, wire, cash, other), `pay_ref`, `paid_from` and `paid_amount`.
+  - Set them with `jt.invoice_set_payment(inv, p)`, which changes only the keys given.
+  - `jt.po_save` applies each invoice's payment fields. This works on applied invoices and on complete POs too.

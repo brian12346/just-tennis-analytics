@@ -24,7 +24,7 @@
       // History range (header): shipped / received views and Activity. Anything still in progress always loads.
       const [h0, h1] = histRange(), la = (c) => `(${c} at time zone 'America/Los_Angeles')::date between ${JT.day(h0)} and ${JT.day(h1)}`;
       const SHIPWHERE = `where s.status <> 'shipped' or ${la("s.shipped_at")}`;
-      const ORDWHERE = `where o.status <> 'shipped' or ${la("o.updated_at")}`;
+      const ORDWHERE = `where o.status <> 'complete' or ${la("o.updated_at")}`;
       const [items, moves, maps, lst, seed, ships, slines, ords, olines, list] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
@@ -182,7 +182,7 @@
       { c: "sales", l: "Value at Amazon price", v: m0(t.amz), s: "earmarked listing, or the only listing mapped to the product" },
       (() => { const op = d.shipments.filter(x => x.status !== "shipped"); const u = op.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.qty, 0), 0);
         return { l: "In open shipments", v: n0(u), s: op.length ? `units · ${op.filter(x => x.status === "open").length} open, ${op.filter(x => x.status === "started").length} started` : "no shipments in progress" }; })(),
-      (() => { const op = d.orders.filter(o => ["ordered", "invoice", "packing_slip"].includes(o.status)); const u = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received), 0), 0);
+      (() => { const op = d.orders.filter(o => ["ordered", "invoiced", "partial"].includes(o.status)); const u = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received), 0), 0);
         const c = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received) * (lineCost(l) || 0), 0), 0);
         return { l: "On order", v: n0(u), s: op.length ? `units · ${m0(c)} at cost · ${op.length} vendor order${op.length === 1 ? "" : "s"}` : "no vendor orders out" }; })(),
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
@@ -339,12 +339,12 @@
   // draft -> ordered -> invoice -> packing slip -> received -> shipped. Receiving puts the units in the prep center
   // (in parts if needed); "shipped" is when the received stock goes out again, normally on an Amazon Outgoing shipment
   // made from the order. Exceptions work like the outgoing ones: the card turns amber, the popup says how to fix it.
-  const OSTAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoice", "Invoice"], ["packing_slip", "Packing slip"], ["received", "Received"], ["shipped", "Shipped"]];
+  const OSTAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoiced", "Invoiced"], ["partial", "Partly received"], ["received", "Received"], ["qb_ready", "QB Ready"], ["complete", "Complete"]];
   const OSTAGE = new Map(OSTAGES), OORDER = OSTAGES.map(x => x[0]);
-  const PRE = ["draft", "ordered", "invoice", "packing_slip"];
-  const ONEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoice", "Invoice in"], invoice: ["packing_slip", "Packing slip in"] };
-  const OPREV = { ordered: "draft", invoice: "ordered", packing_slip: "invoice", received: "packing_slip", shipped: "received" };
-  const OPILL = { draft: "pos", ordered: "manual", invoice: "other", packing_slip: "other", received: "ok", shipped: "web" };
+  const PRE = ["draft", "ordered", "invoiced"], OGOT = ["partial", "received", "qb_ready", "complete"];
+  const ONEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoiced", "Mark invoiced"], received: ["qb_ready", "Mark QB ready"], qb_ready: ["complete", "Mark complete"] };
+  const OPREV = { ordered: "draft", invoiced: "ordered", partial: "invoiced", received: "invoiced", qb_ready: "received", complete: "qb_ready" };
+  const OPILL = { draft: "pos", ordered: "manual", invoiced: "other", partial: "warn", received: "ok", qb_ready: "web", complete: "ok" };
   const RECEIVED_IDLE_DAYS = 14;
   const lineCost = (l) => l.unitCost != null ? l.unitCost : l.shopCost;
   const poLabel = (po) => /^po\b/i.test(po) ? po : "PO " + po;
@@ -355,30 +355,30 @@
   // o: {id, status, vendor, po, expected, invoiceId, inv, shortOk, stageAt, shipments, lines: [{key, vid, asku, title, sku, pid, ordered, received, unitCost, shopCost}]}
   function orderIssuesOf(o) {
     const out = [];
-    if (!o || o.status === "shipped") return out;
+    if (!o || o.status === "complete") return out;
     const at = OORDER.indexOf(o.status), lines = o.lines.filter(l => l.ordered > 0 || l.received > 0);
     if (o.id && !o.lines.length) out.push({ lvl: "warn", kind: "empty", title: "No products on this order", text: "Add what was ordered so it can be received into the prep center.",
       fixes: [{ label: "Add a product", fix: "focus", arg: "po-add" }] });
-    if (o.status === "received") {
-      const short = lines.filter(l => l.received < l.ordered), over = lines.filter(l => l.received > l.ordered);
+    if (OGOT.includes(o.status)) {
+      const short = o.status === "partial" ? lines.filter(l => l.received < l.ordered) : [], over = lines.filter(l => l.received > l.ordered);
       if (short.length && !o.shortOk) out.push({ lvl: "warn", kind: "partial", title: `Not received in full · ${short.length} product${short.length === 1 ? "" : "s"}`,
         text: short.slice(0, 4).map(l => `${esc(l.title)}: ${n0(l.received)} of ${n0(l.ordered)}`).join(" · ") + (short.length > 4 ? " · …" : "")
           + ". If the rest is coming, receive it when it lands. If the vendor won't send it, close the order short (and ask them for a credit).",
         fixes: [{ label: "Receive the rest", fix: "orecv" }, { label: "Close short", fix: "oshort" }, ...(o.invoiceId ? [{ label: "Open the invoice", fix: "oinv" }] : [])] });
       if (over.length) out.push({ lvl: "info", kind: "over", title: `More arrived than ordered · ${over.length} product${over.length === 1 ? "" : "s"}`,
         text: over.map(l => `${esc(l.title)}: ${n0(l.received)} for ${n0(l.ordered)} ordered`).join(" · ") + ". Check it against the packing slip and invoice.", fixes: [] });
-      const ds = daysSince(o.stageAt.received);
+      const ds = ["partial", "received"].includes(o.status) ? daysSince(o.stageAt.received || o.stageAt.partial) : null;
       const outgoing = (o.shipments || []).filter(sh => sh.status !== "shipped");
       if (ds != null && ds >= RECEIVED_IDLE_DAYS && !outgoing.length) out.push({ lvl: "info", kind: "idle", title: `Received ${ds} days ago, not on an Amazon shipment yet`,
         text: "Create the Amazon Outgoing shipment for it, or mark it shipped if it went out another way.", fixes: [{ label: "Create Amazon shipment", fix: "oship" }] });
     }
-    if (["ordered", "invoice", "packing_slip"].includes(o.status) && o.expected && o.expected < today()) {
+    if (["ordered", "invoiced"].includes(o.status) && o.expected && o.expected < today()) {
       const late = Math.round((new Date(today() + "T12:00:00Z") - new Date(o.expected + "T12:00:00Z")) / 864e5);
       out.push({ lvl: "warn", kind: "late", title: `Late · expected ${shortDate(o.expected)} (${late} day${late === 1 ? "" : "s"} ago)`,
         text: "Chase the vendor for a ship date and update the expected date, or receive it if it's here.",
         fixes: [{ label: "Receive it", fix: "orecv" }, { label: "Change expected date", fix: "focus", arg: "po-exp" }] });
     }
-    if (at >= OORDER.indexOf("invoice") && !o.invoiceId) out.push({ lvl: "warn", kind: "noinv", title: "No invoice linked",
+    if (at >= OORDER.indexOf("invoiced") && !o.invoiceId) out.push({ lvl: "warn", kind: "noinv", title: "No invoice linked",
       text: "Link the vendor's invoice from the Invoices tab so costs and quantities can be checked against it. Upload it there first if it isn't in yet.",
       fixes: [{ label: "Link invoice", fix: "focus", arg: "po-inv" }, { label: "Go to Invoices", fix: "tab", arg: "invoices" }] });
     if (o.inv && o.inv.total != null) {
@@ -393,7 +393,7 @@
         fixes: [{ label: "Mark ordered", fix: "onext" }, { label: "Change the date", fix: "focus", arg: "po-placeby" }] });
     }
     const zero = o.lines.filter(l => !(l.ordered > 0) && !(l.received > 0));
-    if (zero.length && at < OORDER.indexOf("received")) out.push({ lvl: at >= 1 ? "warn" : "info", kind: "noqty", title: `No quantity for ${zero.length} product${zero.length === 1 ? "" : "s"}`,
+    if (zero.length && at < OORDER.indexOf("partial")) out.push({ lvl: at >= 1 ? "warn" : "info", kind: "noqty", title: `No quantity for ${zero.length} product${zero.length === 1 ? "" : "s"}`,
       text: zero.slice(0, 4).map(l => esc(l.title)).join(" · ") + (zero.length > 4 ? " · …" : "") + " — added from On The List without a quantity.", fixes: [{ label: "Enter quantities", fix: "focuskq", k: zero[0].key }] });
     if (at >= 1 && !o.po) out.push({ lvl: "info", kind: "nopo", title: "No PO number", text: "Add the PO # so the invoice and packing slip can be matched to this order.", fixes: [{ label: "Add PO #", fix: "focus", arg: "po-po" }] });
     for (const l of lines) if (lineCost(l) == null) out.push({ lvl: "warn", kind: "nocost", title: `No cost for ${esc(l.title)}`,
@@ -408,23 +408,23 @@
 
   function renderOrders() {
     const d = cache, el = $("prep-orders");
-    const prog = d.orders.filter(o => o.status !== "shipped"), done = d.orders.filter(o => o.status === "shipped");
+    const prog = d.orders.filter(o => o.status !== "complete"), done = d.orders.filter(o => o.status === "complete");
     document.querySelectorAll("#prep-oview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.oView)); b.querySelector("span").textContent = b.dataset.v === "open" ? prog.length : done.length; });
     const cnt = (st) => prog.filter(o => o.status === st).length;
-    $("prep-ostages").innerHTML = P.oView !== "open" || !prog.length ? "" : [["all", "All", prog.length], ...OSTAGES.filter(([k]) => k !== "shipped").map(([k, n]) => [k, n, cnt(k)])]
+    $("prep-ostages").innerHTML = P.oView !== "open" || !prog.length ? "" : [["all", "All", prog.length], ...OSTAGES.filter(([k]) => k !== "complete").map(([k, n]) => [k, n, cnt(k)])]
       .map(([k, n, c]) => `<button data-ost="${k}" aria-pressed="${P.oStage === k}">${n}<b>${c}</b></button>`).join("");
     const list = P.oView === "open" ? prog.filter(o => P.oStage === "all" || o.status === P.oStage).sort((a, b) => OORDER.indexOf(b.status) - OORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)))
       : done.sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     const card = (o) => {
       const ord = o.lines.reduce((a, l) => a + l.ordered, 0), rec = o.lines.reduce((a, l) => a + l.received, 0), cost = o.lines.reduce((a, l) => a + l.ordered * (lineCost(l) || 0), 0);
       const iss = orderIssuesOf(o), lvl = worst(iss), sum = orderSummary(iss);
-      const got = o.status === "received" || o.status === "shipped";
+      const got = OGOT.includes(o.status);
       const out = (o.shipments || []).find(sh => sh.status !== "shipped");
       const next = ONEXT[o.status] ? `<button class="mini" data-oact="next" data-oid="${o.id}">${ONEXT[o.status][1]}</button>`
-        : o.status === "packing_slip" ? `<button class="mini primary" data-oact="recv" data-oid="${o.id}">Receive</button>`
-        : o.status === "received" ? (out ? `<button class="mini" data-oact="goship" data-oid="${o.id}" data-sid="${out.id}">Open shipment</button>` : `<button class="mini primary" data-oact="ship" data-oid="${o.id}">Ship to Amazon</button>`) : "";
-      const back = OPREV[o.status] ? `<button class="mini" data-oact="back" data-oid="${o.id}" title="Move back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}${o.status === "received" ? " — the received units come out of the prep center" : ""}">← ${OSTAGE.get(OPREV[o.status])}</button>` : "";
-      const whenTxt = o.status === "shipped" ? `Shipped ${when(o.stageAt.shipped || o.updated)}` : got ? `Received ${when(o.stageAt.received)}`
+        : ["invoiced", "partial"].includes(o.status) ? `<button class="mini primary" data-oact="recv" data-oid="${o.id}">Receive</button>`
+        : "";
+      const back = OPREV[o.status] ? `<button class="mini" data-oact="back" data-oid="${o.id}" title="Move back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}${["partial", "received"].includes(o.status) ? " — the received units come out of the prep center" : ""}">← ${OSTAGE.get(OPREV[o.status])}</button>` : "";
+      const whenTxt = o.status === "complete" ? `Complete ${when(o.stageAt.complete || o.updated)}` : got ? `Received ${when(o.stageAt.received || o.stageAt.partial)}`
         : o.kind === "booking" && o.status === "draft" && o.placeBy ? `Place by ${shortDate(o.placeBy)}`
         : o.expected ? `Expected ${shortDate(o.expected)}` : `${OSTAGE.get(o.status)} ${when(o.stageAt[o.status] || o.created)}`;
       const t = o.lines.map(l => l.title), contents = !t.length ? "No products yet" : t.length === 1 ? t[0] : t.length === 2 ? t[0] + " + " + t[1] : `${t[0]} + ${t.length - 1} more`;
@@ -438,7 +438,7 @@
       </div>`;
     };
     el.innerHTML = (P.oView === "open" ? `<button class="shipcard newcard" data-oact="new"><span class="plus">+</span><b>New vendor order</b><span class="dim small">Products by Shopify SKU, UPC, ASIN or Amazon SKU</span></button>` : "")
-      + (list.map(card).join("") || (P.oView === "open" ? "" : '<div class="muted small">No orders shipped out in the history range above.</div>'));
+      + (list.map(card).join("") || (P.oView === "open" ? "" : '<div class="muted small">No completed orders in the history range above.</div>'));
   }
 
   // ---------- order popup ----------
@@ -451,6 +451,7 @@
     return invList;
   }
   function openOrder(id) {
+    if (window.JTPO) { P.modal = null; renderModal(); window.JTPO.open(id || null); return; }    // orders are edited on the Purchase orders tab
     const o = id ? cache.orders.find(x => x.id === String(id)) : null;
     P.modal = { kind: "order", id: o ? o.id : null, status: o ? o.status : "draft", vendor: o ? o.vendor : "", po: o ? o.po : "", expected: o ? o.expected : "", invoiceId: o ? o.invoiceId : "",
       okind: o ? o.kind : "order", placeBy: o ? o.placeBy : "",
@@ -537,7 +538,7 @@
           <button class="btn" data-oact="recv-cancel">Cancel</button><button class="btn primary" data-oact="recv-go" ${!recvUnits || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : `Receive ${n0(recvUnits)} units`}</button>` : `
           ${M.id && !got ? '<button class="btn" data-oact="del">Delete</button>' : ""}
           <button class="btn" data-oact="save" ${P.busy ? "disabled" : ""}>Save</button>
-          ${ONEXT[M.status] ? `<button class="btn" data-oact="save-next">Save &amp; ${ONEXT[M.status][1].toLowerCase()}</button>` : ""}
+          ${ONEXT[M.status] ? `<button class="btn" data-oact="save-next">Save &amp; ${ONEXT[M.status][1].replace(/^M/, "m")}</button>` : ""}
           ${!got && M.lines.length ? `<button class="btn ${M.status === "packing_slip" ? "primary" : ""}" data-oact="recv-start">Receive…</button>` : ""}
           ${M.status === "received" ? `<button class="btn" data-oact="recv-start">Receive more…</button><button class="btn" data-oact="shipped">Mark shipped</button><button class="btn primary" data-oact="ship">Create Amazon shipment</button>` : ""}`}</span></div>`;
   }
@@ -625,10 +626,10 @@
         e.stopPropagation(); const a = b.dataset.oact, o = b.dataset.oid && cache.orders.find(x => x.id === b.dataset.oid);
         if (a === "new") return openOrder();
         if (a === "next") { try { await JT.prep.setOrderStatus(Number(o.id), ONEXT[o.status][0]); await load(true); render(); } catch (err) { note("bad", "Couldn't update the order: " + esc(JT.message(err))); } return; }
-        if (a === "recv") { openOrder(o.id); orderFix({ fix: "orecv" }); return; }
+        if (a === "recv") return openOrder(o.id);
         if (a === "ship") return shipFromOrder(o);
         if (a === "goship") return openShipment(b.dataset.sid);
-        if (a === "back") { if (o.status === "received") { openOrder(o.id); P.modal.confirm = "unrecv"; renderModal(); return; }
+        if (a === "back") { if (["partial", "received"].includes(o.status)) return openOrder(o.id);
           try { await JT.prep.setOrderStatus(Number(o.id), OPREV[o.status]); note("info", `${esc(o.vendor)} ${esc(orderTitle(o))} moved back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}.`); await load(true); render(); }
           catch (err) { note("bad", "Couldn't move it back: " + esc(JT.message(err))); } return; }
         return;
@@ -692,7 +693,7 @@
   // Marked from the prep center, Amazon inventory, Inventory value or the search box here; each item is for the prep
   // center (Amazon) or the Shopify store. Tick items and put them on the vendor's in-flight draft order or a booking
   // order (Incoming Inventory). Its status follows that order.
-  const listStage = (i) => i.closed ? "done" : !i.order ? "need" : i.order.status === "draft" ? "draft" : ["received", "shipped"].includes(i.order.status) ? "done" : "onorder";
+  const listStage = (i) => i.closed ? "done" : !i.order ? "need" : i.order.status === "draft" ? "draft" : OGOT.includes(i.order.status) ? "done" : "onorder";
   function listStatus(i) {
     const st = listStage(i), o = i.order;
     if (st === "need") return '<span class="pill miss">Needs an order</span>';
@@ -951,7 +952,7 @@
       html = `<div class="panel-head"><h2>${M.id ? esc(M.shipment || "Shipment #" + M.id) : "New shipment"}</h2><span class="steps">${steps}</span><button class="mini" data-act="close">Close</button></div>
         ${!M.id && M.fromRow && open.length ? `<label class="small muted" for="pm-into">Add this product to <select id="pm-into" class="inp sm" style="width:auto"><option value="">a new shipment</option>${open.map(x => `<option value="${x.id}">${esc(shipTitle(x))} (${STATUS[x.status][0].toLowerCase()})</option>`).join("")}</select></label>` : ""}
         ${issuesHtml(iss)}
-        ${M.orderId || (M.sh && M.sh.orderId) ? (() => { const o = cache.orders.find(x => x.id === String(M.orderId || M.sh.orderId)); return o ? `<div class="row small muted">From Incoming Inventory: <button class="linkbtn small" data-fix="gotoorder" data-arg="${o.id}">${esc(o.vendor)} ${esc(orderTitle(o))}</button>${M.status !== "shipped" ? " — marking this shipped marks that order shipped too" : ""}</div>` : ""; })() : ""}
+        ${M.orderId || (M.sh && M.sh.orderId) ? (() => { const o = cache.orders.find(x => x.id === String(M.orderId || M.sh.orderId)); return o ? `<div class="row small muted">From Incoming Inventory: <button class="linkbtn small" data-fix="gotoorder" data-arg="${o.id}">${esc(o.vendor)} ${esc(orderTitle(o))}</button></div>` : ""; })() : ""}
         ${ro ? `<div class="note info">Shipped ${when(M.sh.shipped)}${M.sh.shippedBy ? " by " + esc(M.sh.shippedBy) : ""} to ${esc(M.dest)}. These units left the prep center.</div>` : ""}
         <div class="pmgrid">
           <label class="stack" for="pm-ship">Shipment ID or name<input id="pm-ship" class="inp mono" value="${esc(M.shipment)}" placeholder="e.g. FBA18ABC1234" ${ro ? "disabled" : ""}></label>

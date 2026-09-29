@@ -23,11 +23,15 @@
   const shortDate = (ds) => ds ? new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
   const OI = () => window.JTOrderIssues;
 
-  const STAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoice", "Invoice"], ["packing_slip", "Packing slip"], ["received", "Received"], ["shipped", "Shipped"]];
-  const STAGE = new Map(STAGES), ORDER = STAGES.map(x => x[0]), PRE = ["draft", "ordered", "invoice", "packing_slip"];
-  const NEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoice", "Invoice in"], invoice: ["packing_slip", "Packing slip in"] };
-  const PREV = { ordered: "draft", invoice: "ordered", packing_slip: "invoice", received: "packing_slip", shipped: "received" };
-  const PILL = { draft: "pos", ordered: "manual", invoice: "other", packing_slip: "other", received: "ok", shipped: "web" };
+  // draft -> ordered -> invoiced -> partial (some received) -> received -> qb_ready (bills in QuickBooks) -> complete
+  const STAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoiced", "Invoiced"], ["partial", "Partly received"], ["received", "Received"], ["qb_ready", "QB Ready"], ["complete", "Complete"]];
+  const STAGE = new Map(STAGES), ORDER = STAGES.map(x => x[0]), PRE = ["draft", "ordered", "invoiced"], GOT = ["partial", "received", "qb_ready", "complete"];
+  const NEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoiced", "Mark invoiced"], received: ["qb_ready", "Mark QB ready"], qb_ready: ["complete", "Mark complete"] };
+  const PREV = { ordered: "draft", invoiced: "ordered", partial: "invoiced", received: "invoiced", qb_ready: "received", complete: "qb_ready" };
+  const PILL = { draft: "pos", ordered: "manual", invoiced: "other", partial: "warn", received: "ok", qb_ready: "web", complete: "ok" };
+  const PAY = [["ach", "ACH"], ["check", "Check"], ["credit_card", "Credit card"], ["wire", "Wire"], ["cash", "Cash"], ["other", "Other"]], PAYN = new Map(PAY);
+  const payTxt = (iv) => iv.paidOn ? [PAYN.get(iv.payMethod) || "Paid", shortDate(iv.paidOn), iv.payRef, iv.paidFrom ? "from " + iv.paidFrom : ""].filter(Boolean).join(" · ") : "";
+  const overdue = (iv) => !iv.paidOn && iv.due && iv.due < today();
   const poLabel = (po) => /^po\b/i.test(po) ? po : "PO " + po;
   const SURE = new Set(["remembered", "sku", "upc", "manual", "confirmed"]);
   const HOW = { remembered: "Remembered", sku: "SKU match", upc: "UPC match", manual: "Picked", confirmed: "Confirmed", skupart: "Part of SKU", guess: "Guess" };
@@ -65,12 +69,13 @@
       "(select count(*) from jt.prep_order_lines l where l.order_id = o.id and l.dest = 'prep')",
       `(select coalesce(sum(il.qty), 0) ${IL} and il.variant_id is not null)`,
       "(select count(*) from jt.prep_order_lines l where l.order_id = o.id and l.backorder and l.qty_received < l.qty_ordered)",
-      "(select min(l.eta)::text from jt.prep_order_lines l where l.order_id = o.id and l.backorder and l.qty_received < l.qty_ordered)"],
+      "(select min(l.eta)::text from jt.prep_order_lines l where l.order_id = o.id and l.backorder and l.qty_received < l.qty_ordered)",
+      `(select count(*) ${IV} and ii.paid_on is null)`, `(select min(ii.due_date)::text ${IV} and ii.paid_on is null)`, `(select sum(coalesce(ii.total, ii.subtotal)) ${IV} and ii.paid_on is null)`],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
-      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "" }))
+      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29] }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
   }
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
@@ -221,19 +226,23 @@
     return { id: null, status: "draft", vendor: "", po: "", kind: "order", placeBy: "", expected: "", note: "", shortOk: false, stageAt: {}, created: null, shipments: [],
       lines: [], invoices: [], cur: -1, removed: [], dest: "shopify", add: "", recv: null, confirm: false, dirty: false, search: null, showPdf: false, boPrompt: false };
   }
-  const blankInv = () => ({ id: null, no: "", date: "", due: "", total: null, terms: "", subtotal: null, fileName: "", parts: 0, status: "draft", notes: "", file: null, raw: null, rows: [], filter: "all", isNew: true });
+  const blankInv = () => ({ id: null, no: "", date: "", due: "", total: null, terms: "", subtotal: null, fileName: "", parts: 0, status: "draft", notes: "", file: null, raw: null, rows: [], filter: "all", isNew: true,
+    paidOn: "", payMethod: "", payRef: "", paidFrom: "", paidAmount: null });
   async function openPO(id, keep) {
     if (!id) { S.ed = Object.assign(blankEd(), keep || {}); render(); catalog().then(render).catch(() => {}); return; }
     S.ed = null; S.busy = "Opening the purchase order…"; render();
     try {
       await catalog();
-      const [h, ol, sh, ivs] = await Promise.all([
+      const [h, ol, sh, ivs, lp] = await Promise.all([
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
-        JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms"],
+        JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
+          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount"],
           `from jt.invoices i where i.order_id = ${JT.int(id)} or i.id = (select invoice_id from jt.prep_orders where id = ${JT.int(id)}) order by i.id`, true),
+        // how this vendor was paid last time (for Mark paid)
+        JT.rows(["i.pay_method", "i.paid_from"], `from jt.invoices i where i.vendor = (select vendor from jt.prep_orders where id = ${JT.int(id)}) and i.pay_method <> '' order by i.paid_on desc nulls last, i.id desc limit 1`, true),
       ]);
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
@@ -241,7 +250,9 @@
         stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
-        notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false }));
+        notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
+        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15] }));
+      ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       if (ed.invoices.length) {
         const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account"],
           `from jt.invoice_lines where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")}) order by invoice_id, line_no`, true);
@@ -321,7 +332,7 @@
       if (!ed) {
         // an open order from the same vendor with this PO # takes the invoice
         if (!S.orders) await loadOrders(false);
-        const same = inv.po_no && S.orders.find(o => o.status !== "shipped" && norm(o.po) === norm(inv.po_no) && (!inv.vendor || !o.vendor || o.vendor.toLowerCase() === inv.vendor.toLowerCase()));
+        const same = inv.po_no && S.orders.find(o => o.status !== "complete" && norm(o.po) === norm(inv.po_no) && (!inv.vendor || !o.vendor || o.vendor.toLowerCase() === inv.vendor.toLowerCase()));
         if (same) { S.busy = ""; await openPO(same.id); ed = S.ed; msg = `This invoice's PO # matches <b>${esc(same.vendor)} ${esc(poLabel(same.po))}</b>, so it was added to that order. `; S.busy = "Reading " + file.name + "…"; }
         else { ed = blankEd(); S.ed = ed; }
       }
@@ -420,12 +431,22 @@
     const late = bo.filter(l => l.eta && l.eta < today());
     if (late.length) out.push({ lvl: "warn", kind: "eta", title: `${late.length} backorder${late.length === 1 ? " is" : "s are"} past the expected date`,
       text: late.slice(0, 4).map(l => `${esc((variant(l.vid) || {}).title || l.vid)} (ETA ${shortDate(l.eta)})`).join(" · ") + ". Chase the vendor and update the ETA.", fixes: [] });
-    if (ed.status === "received") {
+    if (ed.status === "partial") {
       const short = ed.lines.filter(l => pr.get(l.id).received < pr.get(l.id).ordered && !l.backorder);
-      if (short.length && !ed.shortOk) out.push({ lvl: "warn", kind: "partial", title: `Not received in full · ${short.length} product${short.length === 1 ? "" : "s"}`,
-        text: "If the rest is coming, mark it backordered (with an ETA if you have one). If the vendor won't send it, close the PO short.",
+      if (short.length) out.push({ lvl: "warn", kind: "partial", title: `Partly received · ${short.length} product${short.length === 1 ? "" : "s"} still to come`,
+        text: "If the rest is coming, mark it backordered (with an ETA if you have one). If the vendor won't send it, close the PO short — it moves to Received.",
         fixes: [{ label: "Mark them backordered", fix: "pbo" }, { label: "Close short", fix: "oshort" }] });
     }
+    const unpaid = ed.invoices.filter(v => v.id && !v.paidOn), late2 = unpaid.filter(overdue);
+    if (late2.length) out.push({ lvl: "warn", kind: "overdue", title: `${late2.length === 1 ? "Invoice " + esc(late2[0].no || "") + " is" : late2.length + " invoices are"} past due and not marked paid`,
+      text: late2.map(v => `${esc(v.no || "invoice")}: due ${shortDate(v.due)}${v.total != null ? " · " + m(v.total) : ""}`).join(" · ") + ". Pay it, or mark it paid if it already was.",
+      fixes: [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(late2[0])) }] });
+    if (ed.status === "received") out.push({ lvl: "info", kind: "toqb", title: "Received — enter the bills in QuickBooks",
+      text: "Use the For QuickBooks box on each invoice, then mark this PO QB ready.", fixes: [{ label: "Mark QB ready", fix: "onext" }] });
+    if (ed.status === "qb_ready") out.push(unpaid.length
+      ? { lvl: "info", kind: "unpaid", title: `${unpaid.length} invoice${unpaid.length === 1 ? "" : "s"} not paid yet`, text: "Mark each invoice paid (with how it was paid) as the bills go out. Then mark the PO complete.",
+          fixes: [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(unpaid[0])) }] }
+      : { lvl: "info", kind: "allpaid", title: "Every invoice is paid", text: "Nothing left to do on this PO.", fixes: [{ label: "Mark complete", fix: "onext" }] });
     const rank = { bad: 0, warn: 1, info: 2 };
     return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
   }
@@ -444,6 +465,7 @@
       else if (iv.total == null && iv.subtotal != null && !near(ba.all, iv.subtotal) && !near(inv, iv.subtotal)) out.push({ lvl: "warn", kind: "subtotal", title: `Lines add up to ${m(ba.all)}; the invoice subtotal is ${m(iv.subtotal)}`,
         text: "A line may not have been read, or a quantity or cost is off.", fixes: [{ label: "Show the PDF", fix: "ppdf" }] });
       if (iv.total == null) out.push({ lvl: "info", kind: "nototal", title: "No invoice total", text: "Enter it so the QuickBooks breakdown can be checked.", fixes: [{ label: "Enter it", fix: "focus", arg: "pe-invtotal" }] });
+      if (overdue(iv)) out.push({ lvl: "warn", kind: "overdue", title: `Past due · was due ${shortDate(iv.due)}`, text: "Not marked paid yet.", fixes: [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(iv)) }] });
       if (!iv.due) out.push({ lvl: "info", kind: "nodue", title: "No due date", text: "Enter the due date (or the terms) for the QuickBooks bill.", fixes: [{ label: "Enter it", fix: "focus", arg: "pe-invdue" }] });
     }
     const rank = { bad: 0, warn: 1, info: 2 };
@@ -454,11 +476,14 @@
     const f = [];
     if (o.unmatched) f.push(["warn", `${o.unmatched} not matched`]);
     if (o.guesses) f.push(["warn", `${o.guesses} to check`]);
-    if (["ordered", "invoice", "packing_slip"].includes(o.status) && o.expected && o.expected < today()) f.push(["warn", "late"]);
-    if (ORDER.indexOf(o.status) >= 2 && ORDER.indexOf(o.status) < 5 && !o.nInv) f.push(["warn", "no invoice"]);
+    if (["ordered", "invoiced"].includes(o.status) && o.expected && o.expected < today()) f.push(["warn", "late"]);
+    if (ORDER.indexOf(o.status) >= 2 && !o.nInv) f.push(["warn", "no invoice"]);
     if (o.status === "draft" && o.kind === "booking" && o.placeBy && o.placeBy < today()) f.push(["warn", "past place-by"]);
     if (o.nBack) f.push([o.backEta && o.backEta < today() ? "warn" : "info", `${o.nBack} backordered${o.backEta ? " · ETA " + shortDate(o.backEta) : ""}`]);
-    if (o.status === "received" && o.received < o.units && !o.nBack) f.push(["info", "received short"]);
+    if (o.status === "partial" && !o.nBack) f.push(["info", "rest not backordered"]);
+    if (o.nUnpaid && o.unpaidDue && o.unpaidDue < today()) f.push(["warn", "bill overdue"]);
+    if (o.status === "received") f.push(["info", "enter in QuickBooks"]);
+    if (o.status === "qb_ready" && !o.nUnpaid) f.push(["info", "all paid · complete it"]);
     return f;
   }
 
@@ -470,34 +495,37 @@
     $("po-list-view").hidden = !!S.ed; $("po-edit-view").hidden = !S.ed;
     if (S.ed) return;
     const all = S.orders || [];
-    const cnt = (st) => all.filter(o => st === "open" ? PRE.includes(o.status) : st === "all" ? true : o.status === st).length;
+    const isOpen = (o) => o.status !== "complete";
+    const cnt = (st) => all.filter(o => st === "open" ? isOpen(o) : st === "all" ? true : o.status === st).length;
     $("po-stage").innerHTML = [["open", "Open"], ...STAGES, ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
     const vs = [...new Set(all.map(o => o.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const vsel = $("po-vendor"); const want = ["all", ...vs].join("|");
     if (vsel.dataset.opts !== want) { vsel.innerHTML = `<option value="all">All vendors</option>` + vs.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join(""); vsel.dataset.opts = want; vsel.value = vs.includes(S.vendor) ? S.vendor : "all"; }
-    const open = all.filter(o => PRE.includes(o.status)), out = all.filter(o => ["ordered", "invoice", "packing_slip"].includes(o.status));
-    const flagged = open.concat(all.filter(o => o.status === "received")).filter(o => listFlags(o).some(f => f[0] !== "info"));
+    const open = all.filter(isOpen), out = all.filter(o => ["ordered", "invoiced", "partial"].includes(o.status));
+    const flagged = open.filter(o => listFlags(o).some(f => f[0] !== "info"));
+    const unpaid = all.filter(o => o.nUnpaid), overdueN = unpaid.filter(o => o.unpaidDue && o.unpaidDue < today()).length;
     $("po-kpis").innerHTML = [
-      { l: "Open POs", v: n0(open.length), s: `${all.filter(o => o.status === "draft").length} draft · ${out.length} placed, not received` },
-      { c: "cost", l: "On order", v: m0(out.reduce((a, o) => a + o.cost, 0)), s: `${n0(out.reduce((a, o) => a + o.units, 0))} units at cost` },
+      { l: "Open POs", v: n0(open.length), s: `${all.filter(o => o.status === "draft").length} draft · ${out.length} placed, not all received` },
+      { c: "cost", l: "On order", v: m0(out.reduce((a, o) => a + o.cost * (o.units ? Math.max(0, o.units - o.received) / o.units : 1), 0)), s: `${n0(out.reduce((a, o) => a + Math.max(0, o.units - o.received), 0))} units to come, at cost` },
+      { l: "Unpaid invoices", v: m0(unpaid.reduce((a, o) => a + o.unpaidAmt, 0)), s: `${n0(unpaid.reduce((a, o) => a + o.nUnpaid, 0))} invoice${unpaid.reduce((a, o) => a + o.nUnpaid, 0) === 1 ? "" : "s"}${overdueN ? ` · <b class="neg">${overdueN} PO${overdueN === 1 ? "" : "s"} overdue</b>` : ""}` },
       { l: "Backordered", v: n0(all.reduce((a, o) => a + o.nBack, 0)), s: "products still to come on open POs" },
-      { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice" : "nothing flagged" },
+      { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice, overdue" : "nothing flagged" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     const q = S.q.trim().toLowerCase().replace(/^#/, "");
-    const list = all.filter(o => (S.stage === "open" ? PRE.includes(o.status) : S.stage === "all" || o.status === S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
+    const list = all.filter(o => (S.stage === "open" ? isOpen(o) : S.stage === "all" || o.status === S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
     const t = $("po-table");
     if (!S.orders) { t.innerHTML = `<tbody><tr><td class="l muted">${S.loading ? "Loading…" : ""}</td></tr></tbody>`; return; }
     t.innerHTML = `<thead><tr><th class="l">PO</th><th class="l">Vendor</th><th class="l">Stage</th><th>Products</th><th>Ordered</th><th>Invoiced</th><th>Received</th><th>Cost</th><th class="l">Invoices</th><th class="l">Dates</th><th class="l">Needs attention</th></tr></thead><tbody>${
       list.map(o => {
-        const fl = listFlags(o), got = ["received", "shipped"].includes(o.status);
+        const fl = listFlags(o), got = GOT.includes(o.status);
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
         return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
           <td class="l"><span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span></td>
           <td>${n0(o.nLines)}</td><td>${n0(o.units)}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
-          <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null || o.due ? `<div class="meta">${o.invTotal != null ? m(o.invTotal) : ""}${o.due ? ` · due ${shortDate(o.due)}` : ""}</div>` : ""}` : '<span class="dim">—</span>'}</td>
+          <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null || o.due ? `<div class="meta">${o.invTotal != null ? m(o.invTotal) : ""}${o.nUnpaid && o.unpaidDue ? ` · due ${shortDate(o.unpaidDue)}` : ""}</div>` : ""}<div>${!o.nUnpaid ? '<span class="pill ok">Paid</span>' : o.unpaidDue && o.unpaidDue < today() ? `<span class="pill miss">${o.nUnpaid < o.nInv ? o.nUnpaid + " " : ""}Overdue</span>` : `<span class="pill warn">${o.nUnpaid < o.nInv ? o.nUnpaid + " " : ""}Unpaid</span>`}</div>` : '<span class="dim">—</span>'}</td>
           <td class="l small">${dates}</td>
           <td class="l">${fl.map(f => `<span class="pill ${f[0] === "info" ? "pos" : "miss"}">${esc(f[1])}</span>`).join("")}</td></tr>`;
       }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open purchase orders. Start one with New PO, or upload a vendor invoice PDF." : "No purchase orders match."}</td></tr>`}</tbody>`;
@@ -509,9 +537,9 @@
     $("po-list-view").hidden = true; $("po-edit-view").hidden = false;
     const box = $("po-edit-view");
     const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, f: document.activeElement.dataset.f, s: document.activeElement.selectionStart } : null;
-    const ro = ed.status === "shipped", got = ed.status === "received" || ro;
+    const ro = ed.status === "complete", got = GOT.includes(ed.status);
     const at = ORDER.indexOf(ed.status);
-    const steps = STAGES.map(([k, n], i) => { const click = ed.id && !got && PRE.includes(k) && k !== ed.status;
+    const steps = STAGES.map(([k, n], i) => { const click = ed.id && !got && PRE.includes(k) && k !== ed.status && !ed.lines.some(l => l.received > 0);
       return `<${click ? "button" : "span"} class="step ${k === ed.status ? "on" : i < at ? "done" : ""}" ${click ? `data-pgo="${k}" title="Move to ${n}"` : ""}>${n}</${click ? "button" : "span"}>`; }).join('<span class="step-sep">→</span>');
     const pr = progress(ed), iss = S.cat ? poIssues(ed) : [];
     let tot = { ordered: 0, invoiced: 0, received: 0, open: 0, back: 0, cost: 0 };
@@ -548,7 +576,7 @@
     box.innerHTML = `
       <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ""}</div>
       <section class="panel">
-        <div class="panel-head po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</h2><span class="steps six">${steps}</span></div>
+        <div class="panel-head po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</h2><span class="steps six seven">${steps}</span></div>
         <div class="pmgrid">
           <label class="stack" for="pe-vendor">Vendor<input id="pe-vendor" class="inp" list="pe-vendors" value="${esc(ed.vendor)}" ${got ? "disabled" : ""} autocomplete="off" placeholder="Shopify vendor"><datalist id="pe-vendors">${vendorOpts}</datalist></label>
           <label class="stack" for="pe-po">PO #<input id="pe-po" class="inp mono" value="${esc(ed.po)}" ${ro ? "disabled" : ""}></label>
@@ -571,8 +599,9 @@
         ${!ro && !ed.recv ? `<div class="addbox"><label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
           ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}
         ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order and its draft invoices? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
-        ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to packing slip? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
-        ${ed.confirm === "shipped" ? `<div class="note warn">Mark this order shipped out? Stock doesn't change — for prep-center stock use Create Amazon shipment instead. <span class="dbtns"><button class="mini primary" data-pact="do-shipped">Yes, mark shipped</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
+        ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
+        ${ed.confirm === "short" ? `<div class="note warn">Close this PO short? What wasn't received is treated as not coming (ask the vendor for a credit if it was billed), and the PO moves to Received. <span class="dbtns"><button class="mini primary" data-pact="do-short">Yes, close it short</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
+        ${ro ? `<div class="note info">This PO is complete, so its products and invoice lines are locked. Invoice payments can still be changed. Step it back to QB ready to change anything else.</div>` : ""}
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
           <span class="dbtns right">${footButtons(ed, got, ro)}</span></div>
       </section>
@@ -587,7 +616,7 @@
   function invoicesHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
     const chips = ed.invoices.map((v, i) => { const c = count(v), bad = c.check + c.none;
-      return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}${v.due ? " · due " + shortDate(v.due) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${v.isNew ? '<span class="pill warn">new</span>' : ""}</button>`; }).join("");
+      return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}${v.due ? " · due " + shortDate(v.due) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${v.isNew ? '<span class="pill warn">new</span>' : v.paidOn ? '<span class="pill ok">Paid</span>' : overdue(v) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</button>`; }).join("");
     const head = `<div class="panel-head"><h2>Invoices</h2><span class="muted small">${ed.invoices.length ? `${ed.invoices.length} on this PO` : "none yet"} · a vendor can bill in parts</span></div>
       <div class="ivchips">${chips}${!ro ? `<label class="ivchip add" for="pe-file"><b>+ Add invoice</b><span>upload the PDF or drop it here</span></label>` : ""}</div>`;
     if (!iv) return `<section class="panel po-inv" id="pe-drop">${head}</section>`;
@@ -608,7 +637,7 @@
         <td>${!lock ? `<button class="linkbtn small" data-pact="rmrow" data-k="${r.id}" title="Remove this invoice line" aria-label="Remove line">✕</button>` : ""}</td></tr>`;
     }).join("");
     return `<section class="panel po-inv" id="pe-drop">${head}
-      <div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}</span>
+      <div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""} ${iv.paidOn ? '<span class="pill ok">Paid</span>' : overdue(iv) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</span>
         <span class="dbtns">${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro ? `<button class="mini" data-pact="rminv">Remove from PO</button>` : ""}</span></div>
       ${ed.confirm === "rminv" ? `<div class="note warn">Take invoice ${esc(iv.no || "")} off this PO? ${iv.id && iv.status === "applied" ? "It was applied on the Invoices tab, so it's only detached." : "It's deleted when you save."} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
       <div class="pmgrid small-grid">
@@ -619,6 +648,7 @@
         <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lock ? "disabled" : ""}></label>
         <label class="stack" for="pe-invtotal">Invoice total<input id="pe-invtotal" class="inp num" value="${iv.total != null ? iv.total.toFixed(2) : ""}" ${ro ? "disabled" : ""}></label>
       </div>
+      ${payHtml(ed, iv)}
       ${qbHtml(ed, iv)}
       ${iss.length ? window.JTIssues.issuesHtml(iss) : ""}
       <div class="po-body ${pdfOn ? "with-pdf" : ""}">
@@ -649,35 +679,55 @@
       <div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${chip}</div>
       ${!lock ? `<div class="mrow">${!sure ? `<button class="mini primary" data-pact="confirm" data-k="${r.id}">Confirm</button>` : ""}${alts}<button class="linkbtn small" data-pact="search" data-k="${r.id}">${sure ? "change" : "search"}</button></div>` : ""}`;
   }
+  // Paying the invoice: always editable (also on applied invoices and complete POs).
+  function payHtml(ed, iv) {
+    const amt = iv.total != null ? iv.total : iv.subtotal != null ? iv.subtotal : null;
+    const diff = iv.paidOn && iv.paidAmount != null && amt != null && !near(iv.paidAmount, amt) ? iv.paidAmount - amt : null;
+    return `<div class="pay ${iv.paidOn ? "paid" : overdue(iv) ? "late" : ""}"><div class="pay-head"><b>Payment</b>${iv.paidOn ? `<span class="pill ok">Paid ${esc(shortDate(iv.paidOn))}</span>` : overdue(iv) ? `<span class="pill miss">Overdue · due ${esc(shortDate(iv.due))}</span>` : `<span class="pill warn">Unpaid${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}</span>`}
+        <span class="dbtns">${iv.paidOn ? `<button class="mini" data-pact="unpay">Mark unpaid</button>` : `<button class="mini primary" data-pact="pay">Mark paid</button>`}</span></div>
+      ${iv.paidOn || iv.payMethod || iv.payRef || iv.paidFrom ? `<div class="pmgrid small-grid">
+        <label class="stack" for="pe-paidon">Paid on<input id="pe-paidon" class="inp" type="date" value="${esc(iv.paidOn)}"></label>
+        <label class="stack" for="pe-paymethod">Paid by<select id="pe-paymethod" class="inp"><option value="" ${!iv.payMethod ? "selected" : ""}>—</option>${PAY.map(([k, n]) => `<option value="${k}" ${iv.payMethod === k ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+        <label class="stack" for="pe-payref">Reference<input id="pe-payref" class="inp mono" value="${esc(iv.payRef)}" placeholder="${iv.payMethod === "check" ? "check no." : iv.payMethod === "credit_card" ? "last 4 / confirmation" : "confirmation no."}"></label>
+        <label class="stack" for="pe-paidfrom">Paid from<input id="pe-paidfrom" class="inp" list="pe-payfroms" value="${esc(iv.paidFrom)}" placeholder="bank account or card"><datalist id="pe-payfroms">${[...new Set(ed.invoices.map(v => v.paidFrom).concat(ed.lastPay ? [ed.lastPay.from] : []).filter(Boolean))].map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>
+        <label class="stack" for="pe-paidamt">Amount paid<input id="pe-paidamt" class="inp num" value="${iv.paidAmount != null ? iv.paidAmount.toFixed(2) : ""}" inputmode="decimal" placeholder="${amt != null ? amt.toFixed(2) : ""}"></label>
+      </div>${diff != null ? `<div class="meta ${diff < 0 ? "neg" : ""}">Paid ${m(iv.paidAmount)} against an invoice total of ${m(amt)} (${diff > 0 ? "+" : ""}${m(diff)}).</div>` : ""}` : ""}</div>`;
+  }
+  function markPaid(ed, iv) {
+    iv.paidOn = iv.paidOn || today();
+    if (iv.paidAmount == null) iv.paidAmount = iv.total != null ? iv.total : iv.subtotal != null ? iv.subtotal : iv.rows.length ? byAccount(iv).all : null;
+    const prev = ed.invoices.find(v => v !== iv && v.payMethod) || null, lp = prev ? { method: prev.payMethod, from: prev.paidFrom } : ed.lastPay;
+    if (!iv.payMethod && lp) { iv.payMethod = lp.method; if (!iv.paidFrom) iv.paidFrom = lp.from || ""; }
+    ed.dirty = true;
+  }
   // A bill as it goes into QuickBooks: header fields and one amount per account.
   function qbHtml(ed, iv) {
     if (!iv.rows.length) return "";
     const ba = byAccount(iv), diff = iv.total != null ? Math.round((iv.total - ba.all) * 100) / 100 : null;
     return `<div class="qb"><div class="qb-head"><b>For QuickBooks</b><span class="muted small">enter as a bill</span><button class="mini" data-pact="qbcopy">Copy</button></div>
       <dl class="qb-meta"><div><dt>Vendor</dt><dd>${esc(ed.vendor || "—")}</dd></div><div><dt>Bill no.</dt><dd class="mono">${esc(iv.no || "—")}</dd></div><div><dt>Bill date</dt><dd>${esc(iv.date || "—")}</dd></div>
-        <div><dt>Due date</dt><dd>${esc(iv.due || "—")}</dd></div><div><dt>Terms</dt><dd>${esc(iv.terms || "—")}</dd></div>${ed.po ? `<div><dt>PO / memo</dt><dd class="mono">${esc(ed.po)}</dd></div>` : ""}</dl>
+        <div><dt>Due date</dt><dd>${esc(iv.due || "—")}</dd></div><div><dt>Terms</dt><dd>${esc(iv.terms || "—")}</dd></div>${ed.po ? `<div><dt>PO / memo</dt><dd class="mono">${esc(ed.po)}</dd></div>` : ""}<div><dt>Payment</dt><dd>${iv.paidOn ? esc(payTxt(iv)) : "Unpaid"}</dd></div></dl>
       <table class="qb-t"><thead><tr><th class="l">Account</th><th>Amount</th></tr></thead><tbody>${ACCOUNTS.map(([k, n]) => `<tr><td class="l">${n}</td><td>${m(ba.out.get(k) || 0)}</td></tr>`).join("")}</tbody>
         <tfoot><tr><td class="l">Total</td><td>${m(ba.all)}</td></tr>${diff != null ? `<tr class="${Math.abs(diff) >= 0.01 ? "off" : "ok"}"><td class="l">Invoice total</td><td>${m(iv.total)}${Math.abs(diff) >= 0.01 ? ` <span class="small">(${diff > 0 ? "+" : ""}${m(diff)} not assigned)</span>` : ' <span class="small">✓ matches</span>'}</td></tr>` : ""}</tfoot></table></div>`;
   }
   function qbText(ed, iv) {
     const ba = byAccount(iv);
-    return [["Vendor", ed.vendor], ["Bill no.", iv.no], ["Bill date", iv.date], ["Due date", iv.due], ["Terms", iv.terms], ["Memo", ed.po ? poLabel(ed.po) : ""]]
+    return [["Vendor", ed.vendor], ["Bill no.", iv.no], ["Bill date", iv.date], ["Due date", iv.due], ["Terms", iv.terms], ["Memo", ed.po ? poLabel(ed.po) : ""],
+      ["Paid on", iv.paidOn], ["Payment method", PAYN.get(iv.payMethod) || ""], ["Payment ref.", iv.payRef], ["Paid from", iv.paidFrom], ["Amount paid", iv.paidAmount != null ? iv.paidAmount.toFixed(2) : ""]]
       .map(([k, v]) => k + "\t" + (v || "")).concat(ACCOUNTS.map(([k, n]) => n + "\t" + (ba.out.get(k) || 0).toFixed(2)), ["Total\t" + ba.all.toFixed(2)]).join("\n");
   }
   function footButtons(ed, got, ro) {
     const busy = S.busy ? "disabled" : "";
-    if (ro) return `<button class="btn" data-pact="back">← Back to received</button>`;
+    if (ro) return `<button class="btn" data-pact="back">← Back to QB ready</button>${ed.dirty ? `<button class="btn primary" data-pact="save" ${busy}>Save</button>` : ""}`;
     if (ed.recv) return `<button class="btn" data-pact="recv-cancel">Cancel</button><button class="btn primary" data-pact="recv-go" ${busy}>Receive</button>`;
     const out = [];
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
-    if (ed.id && !got && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
+    if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     out.push(`<button class="btn ${ed.dirty && !NEXT[ed.status] ? "primary" : ""}" data-pact="save" ${busy}>Save</button>`);
-    if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].toLowerCase()}</button>`);
-    if (ed.lines.length) out.push(`<button class="btn ${ed.status === "packing_slip" ? "primary" : ""}" data-pact="recv" ${busy}>${got ? "Receive more…" : "Receive…"}</button>`);
-    if (ed.status === "received") {
-      out.push(`<button class="btn" data-pact="shipped">Mark shipped</button>`);
-      if (ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn primary" data-pact="amzship">Create Amazon shipment</button>`);
-    }
+    if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
+    if (ed.lines.length && !["qb_ready", "complete"].includes(ed.status)) out.push(`<button class="btn ${["invoiced", "partial"].includes(ed.status) ? "primary" : ""}" data-pact="recv" ${busy}>${got ? "Receive more…" : "Receive…"}</button>`);
+    if (ed.status === "partial") out.push(`<button class="btn" data-pact="short" ${busy}>Close short</button>`);
+    if (got && ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn" data-pact="amzship">Create Amazon shipment</button>`);
     return out.join("");
   }
 
@@ -688,6 +738,7 @@
       unit_cost: l.cost === "" ? null : Number(l.cost), backorder: !!l.backorder, eta: l.backorder ? l.eta || "" : "" }));
     const invoices = ed.invoices.map(iv => ({ id: iv.id ? Number(iv.id) : null, vendor: ed.vendor.trim(), invoice_no: iv.no || "", invoice_date: iv.date || "", file_name: iv.fileName || "",
       subtotal: iv.subtotal, total: iv.total, due_date: iv.due || "", terms: iv.terms || "", notes: iv.notes || "", ...(iv.id ? {} : { stage: "new" }),
+      paid_on: iv.paidOn || "", pay_method: iv.payMethod || "", pay_ref: iv.payRef || "", paid_from: iv.paidFrom || "", paid_amount: iv.paidAmount,
       lines: iv.rows.map(r => { const l = r.vid && lineOf(r.vid);
         return { item_code: r.src.item_code, upc: r.src.upc, description: r.src.description, qty: r.qty === "" ? null : Number(r.qty), unit_cost: r.cost === "" ? null : Number(r.cost),
           amount: rowAmt(r), variant_id: r.vid ? Number(r.vid) : null, match_how: howSaved(r), update_cost: false,
@@ -718,7 +769,7 @@
       ed.id = id; ed.invoices.forEach((v, i) => { if (ids[i]) v.id = ids[i]; }); ed.removed = [];     // a retry after a later step fails updates, not duplicates
       for (const v of ed.invoices) if (v.id && v.file && !v.file.saved) { await uploadFile(v.id, v.file); v.file.saved = true; }
       let moved = "";
-      const target = next || (firstInvoice && ["draft", "ordered"].includes(ed.status) ? "invoice" : null);
+      const target = next || (firstInvoice && ["draft", "ordered"].includes(ed.status) ? "invoiced" : null);
       if (target && target !== ed.status) { await JT.prep.setOrderStatus(Number(id), target); moved = target; }
       S.busy = ""; S.ed = null;
       await loadOrders(true);
@@ -786,7 +837,8 @@
     if (f === "paddcharge") return act("addcharge");
     if (f === "pbo") { const n = markBackordered(ed, ""); note("info", `${n} product${n === 1 ? "" : "s"} marked backordered. Add an ETA on each if you have one, then Save.`); render(); return; }
     if (f === "orecv") return act("recv");
-    if (f === "oshort") { ed.shortOk = true; save(null); return; }
+    if (f === "oshort") return act("short");
+    if (f === "ppaid") { const i = +d.arg; if (ed.invoices[i]) { ed.cur = i; markPaid(ed, ed.invoices[i]); render(); focusArg("pe-paymethod"); } return; }
     if (f === "onext") { save(NEXT[ed.status] && NEXT[ed.status][0]); return; }
     if (f === "oship") return act("amzship");
     if (f === "tab") { const b = document.querySelector(`.tabs button[data-tab="${d.arg}"]`); if (b) b.click(); return; }
@@ -820,10 +872,12 @@
     if (a === "no") { ed.confirm = false; render(); return; }
     if (a === "do-del") { S.busy = "Deleting…"; render(); JT.po.remove(Number(ed.id)).then(async () => { S.busy = ""; S.ed = null; await loadOrders(true); render(); renderList(); note("info", "Purchase order deleted."); })
       .catch(e => { S.busy = ""; ed.confirm = false; render(); note("bad", "Couldn't delete: " + esc(JT.message(e))); }); return; }
-    if (a === "back") { if (ed.status === "received") { ed.confirm = "unrecv"; render(); } else setStatus2(PREV[ed.status], `Moved back to ${STAGE.get(PREV[ed.status]).toLowerCase()}.`); return; }
-    if (a === "do-back") return setStatus2(PREV[ed.status], "Moved back to packing slip; the received units came out of the prep center.");
-    if (a === "shipped") { ed.confirm = "shipped"; render(); return; }
-    if (a === "do-shipped") return setStatus2("shipped", "Marked shipped out.");
+    if (a === "back") { if (["partial", "received"].includes(ed.status)) { ed.confirm = "unrecv"; render(); } else if (ed.dirty) note("warn", "Save or discard your changes first."); else setStatus2(PREV[ed.status], `Moved back to ${STAGE.get(PREV[ed.status]).toLowerCase()}.`); return; }
+    if (a === "do-back") return setStatus2(PREV[ed.status], "Moved back to invoiced; the received units came out of the prep center.");
+    if (a === "short") { ed.confirm = "short"; render(); return; }
+    if (a === "do-short") { if (ed.dirty) { save("received"); return; } return setStatus2("received", "Closed short and moved to received."); }
+    if (a === "pay" && iv) { markPaid(ed, iv); render(); focusArg("pe-paymethod"); return; }
+    if (a === "unpay" && iv) { iv.paidOn = ""; iv.paidAmount = null; iv.payRef = ""; ed.dirty = true; render(); return; }
     if (a === "recv") {
       const n = allChecks(ed);
       if (n) { note("warn", `Confirm or change the ${n} guessed product${n === 1 ? "" : "s"} on the invoices before receiving, so the right stock comes in.`); const i = ed.invoices.findIndex(v => count(v).check); if (i >= 0) { ed.cur = i; ed.invoices[i].filter = "check"; } render(); return; }
@@ -868,6 +922,9 @@
       if (t.id === "pe-placeby") { ed.placeBy = t.value; ed.dirty = true; render(); return; }
       if (t.id === "pe-invdate" && iv) { iv.date = t.value; ed.dirty = true; render(); return; }
       if (t.id === "pe-invdue" && iv) { iv.due = t.value; ed.dirty = true; render(); return; }
+      if (t.id === "pe-paidon" && iv) { iv.paidOn = t.value; ed.dirty = true; render(); return; }
+      if (t.id === "pe-paymethod" && iv) { iv.payMethod = t.value; ed.dirty = true; render(); return; }
+      if (t.id === "pe-paidamt" && iv) { iv.paidAmount = IP.numOf(t.value); ed.dirty = true; render(); return; }
       if (t.id === "pe-dest") { if (t.value !== "mixed") { ed.dest = t.value; for (const l of ed.lines) if (!(l.received > 0)) { l.dest = t.value; if (t.value === "shopify") l.asku = ""; } ed.dirty = true; render(); } return; }
       if (t.id === "pe-boeta") return;
       const k = t.dataset.k, l = k && ed.lines.find(x => x.id === k), r = k && iv && iv.rows.find(x => x.id === k);
@@ -886,6 +943,8 @@
       if (t.id === "pe-note") { ed.note = t.value; ed.dirty = true; return; }
       if (t.id === "pe-invno" && iv) { iv.no = t.value; ed.dirty = true; return; }
       if (t.id === "pe-invterms" && iv) { iv.terms = t.value; ed.dirty = true; return; }
+      if (t.id === "pe-payref" && iv) { iv.payRef = t.value; ed.dirty = true; return; }
+      if (t.id === "pe-paidfrom" && iv) { iv.paidFrom = t.value; ed.dirty = true; return; }
       if (t.id === "pe-invtotal" && iv) { iv.total = IP.numOf(t.value); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 500); return; }
       if (t.id === "pe-invsub" && iv) { iv.subtotal = IP.numOf(t.value); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 500); return; }
       if (t.id === "po-add") { ed.add = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); if (!S.cat) catalog().then(render).catch(() => {}); return; }

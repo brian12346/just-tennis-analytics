@@ -218,19 +218,20 @@ def test_prep_order_receive_and_ship(conn):
     call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
     oid = call("prep_order_save", {"vendor": "Wilson", "po_no": "PO-1", "by": "b@x.com",
                                    "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 48, "unit_cost": 4.5}, {"variant_id": 702, "qty": 10}]})
-    for st in ["ordered", "invoice", "packing_slip", "ordered"]:            # any direction before receiving
+    for st in ["ordered", "invoiced", "draft", "ordered"]:                 # any direction before receiving
         assert call("prep_order_status", {"id": oid, "status": st}) == st
     call("prep_order_save", {"id": oid, "invoice_id": inv, "expected_on": "2026-10-05"})
-    cur.execute("select invoice_id, expected_on::text, stage_at ? 'packing_slip' from jt.prep_orders where id = %s", (oid,))
+    cur.execute("select invoice_id, expected_on::text, stage_at ? 'invoiced' from jt.prep_orders where id = %s", (oid,))
     assert cur.fetchone() == (inv, "2026-10-05", True)
     cur.execute("savepoint a")
-    with pytest.raises(Exception, match="only a received"):
-        call("prep_order_status", {"id": oid, "status": "shipped"})
+    with pytest.raises(Exception, match="QB ready once"):
+        call("prep_order_status", {"id": oid, "status": "qb_ready"})
     cur.execute("rollback to savepoint a")
     # part of it arrives, then the rest
     assert call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 40}, {"variant_id": 702, "qty": 10}]}) == 50
-    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "received"
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "partial"
     call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 8}]})
+    cur.execute("select status, stage_at ? 'partial', stage_at ? 'received' from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == ("received", True, True)
     cur.execute("select variant_id, amazon_sku, qty from jt.prep_items order by 1"); assert cur.fetchall() == [(701, "W-FBA", 48), (702, "", 10)]
     cur.execute("select variant_id, qty_ordered, qty_received from jt.prep_order_lines where order_id = %s order by 1", (oid,)); assert cur.fetchall() == [(701, 48, 48), (702, 10, 10)]
     cur.execute("select count(*), sum(qty_change), min(order_id), min(shipment) from jt.prep_moves where kind = 'receive'"); assert cur.fetchone() == (3, 58, oid, "PO-1")
@@ -241,10 +242,12 @@ def test_prep_order_receive_and_ship(conn):
     with pytest.raises(Exception, match="can't be deleted"):
         call("prep_order_delete", {"id": oid})
     cur.execute("rollback to savepoint b")
-    # an outgoing shipment made from the order ships it
+    # an outgoing shipment made from the order takes the stock out; the PO's stage doesn't change
     sid = call("prep_shipment_save", {"name": "FBA2", "order_id": oid, "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 48}, {"variant_id": 702, "qty": 10}]})
     call("prep_shipment_status", {"id": sid, "status": "shipped"})
-    cur.execute("select status, stage_at ? 'shipped' from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == ("shipped", True)
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "received"
+    # QB ready, complete, and back
+    for st in ["qb_ready", "complete", "qb_ready", "received"]: assert call("prep_order_status", {"id": oid, "status": st}) == st
     cur.execute("select coalesce(sum(qty), 0) from jt.prep_items"); assert cur.fetchone()[0] == 0
     draft = call("prep_order_save", {"vendor": "Head", "lines": [{"variant_id": 701, "qty": 1}]})
     assert call("prep_order_delete", {"id": draft}) is True
@@ -257,26 +260,29 @@ def test_prep_step_back(conn):
     call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
     stock = lambda: (cur.execute("select variant_id, qty from jt.prep_items order by 1"), cur.fetchall())[1]
     oid = call("prep_order_save", {"vendor": "Head", "lines": [{"variant_id": 801, "qty": 10}, {"variant_id": 802, "qty": 4}]})
-    call("prep_order_status", {"id": oid, "status": "packing_slip"})
+    call("prep_order_status", {"id": oid, "status": "invoiced"})
     call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 801, "qty": 10}, {"variant_id": 802, "qty": 4}]})
     assert stock() == [(801, 10), (802, 4)]
-    # outgoing shipment from the order: ship, then step back -> stock returns, order back to received
+    # outgoing shipment from the order: ship, then step back -> stock returns
     sid = call("prep_shipment_save", {"name": "FBA3", "order_id": oid, "lines": [{"variant_id": 801, "qty": 6}]})
     call("prep_shipment_status", {"id": sid, "status": "shipped"})
     assert stock() == [(801, 4), (802, 4)]
-    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "shipped"
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "received"
     assert call("prep_shipment_status", {"id": sid, "status": "started"}) == "started"
     assert stock() == [(801, 10), (802, 4)]
     cur.execute("select status, shipped_at from jt.prep_shipments where id = %s", (sid,)); assert cur.fetchone() == ("started", None)
-    cur.execute("select status, stage_at ? 'shipped' from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == ("received", False)
     cur.execute("select count(*), sum(qty_change) from jt.prep_moves where kind = 'unship'"); assert cur.fetchone() == (1, 6)
     assert call("prep_shipment_status", {"id": sid, "status": "open"}) == "open"
     call("prep_shipment_delete", {"id": sid})
-    # order: shipped -> received (no stock change), received -> packing slip takes the units back out
-    call("prep_order_status", {"id": oid, "status": "shipped"})
+    # order: complete -> back to received (no stock change), received -> invoiced takes the units back out
+    call("prep_order_status", {"id": oid, "status": "qb_ready"}); call("prep_order_status", {"id": oid, "status": "complete"})
+    cur.execute("savepoint b")
+    with pytest.raises(Exception, match="back to received first"):
+        call("prep_order_status", {"id": oid, "status": "invoiced"})
+    cur.execute("rollback to savepoint b")
     assert call("prep_order_status", {"id": oid, "status": "received"}) == "received"
     assert stock() == [(801, 10), (802, 4)]
-    assert call("prep_order_status", {"id": oid, "status": "packing_slip"}) == "packing_slip"
+    assert call("prep_order_status", {"id": oid, "status": "invoiced"}) == "invoiced"
     assert stock() == []
     cur.execute("select sum(qty_received) from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] == 0
     cur.execute("select count(*) from jt.prep_moves where kind = 'unreceive'"); assert cur.fetchone()[0] == 2
@@ -286,7 +292,7 @@ def test_prep_step_back(conn):
     call("prep_shipment_status", {"id": s2, "status": "shipped"})
     cur.execute("savepoint a")
     with pytest.raises(Exception, match="only 2"):
-        call("prep_order_status", {"id": oid, "status": "packing_slip"})
+        call("prep_order_status", {"id": oid, "status": "invoiced"})
     cur.execute("rollback to savepoint a")
 
 
@@ -324,7 +330,7 @@ def test_on_the_list(conn):
     cur.execute("select variant_id, qty from jt.prep_items"); assert cur.fetchall() == [(901, 36)]
     cur.execute("select id from jt.prep_list where closed_at is null"); assert cur.fetchall() == [(c,)]
     # stepping back reopens them
-    call("prep_order_status", {"id": book, "status": "packing_slip"})
+    call("prep_order_status", {"id": book, "status": "invoiced"})
     cur.execute("select count(*) from jt.prep_list where closed_at is null"); assert cur.fetchone()[0] == 3
     cur.execute("select count(*) from jt.prep_items"); assert cur.fetchone()[0] == 0
     assert call("prep_list_remove", {"id": c}) is True
@@ -434,3 +440,22 @@ def test_po_multiple_invoices(conn):
     call("po_save", {"order": {"id": oid}, "remove_invoices": [i2]})
     cur.execute("select count(*) from jt.invoices where id = %s", (i2,)); assert cur.fetchone()[0] == 0
     cur.execute("select invoice_id from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == i1
+
+
+
+def test_invoice_payment(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (941, 94, 5, 'Yonex')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    inv = {"vendor": "Yonex", "invoice_no": "Y-1", "total": 50, "lines": [{"description": "x", "qty": 10, "unit_cost": 5, "variant_id": 941}]}
+    r = call("po_save", {"order": {"vendor": "Yonex"}, "lines": [{"variant_id": 941, "dest": "shopify", "qty": 10}], "invoices": [inv]})
+    oid, iid = r["order_id"], r["invoice_ids"][0]
+    cur.execute("select paid_on, pay_method from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == (None, "")
+    paid = dict(inv, id=iid, paid_on="2026-10-01", pay_method="ach", pay_ref="CONF-77", paid_from="Chase checking", paid_amount=50)
+    call("po_save", {"order": {"id": oid}, "invoices": [paid]})
+    cur.execute("select paid_on::text, pay_method, pay_ref, paid_from, paid_amount::float from jt.invoices where id = %s", (iid,))
+    assert cur.fetchone() == ("2026-10-01", "ach", "CONF-77", "Chase checking", 50.0)
+    # an invoice applied on the Invoices tab can still be marked paid
+    cur.execute("update jt.invoices set status = 'applied' where id = %s", (iid,))
+    call("po_save", {"order": {"id": oid}, "invoices": [dict(paid, pay_method="credit_card", pay_ref="4242")]})
+    cur.execute("select pay_method, pay_ref from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == ("credit_card", "4242")
