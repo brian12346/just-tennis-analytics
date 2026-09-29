@@ -387,3 +387,5 @@ table.prept tr.picked td{background:var(--sales-soft)}
 .pmgrid .inp{width:100%}
 .inp.bad{border-color:var(--bad);background:var(--bad-bg)}
 #prep-unloaded summary{cursor:pointer}
+.addbox{display:flex;flex-direction:column;gap:6px;border:1px dashed var(--line);border-radius:10px;padding:10px 12px}
+.addbox .inp{width:100%;max-width:360px}

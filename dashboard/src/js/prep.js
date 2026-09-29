@@ -190,11 +190,28 @@
     catalog().then(() => renderModal()).catch(e => note("bad", esc(JT.message(e))));
     renderModal(); setTimeout(() => { const i = $(P.modal.pick ? "pm-qty" : "pm-q"); if (i) i.focus(); }, 0);
   }
+  // A shipment starts with the row that was clicked; more products are added by ASIN, Amazon SKU or Shopify SKU.
   function openShip(vid, sku) {
-    const qty = {};
-    if (vid) qty[vid + "|" + (sku || "")] = "";
-    P.modal = { kind: "ship", shipment: "", dest: "FBA", note: "", qty, focus: vid ? vid + "|" + (sku || "") : null, confirm: false };
-    renderModal(); setTimeout(() => { const i = P.modal.focus ? document.querySelector(`#prep-modal input[data-k="${CSS.escape(P.modal.focus)}"]`) : $("pm-ship"); if (i) i.focus(); }, 0);
+    const key = vid ? vid + "|" + (sku || "") : null;
+    P.modal = { kind: "ship", shipment: "", dest: "FBA", note: "", lines: key ? [key] : [], qty: key ? { [key]: "" } : {}, add: "", confirm: false };
+    renderModal(); setTimeout(() => { const i = key ? document.querySelector(`#prep-modal input[data-k="${CSS.escape(key)}"]`) : $("pm-add"); if (i) i.focus(); }, 0);
+  }
+  const keyOf = (r) => r.vid + "|" + r.asku;
+  const rowOf = (k) => cache && cache.rows.find(r => keyOf(r) === k);
+  const asinsOf = (r) => [...new Set([r.target && r.target.asin, ...(r.asku ? [] : r.listings.map(l => l.asin))].filter(Boolean))];
+  // Prep center rows matching what was typed: exact ASIN / Amazon SKU / Shopify SKU first, then partial matches.
+  function findRows(text, exclude) {
+    const t = String(text || "").trim().toLowerCase(); if (!t || !cache) return [];
+    const rows = cache.rows.filter(r => r.qty > 0 && !exclude.includes(keyOf(r)));
+    const keys = (r) => [...asinsOf(r), r.asku, r.sku].filter(Boolean).map(x => x.toLowerCase());
+    const exact = rows.filter(r => keys(r).includes(t));
+    if (exact.length) return exact;
+    return rows.filter(r => keys(r).some(k => k.includes(t)) || r.title.toLowerCase().includes(t)).slice(0, 8);
+  }
+  function addLine(k) {
+    const M = P.modal; if (!M || M.lines.includes(k)) return;
+    M.lines.push(k); M.qty[k] = ""; M.add = ""; M.confirm = false; renderModal();
+    setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-k="${CSS.escape(k)}"]`); if (i) i.focus(); }, 0);
   }
   function closeModal() { P.modal = null; P.busy = false; renderModal(); }
   function onHand(vid, sku) { const r = cache && cache.rows.find(x => x.vid === vid && x.asku === (sku || "")); return r ? r.qty : 0; }
@@ -225,24 +242,30 @@
         <div class="row">${want != null && !bad ? `<span class="${want - cur < 0 ? "neg" : "pos"}">${want - cur > 0 ? "+" : ""}${n0(want - cur)} units${M.pick.cost != null ? " · " + m0((want - cur) * M.pick.cost) + " at cost" : ""}</span>` : ""}
           <span class="dbtns right"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Save count"}</button></span></div>` : ""}`;
     } else {
-      const rows = (cache ? cache.rows : []).filter(r => r.qty > 0);
+      const rows = M.lines.map(rowOf).filter(Boolean);
       let units = 0, cost = 0, lines = 0, over = 0;
-      for (const r of rows) { const v = M.qty[r.vid + "|" + r.asku]; const q = v === undefined || v === "" ? 0 : Number(v); if (q > 0) { lines++; units += q; cost += q * (r.cost || 0); if (q > r.qty || !Number.isInteger(q)) over++; } }
-      html = `<div class="panel-head"><h2>Ship to Amazon</h2><button class="mini" data-act="close">Close</button></div>
+      for (const r of rows) { const v = M.qty[keyOf(r)]; const q = v === undefined || v === "" ? 0 : Number(v); if (q > 0) { lines++; units += q; cost += q * (r.cost || 0); } if (v !== "" && v !== undefined && (!Number.isInteger(q) || q < 0 || q > r.qty)) over++; }
+      const found = findRows(M.add, M.lines);
+      html = `<div class="panel-head"><h2>New shipment</h2><button class="mini" data-act="close">Close</button></div>
         <div class="pmgrid">
           <label class="stack" for="pm-ship">Shipment ID or name<input id="pm-ship" class="inp mono" value="${esc(M.shipment)}" placeholder="e.g. FBA18ABC1234"></label>
-          <label class="stack">Destination<span class="seg" id="pm-dest"><button data-dest="FBA" aria-pressed="${M.dest === "FBA"}">FBA</button><button data-dest="AWD" aria-pressed="${M.dest === "AWD"}">AWD</button></span></label>
+          <label class="stack">Going to<span class="seg" id="pm-dest"><button data-dest="FBA" aria-pressed="${M.dest === "FBA"}">FBA</button><button data-dest="AWD" aria-pressed="${M.dest === "AWD"}">AWD</button></span></label>
           <label class="stack" for="pm-snote" style="grid-column:span 2">Note (optional)<input id="pm-snote" class="inp" value="${esc(M.note)}"></label>
         </div>
-        <div class="tbl-wrap tall"><table class="prept"><thead><tr><th class="l">Shopify product</th><th class="l">For listing</th><th>On hand</th><th>Ship</th><th></th></tr></thead><tbody>${
-          rows.map(r => { const k = r.vid + "|" + r.asku, v = M.qty[k] ?? "", q = v === "" ? 0 : Number(v), bad = v !== "" && (!Number.isInteger(q) || q < 0 || q > r.qty);
-            return `<tr class="${q > 0 ? "picked" : ""}"><td class="l">${esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku)}</span> · ${esc(r.vendor)}</div></td>
-              <td class="l small">${r.asku ? `<span class="mono">${esc(r.asku)}</span>` : '<span class="dim">Any</span>'}</td><td>${n0(r.qty)}</td>
-              <td><input class="inp num sm ${bad ? "bad" : ""}" data-k="${esc(k)}" value="${esc(v)}" inputmode="numeric" placeholder="0" style="width:80px"></td>
-              <td><button class="linkbtn small" data-all="${esc(k)}">all ${n0(r.qty)}</button></td></tr>`; }).join("")}</tbody></table></div>
-        ${M.confirm ? `<div class="note warn">Take ${n0(units)} units (${lines} product${lines === 1 ? "" : "s"}, ${m0(cost)} at cost) out of the prep center as shipment <b>${esc(M.shipment || "(no ID)")}</b> to ${M.dest}? <span class="dbtns"><button class="mini primary" data-act="do-ship" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, ship"}</button><button class="mini" data-act="no-ship">Cancel</button></span></div>` : ""}
-        <div class="row"><span class="muted small">${lines ? `${n0(units)} units · ${lines} product${lines === 1 ? "" : "s"} · ${m0(cost)} at cost` : "Enter how many units of each product are in this shipment."}${over ? ' · <span class="neg">some lines are more than on hand</span>' : ""}</span>
-          <span class="dbtns right"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="ship-go" ${!lines || over || P.busy ? "disabled" : ""}>Ship ${lines ? n0(units) + " units" : ""}</button></span></div>`;
+        ${rows.length ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">Amazon listing</th><th>On hand</th><th>Ship</th><th></th></tr></thead><tbody>${
+          rows.map(r => { const k = keyOf(r), v = M.qty[k] ?? "", q = v === "" ? 0 : Number(v), bad = v !== "" && (!Number.isInteger(q) || q < 0 || q > r.qty), as = asinsOf(r);
+            return `<tr><td class="l">${esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku)}</span> · ${esc(r.vendor)}</div></td>
+              <td class="l small">${r.asku ? `<span class="mono">${esc(r.asku)}</span>` : '<span class="dim">Any listing</span>'}${as.length ? `<div class="meta mono">${esc(as.join(", "))}</div>` : ""}</td><td>${n0(r.qty)}</td>
+              <td><input class="inp num sm ${bad ? "bad" : ""}" data-k="${esc(k)}" value="${esc(v)}" inputmode="numeric" placeholder="0" style="width:80px"><div class="meta"><button class="linkbtn small" data-all="${esc(k)}">all ${n0(r.qty)}</button></div></td>
+              <td><button class="linkbtn small" data-rm="${esc(k)}" title="Remove from this shipment" aria-label="Remove ${esc(r.title)}">✕</button></td></tr>`; }).join("")}</tbody></table></div>` : ""}
+        <div class="addbox">
+          <label class="stack" for="pm-add">Add product<input id="pm-add" class="inp mono" value="${esc(M.add)}" placeholder="ASIN, Amazon SKU or Shopify SKU" autocomplete="off"></label>
+          ${M.add.trim() ? `<div class="mres">${found.map(r => `<button data-add="${esc(keyOf(r))}"><b>${esc(r.title)}</b><br><span class="dim">${esc(r.sku)}${r.asku ? " · " + esc(r.asku) : ""}${asinsOf(r).length ? " · " + esc(asinsOf(r).join(", ")) : ""} · ${n0(r.qty)} on hand</span></button>`).join("")
+            || '<span class="muted small">Nothing in the prep center matches that ASIN or SKU.</span>'}</div>` : ""}
+        </div>
+        ${M.confirm ? `<div class="note warn">Create shipment <b>${esc(M.shipment || "(no ID)")}</b> to ${M.dest} and take ${n0(units)} units (${lines} product${lines === 1 ? "" : "s"}, ${m0(cost)} at cost) out of the prep center? <span class="dbtns"><button class="mini primary" data-act="do-ship" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, create it"}</button><button class="mini" data-act="no-ship">Cancel</button></span></div>` : ""}
+        <div class="row"><span class="muted small">${lines ? `${n0(units)} units · ${lines} product${lines === 1 ? "" : "s"} · ${m0(cost)} at cost` : rows.length ? "Enter how many units of each product are going." : "Add the products in this shipment."}${over ? ' · <span class="neg">more than on hand</span>' : ""}</span>
+          <span class="dbtns right"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="ship-go" ${!lines || over || P.busy ? "disabled" : ""}>Create shipment</button></span></div>`;
     }
     $("prep-mcard").innerHTML = html;
     if (keep) { const el = keep.id ? $(keep.id) : keep.k ? box.querySelector(`input[data-k="${CSS.escape(keep.k)}"]`) : null; if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
@@ -258,12 +281,12 @@
   }
   async function doShip() {
     const M = P.modal; if (!M) return;
-    const lines = Object.entries(M.qty).map(([k, v]) => { const [vid, sku] = k.split("|"); return { variant_id: Number(vid), amazon_sku: sku || "", qty: Number(v) || 0 }; }).filter(l => l.qty > 0);
+    const lines = M.lines.map(k => { const [vid, sku] = k.split("|"); return { variant_id: Number(vid), amazon_sku: sku || "", qty: Number(M.qty[k]) || 0 }; }).filter(l => l.qty > 0);
     P.busy = true; renderModal();
     try {
       await JT.prep.ship({ shipment: M.shipment.trim(), dest: M.dest, note: M.note || "", lines });
       const u = lines.reduce((a, l) => a + l.qty, 0);
-      closeModal(); note("info", `Recorded ${n0(u)} units shipped to ${M.dest}${M.shipment ? " (" + esc(M.shipment) + ")" : ""}. They'll show up in Amazon inventory as inbound once the next FBA / AWD report is uploaded.`);
+      closeModal(); note("info", `Shipment ${M.shipment ? "<b>" + esc(M.shipment) + "</b> " : ""}to ${M.dest} created: ${n0(u)} units taken out of the prep center.`);
       await load(true); render(); refreshTotals();
     } catch (e) { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't record the shipment: " + esc(JT.message(e))); }
   }
@@ -292,12 +315,15 @@
       if (t.id === "pm-note") { M.note = t.value; return; }
       if (t.id === "pm-ship") { M.shipment = t.value; return; }
       if (t.id === "pm-snote") { M.note = t.value; return; }
+      if (t.id === "pm-add") { M.add = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.dataset.k) { M.qty[t.dataset.k] = t.value.trim(); M.confirm = false; clearTimeout(box._t); box._t = setTimeout(renderModal, 250); }
     });
     box.addEventListener("change", (e) => { const M = P.modal; if (M && e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); } });
     box.addEventListener("keydown", (e) => {
       const M = P.modal; if (!M || e.key !== "Enter") return;
       if (e.target.id === "pm-q") { const b = box.querySelector(".mres button[data-pick]"); if (b) b.click(); }
+      else if (e.target.id === "pm-add") { e.preventDefault(); clearTimeout(box._t); const f = findRows(M.add, M.lines); if (f.length) addLine(keyOf(f[0])); else renderModal(); }
+      else if (M.kind === "ship" && e.target.dataset.k) { e.preventDefault(); const a = $("pm-add"); if (a) a.focus(); }
       else if (M.kind === "count" && (e.target.id === "pm-qty" || e.target.id === "pm-note")) { const b = box.querySelector('[data-act="save-count"]'); if (b && !b.disabled) saveCount(); }
     });
     box.addEventListener("click", (e) => {
@@ -307,6 +333,8 @@
       if (b.dataset.act === "repick") { M.pick = null; M.qty = ""; renderModal(); setTimeout(() => { const i = $("pm-q"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "save-count") return saveCount();
       if (b.dataset.dest) { M.dest = b.dataset.dest; M.confirm = false; renderModal(); return; }
+      if (b.dataset.add) return addLine(b.dataset.add);
+      if (b.dataset.rm) { M.lines = M.lines.filter(k => k !== b.dataset.rm); delete M.qty[b.dataset.rm]; M.confirm = false; renderModal(); return; }
       if (b.dataset.all) { M.qty[b.dataset.all] = String(onHand(...b.dataset.all.split("|"))); M.confirm = false; renderModal(); return; }
       if (b.dataset.act === "ship-go") { M.confirm = true; renderModal(); return; }
       if (b.dataset.act === "no-ship") { M.confirm = false; renderModal(); return; }
