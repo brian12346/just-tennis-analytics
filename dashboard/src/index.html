@@ -21,6 +21,7 @@
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
     <button role="tab" data-tab="costs" aria-selected="false">Inventory value</button>
+    <button role="tab" data-tab="prep" aria-selected="false">Prep center</button>
     <button role="tab" data-tab="fba" aria-selected="false">Amazon inventory</button>
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
@@ -171,6 +172,44 @@
       <div class="panel-head"><h2 class="h3">Cost changes</h2><span class="muted small">Every variant's cost is compared with the day before. Click Correction or Real change to override how a row is treated.</span></div>
       <div class="tbl-wrap"><table id="cw-changes"></table></div>
     </section>
+  </div>
+  <div id="tab-prep" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Warehouse · stock set aside to send to Amazon</span>
+        <h1>Prep center</h1>
+      </div>
+      <div class="controls">
+        <button class="btn" id="prep-refresh">Refresh</button>
+        <button class="btn" id="prep-count">Count stock</button>
+        <button class="btn primary" id="prep-ship" disabled>Ship to Amazon</button>
+      </div>
+    </header>
+    <div class="status" id="prep-status" aria-live="polite">Loading the prep center…</div>
+    <div id="prep-note" hidden></div>
+    <section class="kpis" id="prep-kpis" aria-label="Prep center totals"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Stock</h2>
+        <div class="filters" id="prep-filters" hidden>
+          <label for="prep-vendor">Vendor <select id="prep-vendor" class="inp sm"></select></label>
+          <label for="prep-q">Search <input id="prep-q" class="inp" type="search" placeholder="Product, SKU or Amazon SKU"></label>
+        </div>
+      </div>
+      <div id="prep-body"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Activity</h2>
+        <div class="seg" id="prep-mkind" role="group" aria-label="Activity type">
+          <button data-k="all" aria-pressed="true">All</button><button data-k="adjust" aria-pressed="false">Counts</button><button data-k="ship" aria-pressed="false">Shipments</button><button data-k="seed" aria-pressed="false">Starting stock</button>
+        </div>
+      </div>
+      <div id="prep-moves"></div>
+    </section>
+    <div class="modal" id="prep-modal" hidden>
+      <div class="modal-card prep-card" id="prep-mcard" role="dialog" aria-modal="true" aria-label="Prep center"></div>
+    </div>
   </div>
   <div id="tab-fba" hidden>
     <header class="top">
@@ -517,6 +556,9 @@
 <!-- @inline js/product-sales.js -->
 </script>
 
+<script>
+<!-- @inline js/prep.js -->
+</script>
 <script>
 <!-- @inline js/fba.js -->
 </script>

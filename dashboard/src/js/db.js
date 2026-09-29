@@ -232,6 +232,19 @@
       const out = await run(`select jt.set_amazon_vendors(${q(JSON.stringify(list))}::jsonb) as n`, true);
       return (out[0] && out[0].n) || 0;
     },
+    // Prep center (Prep center tab): set counts, or ship units to Amazon. Returns the number of lines changed.
+    prep: {
+      async adjust(body) {
+        if (WEB) return Number(await WEB.write("jt_prep_adjust", { p: body }));
+        const out = await run(`select jt.prep_adjust(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
+        return Number(out[0] && out[0].n) || 0;
+      },
+      async ship(body) {
+        if (WEB) return Number(await WEB.write("jt_prep_ship", { p: body }));
+        const out = await run(`select jt.prep_ship(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
+        return Number(out[0] && out[0].n) || 0;
+      },
+    },
     // Ask for a catalog sync from Shopify now (the sync job runs in about 30 seconds). false = one was just started.
     async requestCatalogSync() {
       if (WEB) return WEB.write("jt_request_catalog_sync", {});

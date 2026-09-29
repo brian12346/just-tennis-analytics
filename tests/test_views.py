@@ -135,3 +135,28 @@ def test_amazon_sku_fees_last_180_days(conn):
     cur.execute("select sku, units, sales, sell_fees, fba_units, fba_fees, last_sold from jt.v_amz_sku_fees order by sku")
     assert cur.fetchall() == [("A", D(3), D("60.00"), D("-9.00"), D(3), D("-12.50"), "2026-09-20"),
                               ("B", D(1), D("20.00"), D("-3.00"), D(0), D("0.00"), "2026-09-01")]
+
+
+def test_prep_center_count_ship_and_seed(conn):
+    import pytest
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost) values (501, 50, 10.68), (502, 50, 21.18)")
+    adj = lambda body: (cur.execute("select jt.prep_adjust(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    ship = lambda body: (cur.execute("select jt.prep_ship(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    assert adj({"by": "b@x.com", "lines": [{"variant_id": 501, "amazon_sku": "001WILPOG12", "qty": 100, "note": "count"},
+                                            {"variant_id": 502, "qty": 5}]}) == 2
+    assert adj({"lines": [{"variant_id": 501, "amazon_sku": "001WILPOG12", "qty": 100}]}) == 0      # same count: nothing logged
+    assert ship({"shipment": "FBA1", "dest": "fba", "lines": [{"variant_id": 501, "amazon_sku": "001WILPOG12", "qty": 40}]}) == 1
+    cur.execute("select variant_id, amazon_sku, qty from jt.prep_items order by variant_id")
+    assert cur.fetchall() == [(501, "001WILPOG12", 60), (502, "", 5)]
+    cur.execute("savepoint s")
+    with pytest.raises(Exception, match="only 5"):
+        ship({"lines": [{"variant_id": 502, "qty": 6}]})
+    cur.execute("rollback to savepoint s")
+    ship({"dest": "AWD", "lines": [{"variant_id": 502, "qty": 5}]})                                  # emptied: row removed
+    cur.execute("select kind, variant_id, qty_change, qty_after, dest, by_user from jt.prep_moves order by id")
+    assert cur.fetchall() == [("adjust", 501, 100, 100, "", "b@x.com"), ("adjust", 502, 5, 5, "", "b@x.com"),
+                              ("ship", 501, -40, 60, "FBA", ""), ("ship", 502, -5, 0, "AWD", "")]
+    cur.execute("select jt.prep_seed(%s::jsonb)", (json.dumps({"lines": [{"variant_id": 502, "qty": 7}, {"variant_id": 502, "qty": 3}]}),))
+    cur.execute("select variant_id, amazon_sku, qty from jt.prep_items")
+    assert cur.fetchall() == [(502, "", 10)]

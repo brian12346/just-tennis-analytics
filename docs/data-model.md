@@ -100,3 +100,13 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   AWD units valued = available + researching (+ inbound to AWD). Reserved-in-AWD and outbound-to-FBA units are left out because the
   FBA report already counts them as FBA inbound (checked on the Sep 28/29 reports: they match FBA inbound SKU by SKU).
   All / FBA / AWD switch on the tab; Product costs shows Amazon at cost split FBA vs AWD.
+
+## Prep center (Prep center tab)
+
+- The physical warehouse is two digital warehouses: Shopify inventory, and the prep center (stock set aside to send to Amazon).
+- `jt.prep_items` (migration 012): on-hand per Shopify variant, optionally earmarked for one Amazon seller SKU (`amazon_sku`, '' = any).
+  `jt.prep_moves`: every change (`adjust` = count, `ship` = shipment to FBA/AWD, `seed` = starting inventory), with before/after and who.
+- `jt.prep_adjust(p)` sets counts (new on-hand, not a delta); `jt.prep_ship(p)` takes units out and fails if a line is short;
+  `jt.prep_seed(p)` replaces everything (starting inventory, run by Claude). Web wrappers `public.jt_prep_adjust / jt_prep_ship` record the signed-in email.
+- Value: units × Shopify cost; Amazon value uses the earmarked listing (or the only listing mapped to the product) and its units-per-Amazon-unit.
+- The Inventory value tab shows Shopify, prep center and Amazon separately; shipped units reappear as Amazon inbound once the next FBA / AWD report is uploaded.

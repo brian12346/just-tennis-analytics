@@ -67,6 +67,7 @@
       P.pending = new Map(pend.map(([v, c]) => [v, +c]));
       fillFilters();
       if (JT.fba) JT.fba.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
+      if (window.JTPrep) window.JTPrep.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
       $("pc-status").textContent = `${P.rows.length.toLocaleString()} Shopify variants · sales ${from} to ${to} (Shopify net sales + Amazon product sales)`;
     } catch (e) { note("bad", esc(JT.message(e))); $("pc-status").textContent = ""; }
     finally { if (id === P.reqId) { P.loading = false; render(); } }
@@ -134,16 +135,21 @@
       && (!q || [i.name, i.sku, i.asin, i.map && i.map.title, i.map && i.map.vsku, i.vendor].join(" ").toLowerCase().includes(q))) : [];
     const f = fd ? JT.fba.totals(fitems, true) : null;
     const allF = fd ? (scoped ? JT.fba.totals(fd.items, true) : f) : null;
-    const totCost = t.cost + (f ? f.cost : 0), totPrice = t.price + (f ? f.price : 0);
+    // Prep center (Prep center tab), same filters
+    const pd = window.JTPrep && window.JTPrep.data;
+    const pr = pd ? window.JTPrep.totals(pd.rows.filter(r => (P.vendor === "all" || r.vendor === P.vendor) && (P.cat === "all" || r.type === P.cat)
+      && (!q || [r.title, r.sku, r.vendor, r.asku].join(" ").toLowerCase().includes(q)))) : null;
+    const totCost = t.cost + (f ? f.cost : 0) + (pr ? pr.cost : 0), totPrice = t.price + (f ? f.price : 0) + (pr ? pr.retail : 0);
     const gm = totPrice ? (totPrice - totCost) / totPrice : null;
     const when = P.asOf ? P.asOf.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
     const snap = fd && fd.meta.snapshot ? new Date(fd.meta.snapshot + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
-    $("pc-inv-scope").innerHTML = (scoped ? `Filtered to ${scope} · total ${m0(all.cost + (allF ? allF.cost : 0))} at cost` : "Every product with stock, in your Shopify locations and at Amazon (FBA + AWD)")
+    $("pc-inv-scope").innerHTML = (scoped ? `Filtered to ${scope} · total ${m0(all.cost + (allF ? allF.cost : 0))} at cost` : "Every product with stock: Shopify, the prep center and Amazon (FBA + AWD)")
       + (when ? ` · Shopify as of ${when}` : "") + (snap ? ` · FBA report of ${snap}` : "") + (fd && fd.awdMeta && fd.awdMeta.snapshot ? ` · AWD report of ${new Date(fd.awdMeta.snapshot + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}` : "");
     const goFba = `<button class="linkbtn small" data-go-fba>open Amazon inventory</button>`;
     el.innerHTML = [
-      { c: "cost", l: "Total inventory at cost", v: m0(totCost), s: f ? `Shopify ${m0(t.cost)} · Amazon ${m0(f.cost)}` : "Shopify only · Amazon loading…" },
+      { c: "cost", l: "Total inventory at cost", v: m0(totCost), s: `Shopify ${m0(t.cost)} · Prep center ${pr ? m0(pr.cost) : "…"} · Amazon ${f ? m0(f.cost) : "…"}` },
       { l: "Shopify at cost", v: m0(t.cost), s: `${Math.round(t.units).toLocaleString()} units · ${m0(t.price)} at Shopify price` },
+      { l: "Prep center at cost", v: pr ? m0(pr.cost) : "—", s: pr ? (pr.units ? `${Math.round(pr.units).toLocaleString()} units waiting to go to Amazon · <button class="linkbtn small" data-go-prep>open prep center</button>` : `empty · <button class="linkbtn small" data-go-prep>open prep center</button>`) : "loading…" },
       { l: "Amazon (FBA + AWD) at cost", v: f ? m0(f.cost) : "—", s: f ? `FBA ${m0(f.fbaCost)} · AWD ${m0(f.awdCost)} · ${Math.round(f.units).toLocaleString()} units incl. inbound · ${m0(f.price)} at Amazon price · ${goFba}` : `No Amazon report loaded · ${goFba}` },
       { c: "sales", l: "Total at retail", v: m0(totPrice), s: gm == null ? "" : `${m0(totPrice - totCost)} margin in stock (${pct(gm)})` },
       { l: "Not valued", v: (t.noCost + t.neg + (f ? f.noCost : 0)).toLocaleString(), s: `Shopify: ${t.noCost} with no cost, ${t.neg} negative on-hand${f ? ` · Amazon: ${f.noCost} SKUs not costed (${Math.round(f.noCostUnits).toLocaleString()} units)` : ""}` },
@@ -260,12 +266,16 @@
     on("pc-next", "click", () => { P.page++; render(); $("pc-table").scrollIntoView({ block: "start" }); });
     on("pc-discard", "click", () => { P.edits.clear(); P.confirm = false; render(); });
     on("pc-save", "click", () => { P.confirm = true; render(); });
-    $("pc-inv").addEventListener("click", (e) => { if (e.target.closest("[data-go-fba]")) { const b = document.querySelector('.tabs button[data-tab="fba"]'); if (b) b.click(); } });
+    $("pc-inv").addEventListener("click", (e) => {
+      const go = e.target.closest("[data-go-fba]") ? "fba" : e.target.closest("[data-go-prep]") ? "prep" : null;
+      if (go) { const b = document.querySelector(`.tabs button[data-tab="${go}"]`); if (b) b.click(); }
+    });
     $("pc-confirm").addEventListener("click", (e) => { if (e.target.id === "pc-yes") save(); if (e.target.id === "pc-no") { P.confirm = false; render(); } });
     window.addEventListener("beforeunload", (e) => { if (P.edits.size) { e.preventDefault(); e.returnValue = ""; } });
   }
 
   bind();
+  window.pcRender = () => render();
   window.pcShow = () => { if (!P.shown) { P.shown = true; load(false); } else render(); };
   window.JTCosts = { _state: P };
   if ((location.hash || "") === "#costs") setTimeout(() => window.pcShow(), 0);

@@ -17,9 +17,10 @@
 
   // ---------- tabs ----------
   function showTab(t) {
-    if (!["amzmap", "amazon", "psales", "costmap", "invoices", "amzmatch", "costs", "fba"].includes(t)) t = "shopify";
+    if (!["amzmap", "amazon", "psales", "costmap", "invoices", "amzmatch", "costs", "fba", "prep"].includes(t)) t = "shopify";
     $("tab-costs").hidden = t !== "costs";
     $("tab-fba").hidden = t !== "fba";
+    $("tab-prep").hidden = t !== "prep";
     $("tab-invoices").hidden = t !== "invoices";
     $("tab-amzmatch").hidden = t !== "amzmatch";
     $("tab-psales").hidden = t !== "psales";
@@ -29,7 +30,7 @@
     $("tab-amzmap").hidden = t !== "amzmap";
     document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
     try { history.replaceState(null, "", "#" + t); } catch (_) {}
-    if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else if (t === "invoices") { if (window.invShow) window.invShow(); } else if (t === "amzmatch") { if (window.amShow) window.amShow(); } else if (t === "costs") { if (window.pcShow) window.pcShow(); } else if (t === "fba") { if (window.fbaShow) window.fbaShow(); } else window.dispatchEvent(new Event("resize"));
+    if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else if (t === "invoices") { if (window.invShow) window.invShow(); } else if (t === "amzmatch") { if (window.amShow) window.amShow(); } else if (t === "costs") { if (window.pcShow) window.pcShow(); } else if (t === "fba") { if (window.fbaShow) window.fbaShow(); } else if (t === "prep") { if (window.prepShow) window.prepShow(); } else window.dispatchEvent(new Event("resize"));
   }
   document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
