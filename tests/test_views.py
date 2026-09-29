@@ -328,3 +328,13 @@ def test_on_the_list(conn):
     cur.execute("select count(*) from jt.prep_list where closed_at is null"); assert cur.fetchone()[0] == 3
     cur.execute("select count(*) from jt.prep_items"); assert cur.fetchone()[0] == 0
     assert call("prep_list_remove", {"id": c}) is True
+
+
+def test_ship_cost_overrides(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.shopify_orders (order_id, name, created_at, order_day) values (5001, '#5001', now(), current_date)")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    assert call("save_ship_cost", {"order_id": 5001, "cost": 0, "combined_with": "#5000", "by": "b@x.com"}) is True
+    assert call("save_ship_cost", {"order_id": 5001, "cost": 8.4, "note": "USPS label bought on the site"}) is True
+    cur.execute("select cost::float, combined_with, note from jt.ship_cost_overrides"); assert cur.fetchone() == (8.4, "", "USPS label bought on the site")
+    assert call("delete_ship_cost", {"order_id": 5001}) is True

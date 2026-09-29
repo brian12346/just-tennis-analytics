@@ -209,6 +209,9 @@
     showError,
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB,
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
+    // shipping cost entered by hand for an order with no ShipStation label
+    saveShipCost: (body) => WEB ? WEB.write("jt_save_ship_cost", { p: body }) : call("save_ship_cost", q(JSON.stringify({ ...body, by: "Claude dashboard" })) + "::jsonb"),
+    deleteShipCost: (orderId) => WEB ? WEB.write("jt_delete_ship_cost", { p: { order_id: Number(int(orderId)) } }) : call("delete_ship_cost", q(JSON.stringify({ order_id: Number(int(orderId)) })) + "::jsonb"),
     deleteCostOverride: (orderId) => WEB ? WEB.write("jt_delete_cost_override", { p_order_id: Number(int(orderId)) }) : call("delete_cost_override", int(orderId)),
     // many at once (one database call); returns how many were saved
     async saveCostOverrides(bodies) {

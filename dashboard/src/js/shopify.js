@@ -109,15 +109,19 @@
 
   // ShipStation label costs for the orders in range (voided labels left out), plus when the last sync ran.
   async function loadLabels(refresh, isCur = () => true) {
-    const [r, sync] = await Promise.all([
+    const [r, sync, man] = await Promise.all([
       JT.rowsSplit(["l.order_id::text", "sum(l.cost)", "count(*)", "coalesce(json_agg(distinct l.service) filter (where l.service <> ''), '[]')"],
         `from jt.shipstation_labels l join jt.shopify_orders o on o.order_id = l.order_id where not l.voided and o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)} group by l.order_id`, "l.order_id", 1, refresh),
       JT.rows(["job", "finished_at", "ok"], "from jt.v_sync_status", refresh),
+      // shipping cost entered by hand for orders with no label (bought elsewhere, or shipped combined with another order)
+      JT.rows(["m.order_id::text", "m.cost", "m.combined_with", "m.note", "m.by_user"],
+        `from jt.ship_cost_overrides m join jt.shopify_orders o on o.order_id = m.order_id where o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)}`, refresh).catch(() => []),
     ]);
     if (!isCur()) return;                                  // a newer range is loading
     const bySid = new Map(); let labels = 0;
     for (const [sid, cost, n, sv] of r) { bySid.set(sid, { cost: num(cost), labels: num(n), services: new Set(sv || []) }); labels += num(n); }
     state.shipSid = bySid; state.shipLabels = labels; state.syncs = sync;
+    state.shipMan = new Map(man.map(([sid, cost, cw, nt, by]) => [sid, { cost: num(cost), combined: cw || "", note: nt || "", by: by || "" }]));
     state.lastSync = (sync.find(x => x[0] === "shipstation_labels") || [])[1] || null;
     state.dbReady = true;
   }
@@ -157,7 +161,12 @@
   function setStatus(t) { $("status").textContent = t; }
 
   // ---------- derived ----------
-  function shipFor(o) { return state.shipSid.get(o.sid) || state.ship.get(o.key) || null; }
+  // label cost for an order: its ShipStation label(s), else a cost entered by hand
+  function shipFor(o) {
+    const l = state.shipSid.get(o.sid) || state.ship.get(o.key); if (l) return l;
+    const mm = state.shipMan && state.shipMan.get(o.sid); if (!mm) return null;
+    return { cost: mm.cost, labels: 0, services: new Set([mm.combined ? "combined with " + mm.combined : "entered by hand"]), manual: true, combined: mm.combined, note: mm.note };
+  }
 
   function shopifyCostFor(o) { return state.costs ? (state.costs.get(o.name) || null) : null; }
   // Effective product cost: a manual entry replaces Shopify's cost for that order.
@@ -250,7 +259,7 @@
       { c:"sales", l:"Profit after shipping", v: haveOrders && haveDaily ? `<span class="${profitAfterShip(sum("gp"), shipCh, cost) < 0 ? "neg" : ""}">${m0(profitAfterShip(sum("gp"), shipCh, cost))}</span>` : dash, s: haveOrders && haveDaily && net ? `${pct(profitAfterShip(sum("gp"), shipCh, cost)/net)} of net sales` : "Gross profit + shipping charged − labels" },
       // share of shipped (non-POS) orders that have a ShipStation label cost matched to them
       { c:"", l:"Label cost coverage", v: haveOrders ? (dv.webShipped ? pct(dv.webShippedWithCost/dv.webShipped) : dash) : dash,
-        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a ShipStation label${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
+        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a label cost (ShipStation or entered)${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
     ];
     $("kpis").innerHTML = k.map(x => `<div class="kpi ${x.c}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
   }
@@ -347,7 +356,9 @@
       const s = shipFor(o); const c = s ? s.cost : 0;
       const k = costFor(o);
       const shipped = o.chan !== "pos" && /FULFILLED/.test(o.ful) && !/UNFULFILLED/.test(o.ful);
-      const costCell = s ? `${m(c)}${s.labels > 1 ? ` <span class="dim">×${s.labels}</span>` : ""}` : shipped ? `<span class="pill miss">No label</span>` : `<span class="dim">—</span>`;
+      const costCell = s && s.manual ? `<button class="costbtn" data-act="shipedit" data-sid="${o.sid}" title="${esc(s.note || "Entered by hand — click to change")}">${m(c)} <span class="pill manual">${s.combined ? "with " + esc(s.combined) : "Entered"}</span></button>`
+        : s ? `${m(c)}${s.labels > 1 ? ` <span class="dim">×${s.labels}</span>` : ""}`
+        : shipped ? `<button class="pill miss" data-act="shipedit" data-sid="${o.sid}" title="Enter the shipping cost, or the order it shipped with">No label · enter</button>` : `<span class="dim">—</span>`;
       const load = '<span class="dim">…</span>';
       let cogsCell;
       if (!costsReady) cogsCell = load;
@@ -359,7 +370,7 @@
       }
       const pas = k ? profitAfterShip(k.gp, o.shipping, c) : null;
       const base = k ? k.net : null;
-      return `<tr><td class="l mono"><a class="olink" href="https://admin.shopify.com/store/justtennis-822/orders/${encodeURIComponent(o.sid)}" target="_blank" rel="noopener">${esc(o.name)}</a>${o.cancelled ? ' <span class="pill cx">Cancelled</span>' : ""}</td><td class="l">${shortDay(o.day)} <span class="dim">${new Date(o.created).toLocaleTimeString("en-US",{timeZone:TZ,hour:"numeric",minute:"2-digit"})}</span></td><td class="l">${chanPill(o)}</td><td class="l dim">${esc(title(o.fin))} · ${esc(title(o.ful))}</td><td>${!costsReady ? load : k ? m(k.net) : '<span class="dim">—</span>'}</td><td class="${o.discounts?"neg":"dim"}">${o.discounts ? m(-o.discounts) : "—"}</td><td>${cogsCell}</td><td class="${k && k.gp < 0 ? "neg" : ""}">${!costsReady ? load : k ? m(k.gp) : '<span class="dim">—</span>'}</td><td>${m(o.shipping)}</td><td>${costCell}</td><td class="${pas != null && pas < 0 ? "neg" : ""}">${pas == null ? '<span class="dim">—</span>' : "<b>" + m(pas) + "</b>"}</td><td class="dim">${pas != null && base ? pct(pas/base) : ""}</td><td class="${o.refunded?"neg":"dim"}">${o.refunded ? m(-o.refunded) : "—"}</td><td>${m(o.total)}</td><td class="l dim">${s ? esc([...s.services].join(", ")) : ""}</td></tr>${state.editing === o.sid && k ? detailRow(o, k) : ""}`;
+      return `<tr><td class="l mono"><a class="olink" href="https://admin.shopify.com/store/justtennis-822/orders/${encodeURIComponent(o.sid)}" target="_blank" rel="noopener">${esc(o.name)}</a>${o.cancelled ? ' <span class="pill cx">Cancelled</span>' : ""}</td><td class="l">${shortDay(o.day)} <span class="dim">${new Date(o.created).toLocaleTimeString("en-US",{timeZone:TZ,hour:"numeric",minute:"2-digit"})}</span></td><td class="l">${chanPill(o)}</td><td class="l dim">${esc(title(o.fin))} · ${esc(title(o.ful))}</td><td>${!costsReady ? load : k ? m(k.net) : '<span class="dim">—</span>'}</td><td class="${o.discounts?"neg":"dim"}">${o.discounts ? m(-o.discounts) : "—"}</td><td>${cogsCell}</td><td class="${k && k.gp < 0 ? "neg" : ""}">${!costsReady ? load : k ? m(k.gp) : '<span class="dim">—</span>'}</td><td>${m(o.shipping)}</td><td>${costCell}</td><td class="${pas != null && pas < 0 ? "neg" : ""}">${pas == null ? '<span class="dim">—</span>' : "<b>" + m(pas) + "</b>"}</td><td class="dim">${pas != null && base ? pct(pas/base) : ""}</td><td class="${o.refunded?"neg":"dim"}">${o.refunded ? m(-o.refunded) : "—"}</td><td>${m(o.total)}</td><td class="l dim">${s ? esc([...s.services].join(", ")) : ""}</td></tr>${state.editing === o.sid && k ? detailRow(o, k) : ""}${state.shipEdit === o.sid ? shipEditRow(o) : ""}`;
     }).join("");
     for (const o of rows) {
       const s = shipFor(o), k = costFor(o), c = s ? s.cost : 0;
@@ -581,6 +592,37 @@
     return { base, delta, total: Math.round((base + delta) * 100) / 100, missing, bad };
   }
 
+  // ---------- shipping cost entered by hand ----------
+  function shipEditRow(o) {
+    const mm = (state.shipMan && state.shipMan.get(o.sid)) || {}, d = state.shipDraft || {};
+    const cw = d.combined ?? mm.combined ?? "", cost = d.cost ?? (mm.cost != null ? String(mm.cost) : "");
+    return `<tr class="detail"><td colspan="15"><div class="dpanel">
+      <div class="small">ShipStation has no label for <b>${esc(o.name)}</b>. Enter what shipping it cost, or the order it went out with.</div>
+      <div class="row">
+        <label class="stack" for="sc-with">Shipped in the same box as order<input id="sc-with" class="inp mono" value="${esc(cw)}" placeholder="#12345" style="width:130px"></label>
+        <label class="stack" for="sc-cost">Label cost<input id="sc-cost" class="inp num" value="${esc(cost)}" inputmode="decimal" placeholder="${cw ? "0.00" : "e.g. 8.45"}" style="width:110px"></label>
+        <label class="stack grow" for="sc-note">Note<input id="sc-note" class="inp" value="${esc(d.note ?? mm.note ?? "")}" placeholder="e.g. label bought on usps.com"></label>
+      </div>
+      <div class="dfoot"><span class="dim small">${cw ? "Combined: the label is already counted on that order, so this one is usually $0." : "Leave the cost at 0 if shipping was free to you."}</span>
+        <span class="dbtns"><button class="mini primary" data-act="shipsave" data-sid="${o.sid}" ${state.saving ? "disabled" : ""}>Save</button><button class="mini" data-act="shipcancel">Cancel</button>${mm.cost != null ? `<button class="mini" data-act="shipclear" data-sid="${o.sid}">Remove</button>` : ""}</span></div>
+    </div></td></tr>`;
+  }
+  async function saveShipCost(sid, clear) {
+    const o = (state.orders || []).find(x => x.sid === sid); if (!o) return;
+    const cw = ($("sc-with") ? $("sc-with").value : "").trim(), raw = ($("sc-cost") ? $("sc-cost").value : "").trim(), nt = ($("sc-note") ? $("sc-note").value : "").trim();
+    const cost = raw === "" ? (cw ? 0 : null) : money(raw);
+    if (!clear && (cost == null || isNaN(cost) || cost < 0)) { note("orders-note", "warn", "Enter the label cost as a dollar amount (0 is fine), or the order it shipped with."); return; }
+    const withName = cw ? "#" + cw.replace(/^#/, "") : "";
+    if (withName && withName === o.name) { note("orders-note", "warn", "Pick the other order it shipped with."); return; }
+    state.saving = true; renderOrders();
+    try {
+      if (clear) { await JT.deleteShipCost(sid); state.shipMan.delete(sid); }
+      else { await JT.saveShipCost({ order_id: Number(sid), cost: Math.round(cost * 100) / 100, combined_with: withName, note: nt }); state.shipMan.set(sid, { cost: Math.round(cost * 100) / 100, combined: withName, note: nt }); }
+      state.shipEdit = null; state.shipDraft = null; note("orders-note", "", "");
+    } catch (e) { note("orders-note", "bad", "Couldn't save the shipping cost: " + esc(mcpMessage(e))); }
+    state.saving = false; render();
+  }
+
   function detailRow(o, k) {
     const L = state.lines.get(o.sid);
     let inner;
@@ -653,8 +695,14 @@
     else if (act === "reload") loadLines(sid);
     else if (act === "save") saveOverride(sid, false);
     else if (act === "clear") saveOverride(sid, true);
+    else if (act === "shipedit") { state.shipEdit = state.shipEdit === sid ? null : sid; state.shipDraft = null; renderOrders(); const i = $("sc-with"); if (i) i.focus(); }
+    else if (act === "shipcancel") { state.shipEdit = null; state.shipDraft = null; renderOrders(); }
+    else if (act === "shipsave") saveShipCost(sid, false);
+    else if (act === "shipclear") saveShipCost(sid, true);
   });
+  $("orders").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && /^sc-/.test(ev.target.id || "")) { ev.preventDefault(); saveShipCost(state.shipEdit, false); } });
   $("orders").addEventListener("input", (ev) => {
+    if (/^sc-/.test(ev.target.id || "")) { state.shipDraft = { combined: $("sc-with").value, cost: $("sc-cost").value, note: $("sc-note").value }; return; }
     const id = ev.target.dataset && ev.target.dataset.line; if (!id) return;
     state.drafts[id] = ev.target.value;
     const o = (state.orders || []).find(x => x.sid === state.editing); if (!o) return;

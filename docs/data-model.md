@@ -164,3 +164,9 @@ New checks are one more entry in `issuesOf`.
 - Order lines carry `dest`: receiving a `shopify` line records it but doesn't add to the prep center.
 - Marked from: Prep center stock rows, Amazon inventory rows (mapped listings, for that seller SKU), Inventory value
   rows (for the Shopify store) and the search box on the list.
+
+## Shipping cost entered by hand (migration 018)
+
+- `jt.ship_cost_overrides` (order_id, cost, combined_with, note): for shipped orders with no ShipStation label —
+  a label bought elsewhere, or an order that went in the same box as another (`combined_with` = that order, cost
+  usually 0). The Shopify tab uses it only when the order has no label of its own; it counts toward label cost coverage.
