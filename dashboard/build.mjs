@@ -42,7 +42,7 @@ const web = `<!doctype html>
 <meta name="theme-color" content="#F3F5F2">
 ${html}`.replace(/<\/style>\n/, "</style>\n</head>\n<body>\n") + "\n</body>\n</html>\n";
 writeFileSync(join(DIST, "web", "index.html"), web);
-// Tab icon (a tennis ball) served next to the page.
+// Tab icon (the Seller Sage mark) served next to the page.
 for (const [from, to] of [["favicon.svg", "favicon.svg"], ["icon-32.png", "icon-32.png"], ["icon-32.png", "favicon.ico"], ["icon-180.png", "apple-touch-icon.png"]])
   copyFileSync(join(SRC, "icon", from), join(DIST, "web", to));
 console.log(`built dashboard/dist/just-tennis-sales.html and dashboard/dist/web/index.html (${Math.round(html.length / 1024)} KB)`);
