@@ -1,5 +1,5 @@
 (() => {
-  // ===================== Product costs =====================
+  // ===================== Inventory value (was Product costs) =====================
   // Every Shopify variant with its current unit cost, sorted by how much it sells (Shopify + Amazon) so the costs
   // that matter most get fixed first. Edited costs are queued in jt.cost_updates and written to Shopify by the sync.
   const $ = (id) => document.getElementById(id);

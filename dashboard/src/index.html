@@ -20,7 +20,7 @@
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
-    <button role="tab" data-tab="costs" aria-selected="false">Product costs</button>
+    <button role="tab" data-tab="costs" aria-selected="false">Inventory value</button>
     <button role="tab" data-tab="fba" aria-selected="false">Amazon inventory</button>
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
@@ -216,8 +216,8 @@
   <div id="tab-costs" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Shopify product costs and inventory value · biggest sellers first (Shopify + Amazon)</span>
-        <h1>Product costs</h1>
+        <span class="eyebrow">Shopify + Amazon inventory at cost · edit Shopify product costs, biggest sellers first</span>
+        <h1>Inventory value</h1>
       </div>
       <div class="controls">
         <label class="small muted" for="pc-period">Sales in <select id="pc-period" class="inp sm">
@@ -228,7 +228,7 @@
     <div class="status" id="pc-status" aria-live="polite">Loading products and sales…</div>
     <div id="pc-note" hidden></div>
     <section class="panel inv-panel">
-      <div class="panel-head"><h2>Inventory value</h2><span class="muted small" id="pc-inv-scope"></span></div>
+      <div class="panel-head"><h2>Totals</h2><span class="muted small" id="pc-inv-scope"></span></div>
       <section class="kpis" id="pc-inv" aria-label="Inventory value"></section>
     </section>
     <section class="kpis" id="pc-kpis" aria-label="Cost health"></section>

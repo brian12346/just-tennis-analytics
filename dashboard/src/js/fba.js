@@ -5,7 +5,7 @@
   // Each seller SKU is costed through its Amazon mapping (amzmap: Shopify variant × units, or a manual cost),
   // priced at its Amazon price, and given an estimated Amazon fee from that SKU's own recent sales (jt.v_amz_sku_fees).
   // The report is stored in jt.docs collection "fbainv" (latest upload only). window.JT.fba is shared with the
-  // Product costs tab, which adds FBA to the inventory total.
+  // Inventory value tab, which adds FBA to the inventory total.
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
