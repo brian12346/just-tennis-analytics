@@ -269,3 +269,13 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
   - Stock is valued newest layer first. Anything beyond the layers is at the opening cost.
   - Products without layers are valued at the Shopify cost, as before.
 - `window.JTCost` (costlayers.js) applies this on the Inventory value tab, the prep center totals and Amazon totals.
+
+### Sales costed by layer (029)
+
+- For products with cost layers, `jt.fifo_sale_costs` holds a FIFO cost for each Shopify sales row. `jt.refresh_fifo_costs()` rebuilds it; the hourly and nightly syncs and Apply to Shopify call it.
+  - Sales before the layers started are costed at the opening cost.
+  - Later sales take units oldest layer first.
+  - Amazon monthly units (through the Shopify mappings) take units too, dated the 15th.
+  - Returns go back at the cost they left at.
+- `jt.v_shopify_sales_costed` uses it, so the daily totals and the Product sales tab ("Current cost · FIFO layers") follow.
+- `jt.prep_orders.shopify_received_at` / `_by` records "Received in Shopify", set with `jt.po_shopify_received`, which starts a catalog sync. `jt.po_apply_costs` refuses a PO with received Shopify-store products until it's set and Shopify's stock has synced after it (max `jt.variants.seen_at`).

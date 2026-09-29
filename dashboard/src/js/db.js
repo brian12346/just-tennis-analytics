@@ -328,6 +328,13 @@
     },
     // Purchase orders tab: an order + its invoice (parsed from the PDF) in one save; the PDF in parts; delete a draft
     po: {
+      // the PO was received in Shopify (on) or not (off); marking it starts a catalog sync — jt.po_shopify_received
+      async shopifyReceived(id, on) {
+        const body = { id: Number(id), on: !!on };
+        if (WEB) return await WEB.write("jt_po_shopify_received", { p: body });
+        const out = await run(`select jt.po_shopify_received(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as t`, true);
+        return out[0] && out[0].t;
+      },
       // new costs from a PO to Shopify (weighted average), starting FIFO cost layers — jt.po_apply_costs
       async applyCosts(body) {
         if (WEB) return await WEB.write("jt_po_apply_costs", { p: body });

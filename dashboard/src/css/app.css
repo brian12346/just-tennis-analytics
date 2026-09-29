@@ -681,3 +681,4 @@ html{scroll-padding-top:130px}
 .costbar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:10px;font-size:13px}
 .costbar.hot{border-color:var(--primary)}
 .costprev{flex-basis:100%;display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.costbar .gate{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding-top:6px;border-top:1px dashed var(--line)}

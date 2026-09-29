@@ -514,3 +514,40 @@ def test_po_apply_costs_and_layers(conn):
     call("prep_order_receive", {"id": later, "lines": [{"variant_id": 931, "dest": "prep", "qty": 5}]})
     cur.execute("select kind, qty, unit_cost from jt.v_cost_layers where variant_id = 931 order by at, kind")
     assert cur.fetchall() == [("opening", 4, D("5.0000")), ("po", 10, D("6.0000")), ("po", 5, D("7.0000"))]
+
+
+def test_fifo_sale_costs(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (941, 94, 11.5, 'Head')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    oid = call("po_save", {"order": {"vendor": "Head", "po_no": "F1"}, "lines": [{"variant_id": 941, "dest": "prep", "qty": 10, "unit_cost": 12}], "invoices": []})["order_id"]
+    cur.execute("update jt.prep_order_lines set qty_received = 10 where order_id = %s", (oid,))
+    cur.execute("update jt.prep_orders set status = 'received', stage_at = jsonb_build_object('partial', '2026-09-12T12:00:00-07:00') where id = %s", (oid,))
+    cur.execute("insert into jt.cost_layers (variant_id, qty, unit_cost, at, order_id, created_at) values (941, 5, 10, '2026-09-09 12:00-07', %s, '2026-09-10 12:00-07')", (oid,))
+    for day, order, units in [("2026-09-05", 90, 2), ("2026-09-11", 91, 4), ("2026-09-13", 100, 3), ("2026-09-13", 101, -1), ("2026-09-15", 102, 2)]:
+        cur.execute("insert into jt.shopify_sales (day, order_id, variant_id, units, net, cogs) values (%s, %s, 941, %s, %s, 0)", (day, order, units, units * 20))
+    cur.execute("select jt.refresh_fifo_costs()")
+    cur.execute("select day::text, order_id, cogs from jt.v_shopify_sales_costed where variant_id = 941 order by day, order_id")
+    assert cur.fetchall() == [("2026-09-05", 90, D("20.00")), ("2026-09-11", 91, D("40.00")), ("2026-09-13", 100, D("34.00")),
+                              ("2026-09-13", 101, D("-12.00")), ("2026-09-15", 102, D("24.00"))]
+    # without layers it's today's cost again
+    cur.execute("delete from jt.cost_layers where variant_id = 941"); cur.execute("select jt.refresh_fifo_costs()")
+    cur.execute("select sum(cogs) from jt.v_shopify_sales_costed where variant_id = 941"); assert cur.fetchone()[0] == D("115.00")
+
+
+def test_apply_needs_shopify_receipt(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor, inventory_item_id, seen_at) values (951, 95, 5, 'Head', 9951, now() - interval '1 day')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    oid = call("po_save", {"order": {"vendor": "Head", "po_no": "S1"}, "lines": [{"variant_id": 951, "dest": "shopify", "qty": 4, "unit_cost": 6}], "invoices": []})["order_id"]
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 951, "dest": "shopify", "qty": 4}]})
+    body = {"order_id": oid, "items": [{"variant_id": 951, "cost": 5.5}]}
+    cur.execute("savepoint a")
+    with pytest.raises(Exception, match="received in Shopify"): call("po_apply_costs", body)
+    cur.execute("rollback to savepoint a")
+    assert call("po_shopify_received", {"id": oid}) is not None
+    cur.execute("savepoint b")
+    with pytest.raises(Exception, match="sync"): call("po_apply_costs", body)          # Shopify's stock hasn't synced since
+    cur.execute("rollback to savepoint b")
+    cur.execute("update jt.variants set seen_at = now() + interval '1 minute'")
+    assert call("po_apply_costs", body) == 1

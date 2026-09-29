@@ -70,6 +70,16 @@ def main(argv: list[str] | None = None) -> None:
         from . import shopify as sh2
         run("cost_updates", lambda: sh2.apply_cost_updates(shopify(), conn, today))
 
+    if a.job in ("hourly", "nightly", "backfill", "shopify-sales", "catalog", "cost-updates"):
+        # Shopify sales costed by cost layer (FIFO) for products whose cost was applied from a PO (migration 029)
+        def fifo():
+            with conn.cursor() as cur:
+                cur.execute("select jt.refresh_fifo_costs()")
+                n = cur.fetchone()[0]
+            conn.commit()
+            return n
+        run("fifo_costs", fifo)
+
     if a.job in ("nightly", "cost-watch"):
         # after the catalog sync: yesterday's sales without cost + this morning's cost changes -> jt.docs
         from . import cost_watch

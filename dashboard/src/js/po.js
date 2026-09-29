@@ -257,7 +257,8 @@
     try {
       await catalog();
       const [h, ol, sh, ivs, lp] = await Promise.all([
-        JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check"],
+        JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check", "o.shopify_received_at::text", "o.shopify_received_by",
+          "(select max(seen_at) from jt.variants)::text"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
@@ -270,7 +271,7 @@
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
-        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
+        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
@@ -944,6 +945,9 @@
     if (a === "updc" && l) { const on = !l.upd; for (const x of ed.lines) if (x.vid === l.vid) x.upd = on; ed.costPreview = null; ed.dirty = true; render(); return; }
     if (a === "updc-all") { for (const x of ed.lines) { const v = variant(x.vid); if (x.cost !== "" && v && (v.cost == null || Math.abs(Number(x.cost) - v.cost) >= 0.005)) for (const y of ed.lines) if (y.vid === x.vid) y.upd = true; } ed.costPreview = null; ed.dirty = true; render(); return; }
     if (a === "apply-costs") return prepareApply();
+    if (a === "shoprecv") return markShopRecv(true);
+    if (a === "shoprecv-off") return markShopRecv(false);
+    if (a === "shoprecv-check") { const id = ed.id; openPO(id); return; }
     if (a === "apply-no") { ed.costPreview = null; render(); return; }
     if (a === "apply-go") return applyCosts();
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
@@ -1005,17 +1009,38 @@
     const marked = costGroups(ed), ready = marked.filter(a => a.rec > 0), waiting = marked.filter(a => !a.rec);
     const changed = ed.lines.filter(l => !l.upd && l.cost !== "" && variant(l.vid) && (variant(l.vid).cost == null || Math.abs(Number(l.cost) - variant(l.vid).cost) >= 0.005));
     if (!marked.length && !changed.length && !ed.costPreview) return "";
-    const pv = ed.costPreview;
+    const pv = ed.costPreview, gate = shopGate(ed);
     return `<div class="costbar ${ready.length ? "hot" : ""}"><span><b>Shopify costs</b> · ${marked.length ? `${marked.length} marked to update${ready.length ? ` · <b>${ready.length} received, ready</b>` : ""}${waiting.length ? ` · ${waiting.length} waiting to be received` : ""}` : `${changed.length} cost${changed.length === 1 ? " differs" : "s differ"} from Shopify`}</span>
-      <span class="dbtns">${changed.length ? `<button class="btn" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy ? "disabled" : ""}>Apply to Shopify (${ready.length})</button>` : ""}</span>
+      <span class="dbtns">${changed.length ? `<button class="btn" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy || gate.block ? "disabled" : ""} title="${esc(gate.text || "")}">Apply to Shopify (${ready.length})</button>` : ""}</span>
+      ${ready.length && gate.html ? `<div class="gate small">${gate.html}</div>` : ""}
       ${pv ? `<div class="costprev"><div class="small">Shopify gets the <b>average cost of everything on hand</b>: the older units at their old cost and the units received on this PO at the PO cost. Inventory value keeps them apart (FIFO), so the older units stay at the old cost until they sell.</div>
         <table class="prept po-t"><thead><tr><th class="l">Product</th><th>On hand</th><th>Received on this PO</th><th>Shopify now</th><th>PO cost</th><th>New Shopify cost</th></tr></thead><tbody>${pv.map(x => `<tr><td class="l">${esc((variant(x.vid) || {}).title || x.vid)}<div class="meta">${esc(x.how)}</div></td><td>${n0(x.onHand)}</td><td>${n0(x.rec)}</td><td>${m(x.old)}</td><td>${m(x.poCost)}</td><td><b>${m(x.cost)}</b></td></tr>`).join("")}</tbody></table>
         <div class="dbtns"><button class="btn primary" data-pact="apply-go" ${S.busy ? "disabled" : ""}>Send ${pv.length} cost${pv.length === 1 ? "" : "s"} to Shopify</button><button class="btn" data-pact="apply-no">Cancel</button></div></div>` : ""}
     </div>`;
   }
+  // Apply to Shopify waits until the PO is received in Shopify and Shopify's stock has synced since (Shopify-store products)
+  function shopGate(ed) {
+    const shopRec = ed.lines.some(l => l.dest === "shopify" && l.received > 0);
+    const done = ed.shopRecvAt ? `<span class="pill ok">Received in Shopify ${esc(when(ed.shopRecvAt))}</span>${ed.shopRecvBy ? ` <span class="muted">${esc(ed.shopRecvBy)}</span>` : ""} <button class="linkbtn small" data-pact="shoprecv-off">undo</button>` : "";
+    if (!shopRec) return { block: false, html: ed.shopRecvAt ? done : "", text: "" };
+    if (!ed.shopRecvAt) return { block: true, text: "Receive the PO in Shopify first",
+      html: `<b>Receive this PO in Shopify first</b> (Shopify's stock count has to include the new units before the average cost is worked out). ${shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? `<a href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">Open the Shopify PO ↗</a> · ` : ""}<button class="btn" data-pact="shoprecv">It's received in Shopify</button>` };
+    if (!ed.stockSyncedAt || new Date(ed.stockSyncedAt) < new Date(ed.shopRecvAt)) return { block: true, text: "Waiting for Shopify's stock to sync",
+      html: `${done} · <b>waiting for Shopify's stock to sync</b> (started when you marked it; usually a few minutes). <button class="linkbtn small" data-pact="shoprecv-check">Check again</button>` };
+    return { block: false, text: "", html: done };
+  }
+  async function markShopRecv(on) {
+    const ed = S.ed; if (!ed || !ed.id) return;
+    if (ed.dirty) { const id = await save(null, true); if (!id) return; }
+    S.busy = "Saving…"; render();
+    try { await JT.po.shopifyReceived(S.ed.id, on); S.busy = ""; const keep = S.ed.cur; await openPO(S.ed.id); if (S.ed) S.ed.cur = keep;
+      note("info", on ? "Marked received in Shopify. Shopify's stock is syncing now; Apply to Shopify opens when it's done." : "No longer marked received in Shopify."); render(); }
+    catch (err) { S.busy = ""; render(); note("bad", "Couldn't save: " + esc(JT.message(err))); }
+  }
   // work out each product's new Shopify cost (and its opening layer, the first time)
   async function prepareApply() {
     const ed = S.ed; if (!ed) return;
+    if (shopGate(ed).block) { note("warn", shopGate(ed).text + "."); return; }
     if (ed.dirty) { const id = await save(null, true); if (!id) return; }
     const e2 = S.ed, groups = costGroups(e2).filter(a => a.rec > 0); if (!groups.length) return;
     S.busy = "Working out the new costs…"; render();
