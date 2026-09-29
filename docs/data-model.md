@@ -170,3 +170,7 @@ New checks are one more entry in `issuesOf`.
 - `jt.ship_cost_overrides` (order_id, cost, combined_with, note): for shipped orders with no ShipStation label —
   a label bought elsewhere, or an order that went in the same box as another (`combined_with` = that order, cost
   usually 0). The Shopify tab uses it only when the order has no label of its own; it counts toward label cost coverage.
+- Tracking numbers (migration 019): the orders sync stores each order's fulfillment tracking numbers in
+  `jt.shopify_order_tracking` (normalized, no spaces). `jt.v_combined_shipments` lists orders with no label of their
+  own whose tracking number is on another order's ShipStation label (ShipStation combined them); the Shopify tab
+  counts those as combined at $0 automatically. A hand-entered cost wins over the automatic match.

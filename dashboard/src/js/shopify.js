@@ -109,18 +109,22 @@
 
   // ShipStation label costs for the orders in range (voided labels left out), plus when the last sync ran.
   async function loadLabels(refresh, isCur = () => true) {
-    const [r, sync, man] = await Promise.all([
+    const [r, sync, man, comb] = await Promise.all([
       JT.rowsSplit(["l.order_id::text", "sum(l.cost)", "count(*)", "coalesce(json_agg(distinct l.service) filter (where l.service <> ''), '[]')"],
         `from jt.shipstation_labels l join jt.shopify_orders o on o.order_id = l.order_id where not l.voided and o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)} group by l.order_id`, "l.order_id", 1, refresh),
       JT.rows(["job", "finished_at", "ok"], "from jt.v_sync_status", refresh),
       // shipping cost entered by hand for orders with no label (bought elsewhere, or shipped combined with another order)
       JT.rows(["m.order_id::text", "m.cost", "m.combined_with", "m.note", "m.by_user"],
         `from jt.ship_cost_overrides m join jt.shopify_orders o on o.order_id = m.order_id where o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)}`, refresh).catch(() => []),
+      // orders with no label of their own whose tracking number is on another order's label (ShipStation combined them)
+      JT.rows(["c.order_id::text", "c.label_order_name", "c.tracking"],
+        `from jt.v_combined_shipments c join jt.shopify_orders o on o.order_id = c.order_id where o.order_day between ${JT.day(state.start)} and ${JT.day(state.end)}`, refresh).catch(() => []),
     ]);
     if (!isCur()) return;                                  // a newer range is loading
     const bySid = new Map(); let labels = 0;
     for (const [sid, cost, n, sv] of r) { bySid.set(sid, { cost: num(cost), labels: num(n), services: new Set(sv || []) }); labels += num(n); }
     state.shipSid = bySid; state.shipLabels = labels; state.syncs = sync;
+    state.shipComb = new Map(comb.map(([sid, name, trk]) => [sid, { name: name || "", tracking: trk || "" }]));
     state.shipMan = new Map(man.map(([sid, cost, cw, nt, by]) => [sid, { cost: num(cost), combined: cw || "", note: nt || "", by: by || "" }]));
     state.lastSync = (sync.find(x => x[0] === "shipstation_labels") || [])[1] || null;
     state.dbReady = true;
@@ -164,8 +168,12 @@
   // label cost for an order: its ShipStation label(s), else a cost entered by hand
   function shipFor(o) {
     const l = state.shipSid.get(o.sid) || state.ship.get(o.key); if (l) return l;
-    const mm = state.shipMan && state.shipMan.get(o.sid); if (!mm) return null;
-    return { cost: mm.cost, labels: 0, services: new Set([mm.combined ? "combined with " + mm.combined : "entered by hand"]), manual: true, combined: mm.combined, note: mm.note };
+    const mm = state.shipMan && state.shipMan.get(o.sid);
+    if (mm) return { cost: mm.cost, labels: 0, services: new Set([mm.combined ? "combined with " + mm.combined : "entered by hand"]), manual: true, combined: mm.combined, note: mm.note };
+    // same tracking number as another order's label: shipped in that box, its label is counted there
+    const cb = state.shipComb && state.shipComb.get(o.sid);
+    if (cb) return { cost: 0, labels: 0, services: new Set(["combined with " + cb.name + " (same tracking)"]), manual: true, auto: true, combined: cb.name, note: "Same tracking number " + cb.tracking + " as " + cb.name + "'s label" };
+    return null;
   }
 
   function shopifyCostFor(o) { return state.costs ? (state.costs.get(o.name) || null) : null; }
@@ -259,7 +267,7 @@
       { c:"sales", l:"Profit after shipping", v: haveOrders && haveDaily ? `<span class="${profitAfterShip(sum("gp"), shipCh, cost) < 0 ? "neg" : ""}">${m0(profitAfterShip(sum("gp"), shipCh, cost))}</span>` : dash, s: haveOrders && haveDaily && net ? `${pct(profitAfterShip(sum("gp"), shipCh, cost)/net)} of net sales` : "Gross profit + shipping charged − labels" },
       // share of shipped (non-POS) orders that have a ShipStation label cost matched to them
       { c:"", l:"Label cost coverage", v: haveOrders ? (dv.webShipped ? pct(dv.webShippedWithCost/dv.webShipped) : dash) : dash,
-        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a label cost (ShipStation or entered)${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
+        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a label cost (ShipStation, combined or entered)${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
     ];
     $("kpis").innerHTML = k.map(x => `<div class="kpi ${x.c}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
   }
@@ -356,7 +364,7 @@
       const s = shipFor(o); const c = s ? s.cost : 0;
       const k = costFor(o);
       const shipped = o.chan !== "pos" && /FULFILLED/.test(o.ful) && !/UNFULFILLED/.test(o.ful);
-      const costCell = s && s.manual ? `<button class="costbtn" data-act="shipedit" data-sid="${o.sid}" title="${esc(s.note || "Entered by hand — click to change")}">${m(c)} <span class="pill manual">${s.combined ? "with " + esc(s.combined) : "Entered"}</span></button>`
+      const costCell = s && s.manual ? `<button class="costbtn" data-act="shipedit" data-sid="${o.sid}" title="${esc(s.note || "Entered by hand — click to change")}">${m(c)} <span class="pill manual">${s.combined ? "with " + esc(s.combined) + (s.auto ? " · auto" : "") : "Entered"}</span></button>`
         : s ? `${m(c)}${s.labels > 1 ? ` <span class="dim">×${s.labels}</span>` : ""}`
         : shipped ? `<button class="pill miss" data-act="shipedit" data-sid="${o.sid}" title="Enter the shipping cost, or the order it shipped with">No label · enter</button>` : `<span class="dim">—</span>`;
       const load = '<span class="dim">…</span>';
@@ -597,7 +605,7 @@
     const mm = (state.shipMan && state.shipMan.get(o.sid)) || {}, d = state.shipDraft || {};
     const cw = d.combined ?? mm.combined ?? "", cost = d.cost ?? (mm.cost != null ? String(mm.cost) : "");
     return `<tr class="detail"><td colspan="15"><div class="dpanel">
-      <div class="small">ShipStation has no label for <b>${esc(o.name)}</b>. Enter what shipping it cost, or the order it went out with.</div>
+      <div class="small">ShipStation has no label for <b>${esc(o.name)}</b>. Enter what shipping it cost, or the order it went out with.${state.shipComb && state.shipComb.get(o.sid) && mm.cost == null ? ` Matched automatically: it has the same tracking number as ${esc(state.shipComb.get(o.sid).name)}'s label, so it counts as combined at $0 — save here only to override that.` : ""}</div>
       <div class="row">
         <label class="stack" for="sc-with">Shipped in the same box as order<input id="sc-with" class="inp mono" value="${esc(cw)}" placeholder="#12345" style="width:130px"></label>
         <label class="stack" for="sc-cost">Label cost<input id="sc-cost" class="inp num" value="${esc(cost)}" inputmode="decimal" placeholder="${cw ? "0.00" : "e.g. 8.45"}" style="width:110px"></label>

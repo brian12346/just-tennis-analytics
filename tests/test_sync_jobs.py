@@ -31,6 +31,7 @@ ORDER = {"id": "gid://shopify/Order/7788625494301", "name": "#21678", "createdAt
          "totalShippingPriceSet": {"shopMoney": {"amount": "8.0"}}, "totalTaxSet": {"shopMoney": {"amount": "3.1"}},
          "totalPriceSet": {"shopMoney": {"amount": "51.05"}}, "totalRefundedSet": {"shopMoney": {"amount": "43.05"}},
          "currentTotalPriceSet": {"shopMoney": {"amount": "8.0"}},
+         "fulfillments": [{"trackingInfo": [{"number": "9400 1111 2222", "company": "USPS"}]}],
          "lineItems": {"pageInfo": {"hasNextPage": True, "endCursor": "c1"}, "nodes": [
              {"id": "gid://shopify/LineItem/18780475293981", "title": "Vision II Backpack", "variantTitle": "Black",
               "sku": "15386", "quantity": 1, "currentQuantity": 0, "product": {"id": "gid://shopify/Product/10118248333597"},
@@ -96,6 +97,13 @@ def test_sales_daily_orders_and_catalog(conn):
     assert cur.fetchone() == (dt.date(2026, 9, 4), "web", D("8.00"))   # 21:40 UTC = Sep 4 Pacific
     cur.execute("select line_id, variant_id, current_quantity from jt.shopify_order_lines order by line_id")
     assert cur.fetchall() == [(2, None, 1), (18780475293981, 51062252273949, 0)]
+    cur.execute("select order_id, tracking, company from jt.shopify_order_tracking")
+    assert cur.fetchall() == [(7788625494301, "940011112222", "USPS")]
+    # combined shipment: this order has no label; another order's label carries its tracking number
+    cur.execute("insert into jt.shopify_orders (order_id, name, created_at, order_day) values (99, '#21677', now(), current_date)")
+    cur.execute("insert into jt.shipstation_labels (label_id, tracking, order_id, ship_date, cost, voided) values ('1', '9400 1111 2222', 99, current_date, 7.5, false)")
+    cur.execute("select order_id, label_order_name from jt.v_combined_shipments")
+    assert cur.fetchall() == [(7788625494301, "#21677")]
 
     first = sh.sync_catalog(shop, conn, dt.date(2026, 9, 24))
     assert first == {"variants": 2, "changes": 0, "baseline": True, "no_cost": 1, "removed": 0, "restored": 0}

@@ -171,6 +171,7 @@ ORDERS_Q = """query($first: Int!, $after: String, $q: String) {
       totalShippingPriceSet { shopMoney { amount } } totalTaxSet { shopMoney { amount } }
       totalPriceSet { shopMoney { amount } } totalRefundedSet { shopMoney { amount } }
       currentTotalPriceSet { shopMoney { amount } }
+      fulfillments(first: 10) { trackingInfo(first: 10) { number company } }
       lineItems(first: 30) {
         pageInfo { hasNextPage endCursor }
         nodes { id title variantTitle sku quantity currentQuantity product { id } variant { id }
@@ -210,7 +211,7 @@ def sync_orders(shop: Shopify, conn, updated_since: dt.datetime) -> int:
              "current_quantity", "unit_price"]
     while True:
         page = shop.graphql(ORDERS_Q, {"first": 25, "after": after, "q": q})["orders"]
-        orders, lines = [], []
+        orders, lines, tracks = [], [], []
         now = dt.datetime.now(dt.timezone.utc)
         for o in page["nodes"]:
             oid = gid_num(o["id"])
@@ -222,6 +223,12 @@ def sync_orders(shop: Shopify, conn, updated_since: dt.datetime) -> int:
                            _amt(o, "totalDiscountsSet"), _amt(o, "totalShippingPriceSet"), _amt(o, "totalTaxSet"),
                            _amt(o, "totalPriceSet"), _amt(o, "totalRefundedSet"), _amt(o, "currentTotalPriceSet"),
                            o.get("subtotalLineItemsQuantity") or 0, o.get("updatedAt"), now))
+            # tracking numbers from the order's fulfillments (to match combined shipments to their label)
+            for f in o.get("fulfillments") or []:
+                for ti in f.get("trackingInfo") or []:
+                    num = "".join(str(ti.get("number") or "").split()).upper()
+                    if num:
+                        tracks.append((oid, num, ti.get("company") or ""))
             lis = o["lineItems"]
             lines += [_line_row(oid, li) for li in lis["nodes"]]
             cursor, more = lis["pageInfo"]["endCursor"], lis["pageInfo"]["hasNextPage"]
@@ -233,7 +240,9 @@ def sync_orders(shop: Shopify, conn, updated_since: dt.datetime) -> int:
         if orders:
             with conn.cursor() as cur:  # replace these orders' lines (items can be removed by order edits)
                 cur.execute("delete from jt.shopify_order_lines where order_id = any(%s)", ([r[0] for r in orders],))
+                cur.execute("delete from jt.shopify_order_tracking where order_id = any(%s)", ([r[0] for r in orders],))
         upsert(conn, "jt.shopify_order_lines", lcols, lines, ["line_id"])
+        upsert(conn, "jt.shopify_order_tracking", ["order_id", "tracking", "company"], tracks, ["order_id", "tracking"])
         conn.commit()
         n += len(orders)
         if not page["pageInfo"]["hasNextPage"]:
