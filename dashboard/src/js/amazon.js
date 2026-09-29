@@ -294,10 +294,8 @@
     const q = $("amz-q").value.trim().toLowerCase(), st = $("amz-fstatus").value, fm = $("amz-fmap").value, fc = $("amz-fchan").value;
     const conf = fm === "conflict" ? conflictAsins() : null;
     return allListings().filter(l => {
-      if (["asin", "cleanup", "conflict"].includes(fm)) {
+      if (fm === "conflict") {
         const mp = S.maps.get(l.sku);
-        if (fm === "asin" && !(mp && mp.via === "asin")) return false;
-        if (fm === "cleanup" && !(mp && mp.via === "asin-cleanup")) return false;
         if (fm === "conflict" && !conf.has(l.asin || (mp && mp.asin) || "")) return false;
         if (fc === "fba" && !isFBA(l)) return false;
         if (fc === "fbm" && isFBA(l)) return false;
