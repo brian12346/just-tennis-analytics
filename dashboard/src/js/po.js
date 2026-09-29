@@ -957,6 +957,8 @@
     if (a === "shoprecv") return markShopRecv(true);
     if (a === "shoprecv-off") return markShopRecv(false);
     if (a === "shoprecv-check") { const id = ed.id; openPO(id); return; }
+    if (a === "apply-amz") { S.busy = "Loading the Amazon report…"; ed.costWorking = true; render();
+      JT.fba.load(false).catch(() => {}).then(() => { S.busy = ""; ed.costWorking = false; prepareApply(); }); return; }
     if (a === "apply-no") { ed.costPreview = null; render(); return; }
     if (a === "apply-go") return applyCosts();
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
@@ -1020,11 +1022,11 @@
     if (!marked.length && !changed.length && !ed.costPreview) return "";
     const pv = ed.costPreview, gate = shopGate(ed);
     return `<div class="costbar ${ready.length ? "hot" : ""}" id="pe-costbar" tabindex="-1"><span><b>Shopify costs</b> · ${marked.length ? `${marked.length} marked to update${ready.length ? ` · <b>${ready.length} received, ready</b>` : ""}${waiting.length ? ` · ${waiting.length} waiting to be received` : ""}` : `${changed.length} cost${changed.length === 1 ? " differs" : "s differ"} from Shopify`}</span>
-      <span class="dbtns">${changed.length ? `<button class="btn" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy || gate.block ? "disabled" : ""} title="${esc(gate.text || "")}">Apply to Shopify (${ready.length})</button>` : ""}</span>
+      <span class="dbtns">${changed.length ? `<button class="btn" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy || gate.block ? "disabled" : ""} title="${esc(gate.text || "")}">${ed.costWorking ? "Working out the new costs…" : `Apply to Shopify (${ready.length})`}</button>` : ""}</span>
       ${ready.length && gate.html ? `<div class="gate small">${gate.html}</div>` : ""}
-      ${pv ? `<div class="costprev"><div class="small">Shopify gets the <b>average cost of everything on hand</b>: the older units at their old cost and the units received on this PO at the PO cost. Inventory value keeps them apart (FIFO), so the older units stay at the old cost until they sell.</div>
+      ${pv ? `<div class="costprev">${ed.costAmzNote ? `<div class="small warnt">Amazon (FBA/AWD) stock isn't counted in "On hand" yet. <button class="linkbtn small" data-pact="apply-amz">Include Amazon stock</button> (loads the Amazon report; can take a minute)</div>` : ""}<div class="small">Shopify gets the <b>average cost of everything on hand</b>: the older units at their old cost and the units received on this PO at the PO cost. Inventory value keeps them apart (FIFO), so the older units stay at the old cost until they sell.</div>
         <table class="prept po-t"><thead><tr><th class="l">Product</th><th>On hand</th><th>Received on this PO</th><th>Shopify now</th><th>PO cost</th><th>New Shopify cost</th></tr></thead><tbody>${pv.map(x => `<tr><td class="l">${esc((variant(x.vid) || {}).title || x.vid)}<div class="meta">${esc(x.how)}</div></td><td>${n0(x.onHand)}</td><td>${n0(x.rec)}</td><td>${m(x.old)}</td><td>${m(x.poCost)}</td><td><b>${m(x.cost)}</b></td></tr>`).join("")}</tbody></table>
-        <div class="dbtns"><button class="btn primary" data-pact="apply-go" ${S.busy ? "disabled" : ""}>Send ${pv.length} cost${pv.length === 1 ? "" : "s"} to Shopify</button><button class="btn" data-pact="apply-no">Cancel</button></div></div>` : ""}
+        <div class="dbtns"><button class="btn primary" data-pact="apply-go" ${S.busy ? "disabled" : ""}>${S.busy ? "Sending…" : `Send ${pv.length} cost${pv.length === 1 ? "" : "s"} to Shopify`}</button><button class="btn" data-pact="apply-no">Cancel</button></div></div>` : ""}
     </div>`;
   }
   // Apply to Shopify waits until the PO is received in Shopify and Shopify's stock has synced since (Shopify-store products)
@@ -1064,9 +1066,12 @@
     if (shopGate(ed).block) { note("warn", shopGate(ed).text + "."); return; }
     if (ed.dirty) { const id = await save(null, true); if (!id) return; }
     const e2 = S.ed, groups = costGroups(e2).filter(a => a.rec > 0); if (!groups.length) return;
-    S.busy = "Working out the new costs…"; render();
+    S.busy = "Working out the new costs…"; e2.costWorking = true; render();
     try {
-      if (JT.fba && !JT.fba.data) await JT.fba.load(false).catch(() => {});
+      // Amazon stock counts toward what's on hand; the Amazon report can be slow to load here, so don't wait long for it
+      // Amazon stock counts toward what's on hand when the Amazon report is loaded; loading it can take a while here,
+      // so it isn't waited for: the preview says so and offers to include it
+      const amzNote = JT.fba && !JT.fba.data ? "amz" : "";
       await window.JTCost.load(true, groups.map(a => a.vid));
       const cutoff = e2.stageAt.partial || e2.stageAt.received || new Date().toISOString();
       const out = [];
@@ -1088,8 +1093,9 @@
         const cost = n > 0 ? Math.round(window.JTCost.fifo(layers, n) / n * 100) / 100 : Math.round(a.cost * 100) / 100;
         out.push({ vid: a.vid, onHand: n, rec: a.rec, old: v.cost, poCost: a.cost, cost, opening, how });
       }
-      S.busy = ""; e2.costPreview = out; render();
-    } catch (err) { S.busy = ""; render(); note("bad", "Couldn't work out the costs: " + esc(JT.message(err))); }
+      S.busy = ""; e2.costWorking = false; e2.costPreview = out; e2.costAmzNote = amzNote; render();
+      focusArg("pe-costbar");
+    } catch (err) { S.busy = ""; e2.costWorking = false; render(); note("bad", "Couldn't work out the costs: " + esc(JT.message(err))); }
   }
   async function applyCosts() {
     const ed = S.ed, pv = ed && ed.costPreview; if (!pv) return;
