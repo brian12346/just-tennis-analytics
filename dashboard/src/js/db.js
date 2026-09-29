@@ -150,6 +150,28 @@
   }
   window.JTDate = { parseTime, laDay, addDays, today: () => laDay(Date.now()) };
 
+  // One set of date presets for everything that reports on the past (the Shopify tab's style): buttons + a custom
+  // start–end. JTRange.of(preset, anchor) -> [start, end]; `anchor` is "today" (Amazon uses its last day of data).
+  const RANGE_PRESETS = [["today", "Today"], ["yesterday", "Yesterday"], ["7", "7d"], ["14", "14d"], ["30", "30d"], ["90", "90d"],
+    ["mtd", "MTD"], ["ytd", "YTD"], ["12m", "12m"], ["ly", "Last year"]];
+  function rangeOf(p, anchor) {
+    const t = anchor || laDay(Date.now()), y = +t.slice(0, 4);
+    if (p === "today") return [t, t];
+    if (p === "yesterday") { const d = addDays(t, -1); return [d, d]; }
+    if (p === "mtd") return [t.slice(0, 8) + "01", t];
+    if (p === "ytd") return [y + "-01-01", t];
+    if (p === "ly") return [(y - 1) + "-01-01", (y - 1) + "-12-31"];
+    if (p === "12m") { const d = new Date(Date.UTC(y, +t.slice(5, 7) - 1 - 11, 1)); return [d.toISOString().slice(0, 10), t]; }   // this month + the 11 before
+    return [addDays(t, -(Number(p) - 1)), t];
+  }
+  // Fill a .seg with the preset buttons (data-<attr>="<preset>").
+  function rangeSeg(id, attr) {
+    const el = document.getElementById(id); if (!el) return;
+    el.innerHTML = RANGE_PRESETS.map(([k, l]) => `<button type="button" data-${attr}="${k}" aria-pressed="false">${l}</button>`).join("");
+  }
+  const rangeLabel = (s, e) => { const f = (d) => new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }); return s === e ? f(s) : f(s) + " – " + f(e); };
+  window.JTRange = { PRESETS: RANGE_PRESETS, of: rangeOf, seg: rangeSeg, label: rangeLabel };
+
   // Anything that breaks on the page shows as a banner at the top instead of failing silently.
   function showError(e) {
     let msg = (e && (e.message || e.reason && e.reason.message)) || String(e || "unknown error");

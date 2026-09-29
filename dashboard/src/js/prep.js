@@ -21,15 +21,17 @@
     if (loading) return loading;
     if (cache && !refresh) return cache;
     loading = (async () => {
-      const SHIPWHERE = "where s.status <> 'shipped' or s.shipped_at > now() - interval '60 days'";
-      const ORDWHERE = "where o.status <> 'shipped' or o.updated_at > now() - interval '60 days'";
+      // History range (header): shipped / received views and Activity. Anything still in progress always loads.
+      const [h0, h1] = histRange(), la = (c) => `(${c} at time zone 'America/Los_Angeles')::date between ${JT.day(h0)} and ${JT.day(h1)}`;
+      const SHIPWHERE = `where s.status <> 'shipped' or ${la("s.shipped_at")}`;
+      const ORDWHERE = `where o.status <> 'shipped' or ${la("o.updated_at")}`;
       const [items, moves, maps, lst, seed, ships, slines, ords, olines, list] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
           "from jt.prep_items i left join jt.variants v on v.variant_id = i.variant_id order by i.updated_at desc", refresh),
         JT.rows(["m.at", "m.kind", "m.variant_id::text", "m.amazon_sku", "m.qty_change", "m.qty_after", "m.shipment", "m.dest", "m.note", "m.by_user",
           "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku"],
-          "from jt.prep_moves m left join jt.variants v on v.variant_id = m.variant_id order by m.at desc, m.id desc limit 200", refresh),
+          `from jt.prep_moves m left join jt.variants v on v.variant_id = m.variant_id where ${la("m.at")} order by m.at desc, m.id desc limit 1000`, refresh),
         JT.rowsSplit(["data->>'sku'", "(regexp_match(data->>'variantId', '(\\d+)$'))[1]", "coalesce(data->>'units', '1')", "data->>'kind'"],
           "from jt.docs where collection = 'amzmap'", "id", 4, refresh),
         // Amazon listing titles, ASINs and prices (All Listings report; FBA report price wins when there is one)
@@ -50,7 +52,7 @@
         // On The List: products marked for re-order (open ones, and ones received in the last 60 days)
         JT.rows(["i.id::text", "i.variant_id::text", "i.amazon_sku", "i.dest", "i.qty", "i.note", "i.source", "i.order_id::text", "i.added_at", "i.added_by", "i.closed_at",
           "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.vendor", "v.unit_cost", "v.inventory_qty", "v.product_id::text"],
-          "from jt.prep_list i left join jt.variants v on v.variant_id = i.variant_id where i.closed_at is null or i.closed_at > now() - interval '60 days' order by i.added_at desc", refresh),
+          `from jt.prep_list i left join jt.variants v on v.variant_id = i.variant_id where i.closed_at is null or ${la("i.closed_at")} order by i.added_at desc`, refresh),
       ]);
       const listing = new Map(lst.map(([sku, asin, title, price]) => [sku, { sku, asin: asin || "", title: title || "", price: price == null ? null : +price }]));
       for (const [, , skus, asin] of seed) for (const k of String(skus || "").split(",").map(s => s.trim()).filter(Boolean)) {
@@ -142,7 +144,12 @@
   }
 
   // ---------- tab state ----------
-  const P = { shown: false, loading: false, err: null, vendor: "all", q: "", modal: null, busy: false, moveKind: "all", shipView: "open", oView: "open", oStage: "all", lView: "todo", lAdd: "", lSel: new Set() };
+  const P = { shown: false, loading: false, err: null, vendor: "all", q: "", modal: null, busy: false, moveKind: "all", shipView: "open", oView: "open", oStage: "all", lView: "todo", lAdd: "", lSel: new Set(), hist: { preset: "90", start: "", end: "" } };
+  function histRange() { const h = P.hist; return h.preset === "custom" ? [h.start, h.end] : window.JTRange.of(h.preset); }
+  function showHist() {
+    const [a, b] = histRange(); $("prep-hstart").value = a; $("prep-hend").value = b;
+    document.querySelectorAll("#prep-hseg button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.h === P.hist.preset)));
+  }
   const note = (kind, html) => { const n = $("prep-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
   async function refresh(force) {
     P.loading = true; P.err = null; render();
@@ -323,7 +330,7 @@
       </div>`;
     };
     el.innerHTML = (P.shipView === "open" ? `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">Add products by ASIN or SKU</span></button>` : "")
-      + (list.map(card).join("") || (P.shipView === "open" ? "" : '<div class="muted small">No shipments shipped in the last 60 days.</div>'));
+      + (list.map(card).join("") || (P.shipView === "open" ? "" : '<div class="muted small">No shipments shipped in the history range above.</div>'));
   }
   // ===================== Incoming Inventory: vendor orders coming in =====================
   // draft -> ordered -> invoice -> packing slip -> received -> shipped. Receiving puts the units in the prep center
@@ -426,7 +433,7 @@
       </div>`;
     };
     el.innerHTML = (P.oView === "open" ? `<button class="shipcard newcard" data-oact="new"><span class="plus">+</span><b>New vendor order</b><span class="dim small">Products by Shopify SKU, UPC, ASIN or Amazon SKU</span></button>` : "")
-      + (list.map(card).join("") || (P.oView === "open" ? "" : '<div class="muted small">No orders shipped out in the last 60 days.</div>'));
+      + (list.map(card).join("") || (P.oView === "open" ? "" : '<div class="muted small">No orders shipped out in the history range above.</div>'));
   }
 
   // ---------- order popup ----------
@@ -714,7 +721,7 @@
     const items = by[P.lView];
     const found = P.lAdd.trim() && cat ? findProducts(P.lAdd).slice(0, 8) : [];
     $("prep-lres").innerHTML = P.lAdd.trim() ? (!cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((v, k) => `<button data-ladd="${k}"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.sku)} · ${esc(v.vendor)}${v.asku ? " · for " + esc(v.asku) : ""}</span></button>`).join("") || '<span class="muted small">No products match.</span>') : "";
-    if (!items.length) { el.innerHTML = `<div class="muted small" style="padding:6px 2px">${P.lView === "todo" ? "Nothing on the list. Add products with the box above, or with “+ List” on Prep center stock, Amazon inventory and Inventory value." : P.lView === "onorder" ? "Nothing on a placed order yet." : "Nothing received from the list in the last 60 days."}</div>`; return; }
+    if (!items.length) { el.innerHTML = `<div class="muted small" style="padding:6px 2px">${P.lView === "todo" ? "Nothing on the list. Add products with the box above, or with “+ List” on Prep center stock, Amazon inventory and Inventory value." : P.lView === "onorder" ? "Nothing on a placed order yet." : "Nothing received from the list in the history range above."}</div>`; return; }
     const groups = new Map();
     for (const i of items) { const k = i.vendor || "(no vendor)"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
     const drafts = (v) => d.orders.filter(o => o.status === "draft" && (o.vendor || "").toLowerCase() === (v === "(no vendor)" ? "" : v.toLowerCase()));
@@ -1071,6 +1078,10 @@
   }
 
   bind();
+  window.JTRange.seg("prep-hseg", "h"); showHist();
+  $("prep-hseg").addEventListener("click", (e) => { const b = e.target.closest("button[data-h]"); if (!b) return; P.hist = { preset: b.dataset.h }; showHist(); refresh(true); });
+  const onHist = () => { const a = $("prep-hstart").value, b = $("prep-hend").value; if (!a || !b || a > b) return; P.hist = { preset: "custom", start: a, end: b }; showHist(); refresh(true); };
+  $("prep-hstart").addEventListener("change", onHist); $("prep-hend").addEventListener("change", onHist);
   bindOrders();
   bindList();
   window.prepShow = () => { if (!P.shown) { P.shown = true; refresh(false); } else render(); };

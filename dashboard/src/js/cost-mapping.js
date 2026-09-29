@@ -33,11 +33,10 @@
   const JT = window.JT, n0 = (x) => Number(x) || 0;
   const errMsg = (e) => JT.message(e);
 
+  window.JTRange.seg("cm-rangeseg", "r");
   function setRange(r) {
-    const t = today(); C.preset = r;
-    if (r === "ytd") { C.start = t.slice(0, 4) + "-01-01"; C.end = t; }
-    else if (r === "ly") { const y = +t.slice(0, 4) - 1; C.start = y + "-01-01"; C.end = y + "-12-31"; }
-    else { C.start = addDays(t, -(Number(r) - 1)); C.end = t; }
+    C.preset = r;
+    [C.start, C.end] = window.JTRange.of(r);
     $("cm-start").value = C.start; $("cm-end").value = C.end;
     document.querySelectorAll("#cm-rangeseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.r === r)));
   }

@@ -37,15 +37,7 @@
       <h1 id="h-store">Just Tennis Daily Sales</h1>
     </div>
     <div class="controls">
-      <div class="seg" id="rangeseg" role="group" aria-label="Date range">
-        <button id="rtoday" data-days="today">Today</button>
-        <button id="ryest" data-days="yesterday">Yesterday</button>
-        <button id="r7" data-days="7">7d</button>
-        <button id="r14" data-days="14" aria-pressed="true">14d</button>
-        <button id="r30" data-days="30">30d</button>
-        <button id="rmtd" data-days="mtd">MTD</button>
-        <button id="rytd" data-days="ytd">YTD</button>
-      </div>
+      <div class="seg" id="rangeseg" role="group" aria-label="Date range"></div>
       <div class="dates">
         <input type="date" id="d-start" aria-label="Start date">
         <span>–</span>
@@ -114,12 +106,7 @@
       </div>
       <div class="controls">
         <label class="small muted basis">Costs <select class="inp sm basis-sel" aria-label="Which product cost to use for past sales"><option value="current">Current Shopify cost</option><option value="recorded">As recorded on each order</option></select></label>
-        <div class="seg" id="ps-rangeseg" role="group" aria-label="Product sales range">
-          <button data-r="ytd" aria-pressed="true">YTD</button>
-          <button data-r="90">90d</button>
-          <button data-r="30">30d</button>
-          <button data-r="ly">Last year</button>
-        </div>
+        <div class="seg" id="ps-rangeseg" role="group" aria-label="Product sales range"></div>
         <div class="dates">
           <input type="date" id="ps-start" aria-label="Start date">
           <span>–</span>
@@ -180,6 +167,13 @@
         <h1>Prep center</h1>
       </div>
       <div class="controls">
+        <span class="small muted">History</span>
+        <div class="seg" id="prep-hseg" role="group" aria-label="History range (shipped, received, activity)"></div>
+        <div class="dates">
+          <input type="date" id="prep-hstart" aria-label="History from">
+          <span>–</span>
+          <input type="date" id="prep-hend" aria-label="History to">
+        </div>
         <button class="btn" id="prep-refresh">Refresh</button>
         <button class="btn" id="prep-count">Count stock</button>
         <button class="btn primary" id="prep-ship" disabled>New shipment</button>
@@ -191,7 +185,7 @@
       <div class="panel-head">
         <div class="lanehead"><h2>Amazon Outgoing</h2><span class="muted small">prep center → FBA / AWD</span></div>
         <div class="seg" id="prep-shview" role="group" aria-label="Which outgoing shipments">
-          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped · last 60 days <span class="cnt">0</span></button>
+          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped <span class="cnt">0</span></button>
         </div>
       </div>
       <div class="shipgrid" id="prep-ships"></div>
@@ -200,7 +194,7 @@
       <div class="panel-head">
         <div class="lanehead"><h2>On The List</h2><span class="muted small">to re-order → a draft or booking order</span></div>
         <div class="seg" id="prep-lview" role="group" aria-label="Which list items">
-          <button data-v="todo" aria-pressed="true">To order <span class="cnt">0</span></button><button data-v="onorder" aria-pressed="false">On order <span class="cnt">0</span></button><button data-v="done" aria-pressed="false">Received · last 60 days <span class="cnt">0</span></button>
+          <button data-v="todo" aria-pressed="true">To order <span class="cnt">0</span></button><button data-v="onorder" aria-pressed="false">On order <span class="cnt">0</span></button><button data-v="done" aria-pressed="false">Received <span class="cnt">0</span></button>
         </div>
       </div>
       <div class="addbox listadd">
@@ -217,7 +211,7 @@
       <div class="panel-head">
         <div class="lanehead"><h2>Incoming Inventory</h2><span class="muted small">vendor orders → prep center</span></div>
         <div class="seg" id="prep-oview" role="group" aria-label="Which vendor orders">
-          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped out · last 60 days <span class="cnt">0</span></button>
+          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped out <span class="cnt">0</span></button>
         </div>
       </div>
       <div class="ostages" id="prep-ostages"></div>
@@ -296,8 +290,13 @@
         <h1>Inventory value</h1>
       </div>
       <div class="controls">
-        <label class="small muted" for="pc-period">Sales in <select id="pc-period" class="inp sm">
-          <option value="12m">Last 12 months</option><option value="ytd">This year</option><option value="ly">Last year</option><option value="all">Since Jan 2025</option></select></label>
+        <span class="small muted">Sales in</span>
+        <div class="seg" id="pc-rangeseg" role="group" aria-label="Sales period"></div>
+        <div class="dates">
+          <input type="date" id="pc-start" aria-label="Sales from">
+          <span>–</span>
+          <input type="date" id="pc-end" aria-label="Sales to">
+        </div>
         <button class="btn" id="pc-refresh">Refresh</button>
       </div>
     </header>
@@ -340,11 +339,7 @@
         <h1>Shopify cost mapping</h1>
       </div>
       <div class="controls">
-        <div class="seg" id="cm-rangeseg" role="group" aria-label="Cost mapping range">
-          <button data-r="ytd" aria-pressed="true">YTD</button>
-          <button data-r="90">90d</button>
-          <button data-r="ly">Last year</button>
-        </div>
+        <div class="seg" id="cm-rangeseg" role="group" aria-label="Cost mapping range"></div>
         <div class="dates">
           <input type="date" id="cm-start" aria-label="Start date">
           <span>–</span>
@@ -414,11 +409,7 @@
         <h1>Amazon sales &amp; profit</h1>
       </div>
       <div class="controls">
-        <div class="seg" id="az-rangeseg" role="group" aria-label="Amazon date range">
-          <button data-days="7">7d</button>
-          <button data-days="30" aria-pressed="true">30d</button>
-          <button data-days="90">90d</button>
-        </div>
+        <div class="seg" id="az-rangeseg" role="group" aria-label="Amazon date range"></div>
         <div class="dates">
           <input type="date" id="az-start" aria-label="Amazon start date">
           <span>–</span>

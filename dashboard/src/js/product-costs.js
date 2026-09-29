@@ -24,13 +24,12 @@
   };
   const note = (kind, html) => { const n = $("pc-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
 
-  function range() {
-    const t = window.JTDate.today(), y = +t.slice(0, 4);
-    if (P.period === "ytd") return [y + "-01-01", t];
-    if (P.period === "ly") return [(y - 1) + "-01-01", (y - 1) + "-12-31"];
-    if (P.period === "all") return ["2025-01-01", t];
-    const d = new Date(Date.UTC(y, +t.slice(5, 7) - 1 - 11, 1));   // this month and the 11 before it
-    return [d.toISOString().slice(0, 10), t];
+  // Sales period: the standard presets (default 12m) or custom dates
+  window.JTRange.seg("pc-rangeseg", "r");
+  const range = () => P.period === "custom" ? [P.from, P.to] : window.JTRange.of(P.period);
+  function showRange() {
+    const [a, b] = range(); $("pc-start").value = a; $("pc-end").value = b;
+    document.querySelectorAll("#pc-rangeseg button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.r === P.period)));
   }
 
   async function load(refresh) {
@@ -261,7 +260,9 @@
     on("pc-sold", "change", (e) => { P.sold = e.target.value; P.page = 0; render(); });
     on("pc-sort", "change", (e) => { P.sort = e.target.value; P.page = 0; render(); });
     on("pc-q", "input", (e) => { P.q = e.target.value; P.page = 0; clearTimeout(e.target._t); e.target._t = setTimeout(render, 200); });
-    on("pc-period", "change", (e) => { P.period = e.target.value; P.page = 0; load(false); });
+    on("pc-rangeseg", "click", (e) => { const b = e.target.closest("button[data-r]"); if (!b) return; P.period = b.dataset.r; P.page = 0; showRange(); load(false); });
+    const onPcDate = () => { const a = $("pc-start").value, b = $("pc-end").value; if (!a || !b || a > b) return; P.period = "custom"; P.from = a; P.to = b; P.page = 0; showRange(); load(false); };
+    on("pc-start", "change", onPcDate); on("pc-end", "change", onPcDate);
     on("pc-refresh", "click", () => load(true));
     on("pc-prev", "click", () => { P.page--; render(); $("pc-table").scrollIntoView({ block: "start" }); });
     on("pc-next", "click", () => { P.page++; render(); $("pc-table").scrollIntoView({ block: "start" }); });
@@ -283,6 +284,7 @@
   }
 
   bind();
+  showRange();
   window.pcRender = () => render();
   window.pcShow = () => { if (!P.shown) { P.shown = true; load(false); } else render(); };
   window.JTCosts = { _state: P };

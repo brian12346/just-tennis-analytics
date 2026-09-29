@@ -438,10 +438,13 @@
     const ms = [...A.months.values()]; if (!ms.length) return null;
     return { first: ms.map(x => x.firstDay).sort()[0], last: ms.map(x => x.lastDay).sort().pop() };
   }
+  window.JTRange.seg("az-rangeseg", "days");
+  // Presets count back from the last day of Amazon data (reports are uploaded, so "today" is usually not in yet).
   function setAzRange(preset) {
     const b = dataBounds(); if (!b) return;
-    A.preset = preset; A.end = b.last; A.start = addDays(b.last, -(Number(preset) - 1));
+    A.preset = preset; [A.start, A.end] = window.JTRange.of(preset, b.last);
     if (A.start < b.first) A.start = b.first;
+    if (A.end > b.last) A.end = b.last;
     $("az-start").value = A.start; $("az-end").value = A.end;
     document.querySelectorAll("#az-rangeseg button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.days === preset)));
     loadDays();

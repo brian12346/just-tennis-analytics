@@ -14,12 +14,10 @@
 
   const P = { mcp: null, downloads: null, start: null, end: null, preset: "ytd", rows: null, ly: null, err: null, lyErr: null, loading: false, open: new Set(), reqId: 0 };
 
+  window.JTRange.seg("ps-rangeseg", "r");
   function setRange(r) {
-    const t = today();
     P.preset = r;
-    if (r === "ytd") { P.start = t.slice(0, 4) + "-01-01"; P.end = t; }
-    else if (r === "ly") { const y = +t.slice(0, 4) - 1; P.start = y + "-01-01"; P.end = y + "-12-31"; }
-    else { P.start = addDays(t, -(Number(r) - 1)); P.end = t; }
+    [P.start, P.end] = window.JTRange.of(r);
     $("ps-start").value = P.start; $("ps-end").value = P.end;
     document.querySelectorAll("#ps-rangeseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.r === r)));
   }
