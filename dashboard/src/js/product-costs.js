@@ -203,7 +203,8 @@
           <td>${r.sSales ? m0(r.sSales) : '<span class="dim">—</span>'}<div class="meta">${r.sUnits ? Math.round(r.sUnits).toLocaleString() + " sold" : ""}</div></td>
           <td>${r.aSales ? m0(r.aSales) : '<span class="dim">—</span>'}<div class="meta">${r.aUnits ? Math.round(r.aUnits).toLocaleString() + " sold" : ""}</div></td>
           <td><b>${m0(r.total)}</b></td>
-          <td class="l">${pill}</td></tr>`;
+          <td class="l">${pill}${!window.JTPrep ? "" : window.JTPrep.listed(r.vid, "", "shopify") ? ' <span class="pill ok" title="On The List (Prep center tab)">On list</span>'
+            : ` <button class="mini" data-list="${esc(r.vid)}" title="Put on On The List (Prep center tab) to re-order for the Shopify store">+ List</button>`}</td></tr>`;
       }).join("") || `<tr><td class="l muted" colspan="12">No products match these filters.</td></tr>`}</tbody>${rows.length ? `<tfoot><tr>
           <td class="l"><b>Total · ${rows.length.toLocaleString()} variants in view</b></td><td></td>
           <td><b>${Math.round(vt.units).toLocaleString()}</b></td><td></td><td><b>${m0(vt.cost)}</b></td><td></td><td><b>${m0(vt.price)}</b></td>
@@ -266,6 +267,13 @@
     on("pc-next", "click", () => { P.page++; render(); $("pc-table").scrollIntoView({ block: "start" }); });
     on("pc-discard", "click", () => { P.edits.clear(); P.confirm = false; render(); });
     on("pc-save", "click", () => { P.confirm = true; render(); });
+    t.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-list]"); if (!b || !window.JTPrep) return;
+      const r = P.rows.find(x => x.vid === b.dataset.list); b.disabled = true;
+      window.JTPrep.addToList({ variant_id: Number(r.vid), amazon_sku: "", dest: "shopify", source: "inventory" })
+        .then(() => { note("info", `Added ${esc(r.title)} to On The List (for the Shopify store) on the Prep center tab.`); render(); },
+              (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); });
+    });
     $("pc-inv").addEventListener("click", (e) => {
       const go = e.target.closest("[data-go-fba]") ? "fba" : e.target.closest("[data-go-prep]") ? "prep" : null;
       if (go) { const b = document.querySelector(`.tabs button[data-tab="${go}"]`); if (b) b.click(); }

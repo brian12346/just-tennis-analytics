@@ -184,7 +184,7 @@
 
   async function refresh(force) {
     F.loading = true; F.err = null; render();
-    try { await load(force); fillFilters(); } catch (e) { F.err = e; note("bad", esc(JT.message(e))); }
+    try { await load(force); fillFilters(); if (window.JTPrep) window.JTPrep.load(force).then(render).catch(() => {}); } catch (e) { F.err = e; note("bad", esc(JT.message(e))); }
     finally { F.loading = false; render(); }
   }
   function fillFilters() {
@@ -273,6 +273,9 @@
           : mp.kind === "manual" ? `<span class="pill manual">Manual cost</span><div class="meta">${esc(i.vendor || "")}</div>`
           : `${mp.pid ? `<a class="olink" href="${ADMIN}/products/${esc(mp.pid)}/variants/${esc(mp.vid)}" target="_blank" rel="noopener">${esc(mp.title)}</a>` : esc(mp.title || "(removed from Shopify)")}
              <div class="meta"><span class="mono">${esc(mp.vsku) || "no SKU"}</span>${mp.units !== 1 ? ` · ×${mp.units} per Amazon unit` : ""}</div><div class="meta">${esc(i.vendor)}${i.type ? " · " + esc(i.type) : ""}</div>`;
+        const onList = mp && mp.kind === "shopify" && window.JTPrep && window.JTPrep.listed(mp.vid, i.sku, "prep");
+        const listBtn = !mp || mp.kind !== "shopify" ? "" : onList ? '<div class="meta"><span class="pill ok">On list</span></div>'
+          : `<div class="meta"><button class="mini" data-list="${esc(i.sku)}" title="Put on On The List (Prep center tab) to re-order for this listing">+ List</button></div>`;
         const fb = F.where !== "awd", aw = F.where !== "fba";
         const unitsMeta = [fb && i.transfer ? n0(i.transfer) + " transfer" : "", fb && F.inbound && i.inbound ? n0(i.inbound) + " inbound" : "",
           aw && (i.awdAvail || (F.inbound && i.awdIn)) ? `<span class="awd">${n0(i.awdAvail)} AWD${F.inbound && i.awdIn ? ` +${n0(i.awdIn)} inbound` : ""}</span>` : "",
@@ -280,7 +283,7 @@
         const hp = i.health ? `<span class="pill ${HEALTH[i.health] || "pos"}">${esc(i.health)}</span>` : "";
         return `<tr class="${i.cost == null ? "flag-bad" : i.profit != null && i.profit < 0 ? "flag-warn" : ""}">
           <td class="l">${i.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(i.asin)}" target="_blank" rel="noopener">${esc(i.name || i.sku)}</a>` : esc(i.name || i.sku)}<div class="meta">${esc(i.asin)} · <span class="mono">${esc(i.sku)}</span></div></td>
-          <td class="l">${shop}</td>
+          <td class="l">${shop}${listBtn}</td>
           <td><b>${n0(u)}</b><div class="meta">${fb ? n0(i.avail) + " FBA available" : ""}${unitsMeta ? (fb ? "<br>" : "") + unitsMeta : ""}</div></td>
           <td>${i.cost == null ? dash : m(i.cost)}</td>
           <td>${i.cost == null ? dash : m0(u * i.cost)}</td>
@@ -325,6 +328,14 @@
     on("fba-prev", "click", () => { F.page--; render(); $("fba-table").scrollIntoView({ block: "start" }); });
     on("fba-next", "click", () => { F.page++; render(); $("fba-table").scrollIntoView({ block: "start" }); });
     on("fba-dl", "click", download);
+    on("fba-table", "click", (e) => {
+      const b = e.target.closest("button[data-list]"); if (!b || !window.JTPrep) return;
+      const it = JT.fba.data.items.find(x => x.sku === b.dataset.list); if (!it || !it.map) return;
+      b.disabled = true;
+      window.JTPrep.addToList({ variant_id: Number(it.map.vid), amazon_sku: it.sku, dest: "prep", source: "amazon" })
+        .then(() => { note("info", `Added ${esc(it.map.title || it.sku)} (for ${esc(it.sku)}) to On The List on the Prep center tab.`); render(); },
+              (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); });
+    });
     on("fba-where", "click", (e) => { const b = e.target.closest("button[data-w]"); if (!b) return; F.where = b.dataset.w; F.page = 0; fillFilters(); render(); });
     on("fba-inb", "click", (e) => { const b = e.target.closest("button[data-inb]"); if (!b) return; F.inbound = b.dataset.inb === "1"; F.page = 0; fillFilters(); render(); });
     on("fba-vbars", "click", (e) => {

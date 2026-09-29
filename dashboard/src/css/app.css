@@ -442,3 +442,14 @@ table.prept tr.picked td{background:var(--sales-soft)}
 .steps.six .step{padding:2px 7px}
 .recvgrid td input{width:80px}
 .invpick{display:flex;flex-direction:column;gap:6px}
+
+/* On The List */
+.listadd .row{align-items:flex-end}
+.listadd .grow{flex:1 1 280px}
+.listadd .grow .inp{max-width:none}
+#prep-lres:empty{display:none}
+#prep-list{display:flex;flex-direction:column;gap:12px}
+.lgroup{display:flex;flex-direction:column;gap:6px}
+.lghead{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}
+.lghead .right{margin-left:auto;display:flex;gap:6px;align-items:center}
+.rbtns .pill{margin-left:4px;vertical-align:middle}

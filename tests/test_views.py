@@ -288,3 +288,43 @@ def test_prep_step_back(conn):
     with pytest.raises(Exception, match="only 2"):
         call("prep_order_status", {"id": oid, "status": "packing_slip"})
     cur.execute("rollback to savepoint a")
+
+
+def test_on_the_list(conn):
+    import pytest
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (901, 90, 5, 'Babolat'), (902, 90, 7, 'Babolat'), (903, 91, 3, 'Babolat')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    a = call("prep_list_add", {"variant_id": 901, "amazon_sku": "B-FBA", "dest": "prep", "qty": 24, "source": "amazon"})
+    assert call("prep_list_add", {"variant_id": 901, "amazon_sku": "B-FBA", "dest": "prep", "qty": 36}) == a      # same item, qty updated
+    b = call("prep_list_add", {"variant_id": 902, "dest": "shopify", "source": "inventory"})
+    c = call("prep_list_add", {"variant_id": 903, "dest": "prep", "qty": 6})
+    # a + b onto a new booking order, c onto a normal draft
+    book = call("prep_list_assign", {"ids": [a, b], "new": {"vendor": "Babolat", "kind": "booking", "place_by": "2026-11-01"}})
+    draft = call("prep_list_assign", {"ids": [c], "new": {"vendor": "Babolat"}})
+    cur.execute("select kind, place_by::text, status from jt.prep_orders where id = %s", (book,)); assert cur.fetchone() == ("booking", "2026-11-01", "draft")
+    cur.execute("select variant_id, dest, qty_ordered from jt.prep_order_lines where order_id = %s order by 1", (book,)); assert cur.fetchall() == [(901, "prep", 36), (902, "shopify", 0)]
+    # move c onto the booking order: it leaves the other draft
+    call("prep_list_assign", {"ids": [c], "order_id": book})
+    cur.execute("select count(*) from jt.prep_order_lines where order_id = %s", (draft,)); assert cur.fetchone()[0] == 0
+    # list qty follows onto the draft line
+    call("prep_list_add", {"variant_id": 902, "dest": "shopify", "qty": 12})
+    cur.execute("select qty_ordered from jt.prep_order_lines where order_id = %s and variant_id = 902", (book,)); assert cur.fetchone()[0] == 12
+    # taking a line off the order in the order popup puts the item back to "needs an order"
+    call("prep_order_save", {"id": book, "lines": [{"variant_id": 901, "amazon_sku": "B-FBA", "qty": 36}, {"variant_id": 902, "dest": "shopify", "qty": 12}]})
+    cur.execute("select order_id from jt.prep_list where id = %s", (c,)); assert cur.fetchone()[0] is None
+    # placed orders don't take list items
+    call("prep_order_status", {"id": book, "status": "ordered"})
+    cur.execute("savepoint a")
+    with pytest.raises(Exception, match="already been placed"):
+        call("prep_list_assign", {"ids": [c], "order_id": book})
+    cur.execute("rollback to savepoint a")
+    # receiving: prep line into the prep center, shopify line only recorded; list items close
+    call("prep_order_receive", {"id": book, "lines": [{"variant_id": 901, "amazon_sku": "B-FBA", "qty": 36}, {"variant_id": 902, "dest": "shopify", "qty": 12}]})
+    cur.execute("select variant_id, qty from jt.prep_items"); assert cur.fetchall() == [(901, 36)]
+    cur.execute("select id from jt.prep_list where closed_at is null"); assert cur.fetchall() == [(c,)]
+    # stepping back reopens them
+    call("prep_order_status", {"id": book, "status": "packing_slip"})
+    cur.execute("select count(*) from jt.prep_list where closed_at is null"); assert cur.fetchone()[0] == 3
+    cur.execute("select count(*) from jt.prep_items"); assert cur.fetchone()[0] == 0
+    assert call("prep_list_remove", {"id": c}) is True

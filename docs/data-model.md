@@ -152,3 +152,15 @@ New checks are one more entry in `issuesOf`.
 - Step back (migration 016): shipments shipped → started put the units back (moves `unship`) and send a linked order
   back to received; orders received → an earlier stage take the received units back out (moves `unreceive`,
   refused if the prep center no longer has them), shipped → received changes no stock.
+
+## On The List (migration 017)
+
+- `jt.prep_list`: products marked for re-order (variant, Amazon SKU, dest `prep` | `shopify`, qty, source,
+  `order_id`, `closed_at`). One open item per variant / Amazon SKU / dest.
+- `jt.prep_list_add` marks (or updates qty/note, and the draft order line with it); `jt.prep_list_assign` puts items
+  on a draft order or a new one (`prep_orders.kind` = `order` | `booking`, `place_by`); only drafts take list items;
+  `jt.prep_list_remove` takes one off (and off its draft). An item's status follows its order; receiving closes it,
+  stepping the order back from received reopens it.
+- Order lines carry `dest`: receiving a `shopify` line records it but doesn't add to the prep center.
+- Marked from: Prep center stock rows, Amazon inventory rows (mapped listings, for that seller SKU), Inventory value
+  rows (for the Shopify store) and the search box on the list.

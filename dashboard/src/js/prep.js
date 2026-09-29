@@ -23,7 +23,7 @@
     loading = (async () => {
       const SHIPWHERE = "where s.status <> 'shipped' or s.shipped_at > now() - interval '60 days'";
       const ORDWHERE = "where o.status <> 'shipped' or o.updated_at > now() - interval '60 days'";
-      const [items, moves, maps, lst, seed, ships, slines, ords, olines] = await Promise.all([
+      const [items, moves, maps, lst, seed, ships, slines, ords, olines, list] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
           "from jt.prep_items i left join jt.variants v on v.variant_id = i.variant_id order by i.updated_at desc", refresh),
@@ -43,10 +43,14 @@
           `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id left join jt.variants v on v.variant_id = l.variant_id ${SHIPWHERE}`, refresh),
         // Incoming Inventory: vendor orders in progress, and ones shipped out in the last 60 days, with their linked invoice
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.invoice_id::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.updated_at",
-          "i.invoice_no", "i.invoice_date::text", "(select sum(coalesce(il.amount, il.qty * il.unit_cost)) from jt.invoice_lines il where il.invoice_id = i.id)"],
+          "i.invoice_no", "i.invoice_date::text", "(select sum(coalesce(il.amount, il.qty * il.unit_cost)) from jt.invoice_lines il where il.invoice_id = i.id)", "o.kind", "o.place_by::text"],
           `from jt.prep_orders o left join jt.invoices i on i.id = o.invoice_id ${ORDWHERE} order by o.updated_at desc`, refresh),
-        JT.rows(["l.order_id::text", "l.variant_id::text", "l.amazon_sku", "l.qty_ordered", "l.qty_received", "l.unit_cost", "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.unit_cost", "v.vendor", "v.product_id::text"],
+        JT.rows(["l.order_id::text", "l.variant_id::text", "l.amazon_sku", "l.qty_ordered", "l.qty_received", "l.unit_cost", "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.unit_cost", "v.vendor", "v.product_id::text", "l.dest"],
           `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id left join jt.variants v on v.variant_id = l.variant_id ${ORDWHERE}`, refresh),
+        // On The List: products marked for re-order (open ones, and ones received in the last 60 days)
+        JT.rows(["i.id::text", "i.variant_id::text", "i.amazon_sku", "i.dest", "i.qty", "i.note", "i.source", "i.order_id::text", "i.added_at", "i.added_by", "i.closed_at",
+          "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.vendor", "v.unit_cost", "v.inventory_qty", "v.product_id::text"],
+          "from jt.prep_list i left join jt.variants v on v.variant_id = i.variant_id where i.closed_at is null or i.closed_at > now() - interval '60 days' order by i.added_at desc", refresh),
       ]);
       const listing = new Map(lst.map(([sku, asin, title, price]) => [sku, { sku, asin: asin || "", title: title || "", price: price == null ? null : +price }]));
       for (const [, , skus, asin] of seed) for (const k of String(skus || "").split(",").map(s => s.trim()).filter(Boolean)) {
@@ -83,17 +87,20 @@
       const alloc = new Map();          // prep row -> units in open / started shipments
       for (const sh of shipments) if (sh.status !== "shipped") for (const l of sh.lines) alloc.set(l.key, (alloc.get(l.key) || 0) + l.qty);
       const orders = ords.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], invoiceId: x[4] || null, expected: x[5] || "", note: x[6] || "", shortOk: !!x[7],
-        stageAt: x[8] || {}, created: x[9], createdBy: x[10] || "", updated: x[11], inv: x[4] ? { no: x[12] || "", date: x[13] || "", total: x[14] == null ? null : +x[14] } : null, lines: [] }));
+        stageAt: x[8] || {}, created: x[9], createdBy: x[10] || "", updated: x[11], inv: x[4] ? { no: x[12] || "", date: x[13] || "", total: x[14] == null ? null : +x[14] } : null, kind: x[15] || "order", placeBy: x[16] || "", lines: [] }));
       const oById = new Map(orders.map(o => [o.id, o]));
-      for (const [oid, vid, asku, qo, qr, uc, title, sku, sc, vendor, pid] of olines) {
-        const o = oById.get(oid); if (o) o.lines.push({ key: vid + "|" + (asku || ""), vid, asku: asku || "", ordered: +qo, received: +qr, unitCost: uc == null ? null : +uc,
+      for (const [oid, vid, asku, qo, qr, uc, title, sku, sc, vendor, pid, dest] of olines) {
+        const o = oById.get(oid); if (o) o.lines.push({ key: okey(vid, asku, dest), vid, asku: asku || "", dest: dest || "prep", ordered: +qo, received: +qr, unitCost: uc == null ? null : +uc,
           title: title || `variant ${vid}`, sku: sku || "", shopCost: sc == null ? null : +sc, vendor: vendor || "", pid: pid || "" });
       }
       for (const o of orders) { o.shipments = shipments.filter(sh => sh.orderId === o.id); o.lines.sort((a, b) => a.title.localeCompare(b.title)); }
       // Amazon seller SKU / ASIN -> Shopify variant, for adding products to an order by Amazon code
       const byAmz = new Map();
       for (const [vid, ls] of byVariant) for (const l of ls) { byAmz.set(l.sku.toLowerCase(), { vid, asku: l.sku }); if (l.asin) byAmz.set(l.asin.toLowerCase(), { vid, asku: "" }); }
-      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, loadedAt: Date.now() };
+      const listItems = list.map(x => ({ id: x[0], vid: x[1], asku: x[2] || "", dest: x[3], qty: x[4] == null ? null : +x[4], note: x[5] || "", source: x[6] || "", orderId: x[7] || null,
+        added: x[8], addedBy: x[9] || "", closed: x[10] || null, title: x[11] || `variant ${x[1]}`, sku: x[12] || "", vendor: x[13] || "", cost: x[14] == null ? null : +x[14], shopQty: x[15] == null ? null : +x[15], pid: x[16] || "" }));
+      for (const it of listItems) it.order = it.orderId ? oById.get(it.orderId) || null : null;
+      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, list: listItems, loadedAt: Date.now() };
       return cache;
     })();
     try { return await loading; } finally { loading = null; }
@@ -109,7 +116,15 @@
     }
     return t;
   }
-  window.JTPrep = { load, totals, get data() { return cache; } };
+  const okey = (vid, asku, dest) => vid + "|" + (asku || "") + "|" + (dest || "prep");
+  // On The List, shared with the Inventory value and Amazon inventory tabs ("+ List" buttons)
+  const listed = (vid, asku, dest) => cache && cache.list ? cache.list.find(i => !i.closed && i.vid === String(vid) && i.asku === (asku || "") && i.dest === (dest || "prep")) || null : null;
+  async function addToList(body) {
+    await JT.prep.listAdd(body);
+    await load(true);
+    if (!$("tab-prep").hidden) render();
+  }
+  window.JTPrep = { load, totals, listed, addToList, get data() { return cache; } };
 
   // ---------- catalog for the product picker ----------
   let cat = null;
@@ -127,7 +142,7 @@
   }
 
   // ---------- tab state ----------
-  const P = { shown: false, loading: false, err: null, vendor: "all", q: "", modal: null, busy: false, moveKind: "all", shipView: "open", oView: "open", oStage: "all" };
+  const P = { shown: false, loading: false, err: null, vendor: "all", q: "", modal: null, busy: false, moveKind: "all", shipView: "open", oView: "open", oStage: "all", lView: "todo", lAdd: "", lSel: new Set() };
   const note = (kind, html) => { const n = $("prep-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
   async function refresh(force) {
     P.loading = true; P.err = null; render();
@@ -162,6 +177,7 @@
         return { l: "On order", v: n0(u), s: op.length ? `units · ${m0(c)} at cost · ${op.length} vendor order${op.length === 1 ? "" : "s"}` : "no vendor orders out" }; })(),
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     renderShipments();
+    renderList();
     renderOrders();
     // vendor filter
     const vs = [...new Set(all.map(r => r.vendor))].sort((a, b) => a.localeCompare(b));
@@ -194,7 +210,7 @@
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
             <td>${r.amzPrice == null ? dash : m(r.amzPrice)}</td><td>${r.amzValue == null ? dash : m0(r.amzValue)}</td>
             <td class="l small">${when(r.upd)}${r.note ? `<div class="meta">${esc(r.note)}</div>` : ""}</td>
-            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button></span></td></tr>`;
+            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${listed(r.vid, r.asku, "prep") ? '<span class="pill ok" title="On The List">On list</span>' : `<button class="mini" data-act="list" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Put on On The List to re-order">+ List</button>`}</span></td></tr>`;
         }).join("") || `<tr><td class="l muted" colspan="9">No products match.</td></tr>`}</tbody>
         <tfoot><tr><td class="l">Total · ${rows.length.toLocaleString()} products</td><td></td><td>${n0(t.units)}</td><td></td><td>${m0(t.cost)}</td><td></td><td>${m0(t.amz)}</td><td></td><td></td></tr></tfoot></table></div>`;
     }
@@ -331,7 +347,7 @@
     const out = [];
     if (!o || o.status === "shipped") return out;
     const at = OORDER.indexOf(o.status), lines = o.lines.filter(l => l.ordered > 0 || l.received > 0);
-    if (o.id && !lines.length) out.push({ lvl: "warn", kind: "empty", title: "No products on this order", text: "Add what was ordered so it can be received into the prep center.",
+    if (o.id && !o.lines.length) out.push({ lvl: "warn", kind: "empty", title: "No products on this order", text: "Add what was ordered so it can be received into the prep center.",
       fixes: [{ label: "Add a product", fix: "focus", arg: "po-add" }] });
     if (o.status === "received") {
       const short = lines.filter(l => l.received < l.ordered), over = lines.filter(l => l.received > l.ordered);
@@ -361,13 +377,21 @@
         title: `Invoice total ${m(o.inv.total)} vs. order ${m(tot)}`, text: `A difference of ${m(o.inv.total - tot)}: a price change, a product missing on one side, a short shipment, or invoice lines that aren't products (freight, fees). If it's only freight or fees, this can be ignored.`,
         fixes: [{ label: "Fill lines from the invoice", fix: "ofill" }, { label: "Open the invoice", fix: "oinv" }] });
     }
+    if (o.status === "draft" && o.kind === "booking") {
+      if (!o.placeBy) out.push({ lvl: "info", kind: "noplace", title: "No place-by date", text: "Set when this booking order has to be placed with the vendor.", fixes: [{ label: "Set the date", fix: "focus", arg: "po-placeby" }] });
+      else if (o.placeBy < today()) out.push({ lvl: "warn", kind: "placeby", title: `Booking order was due to be placed ${shortDate(o.placeBy)}`, text: "Place it with the vendor and mark it ordered, or push the date out.",
+        fixes: [{ label: "Mark ordered", fix: "onext" }, { label: "Change the date", fix: "focus", arg: "po-placeby" }] });
+    }
+    const zero = o.lines.filter(l => !(l.ordered > 0) && !(l.received > 0));
+    if (zero.length && at < OORDER.indexOf("received")) out.push({ lvl: at >= 1 ? "warn" : "info", kind: "noqty", title: `No quantity for ${zero.length} product${zero.length === 1 ? "" : "s"}`,
+      text: zero.slice(0, 4).map(l => esc(l.title)).join(" · ") + (zero.length > 4 ? " · …" : "") + " — added from On The List without a quantity.", fixes: [{ label: "Enter quantities", fix: "focuskq", k: zero[0].key }] });
     if (at >= 1 && !o.po) out.push({ lvl: "info", kind: "nopo", title: "No PO number", text: "Add the PO # so the invoice and packing slip can be matched to this order.", fixes: [{ label: "Add PO #", fix: "focus", arg: "po-po" }] });
     for (const l of lines) if (lineCost(l) == null) out.push({ lvl: "warn", kind: "nocost", title: `No cost for ${esc(l.title)}`,
       text: "Enter the unit cost from the invoice on this order, or set a cost in Shopify.", fixes: [...(l.pid ? [{ label: "Open in Shopify", href: `${ADMIN}/products/${l.pid}/variants/${l.vid}` }] : []), { label: "Enter the cost", fix: "focuskc", k: l.key }] });
     const rank = { bad: 0, warn: 1, info: 2 };
     return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
   }
-  const OKIND = { partial: "not received in full", late: "late", noinv: "no invoice", invdiff: "invoice doesn't match", nocost: "missing cost", empty: "no products", idle: "waiting to ship", nopo: "no PO #", over: "extra received" };
+  const OKIND = { placeby: "past place-by date", noqty: "no quantity", noplace: "no place-by date", partial: "not received in full", late: "late", noinv: "no invoice", invdiff: "invoice doesn't match", nocost: "missing cost", empty: "no products", idle: "waiting to ship", nopo: "no PO #", over: "extra received" };
   const orderSummary = (list) => { const by = new Map(); for (const x of list) if (x.lvl !== "info") by.set(x.kind, (by.get(x.kind) || 0) + 1); return [...by].map(([k, n]) => (n > 1 && k === "nocost" ? n + " products " : "") + OKIND[k]).join(" · "); };
 
   function renderOrders() {
@@ -389,13 +413,14 @@
         : o.status === "received" ? (out ? `<button class="mini" data-oact="goship" data-oid="${o.id}" data-sid="${out.id}">Open shipment</button>` : `<button class="mini primary" data-oact="ship" data-oid="${o.id}">Ship to Amazon</button>`) : "";
       const back = OPREV[o.status] ? `<button class="mini" data-oact="back" data-oid="${o.id}" title="Move back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}${o.status === "received" ? " — the received units come out of the prep center" : ""}">← ${OSTAGE.get(OPREV[o.status])}</button>` : "";
       const whenTxt = o.status === "shipped" ? `Shipped ${when(o.stageAt.shipped || o.updated)}` : got ? `Received ${when(o.stageAt.received)}`
+        : o.kind === "booking" && o.status === "draft" && o.placeBy ? `Place by ${shortDate(o.placeBy)}`
         : o.expected ? `Expected ${shortDate(o.expected)}` : `${OSTAGE.get(o.status)} ${when(o.stageAt[o.status] || o.created)}`;
       const t = o.lines.map(l => l.title), contents = !t.length ? "No products yet" : t.length === 1 ? t[0] : t.length === 2 ? t[0] + " + " + t[1] : `${t[0]} + ${t.length - 1} more`;
       return `<div class="shipcard ord ${o.status}${lvl === "bad" || lvl === "warn" ? " issue-" + lvl : ""}" data-oid="${o.id}" tabindex="0" role="button" aria-label="Open order: ${esc(contents)}${sum ? " — needs attention: " + esc(sum) : ""}">
         <div class="sc-title" title="${esc(o.lines.map(l => n0(l.ordered) + " × " + l.title).join("\n"))}">${esc(contents)}</div>
         <div class="sc-qty">${got ? `<b class="num">${n0(rec)}</b><span>of ${n0(ord)} received</span>` : `<b class="num">${n0(ord)}</b><span>unit${ord === 1 ? "" : "s"}</span>`}<span class="dim">· ${m0(cost)}</span></div>
         ${got && ord ? `<div class="sc-bar"><i style="width:${Math.min(100, rec / ord * 100).toFixed(0)}%"></i></div>` : ""}
-        <div class="sc-meta"><span class="pill ${OPILL[o.status]}">${OSTAGE.get(o.status)}</span><span>${esc(o.vendor || "No vendor")}</span><span class="mono">${esc(orderTitle(o))}</span></div>
+        <div class="sc-meta"><span class="pill ${OPILL[o.status]}">${OSTAGE.get(o.status)}</span>${o.kind === "booking" ? '<span class="pill warn">Booking</span>' : ""}<span>${esc(o.vendor || "No vendor")}</span><span class="mono">${esc(orderTitle(o))}</span></div>
         ${sum ? `<div class="sc-issue"><span aria-hidden="true">▲</span><span>${esc(sum)}</span></div>` : ""}
         <div class="sc-foot"><span class="dim small">${whenTxt}</span><span class="dbtns">${back}${next}</span></div>
       </div>`;
@@ -416,6 +441,7 @@
   function openOrder(id) {
     const o = id ? cache.orders.find(x => x.id === String(id)) : null;
     P.modal = { kind: "order", id: o ? o.id : null, status: o ? o.status : "draft", vendor: o ? o.vendor : "", po: o ? o.po : "", expected: o ? o.expected : "", invoiceId: o ? o.invoiceId : "",
+      okind: o ? o.kind : "order", placeBy: o ? o.placeBy : "",
       note: o ? o.note : "", shortOk: o ? o.shortOk : false, o, add: "", recv: null, confirm: false,
       lines: o ? o.lines.map(l => ({ ...l, ordered: String(l.ordered), cost: l.unitCost == null ? "" : String(+l.unitCost) })) : [] };
     catalog().then(() => { if (P.modal && P.modal.kind === "order") renderModal(); }).catch(() => {});
@@ -425,7 +451,7 @@
   // the popup's order as orderIssuesOf reads it
   function draftOrder(M) {
     const inv = M.invoiceId && invList ? invList.find(x => x.id === String(M.invoiceId)) : M.o && M.o.inv;
-    return { id: M.id, status: M.status, vendor: M.vendor, po: M.po.trim(), expected: M.expected, invoiceId: M.invoiceId || null, inv: M.invoiceId ? inv || null : null,
+    return { id: M.id, status: M.status, vendor: M.vendor, po: M.po.trim(), expected: M.expected, kind: M.okind, placeBy: M.placeBy, invoiceId: M.invoiceId || null, inv: M.invoiceId ? inv || null : null,
       shortOk: M.shortOk, stageAt: M.o ? M.o.stageAt : {}, shipments: M.o ? M.o.shipments : [],
       lines: M.lines.map(l => ({ ...l, ordered: Number(l.ordered) || 0, unitCost: l.cost === "" ? null : Number(l.cost) })) };
   }
@@ -438,8 +464,8 @@
     return (exact.length ? exact : searchCat(t)).map(v => ({ ...v, asku: "" }));
   }
   function addOrderLine(v, asku) {
-    const M = P.modal, key = v.vid + "|" + (asku || "");
-    if (!M.lines.some(l => l.key === key)) M.lines.push({ key, vid: v.vid, asku: asku || "", title: v.title, sku: v.sku, vendor: v.vendor, pid: "", shopCost: v.cost, ordered: "", cost: "", received: 0, unitCost: null });
+    const M = P.modal, key = okey(v.vid, asku, "prep");
+    if (!M.lines.some(l => l.key === key)) M.lines.push({ key, vid: v.vid, asku: asku || "", dest: "prep", title: v.title, sku: v.sku, vendor: v.vendor, pid: "", shopCost: v.cost, ordered: "", cost: "", received: 0, unitCost: null });
     if (!M.vendor && v.vendor) M.vendor = v.vendor;
     M.add = ""; renderModal();
     setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-ok="${CSS.escape(key)}"]`); if (i) i.focus(); }, 0);
@@ -458,10 +484,11 @@
     let units = 0, cost = 0, rec = 0;
     for (const l of M.lines) { const q = Number(l.ordered) || 0; units += q; rec += l.received || 0; cost += q * ((l.cost !== "" ? Number(l.cost) : l.shopCost) || 0); }
     const listingSel = (l) => { const ls = cache.byVariant.get(l.vid) || [];
+      if (l.dest === "shopify") return editLines ? `<select class="inp sm" data-odest="${esc(l.key)}" style="width:auto"><option value="prep">Prep center</option><option value="shopify" selected>Shopify store</option></select>` : '<span class="pill pos">Shopify store</span>';
       if (!editLines) return l.asku ? `<span class="mono">${esc(l.asku)}</span>` : '<span class="dim">Any listing</span>';
-      return `<select class="inp sm" data-osku="${esc(l.key)}" style="width:auto;max-width:190px"><option value="">Any listing</option>${ls.map(x => `<option value="${esc(x.sku)}" ${x.sku === l.asku ? "selected" : ""}>${esc(x.sku)}${x.units !== 1 ? " ×" + x.units : ""}</option>`).join("")}${l.asku && !ls.some(x => x.sku === l.asku) ? `<option selected>${esc(l.asku)}</option>` : ""}</select>`; };
+      return `<select class="inp sm" data-osku="${esc(l.key)}" style="width:auto;max-width:190px"><option value="">Any listing</option>${ls.map(x => `<option value="${esc(x.sku)}" ${x.sku === l.asku ? "selected" : ""}>${esc(x.sku)}${x.units !== 1 ? " ×" + x.units : ""}</option>`).join("")}${l.asku && !ls.some(x => x.sku === l.asku) ? `<option selected>${esc(l.asku)}</option>` : ""}<option value="@shopify">→ Shopify store instead</option></select>`; };
     let recvUnits = 0; if (M.recv) for (const k in M.recv) recvUnits += Number(M.recv[k]) || 0;
-    const head = `<tr><th class="l">Product</th><th class="l">Amazon listing</th><th>Ordered</th>${got || M.recv ? "<th>Received</th>" : ""}${M.recv ? "<th>Arrived now</th>" : ""}<th>Unit cost</th><th>Ext.</th>${editLines ? "<th></th>" : ""}</tr>`;
+    const head = `<tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th>${got || M.recv ? "<th>Received</th>" : ""}${M.recv ? "<th>Arrived now</th>" : ""}<th>Unit cost</th><th>Ext.</th>${editLines ? "<th></th>" : ""}</tr>`;
     const rowsH = M.lines.map(l => { const q = Number(l.ordered) || 0, c = l.cost !== "" ? Number(l.cost) : l.shopCost;
       return `<tr><td class="l">${esc(l.title)}<div class="meta"><span class="mono">${esc(l.sku)}</span>${l.vendor ? " · " + esc(l.vendor) : ""}</div></td>
         <td class="l small">${listingSel(l)}</td>
@@ -478,6 +505,8 @@
       <div class="pmgrid">
         <label class="stack" for="po-vendor">Vendor<input id="po-vendor" class="inp" list="po-vendors" value="${esc(M.vendor)}" ${got ? "disabled" : ""} autocomplete="off"><datalist id="po-vendors">${vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>
         <label class="stack" for="po-po">PO #<input id="po-po" class="inp mono" value="${esc(M.po)}" ${ro ? "disabled" : ""}></label>
+        <label class="stack">Type<span class="seg" id="po-kind"><button data-okind="order" aria-pressed="${M.okind !== "booking"}" ${M.status !== "draft" ? "disabled" : ""}>Order</button><button data-okind="booking" aria-pressed="${M.okind === "booking"}" ${M.status !== "draft" ? "disabled" : ""}>Booking</button></span></label>
+        ${M.okind === "booking" ? `<label class="stack" for="po-placeby">Place by<input id="po-placeby" class="inp" type="date" value="${esc(M.placeBy)}" ${M.status !== "draft" ? "disabled" : ""}></label>` : ""}
         <label class="stack" for="po-exp">Expected<input id="po-exp" class="inp" type="date" value="${esc(M.expected)}" ${ro ? "disabled" : ""}></label>
         <label class="stack" for="po-inv">Invoice<select id="po-inv" class="inp" ${ro ? "disabled" : ""}><option value="">${invList ? (invs.length ? "— not linked —" : M.vendor ? "No invoices from " + esc(M.vendor) + " yet" : "— not linked —") : "Loading invoices…"}</option>${invs.map(x => `<option value="${x.id}" ${x.id === String(M.invoiceId) ? "selected" : ""}>${esc(x.no || "#" + x.id)} · ${esc(x.date || "no date")}${x.total != null ? " · " + m0(x.total) : ""}${M.vendor ? "" : " · " + esc(x.vendor)}</option>`).join("")}</select></label>
         <label class="stack" for="po-note" style="grid-column:1 / -1">Note<input id="po-note" class="inp" value="${esc(M.note)}" ${ro ? "disabled" : ""} placeholder="e.g. booking order, ships in two drops"></label>
@@ -502,7 +531,8 @@
   }
   function orderBody(M) {
     return { id: M.id ? Number(M.id) : null, vendor: M.vendor.trim(), po_no: M.po.trim(), expected_on: M.expected || "", invoice_id: M.invoiceId ? Number(M.invoiceId) : "", note: M.note, short_ok: !!M.shortOk,
-      lines: M.lines.map(l => ({ variant_id: Number(l.vid), amazon_sku: l.asku, qty: Number(l.ordered) || 0, unit_cost: l.cost === "" ? null : Number(l.cost) })).filter(l => l.qty > 0) };
+      kind: M.okind || "order", place_by: M.placeBy || "",
+      lines: M.lines.map(l => ({ variant_id: Number(l.vid), amazon_sku: l.asku, dest: l.dest || "prep", qty: Number(l.ordered) || 0, unit_cost: l.cost === "" ? null : Number(l.cost) })) };
   }
   async function saveOrder(next, quiet) {
     const M = P.modal; if (!M) return null;
@@ -518,7 +548,7 @@
   }
   async function receiveNow() {
     const M = P.modal; if (!M || !M.recv) return;
-    const lines = M.lines.map(l => ({ variant_id: Number(l.vid), amazon_sku: l.asku, qty: Number(M.recv[l.key]) || 0 })).filter(l => l.qty > 0);
+    const lines = M.lines.map(l => ({ variant_id: Number(l.vid), amazon_sku: l.asku, dest: l.dest || "prep", qty: Number(M.recv[l.key]) || 0 })).filter(l => l.qty > 0);
     if (lines.some(l => !Number.isInteger(l.qty) || l.qty < 0)) { note("bad", "Received quantities must be whole numbers."); return; }
     if (M.status !== "received") { const id = await saveOrder(null, true); if (!id) return; }
     P.busy = true; renderModal();
@@ -534,9 +564,10 @@
   function shipFromOrder(o) {
     const lines = [], qty = {}, info = {};
     for (const l of o.lines) {
-      const r = rowOf(l.key); if (!r || !l.received) continue;
-      const free = r.qty - (cache.alloc.get(l.key) || 0);
-      lines.push(l.key); qty[l.key] = String(Math.max(0, Math.min(l.received, free))); info[l.key] = { ...l, qty: 0 };
+      if (l.dest === "shopify") continue;                     // went to the Shopify store, not the prep center
+      const k = l.vid + "|" + l.asku, r = rowOf(k); if (!r || !l.received) continue;
+      const free = r.qty - (cache.alloc.get(k) || 0);
+      lines.push(k); qty[k] = String(Math.max(0, Math.min(l.received, free))); info[k] = { ...l, key: k, qty: 0 };
     }
     P.modal = { kind: "ship", id: null, status: "open", shipment: "", dest: "FBA", note: (o.vendor ? o.vendor + " " : "") + (o.po ? poLabel(o.po) : "order #" + o.id), lines, qty, info, add: "", confirm: false, fromRow: null, orderId: o.id };
     renderModal(); setTimeout(() => { const i = $("pm-ship"); if (i) i.focus(); }, 0);
@@ -552,7 +583,7 @@
         const l = M.lines.find(x => x.vid === vid);
         const qty = String(Math.round(+q || 0)), cost = uc == null ? "" : String(Math.round(+uc * 100) / 100);
         if (l) { l.ordered = qty; l.cost = cost; updated++; }
-        else { M.lines.push({ key: vid + "|", vid, asku: "", title: title || "variant " + vid, sku: sku || "", vendor: vendor || "", pid: "", shopCost: sc == null ? null : +sc, ordered: qty, cost, received: 0, unitCost: null }); added++; }
+        else { M.lines.push({ key: okey(vid, "", "prep"), vid, asku: "", dest: "prep", title: title || "variant " + vid, sku: sku || "", vendor: vendor || "", pid: "", shopCost: sc == null ? null : +sc, ordered: qty, cost, received: 0, unitCost: null }); added++; }
       }
       const miss = +((nm[0] || [])[0] || 0);
       note(miss ? "warn" : "info", `From the invoice: ${added} product${added === 1 ? "" : "s"} added, ${updated} updated.${miss ? ` ${miss} invoice line${miss === 1 ? " isn't" : "s aren't"} matched to a Shopify product yet — match ${miss === 1 ? "it" : "them"} on the Invoices tab.` : ""}`);
@@ -566,6 +597,8 @@
     if (d.fix === "oinv") { const id = M.invoiceId; P.modal = null; renderModal(); const t = document.querySelector('.tabs button[data-tab="invoices"]'); if (t) t.click(); setTimeout(() => window.JTInvoices && window.JTInvoices.open(id), 50); return true; }
     if (d.fix === "ofill") { fillFromInvoice(); return true; }
     if (d.fix === "oship") { const o = cache.orders.find(x => x.id === M.id); if (o) shipFromOrder(o); return true; }
+    if (d.fix === "onext") { saveOrder(ONEXT[M.status][0]); return true; }
+    if (d.fix === "focuskq") { setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-ok="${CSS.escape(d.k)}"]`); if (i) { i.focus(); i.select(); } }, 0); return true; }
     if (d.fix === "focuskc") { setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-oc="${CSS.escape(d.k)}"]`); if (i) { i.focus(); i.select(); } }, 0); return true; }
     return false;
   }
@@ -603,10 +636,14 @@
     box.addEventListener("change", (e) => {
       const M = P.modal, t = e.target; if (!M || M.kind !== "order") return;
       if (t.id === "po-exp") { M.expected = t.value; renderModal(); }
+      if (t.id === "po-placeby") { M.placeBy = t.value; renderModal(); }
+      if (t.dataset.odest) { const l = M.lines.find(x => x.key === t.dataset.odest), nk = okey(l.vid, "", t.value);
+        if (M.lines.some(x => x.key === nk && x !== l)) { note("warn", "That product is already on the order for there."); renderModal(); return; }
+        l.dest = t.value; l.asku = ""; l.key = nk; renderModal(); }
       if (t.id === "po-inv") { M.invoiceId = t.value; renderModal(); }
-      if (t.dataset.osku) { const l = M.lines.find(x => x.key === t.dataset.osku), nk = l.vid + "|" + t.value;
+      if (t.dataset.osku) { const l = M.lines.find(x => x.key === t.dataset.osku), shop = t.value === "@shopify", nk = shop ? okey(l.vid, "", "shopify") : okey(l.vid, t.value, "prep");
         if (M.lines.some(x => x.key === nk && x !== l)) { note("warn", "That product is already on the order for that listing."); renderModal(); return; }
-        l.asku = t.value; l.key = nk; renderModal(); }
+        l.asku = shop ? "" : t.value; l.dest = shop ? "shopify" : "prep"; l.key = nk; renderModal(); }
     });
     box.addEventListener("keydown", (e) => {
       const M = P.modal; if (!M || M.kind !== "order" || e.key !== "Enter") return;
@@ -617,6 +654,7 @@
       const M = P.modal, b = e.target.closest("button"); if (!M || M.kind !== "order" || !b) return;
       if (b.dataset.fix && orderFix(b.dataset)) { e.stopImmediatePropagation(); return; }
       if (b.dataset.ogo) { e.stopImmediatePropagation(); saveOrder(b.dataset.ogo); return; }
+      if (b.dataset.okind) { M.okind = b.dataset.okind; renderModal(); return; }
       if (b.dataset.oadd != null) { const v = findProducts(M.add)[+b.dataset.oadd]; if (v) addOrderLine(v, v.asku); return; }
       if (b.dataset.orm) { M.lines = M.lines.filter(l => l.key !== b.dataset.orm); renderModal(); return; }
       const a = b.dataset.oact; if (!a) return;
@@ -635,6 +673,116 @@
       else if (a === "do-del") { P.busy = true; renderModal(); JT.prep.deleteOrder(Number(M.id)).then(async () => { P.busy = false; P.modal = null; note("info", "Order deleted."); await load(true); render(); })
         .catch(err => { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't delete: " + esc(JT.message(err))); }); }
     });
+  }
+
+  // ===================== On The List: products to re-order =====================
+  // Marked from the prep center, Amazon inventory, Inventory value or the search box here; each item is for the prep
+  // center (Amazon) or the Shopify store. Tick items and put them on the vendor's in-flight draft order or a booking
+  // order (Incoming Inventory). Its status follows that order.
+  const listStage = (i) => i.closed ? "done" : !i.order ? "need" : i.order.status === "draft" ? "draft" : ["received", "shipped"].includes(i.order.status) ? "done" : "onorder";
+  function listStatus(i) {
+    const st = listStage(i), o = i.order;
+    if (st === "need") return '<span class="pill miss">Needs an order</span>';
+    const lbl = `${o.kind === "booking" ? "Booking" : "Draft"} · ${esc(orderTitle(o))}`;
+    if (st === "draft") return `<button class="linkbtn small" data-lord="${o.id}">${lbl}</button>${o.kind === "booking" && o.placeBy ? `<div class="meta">place by ${shortDate(o.placeBy)}</div>` : ""}`;
+    if (st === "onorder") return `<span class="pill manual">${OSTAGE.get(o.status)}</span> <button class="linkbtn small" data-lord="${o.id}">${esc(orderTitle(o))}</button>${o.expected ? `<div class="meta">expected ${shortDate(o.expected)}</div>` : ""}`;
+    return `<span class="pill ok">Received</span>${o ? ` <button class="linkbtn small" data-lord="${o.id}">${esc(orderTitle(o))}</button>` : ""}`;
+  }
+  // on an order, the order line's quantity is the one that counts
+  const listQty = (i) => { const l = i.order && i.order.lines.find(x => x.vid === i.vid && x.asku === i.asku && x.dest === i.dest); return l ? l.ordered : i.qty; };
+  function stockOf(i) {
+    const parts = [];
+    if (i.dest === "prep") {
+      const pr = cache.rows.filter(r => r.vid === i.vid && (!i.asku || r.asku === i.asku || !r.asku)).reduce((a, r) => a + r.qty, 0);
+      parts.push(`prep ${n0(pr)}`);
+      const fd = JT.fba && JT.fba.data;
+      if (fd) {
+        const skus = i.asku ? [i.asku] : (cache.byVariant.get(i.vid) || []).map(l => l.sku);
+        const its = fd.items.filter(x => skus.includes(x.sku));
+        if (its.length) parts.push(`Amazon ${n0(its.reduce((a, x) => a + JT.fba.unitsOf(x, true), 0))}`);
+        const sold = its.reduce((a, x) => a + (x.t30 || 0), 0); if (sold) parts.push(`${n0(sold)} sold/30d`);
+      }
+    }
+    parts.push(`Shopify ${i.shopQty == null ? "—" : n0(i.shopQty)}`);
+    return parts.join(" · ");
+  }
+  function renderList() {
+    const d = cache, el = $("prep-list");
+    const by = { todo: [], onorder: [], done: [] };
+    for (const i of d.list) { const st = listStage(i); (st === "need" || st === "draft" ? by.todo : st === "onorder" ? by.onorder : by.done).push(i); }
+    document.querySelectorAll("#prep-lview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.lView)); b.querySelector("span").textContent = by[b.dataset.v].length; });
+    const items = by[P.lView];
+    const found = P.lAdd.trim() && cat ? findProducts(P.lAdd).slice(0, 8) : [];
+    $("prep-lres").innerHTML = P.lAdd.trim() ? (!cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((v, k) => `<button data-ladd="${k}"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.sku)} · ${esc(v.vendor)}${v.asku ? " · for " + esc(v.asku) : ""}</span></button>`).join("") || '<span class="muted small">No products match.</span>') : "";
+    if (!items.length) { el.innerHTML = `<div class="muted small" style="padding:6px 2px">${P.lView === "todo" ? "Nothing on the list. Add products with the box above, or with “+ List” on Prep center stock, Amazon inventory and Inventory value." : P.lView === "onorder" ? "Nothing on a placed order yet." : "Nothing received from the list in the last 60 days."}</div>`; return; }
+    const groups = new Map();
+    for (const i of items) { const k = i.vendor || "(no vendor)"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
+    const drafts = (v) => d.orders.filter(o => o.status === "draft" && (o.vendor || "").toLowerCase() === (v === "(no vendor)" ? "" : v.toLowerCase()));
+    el.innerHTML = [...groups].sort((a, b) => a[0].localeCompare(b[0])).map(([v, list]) => {
+      const need = list.filter(i => listStage(i) === "need").length, ticked = list.filter(i => P.lSel.has(i.id)).length;
+      const ds = drafts(v);
+      const put = P.lView === "todo" ? `<span class="dbtns right"><select class="inp sm" data-lput="${esc(v)}" style="width:auto">${ds.map(o => `<option value="${o.id}">${o.kind === "booking" ? "Booking" : "Draft"} · ${esc(orderTitle(o))}${o.kind === "booking" && o.placeBy ? " · place by " + shortDate(o.placeBy) : ""} (${o.lines.length} products)</option>`).join("")}<option value="new">New draft order</option><option value="booking">New booking order</option></select>
+        <button class="mini primary" data-lgo="${esc(v)}" ${ticked ? "" : "disabled"}>Put ${ticked || ""} on it</button></span>` : "";
+      return `<div class="lgroup"><div class="lghead"><label class="inline"><input type="checkbox" data-lall="${esc(v)}" ${ticked && ticked === list.length ? "checked" : ""} ${P.lView !== "todo" ? "hidden" : ""}><b>${esc(v)}</b></label><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${need ? ` · ${need} need${need === 1 ? "s" : ""} an order` : ""}</span>${put}</div>
+        <div class="tbl-wrap"><table class="prept"><thead><tr>${P.lView === "todo" ? "<th></th>" : ""}<th class="l">Product</th><th class="l">For</th><th>Qty</th><th class="l">Stock now</th><th class="l">Status</th><th></th></tr></thead><tbody>${
+        list.map(i => `<tr>${P.lView === "todo" ? `<td><input type="checkbox" data-lsel="${i.id}" ${P.lSel.has(i.id) ? "checked" : ""} aria-label="Tick ${esc(i.title)}"></td>` : ""}
+          <td class="l">${i.pid ? `<a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>` : esc(i.title)}<div class="meta"><span class="mono">${esc(i.sku)}</span>${i.source ? " · from " + esc({ prep: "prep center", amazon: "Amazon inventory", inventory: "inventory value", search: "search" }[i.source] || i.source) : ""}${i.addedBy ? " · " + esc(i.addedBy) : ""}</div></td>
+          <td class="l small">${i.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep / Amazon</span>${i.asku ? `<div class="meta mono">${esc(i.asku)}</div>` : ""}`}</td>
+          <td>${(() => { const q = listQty(i); return listStage(i) === "need" || listStage(i) === "draft" ? `<input class="inp num sm" data-lqty="${i.id}" value="${q || ""}" inputmode="numeric" placeholder="qty" style="width:70px">` : q == null ? '<span class="dim">—</span>' : n0(q); })()}</td>
+          <td class="l small">${stockOf(i)}</td>
+          <td class="l small">${listStatus(i)}</td>
+          <td>${listStage(i) === "done" ? "" : `<button class="linkbtn small" data-lrm="${i.id}" title="Take off the list${listStage(i) === "draft" ? " (and off its draft order)" : ""}" aria-label="Remove ${esc(i.title)}">✕</button>`}</td></tr>`).join("")}</tbody></table></div></div>`;
+    }).join("");
+  }
+  async function listAssign(vendor) {
+    const sel = document.querySelector(`#prep-list select[data-lput="${CSS.escape(vendor)}"]`), val = sel ? sel.value : "new";
+    const ids = cache.list.filter(i => (i.vendor || "(no vendor)") === vendor && P.lSel.has(i.id)).map(i => Number(i.id));
+    if (!ids.length) return;
+    try {
+      const body = { ids, ...(val === "new" || val === "booking" ? { new: { vendor: vendor === "(no vendor)" ? "" : vendor, kind: val === "booking" ? "booking" : "order" } } : { order_id: Number(val) }) };
+      const oid = await JT.prep.listAssign(body);
+      ids.forEach(i => P.lSel.delete(String(i)));
+      await load(true); render();
+      const o = cache.orders.find(x => x.id === String(oid));
+      note("info", `Put ${ids.length} product${ids.length === 1 ? "" : "s"} on ${o && o.kind === "booking" ? "booking order" : "draft order"} <button class="linkbtn" data-lord="${oid}">${esc(o ? (o.vendor + " " + orderTitle(o)) : "#" + oid)}</button>.${val === "booking" ? " Set its place-by date in the order." : ""}`);
+    } catch (e) { note("bad", "Couldn't put them on the order: " + esc(JT.message(e))); }
+  }
+  function bindList() {
+    $("prep-lview").addEventListener("click", (e) => { const b = e.target.closest("button[data-v]"); if (b) { P.lView = b.dataset.v; renderList(); } });
+    const add = $("pl-add");
+    add.addEventListener("focus", () => { catalog().then(() => renderList()).catch(() => {}); });
+    add.addEventListener("input", () => { P.lAdd = add.value; clearTimeout(add._t); add._t = setTimeout(renderList, 150); });
+    const doAdd = async (v) => {
+      if (!v) return;
+      const dest = $("pl-dest").value, qty = $("pl-qty").value.trim();
+      if (qty && !(Number.isInteger(Number(qty)) && Number(qty) >= 0)) { note("bad", "Quantity must be a whole number."); return; }
+      try {
+        await addToList({ variant_id: Number(v.vid), amazon_sku: dest === "prep" ? v.asku || "" : "", dest, qty: qty === "" ? null : Number(qty), source: "search" });
+        add.value = ""; P.lAdd = ""; $("pl-qty").value = ""; P.lView = "todo"; render(); note("info", `Added ${esc(v.title)} to the list.`); add.focus();
+      } catch (e) { note("bad", "Couldn't add it: " + esc(JT.message(e))); }
+    };
+    add.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(findProducts(P.lAdd)[0]); } });
+    $("prep-lres").addEventListener("click", (e) => { const b = e.target.closest("button[data-ladd]"); if (b) doAdd(findProducts(P.lAdd)[+b.dataset.ladd]); });
+    const el = $("prep-list");
+    el.addEventListener("change", async (e) => {
+      const t = e.target;
+      if (t.dataset.lsel) { if (t.checked) P.lSel.add(t.dataset.lsel); else P.lSel.delete(t.dataset.lsel); renderList(); }
+      else if (t.dataset.lall != null) { for (const i of cache.list) if ((i.vendor || "(no vendor)") === t.dataset.lall && listStage(i) !== "done" && listStage(i) !== "onorder") { if (t.checked) P.lSel.add(i.id); else P.lSel.delete(i.id); } renderList(); }
+      else if (t.dataset.lqty) {
+        const i = cache.list.find(x => x.id === t.dataset.lqty), v = t.value.trim();
+        if (v && !(Number.isInteger(Number(v)) && Number(v) >= 0)) { t.classList.add("bad"); return; }
+        try { await JT.prep.listAdd({ variant_id: Number(i.vid), amazon_sku: i.asku, dest: i.dest, qty: v === "" ? null : Number(v) }); await load(true); render(); }
+        catch (err) { note("bad", "Couldn't save the quantity: " + esc(JT.message(err))); }
+      }
+    });
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.dataset.lqty) e.target.blur(); });
+    el.addEventListener("click", async (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      if (b.dataset.lgo) return listAssign(b.dataset.lgo);
+      if (b.dataset.lrm) { try { await JT.prep.listRemove(Number(b.dataset.lrm)); P.lSel.delete(b.dataset.lrm); await load(true); render(); } catch (err) { note("bad", "Couldn't remove it: " + esc(JT.message(err))); } return; }
+    });
+    // order links anywhere on the tab (list rows, notes)
+    $("tab-prep").addEventListener("click", (e) => { const b = e.target.closest("[data-lord]"); if (b && !b.closest("#prep-modal")) openOrder(b.dataset.lord); });
   }
 
   function renderMoves() {
@@ -869,6 +1017,8 @@
       const b = e.target.closest("[data-act]"); if (!b || b.closest("#prep-modal")) return;
       if (b.dataset.act === "count") openCount(b.dataset.vid, b.dataset.sku);
       if (b.dataset.act === "ship") openShip(b.dataset.vid, b.dataset.sku);
+      if (b.dataset.act === "list") { b.disabled = true; addToList({ variant_id: Number(b.dataset.vid), amazon_sku: b.dataset.sku || "", dest: "prep", source: "prep" })
+        .then(() => note("info", "Added to On The List."), (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); }); }
     });
     const box = $("prep-modal");
     box.addEventListener("mousedown", (e) => { if (e.target === box && !P.busy) closeModal(); });
@@ -922,6 +1072,7 @@
 
   bind();
   bindOrders();
+  bindList();
   window.prepShow = () => { if (!P.shown) { P.shown = true; refresh(false); } else render(); };
   window.JTPrepTab = { _state: P };
   if ((location.hash || "") === "#prep") setTimeout(() => window.prepShow(), 0);

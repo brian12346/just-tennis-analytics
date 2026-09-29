@@ -198,6 +198,23 @@
     </section>
     <section class="panel">
       <div class="panel-head">
+        <div class="lanehead"><h2>On The List</h2><span class="muted small">to re-order → a draft or booking order</span></div>
+        <div class="seg" id="prep-lview" role="group" aria-label="Which list items">
+          <button data-v="todo" aria-pressed="true">To order <span class="cnt">0</span></button><button data-v="onorder" aria-pressed="false">On order <span class="cnt">0</span></button><button data-v="done" aria-pressed="false">Received · last 60 days <span class="cnt">0</span></button>
+        </div>
+      </div>
+      <div class="addbox listadd">
+        <div class="row">
+          <label class="stack grow" for="pl-add">Add a product<input id="pl-add" class="inp mono" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
+          <label class="stack" for="pl-dest">For<select id="pl-dest" class="inp"><option value="prep">Prep center / Amazon</option><option value="shopify">Shopify store</option></select></label>
+          <label class="stack" for="pl-qty">Qty<input id="pl-qty" class="inp num" inputmode="numeric" placeholder="optional" style="width:90px"></label>
+        </div>
+        <div class="mres" id="prep-lres"></div>
+      </div>
+      <div id="prep-list"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
         <div class="lanehead"><h2>Incoming Inventory</h2><span class="muted small">vendor orders → prep center</span></div>
         <div class="seg" id="prep-oview" role="group" aria-label="Which vendor orders">
           <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped out · last 60 days <span class="cnt">0</span></button>

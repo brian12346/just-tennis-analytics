@@ -275,6 +275,21 @@
         const out = await run(`select jt.prep_order_receive(${q(JSON.stringify({ id, lines, note: note || "", by: "Claude dashboard" }))}::jsonb) as n`, true);
         return Number(out[0] && out[0].n) || 0;
       },
+      // On The List: mark a product for re-order, put items on a draft / booking order, take one off
+      async listAdd(body) {
+        if (WEB) return Number(await WEB.write("jt_prep_list_add", { p: body }));
+        const out = await run(`select jt.prep_list_add(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
+        return Number(out[0] && out[0].id);
+      },
+      async listAssign(body) {
+        if (WEB) return Number(await WEB.write("jt_prep_list_assign", { p: body }));
+        const out = await run(`select jt.prep_list_assign(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
+        return Number(out[0] && out[0].id);
+      },
+      async listRemove(id) {
+        if (WEB) return WEB.write("jt_prep_list_remove", { p: { id } });
+        return run(`select jt.prep_list_remove(${q(JSON.stringify({ id }))}::jsonb) as ok`, true);
+      },
       async deleteOrder(id) {
         if (WEB) return WEB.write("jt_prep_order_delete", { p: { id } });
         return run(`select jt.prep_order_delete(${q(JSON.stringify({ id }))}::jsonb) as ok`, true);
