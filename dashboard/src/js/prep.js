@@ -45,7 +45,7 @@
           `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id left join jt.variants v on v.variant_id = l.variant_id ${SHIPWHERE}`, refresh),
         // Incoming Inventory: vendor orders in progress, and ones shipped out in the last 60 days, with their linked invoice
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.invoice_id::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.updated_at",
-          "i.invoice_no", "i.invoice_date::text", "(select sum(coalesce(il.amount, il.qty * il.unit_cost)) from jt.invoice_lines il where il.invoice_id = i.id and il.match_how <> 'skip')", "o.kind", "o.place_by::text"],
+          "i.invoice_no", "i.invoice_date::text", "(select sum(coalesce(il.amount, il.qty * il.unit_cost)) from jt.invoice_lines il where il.invoice_id = i.id and il.match_how <> 'skip')", "o.kind", "o.place_by::text", "o.receive_into"],
           `from jt.prep_orders o left join jt.invoices i on i.id = o.invoice_id ${ORDWHERE} order by o.updated_at desc`, refresh),
         JT.rows(["l.order_id::text", "l.variant_id::text", "l.amazon_sku", "l.qty_ordered", "l.qty_received", "l.unit_cost", "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.unit_cost", "v.vendor", "v.product_id::text", "l.dest"],
           `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id left join jt.variants v on v.variant_id = l.variant_id ${ORDWHERE}`, refresh),
@@ -89,7 +89,7 @@
       const alloc = new Map();          // prep row -> units in open / started shipments
       for (const sh of shipments) if (sh.status !== "shipped") for (const l of sh.lines) alloc.set(l.key, (alloc.get(l.key) || 0) + l.qty);
       const orders = ords.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], invoiceId: x[4] || null, expected: x[5] || "", note: x[6] || "", shortOk: !!x[7],
-        stageAt: x[8] || {}, created: x[9], createdBy: x[10] || "", updated: x[11], inv: x[4] ? { no: x[12] || "", date: x[13] || "", total: x[14] == null ? null : +x[14] } : null, kind: x[15] || "order", placeBy: x[16] || "", lines: [] }));
+        stageAt: x[8] || {}, created: x[9], createdBy: x[10] || "", updated: x[11], inv: x[4] ? { no: x[12] || "", date: x[13] || "", total: x[14] == null ? null : +x[14] } : null, kind: x[15] || "order", placeBy: x[16] || "", into: x[17] || "", lines: [] }));
       const oById = new Map(orders.map(o => [o.id, o]));
       for (const [oid, vid, asku, qo, qr, uc, title, sku, sc, vendor, pid, dest] of olines) {
         const o = oById.get(oid); if (o) o.lines.push({ key: okey(vid, asku, dest), vid, asku: asku || "", dest: dest || "prep", ordered: +qo, received: +qr, unitCost: uc == null ? null : +uc,
@@ -183,7 +183,7 @@
       { c: "sales", l: "Value at Amazon price", v: m0(t.amz), s: "earmarked listing, or the only listing mapped to the product" },
       (() => { const op = d.shipments.filter(x => x.status !== "shipped"); const u = op.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.qty, 0), 0);
         return { l: "In open shipments", v: n0(u), s: op.length ? `units · ${op.filter(x => x.status === "open").length} open, ${op.filter(x => x.status === "started").length} started` : "no shipments in progress" }; })(),
-      (() => { const op = d.orders.filter(o => ["ordered", "invoiced", "partial"].includes(o.status)); const u = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received), 0), 0);
+      (() => { const op = incoming(d.orders).filter(o => ["ordered", "invoiced", "partial"].includes(o.status)); const u = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received), 0), 0);
         const c = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received) * (lineCost(l) || 0), 0), 0);
         return { l: "On order", v: n0(u), s: op.length ? `units · ${m0(c)} at cost · ${op.length} vendor order${op.length === 1 ? "" : "s"}` : "no vendor orders out" }; })(),
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
@@ -409,7 +409,8 @@
 
   function renderOrders() {
     const d = cache, el = $("prep-orders");
-    const prog = d.orders.filter(o => o.status !== "complete"), done = d.orders.filter(o => o.status === "complete");
+    const inc = incoming(d.orders);
+    const prog = inc.filter(o => o.status !== "complete"), done = inc.filter(o => o.status === "complete");
     document.querySelectorAll("#prep-oview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.oView)); b.querySelector("span").textContent = b.dataset.v === "open" ? prog.length : done.length; });
     const cnt = (st) => prog.filter(o => o.status === st).length;
     $("prep-ostages").innerHTML = P.oView !== "open" || !prog.length ? "" : [["all", "All", prog.length], ...OSTAGES.filter(([k]) => k !== "complete").map(([k, n]) => [k, n, cnt(k)])]
@@ -433,7 +434,7 @@
         <div class="sc-title" title="${esc(o.lines.map(l => n0(l.ordered) + " × " + l.title).join("\n"))}">${esc(contents)}</div>
         <div class="sc-qty">${got ? `<b class="num">${n0(rec)}</b><span>of ${n0(ord)} received</span>` : `<b class="num">${n0(ord)}</b><span>unit${ord === 1 ? "" : "s"}</span>`}<span class="dim">· ${m0(cost)}</span></div>
         ${got && ord ? `<div class="sc-bar"><i style="width:${Math.min(100, rec / ord * 100).toFixed(0)}%"></i></div>` : ""}
-        <div class="sc-meta"><span class="pill ${OPILL[o.status]}">${OSTAGE.get(o.status)}</span>${o.kind === "booking" ? '<span class="pill warn">Booking</span>' : ""}<span>${esc(o.vendor || "No vendor")}</span><span class="mono">${esc(orderTitle(o))}</span></div>
+        <div class="sc-meta"><span class="pill ${OPILL[o.status]}">${OSTAGE.get(o.status)}</span>${o.kind === "booking" ? '<span class="pill warn">Booking</span>' : ""}${o.split ? '<span class="pill manual" title="This PO also has products going to the Shopify store; only the prep-center part is shown here">Prep part</span>' : ""}<span>${esc(o.vendor || "No vendor")}</span><span class="mono">${esc(orderTitle(o))}</span></div>
         ${sum ? `<div class="sc-issue"><span aria-hidden="true">▲</span><span>${esc(sum)}</span></div>` : ""}
         <div class="sc-foot"><span class="dim small">${whenTxt}</span><span class="dbtns">${back}${next}</span></div>
       </div>`;
@@ -442,6 +443,12 @@
       + (list.map(card).join("") || (P.oView === "open" ? "" : '<div class="muted small">No completed orders in the history range above.</div>'));
   }
 
+  // Incoming Inventory is what's coming to the prep center: POs with prep-center lines (a PO split with the
+  // Shopify store shows only its prep-center part), and empty POs not set to go to the Shopify store.
+  function incoming(orders) {
+    return orders.filter(o => o.lines.some(l => l.dest === "prep") || (!o.lines.length && o.into !== "shopify"))
+      .map(o => o.lines.some(l => l.dest !== "prep") ? { ...o, lines: o.lines.filter(l => l.dest === "prep"), split: true } : o);
+  }
   // ---------- order popup ----------
   let invList = null;
   async function invoices() {
