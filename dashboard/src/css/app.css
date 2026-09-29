@@ -667,3 +667,11 @@ html{scroll-padding-top:130px}
 .po-t td.nowrap{white-space:nowrap}
 .forcell{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
 .splittot{font-size:12px;color:var(--muted);margin-top:3px}
+/* PO: Shopify PO check */
+.shopchk .panel-head{flex-wrap:wrap;gap:8px}
+.shopchk .panel-head .right{margin-left:auto}
+.shopchk.bad{border-color:var(--bad-bg, #f3c7c3)}
+.shopchk.good{border-color:var(--good-bg)}
+.shopsum{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:4px 0 10px}
+.shop-t tr.off td{background:color-mix(in srgb, var(--surface-sunken) 60%, transparent)}
+.shop-t .dif{font-weight:700;color:var(--neg, #b42318)}

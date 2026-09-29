@@ -244,3 +244,15 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - `jt.prep_orders.receive_into`: 'shopify', 'prep', 'both', or '' (not set, worked out from the lines). The PO-level choice.
 - Each line's `dest` decides where it's received.
 - A product can be split: one line with dest 'shopify' and one with dest 'prep' (the unique key includes dest).
+
+### Shopify PO check (027)
+
+- `jt.prep_orders.shopify_check` (jsonb, null = not checked): a snapshot of the Shopify PO the order was checked against — {checked_at, source 'pdf' | 'api', file_name, name, supplier, total, subtotal, shipping, scope 'all' | 'shopify', diffs, lines: [{sku, supplier_sku, title, qty, cost, amount, variant_id, how}]}.
+- Where Shopify's side comes from:
+  - Today: the PO's PDF from Shopify admin, read in the dashboard.
+  - Later: Shopify's Admin API (`inventoryPurchaseOrders`, preview in 2026-10), once it's open to live stores. The sync can fill the same snapshot with source 'api'.
+- The dashboard compares product by product against the PO as it is now:
+  - Split products are added up.
+  - scope 'shopify' compares only the Shopify-store lines.
+  - It checks quantity, cost, products missing on either side, lines it can't match, and the supplier.
+  - `diffs` is the count when last saved (for the list).

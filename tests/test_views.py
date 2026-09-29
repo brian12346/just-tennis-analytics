@@ -384,6 +384,13 @@ def test_purchase_order_save(conn):
     assert cur.fetchall() == [(911, "prep", 1), (911, "shopify", 1), (912, "prep", 4)]
     call("po_save", {"order": dict(order, id=oid, receive_into="nonsense"), "invoices": []})
     cur.execute("select receive_into from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "both"
+    # the Shopify PO check snapshot: kept when not sent, replaced, cleared with null
+    chk = {"source": "pdf", "name": "#PO12", "diffs": 1, "lines": [{"sku": "ABC-1", "qty": 2, "cost": 40, "variant_id": 911}]}
+    call("po_save", {"order": dict(order, id=oid, shopify_check=chk), "invoices": []})
+    call("po_save", {"order": dict(order, id=oid), "invoices": []})
+    cur.execute("select shopify_check->>'name', shopify_check->'lines'->0->>'qty' from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == ("#PO12", "2")
+    call("po_save", {"order": dict(order, id=oid, shopify_check=None), "invoices": []})
+    cur.execute("select shopify_check from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] is None
     cur.execute("select count(*) from jt.invoice_lines where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 1
     # the PDF in two parts; part 0 replaces an older file
     call("invoice_file_put", {"invoice_id": iid, "part": 0, "parts": 2, "data": "QUJD", "name": "h.pdf", "type": "application/pdf", "size": 6})
