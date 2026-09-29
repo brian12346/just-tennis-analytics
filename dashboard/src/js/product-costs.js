@@ -18,7 +18,8 @@
     rows: null,             // [{vid, pid, sku, title, vendor, type, status, price, cost, qty, sUnits, sSales, aUnits, aSales, total}]
     pending: new Map(),     // vid -> queued cost not yet in Shopify
     edits: new Map(),       // vid -> typed text
-    period: "12m", vendor: "all", cat: "all", status: "ACTIVE", issue: "all", sold: "sold", q: "", page: 0,
+    period: "12m", vendor: "all", cat: "all", status: "ACTIVE", issue: "all", sold: "sold", q: "", sort: "sales", page: 0,
+    asOf: null,             // last catalog sync (inventory quantities are as of then)
     saving: false, confirm: false,
   };
   const note = (kind, html) => { const n = $("pc-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
@@ -37,7 +38,7 @@
     const [from, to] = range();
     $("pc-status").textContent = "Loading products and sales…";
     try {
-      const [cat, ss, maps, months, pend] = await Promise.all([
+      const [cat, ss, maps, months, pend, asof] = await Promise.all([
         JT.rowsSplit(["variant_id::text", "product_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "product_type", "status", "price", "unit_cost", "inventory_qty"],
           "from jt.variants where removed_at is null", "variant_id", 4, refresh),
         JT.rowsSplit(["variant_id::text", "sum(units)", "sum(net)"],
@@ -45,7 +46,9 @@
         JT.rowsSplit(["data->>'sku'", "data->>'variantId'", "coalesce(data->>'units', '1')"], "from jt.docs where collection = 'amzmap' and data->>'kind' = 'shopify'", "id", 2, refresh),
         JT.rowsSplit(["id", "data->'skus'"], `from jt.docs where collection = 'amzmonths' and id between ${JT.q(from.slice(0, 7))} and ${JT.q(to.slice(0, 7))}`, "id", 4, refresh),
         JT.rows(["variant_id::text", "new_cost"], "from jt.cost_updates where status = 'pending' and new_cost is not null", true),
+        JT.rows(["extract(epoch from max(seen_at))"], "from jt.variants", refresh),
       ]);
+      P.asOf = asof && asof[0] && asof[0][0] ? new Date(+asof[0][0] * 1000) : null;
       if (id !== P.reqId) return;
       const shop = new Map(ss.map(([v, u, n]) => [v, [+u || 0, +n || 0]]));
       // Amazon sales per variant: listing sales from the monthly summaries, through each listing's mapping
@@ -58,7 +61,7 @@
       P.rows = cat.map(x => {
         const s = shop.get(x[0]) || [0, 0], a = amz.get(x[0]) || [0, 0];
         return { vid: x[0], pid: x[1], sku: x[2] || "", title: x[3] || "", vendor: x[4] || "", type: x[5] || "", status: x[6] || "",
-          price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8], qty: x[9],
+          price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8], qty: x[9] == null ? null : +x[9],
           sUnits: s[0], sSales: s[1], aUnits: a[0], aSales: a[1], total: s[1] + a[1] };
       });
       P.pending = new Map(pend.map(([v, c]) => [v, +c]));
@@ -85,14 +88,57 @@
     if (r.price > 0 && (r.price - c) / r.price > 0.75) return "high";
     return "";
   }
+  // Inventory value: on-hand units (all locations, from the last catalog sync) × unit cost / price. Negative on-hand
+  // counts are shown but add nothing to the value.
+  const onHand = (r) => r.qty > 0 ? r.qty : 0;
+  const extCost = (r) => { const c = costOf(r); return onHand(r) && c != null && !isNaN(c) ? onHand(r) * c : 0; };
+  const extPrice = (r) => onHand(r) && r.price != null ? onHand(r) * r.price : 0;
+  const matchesBase = (r, q) => (P.vendor === "all" || r.vendor === P.vendor) && (P.cat === "all" || r.type === P.cat)
+    && (!q || (r.title + " " + r.sku + " " + r.vendor).toLowerCase().includes(q));
   function visible() {
     if (!P.rows) return [];
     const q = P.q.trim().toLowerCase();
-    return P.rows.filter(r => (P.vendor === "all" || r.vendor === P.vendor) && (P.cat === "all" || r.type === P.cat)
-      && (P.status === "all" || r.status === P.status) && (P.sold === "all" || r.sSales || r.aSales || r.sUnits || r.aUnits)
-      && (!q || (r.title + " " + r.sku + " " + r.vendor).toLowerCase().includes(q))
+    // sort on the saved cost so a row doesn't jump while its cost is being typed
+    const saved = (r) => { const c = P.pending.has(r.vid) ? P.pending.get(r.vid) : r.cost; return c == null ? 0 : onHand(r) * c; };
+    const by = P.sort === "invcost" ? (a, b) => saved(b) - saved(a) : P.sort === "invprice" ? (a, b) => extPrice(b) - extPrice(a)
+      : P.sort === "qty" ? (a, b) => onHand(b) - onHand(a) : () => 0;
+    return P.rows.filter(r => matchesBase(r, q)
+      && (P.status === "all" || r.status === P.status)
+      && (P.sold === "all" || (P.sold === "stock" ? r.qty > 0 : r.sSales || r.aSales || r.sUnits || r.aUnits))
       && (P.issue === "all" || (P.issue === "edited" ? P.edits.has(r.vid) : P.issue === "issue" ? !!issueOf(r) : issueOf(r) === P.issue)))
-      .sort((a, b) => b.total - a.total || (b.sUnits + b.aUnits) - (a.sUnits + a.aUnits) || a.title.localeCompare(b.title));
+      .sort((a, b) => by(a, b) || b.total - a.total || (b.sUnits + b.aUnits) - (a.sUnits + a.aUnits) || a.title.localeCompare(b.title));
+  }
+
+  function invTotals(rows) {
+    const t = { cost: 0, price: 0, units: 0, skus: 0, noCost: 0, noCostUnits: 0, neg: 0 };
+    for (const r of rows) {
+      if (r.qty < 0) t.neg++;
+      if (!(r.qty > 0)) continue;
+      t.units += r.qty; t.skus++; t.cost += extCost(r); t.price += extPrice(r);
+      const c = costOf(r); if (c == null || isNaN(c)) { t.noCost++; t.noCostUnits += r.qty; }
+    }
+    return t;
+  }
+  // Inventory summary: every product with stock on hand (any status, sold or not), narrowed only by vendor, category
+  // and search, so the total is the whole store unless one of those is set.
+  function renderInv() {
+    const el = $("pc-inv"); if (!P.rows) { el.innerHTML = ""; return; }
+    const q = P.q.trim().toLowerCase();
+    const scoped = P.vendor !== "all" || P.cat !== "all" || !!q;
+    const t = invTotals(P.rows.filter(r => matchesBase(r, q)));
+    const all = scoped ? invTotals(P.rows) : t;
+    const scope = [P.vendor !== "all" ? esc(P.vendor || "(no vendor)") : "", P.cat !== "all" ? esc(P.cat || "(no category)") : "", q ? `“${esc(P.q.trim())}”` : ""].filter(Boolean).join(" · ");
+    const gm = t.price ? (t.price - t.cost) / t.price : null;
+    const when = P.asOf ? P.asOf.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+    $("pc-inv-scope").innerHTML = (scoped ? `Filtered to ${scope} · store total ${m0(all.cost)} at cost` : "All products with stock on hand, every status and location")
+      + (when ? ` · quantities as of ${when}` : "");
+    el.innerHTML = [
+      { l: "Inventory at cost", v: m0(t.cost), s: `${t.skus.toLocaleString()} variants in stock` },
+      { l: "Inventory at retail", v: m0(t.price), s: "on-hand units × current price" },
+      { l: "Margin in stock", v: m0(t.price - t.cost), s: gm == null ? "" : `${pct(gm)} of retail value` },
+      { l: "Units on hand", v: Math.round(t.units).toLocaleString(), s: t.skus ? `${(t.units / t.skus).toFixed(1)} per variant in stock` : "" },
+      { l: "Not valued", v: (t.noCost + t.neg).toLocaleString(), s: `${t.noCost} in stock with no cost (${t.noCostUnits} unit${t.noCostUnits === 1 ? "" : "s"}) · ${t.neg} with negative on-hand` },
+    ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
 
   function renderKpis(rows) {
@@ -113,13 +159,15 @@
   function render() {
     if ($("tab-costs").hidden) return;
     const t = $("pc-table");
-    if (!P.rows) { t.innerHTML = `<tbody><tr><td class="l muted">${P.loading ? "Loading…" : ""}</td></tr></tbody>`; $("pc-kpis").innerHTML = ""; return; }
+    if (!P.rows) { t.innerHTML = `<tbody><tr><td class="l muted">${P.loading ? "Loading…" : ""}</td></tr></tbody>`; $("pc-kpis").innerHTML = ""; $("pc-inv").innerHTML = ""; return; }
     const rows = visible();
+    renderInv();
     renderKpis(rows);
+    const vt = invTotals(rows);
     const pages = Math.max(1, Math.ceil(rows.length / PER)); if (P.page >= pages) P.page = pages - 1;
     pageRows = rows.slice(P.page * PER, P.page * PER + PER);
     const ae = document.activeElement, keep = ae && ae.dataset && ae.dataset.vid, sel = keep ? [ae.selectionStart, ae.selectionEnd] : null;
-    t.innerHTML = `<thead><tr><th class="l">Product</th><th class="l">Vendor · category</th><th>Price</th><th>Unit cost</th><th>Margin</th><th>Shopify</th><th>Amazon</th><th>Total sales</th><th class="l">Status</th></tr></thead><tbody>${
+    t.innerHTML = `<thead><tr><th class="l">Product</th><th class="l">Vendor · category</th><th>On hand</th><th>Unit cost</th><th>Ext. cost</th><th>Price</th><th>Ext. price</th><th>Margin</th><th>Shopify</th><th>Amazon</th><th>Total sales</th><th class="l">Status</th></tr></thead><tbody>${
       pageRows.map((r) => {
         const iss = issueOf(r), c = costOf(r), edited = P.edits.has(r.vid), v = edited ? P.edits.get(r.vid) : c == null ? "" : c.toFixed(2);
         const bad = edited && (c == null || isNaN(c) || c < 0);
@@ -128,16 +176,23 @@
           : iss === "missing" ? '<span class="pill miss">No cost</span>' : iss === "above" ? '<span class="pill miss">Cost above price</span>'
           : iss === "low" ? '<span class="pill warn">Low margin</span>' : iss === "high" ? '<span class="pill warn">High margin</span>' : '<span class="pill ok">OK</span>';
         return `<tr class="${iss === "missing" || iss === "above" ? "flag-bad" : iss ? "flag-warn" : ""}">
-          <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span>${r.status !== "ACTIVE" ? " · " + esc(r.status.toLowerCase()) : ""}${r.qty != null ? " · " + r.qty + " on hand" : ""}</div></td>
+          <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span>${r.status !== "ACTIVE" ? " · " + esc(r.status.toLowerCase()) : ""}</div></td>
           <td class="l">${esc(r.vendor)}<div class="meta">${esc(r.type || "—")}</div></td>
-          <td>${m(r.price)}</td>
+          <td class="${r.qty < 0 ? "neg" : ""}">${r.qty == null ? '<span class="dim">—</span>' : r.qty.toLocaleString()}</td>
           <td><input class="pcin ${edited ? "edited" : ""} ${bad ? "bad" : ""}" data-vid="${esc(r.vid)}" value="${esc(v)}" inputmode="decimal" aria-label="Unit cost for ${esc(r.title)}">${edited && r.cost != null ? `<div class="meta">was ${m(r.cost)}</div>` : ""}</td>
+          <td>${onHand(r) ? (c == null || isNaN(c) ? '<span class="dim">no cost</span>' : m(extCost(r))) : '<span class="dim">—</span>'}</td>
+          <td>${m(r.price)}</td>
+          <td>${onHand(r) && r.price != null ? m(extPrice(r)) : '<span class="dim">—</span>'}</td>
           <td class="${mg != null && mg < 0 ? "neg" : ""}">${pct(mg)}</td>
           <td>${r.sSales ? m0(r.sSales) : '<span class="dim">—</span>'}<div class="meta">${r.sUnits ? Math.round(r.sUnits).toLocaleString() + " sold" : ""}</div></td>
           <td>${r.aSales ? m0(r.aSales) : '<span class="dim">—</span>'}<div class="meta">${r.aUnits ? Math.round(r.aUnits).toLocaleString() + " sold" : ""}</div></td>
           <td><b>${m0(r.total)}</b></td>
           <td class="l">${pill}</td></tr>`;
-      }).join("") || `<tr><td class="l muted" colspan="9">No products match these filters.</td></tr>`}</tbody>`;
+      }).join("") || `<tr><td class="l muted" colspan="12">No products match these filters.</td></tr>`}</tbody>${rows.length ? `<tfoot><tr>
+          <td class="l"><b>Total · ${rows.length.toLocaleString()} variants in view</b></td><td></td>
+          <td><b>${Math.round(vt.units).toLocaleString()}</b></td><td></td><td><b>${m0(vt.cost)}</b></td><td></td><td><b>${m0(vt.price)}</b></td>
+          <td>${pct(vt.price ? (vt.price - vt.cost) / vt.price : null)}</td>
+          <td>${m0(rows.reduce((a, r) => a + r.sSales, 0))}</td><td>${m0(rows.reduce((a, r) => a + r.aSales, 0))}</td><td><b>${m0(rows.reduce((a, r) => a + r.total, 0))}</b></td><td></td></tr></tfoot>` : ""}`;
     if (keep) { const el = t.querySelector(`input[data-vid="${CSS.escape(keep)}"]`); if (el) { el.focus(); try { el.setSelectionRange(sel[0], sel[1]); } catch (_) {} } }
     $("pc-prev").hidden = P.page === 0; $("pc-next").hidden = P.page >= pages - 1;
     $("pc-count").textContent = rows.length ? `${P.page * PER + 1}–${P.page * PER + pageRows.length} of ${rows.length.toLocaleString()}` : "";
@@ -184,9 +239,10 @@
     const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
     on("pc-vendor", "change", (e) => { P.vendor = e.target.value; P.page = 0; fillFilters(); render(); });
     on("pc-cat", "change", (e) => { P.cat = e.target.value; P.page = 0; render(); });
-    on("pc-status", "change", (e) => { P.status = e.target.value; P.page = 0; render(); });
+    on("pc-stat", "change", (e) => { P.status = e.target.value; P.page = 0; render(); });
     on("pc-issue", "change", (e) => { P.issue = e.target.value; P.page = 0; render(); });
     on("pc-sold", "change", (e) => { P.sold = e.target.value; P.page = 0; render(); });
+    on("pc-sort", "change", (e) => { P.sort = e.target.value; P.page = 0; render(); });
     on("pc-q", "input", (e) => { P.q = e.target.value; P.page = 0; clearTimeout(e.target._t); e.target._t = setTimeout(render, 200); });
     on("pc-period", "change", (e) => { P.period = e.target.value; P.page = 0; load(false); });
     on("pc-refresh", "click", () => load(true));

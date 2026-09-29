@@ -174,7 +174,7 @@
   <div id="tab-costs" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Shopify product costs · biggest sellers first (Shopify + Amazon)</span>
+        <span class="eyebrow">Shopify product costs and inventory value · biggest sellers first (Shopify + Amazon)</span>
         <h1>Product costs</h1>
       </div>
       <div class="controls">
@@ -185,6 +185,10 @@
     </header>
     <div class="status" id="pc-status" aria-live="polite">Loading products and sales…</div>
     <div id="pc-note" hidden></div>
+    <section class="panel inv-panel">
+      <div class="panel-head"><h2>Inventory value</h2><span class="muted small" id="pc-inv-scope"></span></div>
+      <section class="kpis" id="pc-inv" aria-label="Inventory value"></section>
+    </section>
     <section class="kpis" id="pc-kpis" aria-label="Cost health"></section>
     <section class="panel">
       <div class="panel-head">
@@ -192,9 +196,10 @@
         <div class="filters">
           <label for="pc-vendor">Vendor <select id="pc-vendor" class="inp sm"></select></label>
           <label for="pc-cat">Category <select id="pc-cat" class="inp sm"></select></label>
-          <label for="pc-status">Status <select id="pc-status" class="inp sm"><option value="ACTIVE">Active</option><option value="DRAFT">Draft</option><option value="ARCHIVED">Archived</option><option value="all">All</option></select></label>
+          <label for="pc-stat">Status <select id="pc-stat" class="inp sm"><option value="ACTIVE">Active</option><option value="DRAFT">Draft</option><option value="ARCHIVED">Archived</option><option value="all">All</option></select></label>
           <label for="pc-issue">Cost <select id="pc-issue" class="inp sm"><option value="all">Any</option><option value="issue">Needs a look</option><option value="missing">No cost</option><option value="above">Cost above price</option><option value="low">Margin under 10%</option><option value="high">Margin over 75%</option><option value="edited">Edited, not saved</option></select></label>
-          <label for="pc-sold">Sold <select id="pc-sold" class="inp sm"><option value="sold">Sold in period</option><option value="all">All products</option></select></label>
+          <label for="pc-sold">Sold <select id="pc-sold" class="inp sm"><option value="sold">Sold in period</option><option value="stock">In stock</option><option value="all">All products</option></select></label>
+          <label for="pc-sort">Sort <select id="pc-sort" class="inp sm"><option value="sales">Total sales</option><option value="invcost">Inventory value at cost</option><option value="invprice">Inventory value at retail</option><option value="qty">Units on hand</option></select></label>
           <label for="pc-q">Search <input id="pc-q" class="inp" type="search" placeholder="Product, SKU or vendor"></label>
         </div>
       </div>
