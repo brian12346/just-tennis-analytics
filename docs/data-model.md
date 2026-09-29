@@ -256,3 +256,16 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
   - scope 'shopify' compares only the Shopify-store lines.
   - It checks quantity, cost, products missing on either side, lines it can't match, and the supplier.
   - `diffs` is the count when last saved (for the list).
+
+### PO costs to Shopify and cost layers (028)
+
+- `jt.prep_order_lines.update_cost` marks a line whose PO cost should go to Shopify. `cost_applied` / `cost_applied_at` record what was sent.
+- **Apply to Shopify** on a PO covers only received products.
+  - Shopify gets the weighted average of everything on hand (Shopify store + prep center + Amazon): older units at their cost, received units at the PO cost.
+  - The dashboard computes it and `jt.po_apply_costs` queues it in `jt.cost_updates` (the cost-updates sync sends it).
+- **Inventory value uses FIFO cost layers.**
+  - `jt.cost_layers` holds one opening layer per product (what was on hand before the first applied PO, at its old cost, and the time layers start).
+  - `jt.v_cost_layers` adds a layer per PO receipt since then, at the PO cost; it's worked out from the PO lines, so later receipts and un-receipts count.
+  - Stock is valued newest layer first. Anything beyond the layers is at the opening cost.
+  - Products without layers are valued at the Shopify cost, as before.
+- `window.JTCost` (costlayers.js) applies this on the Inventory value tab, the prep center totals and Amazon totals.

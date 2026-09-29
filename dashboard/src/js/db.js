@@ -328,6 +328,12 @@
     },
     // Purchase orders tab: an order + its invoice (parsed from the PDF) in one save; the PDF in parts; delete a draft
     po: {
+      // new costs from a PO to Shopify (weighted average), starting FIFO cost layers — jt.po_apply_costs
+      async applyCosts(body) {
+        if (WEB) return await WEB.write("jt_po_apply_costs", { p: body });
+        const out = await run(`select jt.po_apply_costs(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
+        return out[0] && out[0].n;
+      },
       async save(body) {
         if (WEB) return await WEB.write("jt_po_save", { p: body });
         const out = await run(`select jt.po_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);

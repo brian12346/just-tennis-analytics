@@ -1,6 +1,7 @@
 """The profit math in the views: saved costs, returns on later days, cost history."""
 import json
 from decimal import Decimal as D
+import pytest
 
 SALES_COLS = "day, order_id, order_name, variant_id, product_title, units, net, cogs, net_no_cost"
 
@@ -482,3 +483,34 @@ def test_invoice_payment(conn):
     cur.execute("update jt.invoices set status = 'applied' where id = %s", (iid,))
     call("po_save", {"order": {"id": oid}, "invoices": [dict(paid, pay_method="credit_card", pay_ref="4242")]})
     cur.execute("select pay_method, pay_ref from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == ("credit_card", "4242")
+
+
+def test_po_apply_costs_and_layers(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor, inventory_item_id) values (931, 93, 5, 'Head', 9931)")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    # an older PO, received before the layers start: part of the opening stock, not a layer
+    old = call("po_save", {"order": {"vendor": "Head", "po_no": "OLD"}, "lines": [{"variant_id": 931, "dest": "prep", "qty": 3, "unit_cost": 4}], "invoices": []})["order_id"]
+    call("prep_order_receive", {"id": old, "lines": [{"variant_id": 931, "dest": "prep", "qty": 3}]})
+    cur.execute("update jt.prep_orders set stage_at = jsonb_build_object('partial', now() - interval '10 days') where id = %s", (old,))
+    r = call("po_save", {"order": {"vendor": "Head", "po_no": "NEW"}, "lines": [{"variant_id": 931, "dest": "prep", "qty": 10, "unit_cost": 6, "update_cost": True}], "invoices": []})
+    oid = r["order_id"]
+    cur.execute("select update_cost from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] is True
+    # not received yet: refused
+    with pytest.raises(Exception):
+        cur.execute("savepoint s"); call("po_apply_costs", {"order_id": oid, "items": [{"variant_id": 931, "cost": 5.6}]})
+    cur.execute("rollback to savepoint s")
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 931, "dest": "prep", "qty": 10}]})
+    cur.execute("select (stage_at->>'partial') from jt.prep_orders where id = %s", (oid,)); at = cur.fetchone()[0]
+    n = call("po_apply_costs", {"order_id": oid, "by": "t", "items": [{"variant_id": 931, "cost": 5.64, "opening": {"qty": 4, "unit_cost": 5, "at": at}}]})
+    assert n == 1
+    cur.execute("select new_cost, status from jt.cost_updates where variant_id = 931"); assert cur.fetchone() == (D("5.64"), "pending")
+    cur.execute("select update_cost, cost_applied from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone() == (False, D("5.6400"))
+    cur.execute("select kind, qty, unit_cost from jt.v_cost_layers where variant_id = 931 order by at, kind")
+    assert cur.fetchall() == [("opening", 4, D("5.0000")), ("po", 10, D("6.0000"))]
+    # a second apply doesn't move the opening layer; a later PO receipt is another layer
+    call("po_apply_costs", {"order_id": oid, "items": [{"variant_id": 931, "cost": 5.7, "opening": {"qty": 99, "unit_cost": 1, "at": at}}]})
+    later = call("po_save", {"order": {"vendor": "Head", "po_no": "LATER"}, "lines": [{"variant_id": 931, "dest": "prep", "qty": 5, "unit_cost": 7}], "invoices": []})["order_id"]
+    call("prep_order_receive", {"id": later, "lines": [{"variant_id": 931, "dest": "prep", "qty": 5}]})
+    cur.execute("select kind, qty, unit_cost from jt.v_cost_layers where variant_id = 931 order by at, kind")
+    assert cur.fetchall() == [("opening", 4, D("5.0000")), ("po", 10, D("6.0000")), ("po", 5, D("7.0000"))]

@@ -159,6 +159,9 @@
   // (+ inbound to AWD). AWD units reserved for or shipping to FBA are left out: the FBA report already counts them as inbound.
   const fbaUnits = (it, inbound = true) => it.avail + it.transfer + (inbound ? it.inbound : 0);
   const awdUnits = (it, inbound = true) => (it.awdAvail || 0) + (inbound ? it.awdIn || 0 : 0);
+  // an Amazon listing's cost: FIFO cost layers for the Shopify product where a PO set them (x units per listing)
+  const costOfItem = (it) => it.map && it.map.kind !== "manual" && it.map.vid && window.JTCost && window.JTCost.has(it.map.vid)
+    ? Math.round(window.JTCost.unit(it.map.vid, it.map.unitCost) * (it.map.units || 1) * 100) / 100 : it.cost;
   const unitsOf = (it, inbound = true, where = "all") => where === "fba" ? fbaUnits(it, inbound) : where === "awd" ? awdUnits(it, inbound) : fbaUnits(it, inbound) + awdUnits(it, inbound);
   function totals(items, inbound = true, where = "all") {
     const t = { units: 0, avail: 0, transfer: 0, inbound: 0, awd: 0, awdIn: 0, fbaU: 0, awdU: 0, fbaCost: 0, awdCost: 0, unf: 0, cost: 0, price: 0, fees: 0, profit: 0, skus: 0, noCost: 0, noCostUnits: 0, noCostPrice: 0, storNext: 0, aged: 0 };
@@ -169,10 +172,11 @@
       t.skus++; t.units += u; t.fbaU += fu; t.awdU += au;
       if (where !== "awd") { t.avail += it.avail; t.transfer += it.transfer; t.inbound += inbound ? it.inbound : 0; }
       if (where !== "fba") { t.awd += it.awdAvail || 0; t.awdIn += inbound ? it.awdIn || 0 : 0; }
-      if (it.cost != null) { t.fbaCost += fu * it.cost; t.awdCost += au * it.cost; }
+      const ic = costOfItem(it);
+      if (ic != null) { t.fbaCost += fu * ic; t.awdCost += au * ic; }
       t.price += u * (it.price || 0);
-      if (it.cost == null) { t.noCost++; t.noCostUnits += u; t.noCostPrice += u * (it.price || 0); continue; }
-      t.cost += u * it.cost; t.fees += u * (it.fees || 0); t.profit += u * (it.profit || 0);
+      if (ic == null) { t.noCost++; t.noCostUnits += u; t.noCostPrice += u * (it.price || 0); continue; }
+      t.cost += u * ic; t.fees += u * (it.fees || 0); t.profit += u * (it.profit || 0);
     }
     return t;
   }

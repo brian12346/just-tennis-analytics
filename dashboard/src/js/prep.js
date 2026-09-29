@@ -112,7 +112,8 @@
     for (const r of rows) {
       if (r.qty <= 0) continue;
       t.skus++; t.units += r.qty; if (r.asku) t.earmarked++;
-      if (r.cost == null) { t.noCost++; t.noCostUnits += r.qty; } else t.cost += r.qty * r.cost;
+      const c = window.JTCost && window.JTCost.has(r.vid) ? window.JTCost.unit(r.vid, r.cost) : r.cost;     // FIFO cost layers where a PO set them
+      if (c == null) { t.noCost++; t.noCostUnits += r.qty; } else t.cost += r.qty * c;
       t.amz += r.amzValue || 0;
       t.retail += r.amzValue != null ? r.amzValue : r.qty * (r.price || 0);   // Amazon price where known, else Shopify price
     }

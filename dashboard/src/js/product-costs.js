@@ -67,6 +67,7 @@
       fillFilters();
       if (JT.fba) JT.fba.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
       if (window.JTPrep) window.JTPrep.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
+      if (window.JTCost) window.JTCost.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
       $("pc-status").textContent = `${P.rows.length.toLocaleString()} Shopify variants · sales ${from} to ${to} (Shopify net sales + Amazon product sales)`;
     } catch (e) { note("bad", esc(JT.message(e))); $("pc-status").textContent = ""; }
     finally { if (id === P.reqId) { P.loading = false; render(); } }
@@ -92,7 +93,10 @@
   // Inventory value: on-hand units (all locations, from the last catalog sync) × unit cost / price. Negative on-hand
   // counts are shown but add nothing to the value.
   const onHand = (r) => r.qty > 0 ? r.qty : 0;
-  const extCost = (r) => { const c = costOf(r); return onHand(r) && c != null && !isNaN(c) ? onHand(r) * c : 0; };
+  // the cost stock is valued at: FIFO cost layers where a purchase order set the cost (JTCost), else the cost
+  const layered = (r) => !P.edits.has(r.vid) && window.JTCost && window.JTCost.has(r.vid);
+  const valCost = (r) => layered(r) ? window.JTCost.unit(r.vid, costOf(r)) : costOf(r);
+  const extCost = (r) => { const c = valCost(r); return onHand(r) && c != null && !isNaN(c) ? onHand(r) * c : 0; };
   const extPrice = (r) => onHand(r) && r.price != null ? onHand(r) * r.price : 0;
   const matchesBase = (r, q) => (P.vendor === "all" || r.vendor === P.vendor) && (P.cat === "all" || r.type === P.cat)
     && (!q || (r.title + " " + r.sku + " " + r.vendor).toLowerCase().includes(q));
@@ -195,7 +199,7 @@
           <td class="l">${esc(r.vendor)}<div class="meta">${esc(r.type || "—")}</div></td>
           <td class="${r.qty < 0 ? "neg" : ""}">${r.qty == null ? '<span class="dim">—</span>' : r.qty.toLocaleString()}</td>
           <td><input class="pcin ${edited ? "edited" : ""} ${bad ? "bad" : ""}" data-vid="${esc(r.vid)}" value="${esc(v)}" inputmode="decimal" aria-label="Unit cost for ${esc(r.title)}">${edited && r.cost != null ? `<div class="meta">was ${m(r.cost)}</div>` : ""}</td>
-          <td>${onHand(r) ? (c == null || isNaN(c) ? '<span class="dim">no cost</span>' : m(extCost(r))) : '<span class="dim">—</span>'}</td>
+          <td>${onHand(r) ? (c == null || isNaN(c) ? '<span class="dim">no cost</span>' : m(extCost(r)) + (layered(r) ? `<div class="meta" title="${esc(window.JTCost.describe(r.vid))}">FIFO · ${m(valCost(r))}/unit</div>` : "")) : '<span class="dim">—</span>'}</td>
           <td>${m(r.price)}</td>
           <td>${onHand(r) && r.price != null ? m(extPrice(r)) : '<span class="dim">—</span>'}</td>
           <td class="${mg != null && mg < 0 ? "neg" : ""}">${pct(mg)}</td>

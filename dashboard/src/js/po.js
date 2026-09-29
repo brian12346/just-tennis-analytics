@@ -259,7 +259,7 @@
       const [h, ol, sh, ivs, lp] = await Promise.all([
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
-        JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
+        JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
         JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
           "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount"],
@@ -271,7 +271,8 @@
       const x = h[0], ed = blankEd();
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
         stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
-      ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false }));
+      ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
+        upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
         notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
         paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15] }));
@@ -591,6 +592,14 @@
       const q = (x) => Number(x.qty) || 0, sum = parts.reduce((a, x) => a + q(x), 0), tot = ed.splitTot && ed.splitTot[l.vid] != null ? ed.splitTot[l.vid] : sum;
       const rec = parts.reduce((a, x) => a + (x.received || 0), 0), sh = parts.filter(x => x.dest === "shopify").reduce((a, x) => a + q(x), 0), pp = sum - sh;
       return `<div class="splittot"><span class="pill manual">Split</span> <b class="num">${n0(tot)}</b> total · ${n0(sh)} Shopify + ${n0(pp)} prep${rec ? ` · ${n0(rec)} received` : ""}${sum !== tot ? ` <span class="neg">· parts add to ${n0(sum)}</span>` : ""}</div>`; };
+    // updating the Shopify cost from this PO: mark it here, apply in bulk (received units only)
+    const costCell = (l, v, chg) => {
+      const applied = l.costApplied != null ? `<div class="meta" title="Sent to Shopify ${esc(when(l.costAppliedAt))} — the average of everything on hand">Shopify set to ${m(l.costApplied)}</div>` : "";
+      if (ro || ed.recv || l.cost === "" || !v) return applied;
+      const differs = chg != null && Math.abs(chg) >= 0.0005 || (v.cost == null && l.cost !== "");
+      if (!differs && !l.upd) return applied;
+      return `<button class="mini updc ${l.upd ? "on" : ""}" data-pact="updc" data-k="${l.id}" aria-pressed="${l.upd}" title="${l.upd ? "Marked: apply it with Apply to Shopify (received units only)" : "Mark this cost to update Shopify"}">${l.upd ? "✓ Update Shopify" : "Update Shopify"}</button>${applied}`;
+    };
     const canSplit = (l) => !ro && !ed.recv && !(l.received > 0) && (Number(l.qty) || 0) > 1;
     const destSel = (l) => {
       const canPick = !ro && !(l.received > 0) && (!ed.recv || PRE.includes(ed.status) || true);
@@ -617,7 +626,7 @@
           : '<span class="pill ok">All in</span>'}</td>` : ""}
         <td class="l small"><span class="pill ${p.st[1]}">${esc(p.st[0])}</span>${p.open > 0 && (p.invoiced || p.received) ? `<div class="meta">${n0(p.open)} still to come</div>` : ""}</td>
         <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : '<span class="dim">—</span>'}</td>
-        <td>${!ro && !ed.recv ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">${chg != null && Math.abs(chg) >= 0.0005 ? `<div class="meta ${chg > 0 ? "neg" : "pos"}">${pct(chg)} vs Shopify</div>` : ""}` : m(l.cost === "" ? v && v.cost : Number(l.cost))}</td>
+        <td>${!ro && !ed.recv ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">${chg != null && Math.abs(chg) >= 0.0005 ? `<div class="meta ${chg > 0 ? "neg" : "pos"}">${pct(chg)} vs Shopify</div>` : ""}` : m(l.cost === "" ? v && v.cost : Number(l.cost))}${costCell(l, v, chg)}</td>
         <td>${m(lineAmt(l))}</td>
         <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${ed.split && ed.split.id === l.id ? splitRow(l) : ""}`;
     };
@@ -661,6 +670,7 @@
         ${openLines.length && !ro && !ed.recv && ed.invoices.length ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
+        ${costBar(ed, pr, ro)}
         ${ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th><th>Invoiced</th><th>Received</th>${ed.recv ? "<th>Arrived now</th>" : rcv ? "<th>Receive</th>" : ""}<th class="l">Status</th><th class="l">Backorder · ETA</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
         ${!ro && !ed.recv ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
@@ -804,7 +814,7 @@
   function bodyOf(ed) {
     const lineOf = (vid) => ed.lines.find(l => l.vid === vid);
     const lines = ed.lines.map(l => ({ variant_id: Number(l.vid), amazon_sku: l.dest === "prep" ? l.asku || "" : "", dest: l.dest || "prep", qty: Number(l.qty) || 0,
-      unit_cost: l.cost === "" ? null : Number(l.cost), backorder: !!l.backorder, eta: l.backorder ? l.eta || "" : "" }));
+      unit_cost: l.cost === "" ? null : Number(l.cost), backorder: !!l.backorder, eta: l.backorder ? l.eta || "" : "", update_cost: !!l.upd }));
     const invoices = ed.invoices.map(iv => ({ id: iv.id ? Number(iv.id) : null, vendor: ed.vendor.trim(), invoice_no: iv.no || "", invoice_date: iv.date || "", file_name: iv.fileName || "",
       subtotal: iv.subtotal, total: iv.total, due_date: iv.due || "", terms: iv.terms || "", notes: iv.notes || "", ...(iv.id ? {} : { stage: "new" }),
       paid_on: iv.paidOn || "", pay_method: iv.payMethod || "", pay_ref: iv.payRef || "", paid_from: iv.paidFrom || "", paid_amount: iv.paidAmount,
@@ -931,6 +941,11 @@
     if (a === "split" && l) { const q = Number(l.qty) || 0, half = Math.floor(q / 2);
       ed.split = { id: l.id, total: q, s: String(l.dest === "shopify" ? q - half : half), p: String(l.dest === "shopify" ? half : q - half), asku: l.dest === "prep" ? l.asku : "" };
       render(); setTimeout(() => { const i = box().querySelector('[data-f="spP"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
+    if (a === "updc" && l) { const on = !l.upd; for (const x of ed.lines) if (x.vid === l.vid) x.upd = on; ed.costPreview = null; ed.dirty = true; render(); return; }
+    if (a === "updc-all") { for (const x of ed.lines) { const v = variant(x.vid); if (x.cost !== "" && v && (v.cost == null || Math.abs(Number(x.cost) - v.cost) >= 0.005)) for (const y of ed.lines) if (y.vid === x.vid) y.upd = true; } ed.costPreview = null; ed.dirty = true; render(); return; }
+    if (a === "apply-costs") return prepareApply();
+    if (a === "apply-no") { ed.costPreview = null; render(); return; }
+    if (a === "apply-go") return applyCosts();
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
     if (a === "shop-rm") { ed.shopCheck = null; ed.dirty = true; render(); note("info", "Shopify PO check removed. Save to keep that."); return; }
     if (a === "split-no") { ed.split = null; render(); return; }
@@ -976,6 +991,69 @@
     if (a === "amzship") { if (window.JTPrepTab && window.JTPrepTab.shipFromOrder) window.JTPrepTab.shipFromOrder(ed.id); return; }
   }
   const box = () => $("po-edit-view");
+  // ---------- new costs to Shopify ----------
+  // Lines marked "Update Shopify" are applied in bulk, received products only. Shopify gets the average cost of
+  // everything on hand (older units at their old cost, this PO's at the PO cost); inventory value keeps FIFO layers.
+  function costGroups(ed) {
+    const g = new Map();
+    for (const l of ed.lines) { if (!l.upd || l.cost === "") continue; const a = g.get(l.vid) || { vid: l.vid, qty: 0, rec: 0, amt: 0 }; a.qty += Number(l.qty) || 0; a.rec += l.received || 0; a.amt += (l.received || Number(l.qty) || 0) * Number(l.cost); g.set(l.vid, a); }
+    for (const a of g.values()) { const w = a.rec || a.qty; a.cost = w ? Math.round(a.amt / w * 10000) / 10000 : null; }
+    return [...g.values()];
+  }
+  function costBar(ed, pr, ro) {
+    if (ro || ed.recv) return "";
+    const marked = costGroups(ed), ready = marked.filter(a => a.rec > 0), waiting = marked.filter(a => !a.rec);
+    const changed = ed.lines.filter(l => !l.upd && l.cost !== "" && variant(l.vid) && (variant(l.vid).cost == null || Math.abs(Number(l.cost) - variant(l.vid).cost) >= 0.005));
+    if (!marked.length && !changed.length && !ed.costPreview) return "";
+    const pv = ed.costPreview;
+    return `<div class="costbar ${ready.length ? "hot" : ""}"><span><b>Shopify costs</b> · ${marked.length ? `${marked.length} marked to update${ready.length ? ` · <b>${ready.length} received, ready</b>` : ""}${waiting.length ? ` · ${waiting.length} waiting to be received` : ""}` : `${changed.length} cost${changed.length === 1 ? " differs" : "s differ"} from Shopify`}</span>
+      <span class="dbtns">${changed.length ? `<button class="btn" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy ? "disabled" : ""}>Apply to Shopify (${ready.length})</button>` : ""}</span>
+      ${pv ? `<div class="costprev"><div class="small">Shopify gets the <b>average cost of everything on hand</b>: the older units at their old cost and the units received on this PO at the PO cost. Inventory value keeps them apart (FIFO), so the older units stay at the old cost until they sell.</div>
+        <table class="prept po-t"><thead><tr><th class="l">Product</th><th>On hand</th><th>Received on this PO</th><th>Shopify now</th><th>PO cost</th><th>New Shopify cost</th></tr></thead><tbody>${pv.map(x => `<tr><td class="l">${esc((variant(x.vid) || {}).title || x.vid)}<div class="meta">${esc(x.how)}</div></td><td>${n0(x.onHand)}</td><td>${n0(x.rec)}</td><td>${m(x.old)}</td><td>${m(x.poCost)}</td><td><b>${m(x.cost)}</b></td></tr>`).join("")}</tbody></table>
+        <div class="dbtns"><button class="btn primary" data-pact="apply-go" ${S.busy ? "disabled" : ""}>Send ${pv.length} cost${pv.length === 1 ? "" : "s"} to Shopify</button><button class="btn" data-pact="apply-no">Cancel</button></div></div>` : ""}
+    </div>`;
+  }
+  // work out each product's new Shopify cost (and its opening layer, the first time)
+  async function prepareApply() {
+    const ed = S.ed; if (!ed) return;
+    if (ed.dirty) { const id = await save(null, true); if (!id) return; }
+    const e2 = S.ed, groups = costGroups(e2).filter(a => a.rec > 0); if (!groups.length) return;
+    S.busy = "Working out the new costs…"; render();
+    try {
+      if (JT.fba && !JT.fba.data) await JT.fba.load(false).catch(() => {});
+      await window.JTCost.load(true, groups.map(a => a.vid));
+      const cutoff = e2.stageAt.partial || e2.stageAt.received || new Date().toISOString();
+      const out = [];
+      for (const a of groups) {
+        const v = variant(a.vid) || {}, n = window.JTCost.onHand(a.vid);
+        let layers = window.JTCost.layers(a.vid), opening = null, how = "";
+        if (!layers) {
+          // first time: this PO's receipts and any later ones are layers; the rest on hand is the opening layer at the old cost
+          const r = await JT.rows(["l.order_id::text", "sum(l.qty_received)", "sum(l.qty_received * coalesce(l.unit_cost, v.unit_cost)) / sum(l.qty_received)",
+            "min(coalesce((o.stage_at->>'partial')::timestamptz, (o.stage_at->>'received')::timestamptz, o.updated_at))::text"],
+            `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id join jt.variants v on v.variant_id = l.variant_id where l.variant_id = ${JT.int(a.vid)} and l.qty_received > 0
+             and coalesce((o.stage_at->>'partial')::timestamptz, (o.stage_at->>'received')::timestamptz, o.updated_at) >= ${JT.q(cutoff)}::timestamptz group by l.order_id`, true);
+          const po = r.map(([oid, q, c, at]) => ({ kind: "po", orderId: oid, qty: +q || 0, cost: oid === String(e2.id) ? a.cost : +c, at, t: new Date(at).getTime() }));
+          const inPo = po.reduce((s2, x) => s2 + x.qty, 0), oq = Math.max(0, Math.round(n - inPo)), oc = v.cost != null ? v.cost : a.cost;
+          opening = { qty: oq, unit_cost: oc, at: cutoff };
+          layers = [{ kind: "opening", qty: oq, cost: oc, at: cutoff, t: 0 }, ...po];
+          how = `${n0(oq)} older units at ${m(oc)}`;
+        } else how = "cost layers already started";
+        const cost = n > 0 ? Math.round(window.JTCost.fifo(layers, n) / n * 100) / 100 : Math.round(a.cost * 100) / 100;
+        out.push({ vid: a.vid, onHand: n, rec: a.rec, old: v.cost, poCost: a.cost, cost, opening, how });
+      }
+      S.busy = ""; e2.costPreview = out; render();
+    } catch (err) { S.busy = ""; render(); note("bad", "Couldn't work out the costs: " + esc(JT.message(err))); }
+  }
+  async function applyCosts() {
+    const ed = S.ed, pv = ed && ed.costPreview; if (!pv) return;
+    S.busy = "Sending costs to Shopify…"; render();
+    try {
+      const n = await JT.po.applyCosts({ order_id: Number(ed.id), items: pv.map(x => ({ variant_id: Number(x.vid), cost: x.cost, opening: x.opening })) });
+      S.busy = ""; const id = ed.id; await openPO(id); if (window.JTCost) window.JTCost.load(true).catch(() => {});
+      note("info", `${n} Shopify cost${n === 1 ? "" : "s"} queued — the sync sends ${n === 1 ? "it" : "them"} to Shopify in a minute or two. Inventory value now keeps this PO's units at the PO cost.`);
+    } catch (err) { S.busy = ""; render(); note("bad", "Couldn't apply the costs: " + esc(JT.message(err))); }
+  }
   // ---------- checking against the Shopify PO ----------
   // Shopify's API doesn't open POs to apps on a live store yet, so Shopify's side comes from the PO's PDF.
   const SDIFF = { qty: "quantity", cost: "cost", missing: "not on the Shopify PO", extra: "only on the Shopify PO", unmatched: "not matched to a product", supplier: "supplier" };

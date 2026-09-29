@@ -675,3 +675,9 @@ html{scroll-padding-top:130px}
 .shopsum{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:4px 0 10px}
 .shop-t tr.off td{background:color-mix(in srgb, var(--surface-sunken) 60%, transparent)}
 .shop-t .dif{font-weight:700;color:var(--neg, #b42318)}
+/* PO: Shopify cost updates */
+.po-t .updc{margin-top:4px;font-size:11px;padding:2px 7px}
+.po-t .updc.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.costbar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:10px;font-size:13px}
+.costbar.hot{border-color:var(--primary)}
+.costprev{flex-basis:100%;display:flex;flex-direction:column;gap:8px;margin-top:4px}
