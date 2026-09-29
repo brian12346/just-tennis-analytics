@@ -290,6 +290,7 @@
   bind();
   showRange();
   window.pcRender = () => render();
+  window.addEventListener("jt:catalog", () => { if (!$("tab-costs").hidden) load(true); else P.shown = false; });
   window.pcShow = () => { if (!P.shown) { P.shown = true; load(false); } else render(); };
   window.JTCosts = { _state: P };
   if ((location.hash || "") === "#costs") setTimeout(() => window.pcShow(), 0);

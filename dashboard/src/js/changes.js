@@ -15,6 +15,7 @@
       if (e.target === d) return d.close();                                   // click on the backdrop
       const b = e.target.closest("button"); if (!b) return;
       if (b.dataset.close != null) d.close();
+      if (b.dataset.apply != null) { if (window.JT && JT.catalogChanged) JT.catalogChanged("changes"); D.applied = true; render(); }
       if (b.dataset.kind) { D.kind = b.dataset.kind; render(); }
     });
     d.addEventListener("change", (e) => { if (e.target.id === "chg-run") { D.run = e.target.value; D.kind = "all"; loadRun(); } });
@@ -47,6 +48,7 @@
     const hiddenStock = D.kind === "all" && counts.has("stock") && D.rows.length > LIMIT;
     d.innerHTML = `<div class="dlg-head"><h2>What changed in Shopify</h2>
         <label class="small muted">Sync <select id="chg-run" class="inp sm">${D.runs.map(([t, n]) => `<option value="${esc(t)}" ${t === D.run ? "selected" : ""}>${esc(fmtRun(t))} · ${n} change${n === 1 ? "" : "s"}</option>`).join("") || '<option value="">no syncs recorded yet</option>'}</select></label>
+        <button class="mini ${D.applied ? "" : "primary"}" data-apply title="Reload the Shopify products in every tab (Purchase orders, Invoices, Prep center, Inventory value...)">${D.applied ? "✓ All tabs updated" : "Update all tabs"}</button>
         <button class="mini" data-close aria-label="Close">Close</button></div>
       <div class="dlg-body">
         ${D.busy ? '<div class="muted">Loading…</div>' : !D.rows.length ? `<div class="muted">${D.runs.length ? "Nothing changed in this sync." : "No syncs with changes recorded yet. Changes are recorded from the next sync from Shopify on."}</div>` : `
@@ -74,7 +76,7 @@
     D.busy = false; render();
   }
   async function open(opts) {
-    const d = dlg(); D.kind = "all"; D.q = ""; D.busy = true; render(); if (!d.open) d.showModal();
+    const d = dlg(); D.kind = "all"; D.q = ""; D.busy = true; D.applied = !!(opts && opts.applied); render(); if (!d.open) d.showModal();
     try {
       const r = await JT.rows(["synced_at::text", "count(*)"], "from jt.catalog_changes group by synced_at order by synced_at desc limit 60", true);
       D.runs = r.map(([t, n]) => [t, +n]);

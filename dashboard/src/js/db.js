@@ -58,6 +58,7 @@
   // At most 2 calls in flight. The very first call runs alone, so the "allow Supabase" prompt
   // is answered before anything else is sent (calls made while it is open get refused).
   let active = 0, gate = null; const waiting = [];
+  let freshUntil = 0;      // right after a catalog change every read skips the caches (see catalogChanged)
   const LIMIT = WEB ? 4 : 2;                     // the Claude connector throttles bursts; direct web calls don't
   const acquire = () => new Promise(r => { if (active < LIMIT) { active++; r(); } else waiting.push(r); });
   const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
@@ -79,6 +80,7 @@
   }
 
   async function run(sql, refresh) {
+    refresh = refresh || Date.now() < freshUntil;
     if (WEB) {
       await acquire();
       try { return await WEB.sql(sql, refresh); }
@@ -127,6 +129,25 @@
     return [].concat(...res);
   }
   const call = (fn, argSql) => run(`select jt.${fn}(${argSql}) as ok`);
+
+  // ---------- Shopify catalog changes reach every tab ----------
+  // After a sync from Shopify brings in new or changed products, every tab drops its copy of the catalog: each
+  // listens for "jt:catalog" and reloads (reads skip the caches for two minutes). checkCatalog() notices a sync
+  // made elsewhere (the nightly one, another browser) by the catalog's last sync time; the tabs call it on show.
+  const catState = { stamp: null, at: 0 };
+  function catalogChanged(why) {
+    freshUntil = Date.now() + 120000;
+    if (WEB && window.JTWeb && window.JTWeb.clearCache) window.JTWeb.clearCache();
+    window.dispatchEvent(new CustomEvent("jt:catalog", { detail: { why: why || "" } }));
+  }
+  async function checkCatalog(force) {
+    if (!force && Date.now() - catState.at < 60000) return false;
+    catState.at = Date.now();
+    const r = await rows(["max(seen_at)::text"], "from jt.variants", true);
+    const s = r[0] && r[0][0], was = catState.stamp; catState.stamp = s || was;
+    if (was && s && s !== was) { catalogChanged("sync"); return true; }
+    return false;
+  }
 
   // ---------- dates, the same in every browser ----------
   // Pacific-time calendar day as YYYY-MM-DD, built from its parts (a locale's own date format varies by browser).
@@ -207,7 +228,7 @@
   window.JT = {
     costBasis, src: SRC, setCostBasis,
     showError,
-    PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB,
+    PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB, catalogChanged, checkCatalog,
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
     // shipping cost entered by hand for an order with no ShipStation label
     saveShipCost: (body) => WEB ? WEB.write("jt_save_ship_cost", { p: body }) : call("save_ship_cost", q(JSON.stringify({ ...body, by: "Claude dashboard" })) + "::jsonb"),

@@ -360,6 +360,7 @@
   }
 
   bind();
+  window.addEventListener("jt:catalog", () => { if (!$("tab-fba").hidden) refresh(true); else F.shown = false; });
   window.fbaShow = () => { if (!F.shown) { F.shown = true; refresh(false); } else render(); };
   window.JTFba = { _state: F, parse, parseAwd };
   const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;

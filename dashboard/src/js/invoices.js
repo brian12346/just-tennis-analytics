@@ -548,6 +548,7 @@
 
   // ---------- boot ----------
   bindOnce();
+  window.addEventListener("jt:catalog", () => { I.cat = null; if (!$("tab-invoices").hidden) refresh(true); else I.shown = false; });
   window.invShow = () => { if (!I.shown) { I.shown = true; refresh(false); } else { renderBoard(); renderEditor(); } };
   window.JTInvoices = { parseInvoice, findQtyPrice, roundPrice, parseDate, pdfRows, _state: I, open: (id) => { if (window.invShow) window.invShow(); openInvoice(id); } };   // for tests
   if ((location.hash || "") === "#invoices") setTimeout(() => window.invShow(), 0);

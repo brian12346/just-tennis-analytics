@@ -17,6 +17,7 @@
 
   // ---------- tabs ----------
   function showTab(t) {
+    if (window.JT && window.JT.checkCatalog) window.JT.checkCatalog().catch(() => {});      // a sync from Shopify since? every tab reloads
     if (!["amzmap", "amazon", "psales", "costmap", "invoices", "amzmatch", "costs", "fba", "prep", "po"].includes(t)) t = "shopify";
     $("tab-po").hidden = t !== "po";
     $("tab-costs").hidden = t !== "costs";

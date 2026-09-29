@@ -1374,6 +1374,21 @@
   }
 
   bind();
+  // new or changed Shopify products: reload the catalog; an open PO's unmatched invoice lines get another try
+  window.addEventListener("jt:catalog", () => {
+    S.cat = null; S.catP = null;
+    if ($("tab-po").hidden) return;
+    catalog(true).then(() => {
+      const ed = S.ed; let n = 0;
+      if (ed) for (const iv of ed.invoices) for (const r of iv.rows) {
+        if (!r.src || r.skip || r.how === "manual" || r.confirmed || isSure(r)) continue;       // not-matched lines and guesses
+        const g = guessLine(r.src, ed.vendor); if (g.vid && (g.vid !== r.vid || g.how !== r.how)) { Object.assign(r, g); n++; }
+      }
+      if (n) { syncLines(ed); ed.dirty = true; note("info", `Shopify products updated: ${n} invoice line${n === 1 ? " was" : "s were"} matched again with the new products. Check them and Save.`); }
+      render();
+    }).catch(() => {});
+    refresh(true).catch(() => {});
+  });
   window.poShow = () => { if (!S.shown) { S.shown = true; refresh(false); catalog().catch(() => {}); } render(); };
   window.JTPO = { _state: S, open: (id) => { const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(id); }, guessLine, merge, progress };
   if ((location.hash || "") === "#po") setTimeout(() => window.poShow(), 0);

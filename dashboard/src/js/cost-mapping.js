@@ -458,7 +458,8 @@
           (+d.removed ? ` · ${d.removed} no longer in Shopify (hidden; see Status: Removed from Shopify)` : "") +
           (+d.restored ? ` · ${d.restored} back in Shopify` : "") + (+d.changes ? ` · ${d.changes} cost change${+d.changes > 1 ? "s" : ""}` : "") + ".");
         C.cat = null; await loadCatalog(true);
-        if (window.JTChanges) window.JTChanges.open({ since: t0 });        // what this sync changed
+        if (JT.catalogChanged) JT.catalogChanged("cm");                   // every other tab picks up the new products
+        if (window.JTChanges) window.JTChanges.open({ since: t0, applied: true });        // what this sync changed
       }
     } catch (e) { note("bad", "Couldn't start a sync from Shopify: " + esc(errMsg(e))); }
     btn.disabled = false; btn.textContent = "Sync from Shopify";
@@ -566,6 +567,7 @@
   });
 
   // ---------- boot ----------
+  window.addEventListener("jt:catalog", (e) => { if (e.detail && e.detail.why === "cm") return; C.cat = null; if (!$("tab-costmap").hidden && C.mode === "products") loadCatalog(true); });
   window.cmRender = () => { if (!C.orders && !C.loading && C.mcp) load(false); render(); };
   setRange("ytd");
   const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;

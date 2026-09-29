@@ -370,6 +370,7 @@
   }
 
   bind();
+  window.addEventListener("jt:catalog", () => { if (!$("tab-amzmatch").hidden) load(true); else A.shown = false; });
   window.amShow = () => { if (!A.shown) { A.shown = true; load(false); } else render(); };
   window.JTAmReview = { _state: A };
   if ((location.hash || "") === "#amzmatch") setTimeout(() => window.amShow(), 0);

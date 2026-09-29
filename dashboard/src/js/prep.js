@@ -1142,6 +1142,7 @@
   $("prep-hstart").addEventListener("change", onHist); $("prep-hend").addEventListener("change", onHist);
   bindOrders();
   bindList();
+  window.addEventListener("jt:catalog", () => { cat = null; if (!$("tab-prep").hidden) refresh(true); else P.shown = false; });
   window.prepShow = () => { if (!P.shown) { P.shown = true; refresh(false); } else render(); };
   window.JTPrepTab = { _state: P,
     // from the Purchase orders tab: an Amazon Outgoing shipment made from a received order
