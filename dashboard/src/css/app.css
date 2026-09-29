@@ -512,6 +512,20 @@ html{scroll-padding-top:130px}
 .po-t .meta .pill{margin-left:2px}
 .po-t .warnt{color:var(--warn)}
 .po-foot{justify-content:space-between;flex-wrap:wrap;gap:8px}
+.qb{border:1px solid var(--line);border-radius:var(--radius-md);padding:12px 14px;display:flex;flex-direction:column;gap:10px;background:var(--surface-sunken)}
+.qb-head{display:flex;gap:10px;align-items:baseline}
+.qb-head .mini{margin-left:auto}
+.qb-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px 16px;margin:0}
+.qb-meta dt{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.qb-meta dd{margin:2px 0 0;font-weight:600}
+.qb-t{border-collapse:collapse;max-width:420px;width:100%;font-variant-numeric:tabular-nums}
+.qb-t th,.qb-t td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--line)}
+.qb-t .l{text-align:left}
+.qb-t th{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.qb-t tfoot td{font-weight:600}
+.qb-t tr.off td{color:var(--warn);background:var(--warn-bg)}
+.qb-t tr.ok td{color:var(--good)}
+.qbpre{margin:6px 0 0;font:12px/1.5 var(--mono);white-space:pre-wrap;user-select:all}
 @media (max-width:1100px){ .po-body.with-pdf{grid-template-columns:minmax(0,1fr)} .po-pdf{position:static;max-height:none} }
 
 /* Seller Sage Pro app bar: brand row + main nav on Berkeley Blue, pinned while scrolling */

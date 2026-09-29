@@ -201,3 +201,12 @@ earmarked later: Prep center → Stock → **Assign** splits a row's units acros
 pack size), or moves earmarked units to another listing / back to any. `jt.prep_assign(p)` =
 `{variant_id, from_sku, moves: [{to_sku, qty}], note}`, in Shopify units (a 2-pack listing takes 2 per Amazon unit);
 logged as two `prep_moves` of kind `assign`. PO lines pick the listing by ASIN, and can still be changed at receive time.
+
+## Invoice money for QuickBooks (migration 022)
+
+`jt.invoices` has `due_date`, `total` and `terms`; every `jt.invoice_lines` row has an `account`: `inventory`
+(products) or `inbound_shipping` (freight in). The PDF reader picks up the invoice total, the due date (or terms like
+"Net 30" + the invoice date) and freight / shipping / handling amounts in the totals area; those charges are saved as
+invoice lines (`match_how = 'skip'`, account `inbound_shipping`), so the lines add up to the invoice total. The
+Purchase orders tab shows the bill "For QuickBooks": vendor, bill no., bill date, due date, terms, PO as memo, and
+one amount per account, checked against the invoice total.

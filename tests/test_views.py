@@ -392,3 +392,17 @@ def test_prep_assign(conn):
     with pytest.raises(Exception, match="only 12"):
         call("prep_assign", {"variant_id": 921, "from_sku": "TWO-FBA", "moves": [{"to_sku": "", "qty": 13}]})
     cur.execute("rollback to savepoint a")
+
+
+def test_invoice_finance_fields(conn):
+    cur = conn.cursor()
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    iid = call("save_invoice", {"vendor": "Wilson", "invoice_no": "W-1", "invoice_date": "2026-09-18", "due_date": "2026-10-18", "total": 1474, "terms": "Net 30",
+        "lines": [{"description": "Pro Staff", "qty": 6, "unit_cost": 155, "amount": 930},
+                  {"description": "Freight", "qty": 1, "unit_cost": 25, "amount": 25, "match_how": "skip", "account": "inbound_shipping"}]})
+    cur.execute("select due_date::text, total::float, terms from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == ("2026-10-18", 1474.0, "Net 30")
+    cur.execute("select account, sum(amount)::float from jt.invoice_lines where invoice_id = %s group by 1 order by 1", (iid,))
+    assert cur.fetchall() == [("inbound_shipping", 25.0), ("inventory", 930.0)]
+    # a save that doesn't send the money fields keeps them (the Invoices tab)
+    call("save_invoice", {"id": iid, "vendor": "Wilson", "invoice_no": "W-1", "lines": []})
+    cur.execute("select due_date::text, total::float from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == ("2026-10-18", 1474.0)

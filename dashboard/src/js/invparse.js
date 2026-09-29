@@ -69,7 +69,7 @@
     ctx = ctx || {}; const skipV = ctx.notVendor || /\bjust tennis\b/i;   // our own name is on every invoice (bill to / ship to)
     const vendors = (ctx.vendors || []).filter(v => !skipV.test(v));
     const text = rows.map(r => r.cells.join("  ")).join("\n");
-    const out = { vendor: "", invoice_no: "", invoice_date: "", po_no: "", subtotal: null, lines: [] };
+    const out = { vendor: "", invoice_no: "", invoice_date: "", po_no: "", subtotal: null, total: null, due_date: "", terms: "", lines: [], charges: [] };
     // invoice number: the token after "invoice #/no/number" (on the same row or the row below)
     for (let i = 0; i < rows.length && !out.invoice_no; i++) {
       const t = rows[i].cells.join("  ");
@@ -99,6 +99,26 @@
     }
     const st = /sub\s*-?\s*total[^0-9\n]*\$?\s*([\d,]+\.\d{2})/i.exec(text) || /merchandise\s*total[^0-9\n]*\$?\s*([\d,]+\.\d{2})/i.exec(text);
     if (st) out.subtotal = numOf(st[1]);
+    // invoice total: "Invoice total", "Total due", "Amount due", "Balance due", "Grand total", or a row that is just "Total  1,474.00"
+    for (const r of rows) {
+      const t = r.cells.join("  "), mt = /(?:^|\s)(?:invoice\s*total|total\s*(?:amount\s*)?due|amount\s*due|balance\s*due|grand\s*total|total\s*invoice|total)\b(?!\s*(?:qty|quantity|units|weight|pieces))[^0-9\n]{0,24}\$?\s*([\d,]+\.\d{2})\s*$/i.exec(t);
+      if (mt && !/sub\s*-?\s*total/i.test(t.slice(0, mt.index + 12))) { const v = numOf(mt[1]); if (v != null && (out.total == null || v >= out.total)) out.total = v; }
+    }
+    // due date ("Due date", "Payment due") and terms ("Net 30"): a due date written out wins; else invoice date + the terms' days
+    for (let i = 0; i < rows.length && !out.due_date; i++) {
+      const t = rows[i].cells.join("  ");
+      if (/\b(?:due\s*date|payment\s*due|date\s*due|due\s*on|due)\b/i.test(t) && !/amount\s*due|balance\s*due|total\s*due/i.test(t)) {
+        const k = rows[i].cells.findIndex(c => /due/i.test(c));
+        const d = parseDate(t.slice(t.search(/due/i))) || (rows[i + 1] ? parseDate(cellBelow(rows[i], k, rows[i + 1])) : "");
+        if (d) out.due_date = d;
+      }
+    }
+    { const mt = /\b(net\s*-?\s*(\d{1,3}))\b(?:\s*days)?/i.exec(text) || /\b(due\s*on\s*receipt|cod|c\.o\.d\.|prepaid|credit\s*card)\b/i.exec(text);
+      if (mt) out.terms = mt[1].replace(/\s+/g, " ").replace(/^net\s*-?\s*/i, "Net ").replace(/^./, c => c.toUpperCase());
+      if (!out.due_date && out.invoice_date) {
+        const n = mt && mt[2] ? +mt[2] : mt && /receipt|cod|c\.o\.d|prepaid|credit/i.test(mt[1]) ? 0 : null;
+        if (n != null) { const d = new Date(out.invoice_date + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); out.due_date = d.toISOString().slice(0, 10); }
+      } }
     // vendor: the Shopify vendor named most often (first page counts double)
     if (vendors.length) {
       let best = "", bestN = 0;
@@ -111,6 +131,14 @@
       }
       out.vendor = best;
     }
+    // Charges in the totals area (not item lines): freight / shipping / handling -> inbound shipping
+    const charge = (r, nums) => {
+      const t = r.cells.join(" ");
+      if (!/\b(freight|shipping|handling|delivery|postage|inbound)\b/i.test(t) || /ship\s*(to|via|date|from|method)|shipped|bill\s*to|address|terms/i.test(t)) return;
+      const money = nums.filter(x => /\.\d{2}\)?$/.test(x.t)); if (!money.length) return;
+      const v = money[money.length - 1].v; if (!(v > 0)) return;
+      out.charges.push({ kind: "inbound_shipping", label: t.replace(/\$?\s*[\d,]+\.\d{2}.*$/, "").replace(/[:\s]+$/, "").trim().slice(0, 80) || "Freight", amount: v });
+    };
     // item lines: a row with a quantity, a unit price and an extended amount where qty × unit ≈ amount
     let last = null;
     for (const r of rows) {
@@ -124,9 +152,10 @@
           last.line.description = (last.line.description + " " + r.cells.join(" ")).trim().slice(0, 300);
         }
         if (priced) last = null;
+        charge(r, nums);
         continue;
       }
-      if (/\b(sub\s*total|total|freight|shipping|tax|balance|amount due|discount)\b/i.test(r.cells.join(" ")) && hit.qty === 1 && tk.length < 6) continue;
+      if (/\b(sub\s*total|total|freight|shipping|tax|balance|amount due|discount)\b/i.test(r.cells.join(" ")) && hit.qty === 1 && tk.length < 6) { charge(r, nums); continue; }
       const used = new Set([hit.qi, hit.ui, hit.ai]);
       const rest = tk.filter((t, i) => !used.has(i));
       const upc = rest.find(t => /^\d{11,14}$/.test(t)) || "";
