@@ -348,9 +348,10 @@ def test_purchase_order_save(conn):
            "lines": [{"item_code": "abc-1", "description": "Speed MP", "qty": 2, "unit_cost": 40, "amount": 80, "variant_id": 911, "match_how": "manual", "dest": "shopify"},
                      {"item_code": "FRT", "description": "Freight", "qty": 1, "unit_cost": 10, "amount": 10, "variant_id": None, "match_how": ""},
                      {"item_code": "x-9", "description": "Grip", "qty": 4, "unit_cost": 5, "amount": 20, "variant_id": 912, "match_how": "guess-high", "dest": "prep", "amazon_sku": "HG-FBA"}]}
-    order = {"vendor": "Head", "po_no": "4471", "lines": [{"variant_id": 911, "dest": "shopify", "qty": 2, "unit_cost": 40}, {"variant_id": 912, "amazon_sku": "HG-FBA", "dest": "prep", "qty": 4, "unit_cost": 5}]}
-    r = call("po_save", {"order": order, "invoice": inv, "remember": [{"item_code": "abc-1", "variant_id": 911}], "by": "t"})
-    oid, iid = r["order_id"], r["invoice_id"]
+    order = {"vendor": "Head", "po_no": "4471"}
+    lines = [{"variant_id": 911, "dest": "shopify", "qty": 2, "unit_cost": 40}, {"variant_id": 912, "amazon_sku": "HG-FBA", "dest": "prep", "qty": 4, "unit_cost": 5}]
+    r = call("po_save", {"order": order, "lines": lines, "invoices": [inv], "remember": [{"item_code": "abc-1", "variant_id": 911}], "by": "t"})
+    oid, iid = r["order_id"], r["invoice_ids"][0]
     cur.execute("select invoice_id, po_no, vendor from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == (iid, "4471", "Head")
     cur.execute("select po_no from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0] == "4471"
     cur.execute("select line_no, variant_id, dest, amazon_sku from jt.invoice_lines where invoice_id = %s order by 1", (iid,))
@@ -359,8 +360,8 @@ def test_purchase_order_save(conn):
     cur.execute("select item_code, variant_id from jt.vendor_items where vendor = 'Head'"); assert cur.fetchall() == [("ABC1", 911)]
     # saving again keeps the same invoice (lines replaced)
     inv2 = dict(inv, id=iid, lines=inv["lines"][:1])
-    r2 = call("po_save", {"order": dict(order, id=oid), "invoice": inv2, "remember": []})
-    assert r2 == {"order_id": oid, "invoice_id": iid}
+    r2 = call("po_save", {"order": dict(order, id=oid), "lines": lines, "invoices": [inv2], "remember": []})
+    assert r2 == {"order_id": oid, "invoice_ids": [iid]}
     cur.execute("select count(*) from jt.invoice_lines where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 1
     # the PDF in two parts; part 0 replaces an older file
     call("invoice_file_put", {"invoice_id": iid, "part": 0, "parts": 2, "data": "QUJD", "name": "h.pdf", "type": "application/pdf", "size": 6})
@@ -406,3 +407,30 @@ def test_invoice_finance_fields(conn):
     # a save that doesn't send the money fields keeps them (the Invoices tab)
     call("save_invoice", {"id": iid, "vendor": "Wilson", "invoice_no": "W-1", "lines": []})
     cur.execute("select due_date::text, total::float from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == ("2026-10-18", 1474.0)
+
+
+def test_po_multiple_invoices(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (931, 93, 5, 'Babolat'), (932, 93, 7, 'Babolat'), (933, 93, 9, 'Babolat')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    lines = [{"variant_id": 931, "dest": "shopify", "qty": 10}, {"variant_id": 932, "dest": "shopify", "qty": 6}, {"variant_id": 933, "dest": "shopify", "qty": 4}]
+    inv1 = {"vendor": "Babolat", "invoice_no": "B-1", "lines": [{"description": "a", "qty": 10, "unit_cost": 5, "variant_id": 931}]}
+    r = call("po_save", {"order": {"vendor": "Babolat", "po_no": "77"}, "lines": lines, "invoices": [inv1]})
+    oid, (i1,) = r["order_id"], r["invoice_ids"]
+    # the rest is backordered, one line with an ETA
+    lines[1].update(backorder=True, eta="2026-11-01"); lines[2].update(backorder=True)
+    inv2 = {"vendor": "Babolat", "invoice_no": "B-2", "lines": [{"description": "b", "qty": 6, "unit_cost": 7, "variant_id": 932}]}
+    r = call("po_save", {"order": {"id": oid, "vendor": "Babolat", "po_no": "77"}, "lines": lines, "invoices": [dict(inv1, id=i1), inv2]})
+    i2 = r["invoice_ids"][1]
+    cur.execute("select id from jt.invoices where order_id = %s order by id", (oid,)); assert [x[0] for x in cur.fetchall()] == [i1, i2]
+    cur.execute("select invoice_id from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == i2
+    cur.execute("select variant_id, backorder, eta::text from jt.prep_order_lines where order_id = %s order by 1", (oid,))
+    assert cur.fetchall() == [(931, False, None), (932, True, "2026-11-01"), (933, True, None)]
+    # receive the first invoice; a received line can't be dropped, others can
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 931, "dest": "shopify", "qty": 10}]})
+    call("po_save", {"order": {"id": oid, "vendor": "Babolat", "po_no": "77"}, "lines": [lines[1]], "invoices": []})
+    cur.execute("select variant_id, qty_received from jt.prep_order_lines where order_id = %s order by 1", (oid,)); assert cur.fetchall() == [(931, 10), (932, 0)]
+    # taking an invoice off: the draft is deleted
+    call("po_save", {"order": {"id": oid}, "remove_invoices": [i2]})
+    cur.execute("select count(*) from jt.invoices where id = %s", (i2,)); assert cur.fetchone()[0] == 0
+    cur.execute("select invoice_id from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == i1

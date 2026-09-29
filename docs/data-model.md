@@ -210,3 +210,13 @@ logged as two `prep_moves` of kind `assign`. PO lines pick the listing by ASIN, 
 invoice lines (`match_how = 'skip'`, account `inbound_shipping`), so the lines add up to the invoice total. The
 Purchase orders tab shows the bill "For QuickBooks": vendor, bill no., bill date, due date, terms, PO as memo, and
 one amount per account, checked against the invoice total.
+
+## Several invoices per PO, backorders (migration 023)
+
+`jt.invoices.order_id` links each invoice to its purchase order (a PO can have many; `prep_orders.invoice_id` is
+kept as the latest, for the Prep center). PO lines (`jt.prep_order_lines`) are what was ordered and what receiving
+is against; each has `backorder` and `eta` (expected arrival, null = unknown). In the app a line's status comes
+from ordered vs. invoiced (matched, confirmed lines on the order's invoices) vs. received: On order, Backordered ·
+ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the PO is added as a line.
+`jt.po_save` now takes `{order, lines, invoices: [...], remove_invoices, remember}` and returns
+`{order_id, invoice_ids}`; lines can be changed at any stage but shipped, and a received line can't be removed.
