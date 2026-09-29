@@ -38,7 +38,7 @@
         // shipments: in progress, and shipped in the last 60 days
         JT.rows(["s.id::text", "s.name", "s.dest", "s.status", "s.note", "s.created_at", "s.created_by", "s.started_at", "s.shipped_at", "s.shipped_by", "s.updated_at"],
           `from jt.prep_shipments s ${SHIPWHERE} order by s.updated_at desc`, refresh),
-        JT.rows(["l.shipment_id::text", "l.variant_id::text", "l.amazon_sku", "l.qty", "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.unit_cost", "v.vendor"],
+        JT.rows(["l.shipment_id::text", "l.variant_id::text", "l.amazon_sku", "l.qty", "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.unit_cost", "v.vendor", "v.product_id::text"],
           `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id left join jt.variants v on v.variant_id = l.variant_id ${SHIPWHERE}`, refresh),
       ]);
       const listing = new Map(lst.map(([sku, asin, title, price]) => [sku, { sku, asin: asin || "", title: title || "", price: price == null ? null : +price }]));
@@ -70,8 +70,8 @@
         .map(([id, file, skus, asin, qty]) => ({ id, file, skus, asin, qty: +qty || 0 }));
       const shipments = ships.map(x => ({ id: x[0], name: x[1] || "", dest: x[2], status: x[3], note: x[4] || "", created: x[5], createdBy: x[6] || "", started: x[7], shipped: x[8], shippedBy: x[9] || "", updated: x[10], lines: [] }));
       const byId = new Map(shipments.map(sh => [sh.id, sh]));
-      for (const [sid, vid, asku, qty, title, sku, cost, vendor] of slines) {
-        const sh = byId.get(sid); if (sh) sh.lines.push({ key: vid + "|" + (asku || ""), vid, asku: asku || "", qty: +qty, title: title || `variant ${vid}`, sku: sku || "", cost: cost == null ? null : +cost, vendor: vendor || "" });
+      for (const [sid, vid, asku, qty, title, sku, cost, vendor, pid] of slines) {
+        const sh = byId.get(sid); if (sh) sh.lines.push({ key: vid + "|" + (asku || ""), vid, asku: asku || "", qty: +qty, title: title || `variant ${vid}`, sku: sku || "", cost: cost == null ? null : +cost, vendor: vendor || "", pid: pid || "" });
       }
       const alloc = new Map();          // prep row -> units in open / started shipments
       for (const sh of shipments) if (sh.status !== "shipped") for (const l of sh.lines) alloc.set(l.key, (alloc.get(l.key) || 0) + l.qty);
@@ -186,6 +186,80 @@
   const STATUS = { open: ["Open", "pos"], started: ["Started", "web"], shipped: ["Shipped", "ok"] };
   const statusPill = (st) => `<span class="pill ${STATUS[st][1]}">${STATUS[st][0]}</span>`;
   const shipTitle = (sh) => sh.name || `Shipment #${sh.id}`;
+
+  // ---------- exceptions ----------
+  // Everything about a shipment that needs someone to look at it. The card turns amber (warn) or red (bad), and the
+  // shipment's popup lists each one with what it means and buttons to fix it. Blocking problems ("bad") stop
+  // "Mark shipped"; warnings don't. New checks slot in here: each is {lvl, kind, title, text, fixes}.
+  // A fix is {label, fix, k?, n?, arg?} (handled in the popup), {label, act} (a popup button) or {label, href}.
+  const LATE_DAYS = 7, STALE_DAYS = 14;
+  const KIND_LABEL = { short: "short on stock", shared: "also in another shipment", nocost: "missing cost", nolisting: "no Amazon listing",
+    empty: "no products", noid: "no shipment ID", late: "late", stale: "sitting open", bad: "quantity isn't a whole number" };
+  const daysSince = (t) => { const d = window.JTDate.parseTime(t); return t && !isNaN(d) ? Math.floor((Date.now() - d) / 864e5) : null; };
+  // s: {id, status, name, created, started, lines: [{key, vid, asku, qty, title, sku, cost, pid}]} (a saved shipment or the popup's draft)
+  function issuesOf(s) {
+    const out = [];
+    if (!cache || s.status === "shipped") return out;
+    const mine = s.id ? cache.shipments.find(x => x.id === String(s.id)) : null;
+    const savedQty = (k) => mine && mine.status !== "shipped" ? ((mine.lines.find(l => l.key === k) || {}).qty || 0) : 0;
+    const othersWith = (k) => cache.shipments.filter(x => x.status !== "shipped" && x.id !== String(s.id || "") && x.lines.some(l => l.key === k));
+    const lines = s.lines.filter(l => l.qty > 0);
+    if (s.id && !lines.length && !s.lines.some(l => l.invalid)) out.push({ lvl: "warn", kind: "empty", title: "No products in this shipment", text: "Add what's going in the box by ASIN, Amazon SKU or Shopify SKU.", fixes: [{ label: "Add a product", fix: "focus", arg: "pm-add" }] });
+    for (const l of s.lines) if (l.invalid) out.push({ lvl: "bad", kind: "bad", title: `${esc(l.title)}: "${esc(l.raw)}" isn't a quantity`, text: "Enter a whole number of units.", fixes: [{ label: "Fix the quantity", fix: "focusk", k: l.key }] });
+    for (const l of lines) {
+      const have = onHand(l.vid, l.asku), others = Math.max(0, (cache.alloc.get(l.key) || 0) - savedQty(l.key)), free = Math.max(0, have - others);
+      const who = othersWith(l.key), whoTxt = who.map(x => `${shipTitle(x)} (${STATUS[x.status][0].toLowerCase()})`).join(", ");
+      const name = esc(l.title) + (l.asku ? ` <span class="mono">${esc(l.asku)}</span>` : "");
+      if (l.qty > have) {
+        const fixes = [];
+        if (free > 0) fixes.push({ label: `Ship ${n0(free)} instead`, fix: "setqty", k: l.key, n: free });
+        fixes.push({ label: "Recount this product", fix: "recount", k: l.key });
+        fixes.push({ label: "Remove from shipment", fix: "remove", k: l.key });
+        for (const x of who) fixes.push({ label: `Open ${shipTitle(x)}`, fix: "goto", arg: x.id });
+        out.push({ lvl: "bad", kind: "short", title: `Short on ${name}`,
+          text: `This shipment has ${n0(l.qty)}, but ${have ? "only " + n0(have) + (have === 1 ? " is" : " are") : "none are"} in the prep center${others ? ` and ${n0(others)} of those ${others === 1 ? "is" : "are"} already in ${esc(whoTxt)}` : ""}. `
+            + `If the rest is on the shelf, recount it into the prep center; if it's on the Shopify side, move it over and recount; otherwise ship what's here${free ? ` (${n0(free)})` : ""} or take it off this shipment.`, fixes });
+      } else if (l.qty > free) {
+        const fixes = [];
+        if (free > 0) fixes.push({ label: `Ship ${n0(free)} instead`, fix: "setqty", k: l.key, n: free });
+        for (const x of who) fixes.push({ label: `Open ${shipTitle(x)}`, fix: "goto", arg: x.id });
+        fixes.push({ label: "Recount this product", fix: "recount", k: l.key });
+        out.push({ lvl: "warn", kind: "shared", title: `${name} is also in ${esc(whoTxt)}`,
+          text: `${n0(have)} in the prep center, ${n0(others)} already set aside for ${who.length === 1 ? "that shipment" : "those shipments"}, and this one wants ${n0(l.qty)}. Whichever ships second will come up short.`, fixes });
+      }
+      if (l.cost == null) out.push({ lvl: "warn", kind: "nocost", title: `No Shopify cost on ${name}`, text: "The shipment's value, the prep center total and Amazon profit leave this product out until it has a cost.",
+        fixes: [...(l.pid ? [{ label: "Open in Shopify", href: `${ADMIN}/products/${l.pid}/variants/${l.vid}` }] : []), { label: "Find it in Inventory value", fix: "costs", arg: l.sku || l.title }] });
+      const r = rowOf(l.key);
+      if (!l.asku && r && !r.listings.length) out.push({ lvl: "warn", kind: "nolisting", title: `${name} isn't mapped to an Amazon listing`, text: "Amazon won't know which listing these units are for, and they won't be valued at an Amazon price. Map one of its listings, or earmark the stock for a seller SKU with Count stock.",
+        fixes: [{ label: "Open Amazon mapping", fix: "tab", arg: "amzmap" }] });
+    }
+    if (s.status === "started" && !String(s.name || "").trim()) out.push({ lvl: "warn", kind: "noid", title: "No Amazon shipment ID", text: "Add the shipment ID from Seller Central (FBA…) so this can be matched to what Amazon receives.", fixes: [{ label: "Add the ID", fix: "focus", arg: "pm-ship" }] });
+    const ds = daysSince(s.started), dc = daysSince(s.created);
+    if (s.status === "started" && ds != null && ds >= LATE_DAYS) out.push({ lvl: "warn", kind: "late", title: `Started ${ds} days ago and not shipped`, text: "If it went out, mark it shipped so the prep center count is right. If it's on hold, move it back to open.",
+      fixes: [{ label: "Mark shipped", act: "ship-go" }, { label: "Back to open", act: "save-reopen" }] });
+    if (s.status === "open" && s.id && dc != null && dc >= STALE_DAYS) out.push({ lvl: "info", kind: "stale", title: `Open for ${dc} days`, text: "Its units are held back from other shipments while it's open. Start it, or delete it if it isn't going.",
+      fixes: [{ label: "Start", act: "save-start" }, { label: "Delete", act: "del" }] });
+    const rank = { bad: 0, warn: 1, info: 2 };
+    return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
+  }
+  const worst = (list) => list.some(x => x.lvl === "bad") ? "bad" : list.some(x => x.lvl === "warn") ? "warn" : list.length ? "info" : "";
+  function issueSummary(list) {
+    const by = new Map(); for (const x of list) if (x.lvl !== "info") by.set(x.kind, (by.get(x.kind) || 0) + 1);
+    return [...by].map(([k, n]) => (n > 1 && ["short", "shared", "nocost", "nolisting"].includes(k) ? n + " products " : "") + KIND_LABEL[k]).join(" · ");
+  }
+  function issuesHtml(list) {
+    if (!list.length) return "";
+    const btn = (f) => f.href ? `<a class="mini" href="${esc(f.href)}" target="_blank" rel="noopener">${esc(f.label)} ↗</a>`
+      : f.act ? `<button class="mini" data-act="${f.act}">${esc(f.label)}</button>`
+      : `<button class="mini" data-fix="${f.fix}" data-k="${esc(f.k || "")}" data-n="${f.n ?? ""}" data-arg="${esc(f.arg || "")}">${esc(f.label)}</button>`;
+    const n = list.filter(x => x.lvl !== "info").length;
+    return `<div class="issues"><span class="ih">${n ? `Needs attention · ${n}` : "Heads up"}</span>${list.map(x => `<div class="issue ${x.lvl}"><div class="it"><b>${x.title}</b><span>${x.text}</span></div>${x.fixes.length ? `<div class="fixes">${x.fixes.map(btn).join("")}</div>` : ""}</div>`).join("")}</div>`;
+  }
+  window.JTIssues = { issuesOf, issuesHtml, worst };
+  const contentsOf = (sh) => {
+    const t = sh.lines.map(l => l.title);
+    return !t.length ? "Empty shipment" : t.length === 1 ? t[0] : t.length === 2 ? t[0] + " + " + t[1] : `${t[0]} + ${t.length - 1} more`;
+  };
   function renderShipments() {
     const d = cache, el = $("prep-ships");
     const prog = d.shipments.filter(x => x.status !== "shipped"), done = d.shipments.filter(x => x.status === "shipped");
@@ -194,15 +268,17 @@
       : done.sort((a, b) => String(b.shipped).localeCompare(String(a.shipped)));
     const card = (sh) => {
       const units = sh.lines.reduce((a, l) => a + l.qty, 0), cost = sh.lines.reduce((a, l) => a + l.qty * (l.cost || 0), 0);
-      const short = sh.status !== "shipped" && sh.lines.some(l => l.qty > onHand(l.vid, l.asku));
-      const next = sh.status === "open" ? `<button class="mini" data-sact="started" data-sid="${sh.id}">Start</button>`
+      const iss = issuesOf(sh), lvl = worst(iss), sum = issueSummary(iss);
+      const next = lvl === "bad" ? `<button class="mini" data-sact="fix" data-sid="${sh.id}">Fix</button>`
+        : sh.status === "open" ? `<button class="mini" data-sact="started" data-sid="${sh.id}">Start</button>`
         : sh.status === "started" ? `<button class="mini primary" data-sact="ship" data-sid="${sh.id}">Mark shipped</button>` : "";
       const when2 = sh.status === "shipped" ? `Shipped ${when(sh.shipped)}${sh.shippedBy ? " · " + esc(sh.shippedBy) : ""}` : sh.status === "started" ? `Started ${when(sh.started)}` : `Created ${when(sh.created)}${sh.createdBy ? " · " + esc(sh.createdBy) : ""}`;
-      return `<div class="shipcard ${sh.status}" data-sid="${sh.id}" tabindex="0" role="button" aria-label="Open ${esc(shipTitle(sh))}">
-        <div class="sc-top"><b class="mono">${esc(shipTitle(sh))}</b><span>${statusPill(sh.status)} <span class="pill ${sh.dest === "AWD" ? "manual" : "web"}">${esc(sh.dest)}</span></span></div>
-        <div class="sc-mid"><span class="num"><b>${n0(units)}</b> units</span><span class="dim">${sh.lines.length} product${sh.lines.length === 1 ? "" : "s"} · ${m0(cost)}</span></div>
-        <div class="sc-lines">${sh.lines.slice(0, 3).map(l => `<div>${n0(l.qty)} × ${esc(l.title)}</div>`).join("")}${sh.lines.length > 3 ? `<div class="dim">+${sh.lines.length - 3} more</div>` : ""}${!sh.lines.length ? '<div class="dim">No products yet</div>' : ""}</div>
-        ${short ? '<div class="small neg">Some lines are more than on hand</div>' : ""}
+      const contents = contentsOf(sh);
+      return `<div class="shipcard ${sh.status}${lvl === "bad" || lvl === "warn" ? " issue-" + lvl : ""}" data-sid="${sh.id}" tabindex="0" role="button" aria-label="Open shipment: ${esc(contents)}${sum ? " — needs attention: " + esc(sum) : ""}">
+        <div class="sc-title" title="${esc(sh.lines.map(l => n0(l.qty) + " × " + l.title).join("\n"))}">${esc(contents)}</div>
+        <div class="sc-qty"><b class="num">${n0(units)}</b><span>unit${units === 1 ? "" : "s"}</span><span class="dim">· ${sh.lines.length} product${sh.lines.length === 1 ? "" : "s"} · ${m0(cost)}</span></div>
+        <div class="sc-meta">${statusPill(sh.status)}<span class="pill ${sh.dest === "AWD" ? "manual" : "web"}">${esc(sh.dest)}</span><span class="mono">${esc(shipTitle(sh))}</span></div>
+        ${sum ? `<div class="sc-issue"><span aria-hidden="true">${lvl === "bad" ? "●" : "▲"}</span><span>${esc(sum)}</span></div>` : ""}
         <div class="sc-foot"><span class="dim small">${when2}</span><span class="dbtns">${next}</span></div>
       </div>`;
     };
@@ -225,9 +301,10 @@
   }
 
   // ---------- modals: count stock / ship to Amazon ----------
-  function openCount(vid, sku) {
+  function openCount(vid, sku, back, fallback) {
     const r = vid && cache ? cache.rows.find(x => x.vid === vid && x.asku === (sku || "")) : null;
-    P.modal = { kind: "count", q: "", pick: r ? { vid: r.vid, sku: r.sku, title: r.title, vendor: r.vendor, cost: r.cost } : null, asku: r ? r.asku : "", qty: "", note: "" };
+    const pick = r ? { vid: r.vid, sku: r.sku, title: r.title, vendor: r.vendor, cost: r.cost } : fallback || null;
+    P.modal = { kind: "count", q: "", pick, asku: r ? r.asku : sku || "", qty: "", note: "", back: back || null };
     catalog().then(() => renderModal()).catch(e => note("bad", esc(JT.message(e))));
     renderModal(); setTimeout(() => { const i = $(P.modal.pick ? "pm-qty" : "pm-q"); if (i) i.focus(); }, 0);
   }
@@ -266,7 +343,8 @@
     M.lines.push(k); M.qty[k] = ""; M.add = ""; M.confirm = false; renderModal();
     setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-k="${CSS.escape(k)}"]`); if (i) i.focus(); }, 0);
   }
-  function closeModal() { P.modal = null; P.busy = false; renderModal(); }
+  // Closing a popup opened from a shipment (e.g. a recount) goes back to that shipment, with its edits kept.
+  function closeModal() { const b = P.modal && P.modal.back; P.modal = b || null; P.busy = false; renderModal(); }
   function onHand(vid, sku) { const r = cache && cache.rows.find(x => x.vid === vid && x.asku === (sku || "")); return r ? r.qty : 0; }
 
   function renderModal() {
@@ -293,23 +371,30 @@
           <label class="stack" for="pm-note" style="grid-column:1 / -1">Note (optional)<input id="pm-note" class="inp" value="${esc(M.note)}" placeholder="e.g. cycle count, received from Wilson PO 1234"></label>
         </div>
         <div class="row">${want != null && !bad ? `<span class="${want - cur < 0 ? "neg" : "pos"}">${want - cur > 0 ? "+" : ""}${n0(want - cur)} units${M.pick.cost != null ? " · " + m0((want - cur) * M.pick.cost) + " at cost" : ""}</span>` : ""}
-          <span class="dbtns right"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Save count"}</button></span></div>` : ""}`;
+          <span class="dbtns right"><button class="btn" data-act="close">${M.back ? "Back to shipment" : "Cancel"}</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Save count"}</button></span></div>` : ""}`;
     } else {
       const ro = M.status === "shipped";
       const rows = M.lines.map(lineOf).filter(Boolean);
       const saved = (k) => M.sh && M.sh.status !== "shipped" ? ((M.sh.lines.find(l => l.key === k) || {}).qty || 0) : 0;
       const avail = (r) => r.qty - ((cache.alloc.get(keyOf(r)) || 0) - saved(keyOf(r)));   // on hand less other shipments in progress
-      let units = 0, cost = 0, lines = 0, bad = 0, over = 0, tight = 0;
+      let units = 0, cost = 0, lines = 0, bad = 0;
       for (const r of rows) {
         const v = M.qty[keyOf(r)], q = v === undefined || v === "" ? 0 : Number(v);
         if (v !== "" && v !== undefined && (!Number.isInteger(q) || q < 0)) bad++;
-        else if (q > 0) { lines++; units += q; cost += q * (r.cost || 0); if (q > r.qty) over++; else if (q > avail(r)) tight++; }
+        else if (q > 0) { lines++; units += q; cost += q * (r.cost || 0); }
       }
       const found = ro ? [] : findRows(M.add, M.lines);
+      const draft = { id: M.id, status: M.status, name: M.shipment, created: M.sh && M.sh.created, started: M.sh && M.sh.started,
+        lines: rows.map(r => { const k = keyOf(r), v = M.qty[k] ?? "", q = v === "" ? 0 : Number(v), inf = M.info[k] || {};
+          return { key: k, vid: r.vid, asku: r.asku, qty: Number.isInteger(q) && q > 0 ? q : 0, invalid: v !== "" && !(Number.isInteger(q) && q >= 0), raw: v,
+            title: r.title, sku: r.sku, cost: r.cost, pid: r.pid || inf.pid || "" }; }) };
+      const iss = ro ? [] : issuesOf(draft), blocked = iss.some(x => x.lvl === "bad");
+      if (blocked) for (const x of iss) x.fixes = x.fixes.filter(f => f.act !== "ship-go");
       const open = (cache.shipments || []).filter(x => x.status !== "shipped" && x.id !== M.id);
       const steps = ["open", "started", "shipped"].map(st2 => `<span class="step ${st2 === M.status ? "on" : ["open", "started", "shipped"].indexOf(st2) < ["open", "started", "shipped"].indexOf(M.status) ? "done" : ""}">${STATUS[st2][0]}</span>`).join('<span class="step-sep">→</span>');
       html = `<div class="panel-head"><h2>${M.id ? esc(M.shipment || "Shipment #" + M.id) : "New shipment"}</h2><span class="steps">${steps}</span><button class="mini" data-act="close">Close</button></div>
         ${!M.id && M.fromRow && open.length ? `<label class="small muted" for="pm-into">Add this product to <select id="pm-into" class="inp sm" style="width:auto"><option value="">a new shipment</option>${open.map(x => `<option value="${x.id}">${esc(shipTitle(x))} (${STATUS[x.status][0].toLowerCase()})</option>`).join("")}</select></label>` : ""}
+        ${issuesHtml(iss)}
         ${ro ? `<div class="note info">Shipped ${when(M.sh.shipped)}${M.sh.shippedBy ? " by " + esc(M.sh.shippedBy) : ""} to ${esc(M.dest)}. These units left the prep center.</div>` : ""}
         <div class="pmgrid">
           <label class="stack" for="pm-ship">Shipment ID or name<input id="pm-ship" class="inp mono" value="${esc(M.shipment)}" placeholder="e.g. FBA18ABC1234" ${ro ? "disabled" : ""}></label>
@@ -330,23 +415,39 @@
         </div>`}
         ${M.confirm === "ship" ? `<div class="note warn">Mark <b>${esc(M.shipment || "this shipment")}</b> shipped to ${esc(M.dest)}? ${n0(units)} units (${lines} product${lines === 1 ? "" : "s"}, ${m0(cost)} at cost) leave the prep center. This can't be undone. <span class="dbtns"><button class="mini primary" data-act="do-ship" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, shipped"}</button><button class="mini" data-act="no-ship">Cancel</button></span></div>` : ""}
         ${M.confirm === "del" ? `<div class="note warn">Delete this shipment? Nothing has left the prep center, so no stock changes. <span class="dbtns"><button class="mini primary" data-act="do-del" ${P.busy ? "disabled" : ""}>Yes, delete</button><button class="mini" data-act="no-ship">Cancel</button></span></div>` : ""}
-        <div class="row"><span class="muted small">${lines ? `${n0(units)} units · ${lines} product${lines === 1 ? "" : "s"} · ${m0(cost)} at cost` : ro ? "" : rows.length ? "Enter how many units of each product are going." : "Add the products in this shipment."}${over ? ' · <span class="neg">more than on hand — fix before shipping</span>' : tight ? ' · <span class="warnt">some units are also in another shipment</span>' : ""}</span>
+        <div class="row"><span class="muted small">${lines ? `${n0(units)} units · ${lines} product${lines === 1 ? "" : "s"} · ${m0(cost)} at cost` : ro ? "" : rows.length ? "Enter how many units of each product are going." : "Add the products in this shipment."}${blocked && M.status === "started" ? ' · <span class="neg">fix the red items above to mark it shipped</span>' : ""}</span>
           <span class="dbtns right">${ro ? '<button class="btn" data-act="close">Close</button>' : `
             ${M.id ? '<button class="btn" data-act="del">Delete</button>' : ""}
             <button class="btn" data-act="save" ${bad || P.busy ? "disabled" : ""}>Save</button>
             ${M.status === "open" ? `<button class="btn primary" data-act="save-start" ${!lines || bad || P.busy ? "disabled" : ""}>Save &amp; start</button>` : ""}
-            ${M.status === "started" ? `<button class="btn" data-act="save-reopen" ${bad || P.busy ? "disabled" : ""}>Back to open</button><button class="btn primary" data-act="ship-go" ${!lines || bad || over || P.busy ? "disabled" : ""}>Mark shipped</button>` : ""}`}</span></div>`;
+            ${M.status === "started" ? `<button class="btn" data-act="save-reopen" ${bad || P.busy ? "disabled" : ""}>Back to open</button><button class="btn primary" data-act="ship-go" ${!lines || bad || blocked || P.busy ? "disabled" : ""}>Mark shipped</button>` : ""}`}</span></div>`;
     }
     $("prep-mcard").innerHTML = html;
     if (keep) { const el = keep.id ? $(keep.id) : keep.k ? box.querySelector(`input[data-k="${CSS.escape(keep.k)}"]`) : null; if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
   }
 
+  function applyFix(d) {
+    const M = P.modal; if (!M) return;
+    const k = d.k, focusSoon = (sel) => setTimeout(() => { const i = typeof sel === "string" ? $(sel) : sel(); if (i) { i.focus(); if (i.select) i.select(); } }, 0);
+    if (d.fix === "setqty") { M.qty[k] = String(d.n); M.confirm = false; renderModal(); }
+    else if (d.fix === "remove") { M.lines = M.lines.filter(x => x !== k); delete M.qty[k]; M.confirm = false; renderModal(); }
+    else if (d.fix === "recount") { const [vid, asku] = k.split("|"), i = M.info[k] || {}; openCount(vid, asku, M, { vid, sku: i.sku || "", title: i.title || "", vendor: i.vendor || "", cost: i.cost ?? null });
+      catalog().catch(() => {}); focusSoon("pm-qty"); }
+    else if (d.fix === "focus") focusSoon(d.arg);
+    else if (d.fix === "focusk") focusSoon(() => document.querySelector(`#prep-modal input[data-k="${CSS.escape(k)}"]`));
+    else if (d.fix === "goto") openShipment(d.arg);
+    else if (d.fix === "tab" || d.fix === "costs") {
+      P.modal = null; renderModal();
+      const t = document.querySelector(`.tabs button[data-tab="${d.fix === "costs" ? "costs" : d.arg}"]`); if (t) t.click();
+      if (d.fix === "costs") setTimeout(() => { const q = $("pc-q"), st = $("pc-stat"); if (st) { st.value = "all"; st.dispatchEvent(new Event("change")); } if (q) { q.value = d.arg; q.dispatchEvent(new Event("input")); } }, 50);
+    }
+  }
   async function saveCount() {
     const M = P.modal; if (!M || !M.pick) return;
     P.busy = true; renderModal();
     try {
       await JT.prep.adjust({ lines: [{ variant_id: Number(M.pick.vid), amazon_sku: M.asku || "", qty: Number(M.qty), note: M.note || "" }] });
-      closeModal(); note("info", `Saved the count for ${esc(M.pick.title)}.`); await load(true); render(); refreshTotals();
+      note("info", `Saved the count for ${esc(M.pick.title)}.`); await load(true); closeModal(); render(); refreshTotals();
     } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't save: " + esc(JT.message(e))); }
   }
   // Save the editor, then optionally move the status (started / open / shipped).
@@ -388,6 +489,7 @@
     on("prep-ships", "click", (e) => {
       const b = e.target.closest("button[data-sact]");
       if (b) { e.stopPropagation(); if (b.dataset.sact === "new") return openShip(); if (b.dataset.sact === "started") return quickStatus(b.dataset.sid, "started");
+        if (b.dataset.sact === "fix") return openShipment(b.dataset.sid);
         if (b.dataset.sact === "ship") { openShipment(b.dataset.sid); P.modal.confirm = "ship"; renderModal(); } return; }
       const c = e.target.closest(".shipcard[data-sid]"); if (c) openShipment(c.dataset.sid);
     });
@@ -429,6 +531,7 @@
       if (b.dataset.pick) { const v = cat.find(x => x.vid === b.dataset.pick); M.pick = { vid: v.vid, sku: v.sku, title: v.title, vendor: v.vendor, cost: v.cost }; M.asku = ""; renderModal(); setTimeout(() => { const i = $("pm-qty"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "repick") { M.pick = null; M.qty = ""; renderModal(); setTimeout(() => { const i = $("pm-q"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "save-count") return saveCount();
+      if (b.dataset.fix) return applyFix(b.dataset);
       if (b.dataset.dest) { M.dest = b.dataset.dest; M.confirm = false; renderModal(); return; }
       if (b.dataset.add) return addLine(b.dataset.add);
       if (b.dataset.rm) { M.lines = M.lines.filter(k => k !== b.dataset.rm); delete M.qty[b.dataset.rm]; M.confirm = false; renderModal(); return; }

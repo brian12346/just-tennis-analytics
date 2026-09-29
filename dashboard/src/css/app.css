@@ -395,11 +395,27 @@ table.prept tr.picked td{background:var(--sales-soft)}
 .shipcard:hover,.shipcard:focus-visible{border-color:var(--sales)}
 .shipcard.started{border-left-color:var(--sales)}
 .shipcard.shipped{border-left-color:var(--good);opacity:.9}
-.shipcard .sc-top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
-.shipcard .sc-top b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
-.shipcard .sc-mid{display:flex;justify-content:space-between;gap:8px;font-size:13px}
-.shipcard .sc-lines{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:1px}
-.shipcard .sc-lines div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shipcard .sc-title{font-weight:600;font-size:14px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.shipcard .sc-qty{font-size:13px;display:flex;gap:6px;flex-wrap:wrap;align-items:baseline}
+.shipcard .sc-qty b{font-family:var(--display);font-size:20px;font-weight:600}
+.shipcard .sc-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.shipcard .sc-meta .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+.shipcard .sc-issue{font-size:12px;font-weight:500;display:flex;gap:5px;align-items:flex-start}
+.shipcard.issue-warn{border-color:var(--warn);border-left-color:var(--warn);background:var(--warn-bg)}
+.shipcard.issue-warn .sc-issue{color:var(--warn)}
+.shipcard.issue-bad{border-color:var(--bad);border-left-color:var(--bad);background:var(--bad-bg)}
+.shipcard.issue-bad .sc-issue{color:var(--bad)}
+/* exceptions: what needs attention on a shipment, with ways to fix it */
+.issues{display:flex;flex-direction:column;gap:8px}
+.issues .ih{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.issue{border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:8px;padding:8px 10px;background:var(--warn-bg);display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:space-between}
+.issue.bad{border-left-color:var(--bad);background:var(--bad-bg)}
+.issue.info{border-left-color:var(--faint);background:var(--line-soft)}
+.issue .it{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 300px;font-size:13px}
+.issue .it b{color:var(--ink)}
+.issue .it span{color:var(--muted)}
+.issue .fixes{display:flex;gap:6px;flex-wrap:wrap}
+.issue .fixes a.mini{text-decoration:none;color:inherit}
 .shipcard .sc-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto}
 .shipcard.newcard{border-style:dashed;border-left-width:1px;align-items:center;justify-content:center;background:transparent;color:var(--sales)}
 .shipcard.newcard .plus{font-size:26px;line-height:1}

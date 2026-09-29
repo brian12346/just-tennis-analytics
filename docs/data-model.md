@@ -126,3 +126,11 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   ("in shipments") but only leave the prep center when the shipment is marked shipped (`jt.prep_shipment_status` calls
   `jt.prep_ship`, which fails if a line is short). Shipped is final; moves carry `shipment_id`.
 - Web wrappers: `public.jt_prep_shipment_save / jt_prep_shipment_status / jt_prep_shipment_delete`.
+
+### Shipment exceptions (dashboard only)
+
+Each open or started shipment is checked in the page (`issuesOf` in `dashboard/src/js/prep.js`, shared as
+`window.JTIssues`): short on stock (blocks Mark shipped), units also held by another shipment, no Shopify cost,
+no Amazon listing mapped, started without a shipment ID, started 7+ days ago and not shipped, open 14+ days.
+Cards turn amber (warning) or red (blocking); the shipment popup lists each exception with fix buttons.
+New checks are one more entry in `issuesOf`.
