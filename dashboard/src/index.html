@@ -21,6 +21,7 @@
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
     <button role="tab" data-tab="costs" aria-selected="false">Product costs</button>
+    <button role="tab" data-tab="fba" aria-selected="false">FBA inventory</button>
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
@@ -169,6 +170,44 @@
       <div id="cw-hist"></div>
       <div class="panel-head"><h2 class="h3">Cost changes</h2><span class="muted small">Every variant's cost is compared with the day before. Click Correction or Real change to override how a row is treated.</span></div>
       <div class="tbl-wrap"><table id="cw-changes"></table></div>
+    </section>
+  </div>
+  <div id="tab-fba" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Amazon FBA · units at Amazon, costed through your Shopify products</span>
+        <h1>FBA inventory</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="fba-inb" role="group" aria-label="Units counted">
+          <button data-inb="0" aria-pressed="false">At Amazon</button><button data-inb="1" aria-pressed="true">+ Inbound</button>
+        </div>
+        <label class="btn" for="fba-file">Upload FBA Inventory report<input type="file" id="fba-file" accept=".csv,.txt,text/csv,text/plain" hidden></label>
+        <button class="btn" id="fba-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="fba-status" aria-live="polite">Loading FBA inventory…</div>
+    <div id="fba-note" hidden></div>
+    <section class="kpis" id="fba-kpis" aria-label="FBA inventory totals"></section>
+    <section class="panel">
+      <div class="panel-head"><h2>Inventory at cost by vendor</h2><span class="muted small">Click a vendor to filter the list below.</span></div>
+      <div class="vbars" id="fba-vbars"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>By Amazon listing</h2>
+        <div class="filters">
+          <label for="fba-vendor">Vendor <select id="fba-vendor" class="inp sm"></select></label>
+          <label for="fba-cat">Category <select id="fba-cat" class="inp sm"></select></label>
+          <label for="fba-show">Show <select id="fba-show" class="inp sm"><option value="all">All SKUs</option><option value="nocost">Not costed</option><option value="loss">Losing money</option><option value="low">Margin under 10%</option><option value="aged">Over 180 days old</option></select></label>
+          <label for="fba-health">Health <select id="fba-health" class="inp sm"><option value="all">Any</option><option>Healthy</option><option>Low stock</option><option>Excess</option><option>Out of stock</option><option value="Unknown">Not rated</option></select></label>
+          <label for="fba-sort">Sort <select id="fba-sort" class="inp sm"><option value="cost">Inventory at cost</option><option value="price">Value at price</option><option value="profit">Est. profit</option><option value="units">Units</option><option value="margin">Margin</option><option value="days">Days of supply</option></select></label>
+          <label for="fba-q">Search <input id="fba-q" class="inp" type="search" placeholder="Title, ASIN, SKU or vendor"></label>
+        </div>
+      </div>
+      <div class="cmbar"><span class="muted small">Est. fees = referral fee % × price + FBA fee per unit, from each SKU's own sales in the last 180 days (or 15% and the typical FBA fee for its size when it hasn't sold). Profit = price − fees − cost. Storage fees aren't included.</span><span class="dbtns right"><button class="btn" id="fba-dl" hidden>Download CSV</button></span></div>
+      <div class="tbl-wrap tall xl"><table id="fba-table" class="fbat"></table></div>
+      <div class="row"><button class="btn" id="fba-prev" hidden>Previous</button><button class="btn" id="fba-next" hidden>Next page</button><span class="muted small" id="fba-count"></span></div>
     </section>
   </div>
   <div id="tab-costs" hidden>
@@ -475,6 +514,9 @@
 <!-- @inline js/product-sales.js -->
 </script>
 
+<script>
+<!-- @inline js/fba.js -->
+</script>
 <script>
 <!-- @inline js/product-costs.js -->
 </script>

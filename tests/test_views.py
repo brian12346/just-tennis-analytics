@@ -122,3 +122,16 @@ def test_current_cost_views_recost_past_sales(conn):
     assert cur.fetchone() == (D("17.00"), D("83.00"), D("12.00"))      # 14.02 + 2.98; 20 - 8 no-cost now costed
     cur.execute("select sum(cogs), sum(net_no_cost) from jt.v_product_sales_daily_costed where day = '2026-03-02'")
     assert cur.fetchone() == (D("17.00"), D("12.00"))
+
+
+def test_amazon_sku_fees_last_180_days(conn):
+    cur = conn.cursor()
+    day = lambda d, skus, orders: cur.execute("insert into jt.docs (collection, id, data) values ('amzdays', %s, %s::jsonb)",
+                                              (d, json.dumps({"date": d, "skus": skus, "orders": orders})))
+    # [time, orderId, skuIdx, qty, sales, ship, promo, sellfees, fbafees, total, fba]
+    day("2026-09-01", ["A", "B"], [["10:00", "o1", 0, 2, 40, 0, 0, -6, -8, 26, 1], ["11:00", "o2", 1, 1, 20, 0, 0, -3, 0, 17, 0]])
+    day("2026-09-20", ["A"], [["09:00", "o3", 0, 1, 20, 0, 0, -3, -4.5, 12.5, 1]])
+    day("2025-12-01", ["A"], [["09:00", "o0", 0, 5, 100, 0, 0, -50, -50, 0, 1]])   # more than 180 days before the last day: left out
+    cur.execute("select sku, units, sales, sell_fees, fba_units, fba_fees, last_sold from jt.v_amz_sku_fees order by sku")
+    assert cur.fetchall() == [("A", D(3), D("60.00"), D("-9.00"), D(3), D("-12.50"), "2026-09-20"),
+                              ("B", D(1), D("20.00"), D("-3.00"), D(0), D("0.00"), "2026-09-01")]

@@ -79,3 +79,18 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   and variants still without a cost keep what Shopify recorded. Saved per-order costs still apply on top.
 - The "Costs" switch (Shopify and Product sales tabs) flips to "As recorded on each order" (per viewer, stored in the
   browser). Amazon profit uses current costs for all history while `settings/costs.historyStart` is null (cleanup mode).
+
+## FBA inventory (FBA inventory tab)
+
+- Upload: Seller Central → Reports → Fulfillment → Inventory → **FBA Inventory** (CSV). Stored in `jt.docs` collection `fbainv`
+  (`c000`, `c001`, … 150 rows each; the latest upload replaces the previous one). Rows with no units anywhere are dropped.
+- Row: `[sku, fnsku, asin, name, available, transfer, inbound, reservedForOrders, unfulfillable, yourPrice, featuredPrice,
+  shippedT30, shippedT90, daysOfSupply, health, storageType, storageNextMonth, agedOver180]`.
+  `transfer` = fc-transfer + reserved FC processing + reserved staging. Units reserved for customer orders are already sold and not counted.
+- Units valued = available + transfer (+ inbound, on by default). Cost per Amazon unit comes from the listing's mapping
+  (`amzmap`: Shopify variant cost × units, or a manual cost). Price = your Amazon price (featured offer if blank).
+- Estimated fees per unit = referral rate × price + FBA fee, from `jt.v_amz_sku_fees` (migration 011: each seller SKU's
+  Transaction-report sales in the 180 days up to the latest day loaded). SKUs without history: 15% referral and the
+  median FBA fee of SKUs with the same storage type. Profit = price − fees − cost (storage fees not included).
+- The Product costs tab adds FBA at cost to the inventory total (Shopify and FBA shown separately). Shopify's on-hand
+  counts don't include FBA units, so the two don't overlap.
