@@ -259,6 +259,26 @@
         if (WEB) return WEB.write("jt_prep_shipment_delete", { p: { id } });
         return run(`select jt.prep_shipment_delete(${q(JSON.stringify({ id }))}::jsonb) as ok`, true);
       },
+      // New Inventory: vendor orders coming in (draft -> ordered -> invoice -> packing_slip -> received -> shipped)
+      async saveOrder(body) {
+        if (WEB) return Number(await WEB.write("jt_prep_order_save", { p: body }));
+        const out = await run(`select jt.prep_order_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
+        return Number(out[0] && out[0].id);
+      },
+      async setOrderStatus(id, status) {
+        if (WEB) return WEB.write("jt_prep_order_status", { p: { id, status } });
+        const out = await run(`select jt.prep_order_status(${q(JSON.stringify({ id, status, by: "Claude dashboard" }))}::jsonb) as s`, true);
+        return out[0] && out[0].s;
+      },
+      async receiveOrder(id, lines, note) {
+        if (WEB) return Number(await WEB.write("jt_prep_order_receive", { p: { id, lines, note: note || "" } }));
+        const out = await run(`select jt.prep_order_receive(${q(JSON.stringify({ id, lines, note: note || "", by: "Claude dashboard" }))}::jsonb) as n`, true);
+        return Number(out[0] && out[0].n) || 0;
+      },
+      async deleteOrder(id) {
+        if (WEB) return WEB.write("jt_prep_order_delete", { p: { id } });
+        return run(`select jt.prep_order_delete(${q(JSON.stringify({ id }))}::jsonb) as ok`, true);
+      },
     },
     // Ask for a catalog sync from Shopify now (the sync job runs in about 30 seconds). false = one was just started.
     async requestCatalogSync() {

@@ -703,6 +703,6 @@
   // ---------- boot ----------
   bindOnce();
   window.invShow = () => { if (!I.shown) { I.shown = true; refresh(false); } else { renderBoard(); renderEditor(); } };
-  window.JTInvoices = { parseInvoice, findQtyPrice, roundPrice, parseDate, pdfRows, _state: I };   // for tests
+  window.JTInvoices = { parseInvoice, findQtyPrice, roundPrice, parseDate, pdfRows, _state: I, open: (id) => { if (window.invShow) window.invShow(); openInvoice(id); } };   // for tests
   if ((location.hash || "") === "#invoices") setTimeout(() => window.invShow(), 0);
 })();

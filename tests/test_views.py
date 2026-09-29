@@ -208,3 +208,43 @@ def test_prep_shipment_workflow(conn):
     cur.execute("rollback to savepoint t")
     other = call("prep_shipment_save", {"name": "", "lines": [{"variant_id": 601, "amazon_sku": "X-FBA", "qty": 1}]})
     assert call("prep_shipment_delete", {"id": other}) is True
+
+
+def test_prep_order_receive_and_ship(conn):
+    import pytest
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost) values (701, 70, 5), (702, 70, 7)")
+    cur.execute("insert into jt.invoices (vendor, invoice_no) values ('Wilson', 'INV-9') returning id"); inv = cur.fetchone()[0]
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    oid = call("prep_order_save", {"vendor": "Wilson", "po_no": "PO-1", "by": "b@x.com",
+                                   "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 48, "unit_cost": 4.5}, {"variant_id": 702, "qty": 10}]})
+    for st in ["ordered", "invoice", "packing_slip", "ordered"]:            # any direction before receiving
+        assert call("prep_order_status", {"id": oid, "status": st}) == st
+    call("prep_order_save", {"id": oid, "invoice_id": inv, "expected_on": "2026-10-05"})
+    cur.execute("select invoice_id, expected_on::text, stage_at ? 'packing_slip' from jt.prep_orders where id = %s", (oid,))
+    assert cur.fetchone() == (inv, "2026-10-05", True)
+    cur.execute("savepoint a")
+    with pytest.raises(Exception, match="only a received"):
+        call("prep_order_status", {"id": oid, "status": "shipped"})
+    cur.execute("rollback to savepoint a")
+    # part of it arrives, then the rest
+    assert call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 40}, {"variant_id": 702, "qty": 10}]}) == 50
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "received"
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 8}]})
+    cur.execute("select variant_id, amazon_sku, qty from jt.prep_items order by 1"); assert cur.fetchall() == [(701, "W-FBA", 48), (702, "", 10)]
+    cur.execute("select variant_id, qty_ordered, qty_received from jt.prep_order_lines where order_id = %s order by 1", (oid,)); assert cur.fetchall() == [(701, 48, 48), (702, 10, 10)]
+    cur.execute("select count(*), sum(qty_change), min(order_id), min(shipment) from jt.prep_moves where kind = 'receive'"); assert cur.fetchone() == (3, 58, oid, "PO-1")
+    # lines are locked once received; notes are not
+    call("prep_order_save", {"id": oid, "note": "all in", "lines": []})
+    cur.execute("select count(*) from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] == 2
+    cur.execute("savepoint b")
+    with pytest.raises(Exception, match="can't be deleted"):
+        call("prep_order_delete", {"id": oid})
+    cur.execute("rollback to savepoint b")
+    # an outgoing shipment made from the order ships it
+    sid = call("prep_shipment_save", {"name": "FBA2", "order_id": oid, "lines": [{"variant_id": 701, "amazon_sku": "W-FBA", "qty": 48}, {"variant_id": 702, "qty": 10}]})
+    call("prep_shipment_status", {"id": sid, "status": "shipped"})
+    cur.execute("select status, stage_at ? 'shipped' from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == ("shipped", True)
+    cur.execute("select coalesce(sum(qty), 0) from jt.prep_items"); assert cur.fetchone()[0] == 0
+    draft = call("prep_order_save", {"vendor": "Head", "lines": [{"variant_id": 701, "qty": 1}]})
+    assert call("prep_order_delete", {"id": draft}) is True

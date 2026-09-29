@@ -189,12 +189,22 @@
     <div id="prep-note" hidden></div>
     <section class="panel">
       <div class="panel-head">
-        <h2>Shipments</h2>
-        <div class="seg" id="prep-shview" role="group" aria-label="Which shipments">
+        <div class="lanehead"><h2>Amazon Outgoing</h2><span class="muted small">prep center → FBA / AWD</span></div>
+        <div class="seg" id="prep-shview" role="group" aria-label="Which outgoing shipments">
           <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped · last 60 days <span class="cnt">0</span></button>
         </div>
       </div>
       <div class="shipgrid" id="prep-ships"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <div class="lanehead"><h2>New Inventory</h2><span class="muted small">vendor orders → prep center</span></div>
+        <div class="seg" id="prep-oview" role="group" aria-label="Which vendor orders">
+          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped out · last 60 days <span class="cnt">0</span></button>
+        </div>
+      </div>
+      <div class="ostages" id="prep-ostages"></div>
+      <div class="shipgrid" id="prep-orders"></div>
     </section>
     <section class="kpis" id="prep-kpis" aria-label="Prep center totals"></section>
     <section class="panel">
@@ -212,7 +222,7 @@
       <div class="panel-head">
         <h2>Activity</h2>
         <div class="seg" id="prep-mkind" role="group" aria-label="Activity type">
-          <button data-k="all" aria-pressed="true">All</button><button data-k="adjust" aria-pressed="false">Counts</button><button data-k="ship" aria-pressed="false">Shipments</button><button data-k="seed" aria-pressed="false">Starting stock</button>
+          <button data-k="all" aria-pressed="true">All</button><button data-k="adjust" aria-pressed="false">Counts</button><button data-k="ship" aria-pressed="false">Shipped out</button><button data-k="receive" aria-pressed="false">Received</button><button data-k="seed" aria-pressed="false">Starting stock</button>
         </div>
       </div>
       <div id="prep-moves"></div>

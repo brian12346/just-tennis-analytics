@@ -134,3 +134,18 @@ Each open or started shipment is checked in the page (`issuesOf` in `dashboard/s
 no Amazon listing mapped, started without a shipment ID, started 7+ days ago and not shipped, open 14+ days.
 Cards turn amber (warning) or red (blocking); the shipment popup lists each exception with fix buttons.
 New checks are one more entry in `issuesOf`.
+
+## New Inventory: vendor orders (migration 015)
+
+- `jt.prep_orders` (vendor, PO #, status draft → ordered → invoice → packing_slip → received → shipped, linked
+  `invoice_id` on `jt.invoices`, `expected_on`, `short_ok`, `stage_at` = when each status was reached) and
+  `jt.prep_order_lines` (variant, Amazon SKU earmark, qty ordered / received, unit cost from the invoice).
+- `jt.prep_order_receive` adds units to `jt.prep_items` (partial receipts add up; moves have kind `receive` and
+  `order_id`). Received orders can't be deleted and their lines are locked.
+- "Shipped" = the received stock went back out: an Amazon Outgoing shipment made from the order carries
+  `prep_shipments.order_id`, and marking it shipped marks the order shipped. `prep_order_status('shipped')` also
+  closes it by hand (no stock change).
+- Exceptions on the card / in the popup: not received in full (until closed short), late vs. expected date,
+  no invoice linked from the Invoice stage on, invoice total ≠ order total, missing cost, no PO #, received 14+ days
+  and not on an Amazon shipment.
+- Web wrappers: `public.jt_prep_order_save / _status / _receive / _delete`.
