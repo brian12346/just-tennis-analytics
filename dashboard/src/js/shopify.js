@@ -248,7 +248,9 @@
       { c:"", l:"Gross profit", v: haveDaily ? m0(sum("gp")) : dash, s: haveDaily && (net - sum("nocost")) ? `${pct(sum("gp")/(net - sum("nocost")))} margin` : "" },
       { c:"cost", l:"Label cost", v: haveOrders ? m0(cost) : dash, s: haveOrders ? `${labels} labels · ${m0(shipCh)} charged to customers` : "" },
       { c:"sales", l:"Profit after shipping", v: haveOrders && haveDaily ? `<span class="${profitAfterShip(sum("gp"), shipCh, cost) < 0 ? "neg" : ""}">${m0(profitAfterShip(sum("gp"), shipCh, cost))}</span>` : dash, s: haveOrders && haveDaily && net ? `${pct(profitAfterShip(sum("gp"), shipCh, cost)/net)} of net sales` : "Gross profit + shipping charged − labels" },
-      { c:"", l:"Cost coverage", v: haveOrders ? (dv.webShipped ? pct(dv.webShippedWithCost/dv.webShipped) : dash) : dash, s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders matched` : "" },
+      // share of shipped (non-POS) orders that have a ShipStation label cost matched to them
+      { c:"", l:"Label cost coverage", v: haveOrders ? (dv.webShipped ? pct(dv.webShippedWithCost/dv.webShipped) : dash) : dash,
+        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a ShipStation label${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
     ];
     $("kpis").innerHTML = k.map(x => `<div class="kpi ${x.c}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
   }
@@ -542,6 +544,12 @@
   $("f-chan").addEventListener("change", renderOrders);
   $("f-miss").addEventListener("change", renderOrders);
   $("f-nocost").addEventListener("change", renderOrders);
+  // "show the N without one" on the Label cost coverage tile: filter Orders to shipped orders with no label cost
+  $("kpis").addEventListener("click", (e) => {
+    if (!e.target.closest("[data-kpi-miss]")) return;
+    $("f-chan").value = "all"; $("f-nocost").checked = false; $("f-miss").checked = true; renderOrders();
+    $("orders").closest(".panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 
   // ---------- manual product cost entry ----------
   async function loadLines(sid) {
