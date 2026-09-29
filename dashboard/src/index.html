@@ -20,6 +20,7 @@
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
+    <button role="tab" data-tab="costs" aria-selected="false">Product costs</button>
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
@@ -166,6 +167,45 @@
       <div id="cw-hist"></div>
       <div class="panel-head"><h2 class="h3">Cost changes</h2><span class="muted small">Every variant's cost is compared with the day before. Click Correction or Real change to override how a row is treated.</span></div>
       <div class="tbl-wrap"><table id="cw-changes"></table></div>
+    </section>
+  </div>
+  <div id="tab-costs" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Shopify product costs · biggest sellers first (Shopify + Amazon)</span>
+        <h1>Product costs</h1>
+      </div>
+      <div class="controls">
+        <label class="small muted" for="pc-period">Sales in <select id="pc-period" class="inp sm">
+          <option value="12m">Last 12 months</option><option value="ytd">This year</option><option value="ly">Last year</option><option value="all">Since Jan 2025</option></select></label>
+        <button class="btn" id="pc-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="pc-status" aria-live="polite">Loading products and sales…</div>
+    <div id="pc-note" hidden></div>
+    <section class="kpis" id="pc-kpis" aria-label="Cost health"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Costs by product</h2>
+        <div class="filters">
+          <label for="pc-vendor">Vendor <select id="pc-vendor" class="inp sm"></select></label>
+          <label for="pc-cat">Category <select id="pc-cat" class="inp sm"></select></label>
+          <label for="pc-status">Status <select id="pc-status" class="inp sm"><option value="ACTIVE">Active</option><option value="DRAFT">Draft</option><option value="ARCHIVED">Archived</option><option value="all">All</option></select></label>
+          <label for="pc-issue">Cost <select id="pc-issue" class="inp sm"><option value="all">Any</option><option value="issue">Needs a look</option><option value="missing">No cost</option><option value="above">Cost above price</option><option value="low">Margin under 10%</option><option value="high">Margin over 75%</option><option value="edited">Edited, not saved</option></select></label>
+          <label for="pc-sold">Sold <select id="pc-sold" class="inp sm"><option value="sold">Sold in period</option><option value="all">All products</option></select></label>
+          <label for="pc-q">Search <input id="pc-q" class="inp" type="search" placeholder="Product, SKU or vendor"></label>
+        </div>
+      </div>
+      <div class="cmbar">
+        <span class="muted small" id="pc-hint">Type a new unit cost and press Enter to move down. Saved costs are written to Shopify within about a minute.</span>
+        <span class="dbtns right">
+          <button class="btn" id="pc-discard" disabled>Discard edits</button>
+          <button class="btn primary" id="pc-save" disabled>Save costs to Shopify</button>
+        </span>
+      </div>
+      <div id="pc-confirm" hidden></div>
+      <div class="tbl-wrap tall xl"><table id="pc-table" class="pct"></table></div>
+      <div class="row"><button class="btn" id="pc-prev" hidden>Previous</button><button class="btn" id="pc-next" hidden>Next page</button><span class="muted small" id="pc-count"></span></div>
     </section>
   </div>
   <div id="tab-costmap" hidden>
@@ -428,6 +468,9 @@
 <!-- @inline js/product-sales.js -->
 </script>
 
+<script>
+<!-- @inline js/product-costs.js -->
+</script>
 <script>
 <!-- @inline js/cost-mapping.js -->
 </script>

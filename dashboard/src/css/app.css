@@ -128,8 +128,8 @@ table.lines tr.need input{border-color:var(--warn)}
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:-4px;overflow-x:auto}
 .tabs button{border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);font-weight:600;font-family:var(--display);font-size:16px;letter-spacing:.01em;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--sales)}
-#tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices,#tab-amzmatch{display:flex;flex-direction:column;gap:18px}
-#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
+#tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices,#tab-amzmatch,#tab-costs{display:flex;flex-direction:column;gap:18px}
+#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#tab-costs[hidden],#pc-note[hidden],#pc-confirm[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
 /* product sales */
 .tbl-wrap.xl{max-height:720px}
 .tree{display:inline-flex;align-items:center;gap:4px;white-space:normal}
@@ -321,3 +321,21 @@ table.amv td.l a{overflow-wrap:anywhere}
 #am-setv{width:auto;min-width:180px}
 table.amv tr.conf td{background:transparent}
 table.amv tr.guess td:nth-child(4) select{border-color:var(--warn)}
+
+/* Product costs */
+#pc-vendor,#pc-cat,#pc-status,#pc-issue,#pc-sold,#pc-period{width:auto;min-width:120px}
+table.pct{width:100%;font-size:13px;table-layout:fixed}
+table.pct th,table.pct td{padding:6px 8px;vertical-align:top}
+table.pct th:nth-child(1){width:auto}table.pct th:nth-child(2){width:150px}table.pct th:nth-child(3){width:78px}
+table.pct th:nth-child(4){width:108px}table.pct th:nth-child(5){width:74px}table.pct th:nth-child(6){width:96px}
+table.pct th:nth-child(7){width:96px}table.pct th:nth-child(8){width:100px}table.pct th:nth-child(9){width:110px}
+table.pct td .meta{font-size:12px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+table.pct td.l a{overflow-wrap:anywhere}
+table.pct input.pcin{width:100%;text-align:right;padding:4px 6px;font:inherit;font-variant-numeric:tabular-nums;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+table.pct input.pcin.edited{border-color:var(--sales);background:var(--sales-soft)}
+table.pct input.pcin.bad{border-color:var(--bad)}
+table.pct tr.flag-bad td:first-child{box-shadow:inset 3px 0 0 var(--bad)}
+table.pct tr.flag-warn td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
+table.pct td.l .olink{white-space:normal;display:inline}
+table.pct td{overflow:hidden}
+table.pct td{white-space:normal}
