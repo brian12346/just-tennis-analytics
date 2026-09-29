@@ -273,17 +273,36 @@
   let allCache = null;
   function allListings() {
     const sales = skuSales();
-    const key = S.listings.length + ":" + sales.size + ":" + Object.keys(A.titles).length;
+    const key = S.listings.length + ":" + sales.size + ":" + Object.keys(A.titles).length + ":" + S.maps.size;
     if (allCache && allCache.key === key) return allCache.list;
     const have = new Set(S.listings.map(l => l.sku));
-    const extra = [...sales.keys()].filter(k => k && !have.has(k)).map(k => ({ sku: k, asin: "", title: A.titles[k] || k, price: null, qty: null, channel: "", status: "Sold · not in listings report", extra: true }));
+    const extra = [...sales.keys()].filter(k => k && !have.has(k)).map(k => { const mp = S.maps.get(k) || {}; return { sku: k, asin: mp.asin || "", title: A.titles[k] || mp.title || k, price: null, qty: null, channel: "", status: "Sold · not in listings report", extra: true }; });
+    // mapped SKUs known only from the FBA / AWD / prep-center files
+    for (const [k, mp] of S.maps) if (k && !have.has(k) && !sales.has(k)) extra.push({ sku: k, asin: mp.asin || "", title: mp.title || k, price: null, qty: null, channel: /FBA/i.test(k) ? "AMAZON_NA" : "", status: "Not in listings report", extra: true });
     const list = S.listings.concat(extra);
     for (const l of list) { const a = sales.get(l.sku); l.units = a ? a[0] : 0; l.sales = a ? a[1] : 0; }
     allCache = { key, list }; return list;
   }
+  // ASINs whose seller SKUs are mapped to different products (one ASIN should be one product)
+  const sigOf = (mp) => !mp ? null : mp.kind === "manual" ? "m:" + mp.manualCost : "s:" + gidNum(mp.variantId) + "x" + (mp.units || 1);
+  function conflictAsins() {
+    const by = new Map();
+    for (const l of allListings()) { const mp = S.maps.get(l.sku), a = l.asin || (mp && mp.asin); if (!a || !mp) continue; const s = by.get(a) || new Set(); s.add(sigOf(mp)); by.set(a, s); }
+    return new Set([...by].filter(([, s]) => s.size > 1).map(([a]) => a));
+  }
   function filtered() {
     const q = $("amz-q").value.trim().toLowerCase(), st = $("amz-fstatus").value, fm = $("amz-fmap").value, fc = $("amz-fchan").value;
+    const conf = fm === "conflict" ? conflictAsins() : null;
     return allListings().filter(l => {
+      if (["asin", "cleanup", "conflict"].includes(fm)) {
+        const mp = S.maps.get(l.sku);
+        if (fm === "asin" && !(mp && mp.via === "asin")) return false;
+        if (fm === "cleanup" && !(mp && mp.via === "asin-cleanup")) return false;
+        if (fm === "conflict" && !conf.has(l.asin || (mp && mp.asin) || "")) return false;
+        if (fc === "fba" && !isFBA(l)) return false;
+        if (fc === "fbm" && isFBA(l)) return false;
+        return !q || l.title.toLowerCase().includes(q) || l.sku.toLowerCase().includes(q) || (l.asin || "").toLowerCase().includes(q);
+      }
       if (st !== "all" && l.status !== st && !(st === "Active" && l.extra)) return false;
       const mapped = S.maps.has(l.sku);
       if (fm === "mapped" && !mapped) return false;
@@ -352,7 +371,9 @@
       const mp = S.maps.get(l.sku), c = costOf(mp), open = S.open === l.sku;
       const mapped = !mp ? '<span class="pill miss">Not mapped</span>'
         : mp.kind === "manual" ? '<span class="pill manual">Manual cost</span>'
-        : `<div class="iname">${shopLink(mp.productId || (S.costs.get(mp.variantId) || {}).pid, mp.variantId, esc((S.costs.get(mp.variantId) || {}).displayName || mp.vtitle))}</div><div class="mono dim small">${esc(mp.vsku || "")}</div>`;
+        : `<div class="iname">${shopLink(mp.productId || (S.costs.get(mp.variantId) || {}).pid, mp.variantId, esc((S.costs.get(mp.variantId) || {}).displayName || mp.vtitle))}</div><div class="mono dim small">${esc(mp.vsku || "")}</div>`
+          + (mp.via === "asin" ? `<div class="small"><span class="pill ok" title="Copied automatically: same ASIN as ${esc(mp.fromSku || "")}">Same ASIN as <span class="mono">${esc(mp.fromSku || "?")}</span></span></div>`
+            : mp.via === "asin-cleanup" ? `<div class="small"><span class="pill warn" title="Changed by Claude on Sep 29 so every SKU of this ASIN maps to the same product">Fixed Sep 29 (ASIN cleanup)</span></div>` : "");
       const pctv = c && c.cost != null && l.price ? Math.round(c.cost / l.price * 100) : null;
       return `<tr class="${open ? "openrow" : ""}"><td class="l"><div class="iname">${esc(l.title)}</div><div class="small dim">${l.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.asin)}</a> · ` : ""}<span class="mono">${esc(l.sku)}</span></div></td>
         <td><button class="mini ${mp ? "" : "primary"}" data-a="${open ? "cancel" : "edit"}" data-sku="${esc(l.sku)}">${open ? "Close" : mp ? "Edit" : "Map"}</button></td>
