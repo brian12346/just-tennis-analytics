@@ -160,3 +160,23 @@ def test_prep_center_count_ship_and_seed(conn):
     cur.execute("select jt.prep_seed(%s::jsonb)", (json.dumps({"lines": [{"variant_id": 502, "qty": 7}, {"variant_id": 502, "qty": 3}]}),))
     cur.execute("select variant_id, amazon_sku, qty from jt.prep_items")
     assert cur.fetchall() == [(502, "", 10)]
+
+
+def test_asin_mapping_fill(conn):
+    cur = conn.cursor()
+    doc = lambda c, i, d: cur.execute("insert into jt.docs (collection, id, data) values (%s, %s, %s::jsonb) "
+                                      "on conflict (collection, id) do update set data = excluded.data", (c, i, json.dumps(d)))
+    doc("amzlistings", "c000", {"rows": [["A-FBA", "B000000001", "Grip"], ["A-FBM", "B000000001", "Grip"], ["A(2)", "B000000001", "Grip"],
+                                         ["B-FBA", "B000000002", "Bag"], ["B-FBM", "B000000002", "Bag"]]})
+    m = lambda sku, vid, **kw: doc("amzmap", "s_" + sku.replace("(", "~28").replace(")", "~29"),
+                                   {"sku": sku, "kind": "shopify", "variantId": f"gid://shopify/ProductVariant/{vid}", "units": 1, **kw})
+    m("A-FBA", 11)                       # trigger copies it to A-FBM and A(2)
+    m("B-FBA", 21); m("B-FBM", 22, via="match")   # hand-made sibling mapping is left alone
+    cur.execute("select id, data->>'variantId', data->>'via', data->>'fromSku' from jt.docs where collection = 'amzmap' order by id")
+    got = {r[0]: r[1:] for r in cur.fetchall()}
+    assert got["s_A~282~29"] == ("gid://shopify/ProductVariant/11", "asin", "A-FBA")
+    assert got["s_A-FBM"] == ("gid://shopify/ProductVariant/11", "asin", "A-FBA")
+    assert got["s_B-FBM"] == ("gid://shopify/ProductVariant/22", "match", None)
+    m("A-FBA", 12)                       # a change follows to the automatic copies
+    cur.execute("select data->>'variantId' from jt.docs where collection = 'amzmap' and id = 's_A-FBM'")
+    assert cur.fetchone()[0] == "gid://shopify/ProductVariant/12"

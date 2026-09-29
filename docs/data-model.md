@@ -110,3 +110,11 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   `jt.prep_seed(p)` replaces everything (starting inventory, run by Claude). Web wrappers `public.jt_prep_adjust / jt_prep_ship` record the signed-in email.
 - Value: units × Shopify cost; Amazon value uses the earmarked listing (or the only listing mapped to the product) and its units-per-Amazon-unit.
 - The Inventory value tab shows Shopify, prep center and Amazon separately; shipped units reappear as Amazon inbound once the next FBA / AWD report is uploaded.
+
+## One ASIN = one mapping (migration 013)
+
+- `jt.v_amz_sku_asin`: seller SKU → ASIN from the listings, FBA, AWD and prep-center files and the mappings themselves.
+- `jt.fill_asin_mappings(sku)`: copies a SKU's mapping to the other seller SKUs of its ASIN (`via: "asin"`, `fromSku`);
+  with no argument, fills every ASIN whose mapped SKUs agree. A trigger on `jt.docs` runs it whenever a mapping is saved
+  (hand-made sibling mappings are never overwritten; automatic copies follow changes) and whenever a listings / FBA / AWD /
+  prep-center file is loaded. Backup of the mappings before the first fill: `jt.docs amzmapbak/before-asin-fill-2026-09-29`.
