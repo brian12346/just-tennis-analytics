@@ -656,9 +656,13 @@
     const iv = cur(ed);
     const pdfOn = !!(iv && ed.showPdf && (iv.file || iv.parts));
     box.innerHTML = `
-      <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ""}</div>
+      <div class="po-top">
+        <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
+          <span class="dbtns right"><button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
+        <div class="po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</h2><span class="steps six seven">${steps}</span></div>
+        ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
+      </div>
       <section class="panel">
-        <div class="panel-head po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</h2><span class="steps six seven">${steps}</span></div>
         <div class="pmgrid">
           <label class="stack" for="pe-vendor">Vendor<input id="pe-vendor" class="inp" list="pe-vendors" value="${esc(ed.vendor)}" ${got ? "disabled" : ""} autocomplete="off" placeholder="Shopify vendor"><datalist id="pe-vendors">${vendorOpts}</datalist></label>
           <label class="stack" for="pe-po">PO #<input id="pe-po" class="inp mono" value="${esc(ed.po)}" ${ro ? "disabled" : ""}></label>
@@ -669,7 +673,6 @@
           <label class="stack" for="pe-dest">Receive into<select id="pe-dest" class="inp" ${ro ? "disabled" : ""}><option value="shopify" ${ed.dest === "shopify" ? "selected" : ""}>Shopify store</option><option value="prep" ${ed.dest === "prep" ? "selected" : ""}>Prep center (Amazon)</option><option value="both" ${both ? "selected" : ""}>Both — choose per product</option></select></label>
           <label class="stack" for="pe-note" style="grid-column:1 / -1">Note<input id="pe-note" class="inp" value="${esc(ed.note)}" ${ro ? "disabled" : ""} placeholder="e.g. ships in two drops"></label>
         </div>
-        ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span></div>${both ? `<div class="po-sum dests">${["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> units · ${m(c)}</span>`; }).join("")}</div>` : ""}` : ""}
       </section>
       ${shopCheckHtml(ed, ro)}
       ${iss.length ? `<section class="po-issues">${window.JTIssues.issuesHtml(iss)}</section>` : ""}
@@ -698,6 +701,8 @@
     }
     if (pdfOn && $("pe-pdf") && !$("pe-pdf").childElementCount) renderPdf();
     watchGate();
+    { const bar = document.querySelector(".appbar"), top = box.querySelector(".po-top"), st = document.documentElement.style;
+      if (bar) st.setProperty("--appbar-h", bar.offsetHeight + "px"); if (top) st.setProperty("--potop-h", top.offsetHeight + "px"); }
   }
   function invoicesHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
@@ -1040,6 +1045,14 @@
       html: `${done} · <b>waiting for Shopify's stock to sync</b> (started when you marked it; usually a few minutes). <button class="linkbtn small" data-pact="shoprecv-check">Check again</button>` };
     return { block: false, text: "", html: done };
   }
+  // the Save button and saved/unsaved note in the sticky header, without redrawing the page
+  function syncTop() {
+    const ed = S.ed, c = document.querySelector("#po-edit-view .po-crumb"); if (!ed || !c) return;
+    const b = c.querySelector('button[data-pact="save"]'), st = c.querySelector(".pill.warn, .muted.small");
+    const want = ed.dirty || !ed.id;
+    if (b) { b.disabled = !!S.busy || !want || !!ed.recv; b.classList.toggle("primary", want); b.textContent = S.busy === "Saving…" ? "Saving…" : want ? "Save" : "Saved"; }
+    if (st && ed.dirty && !st.classList.contains("warn")) st.outerHTML = '<span class="pill warn">Unsaved changes</span>';
+  }
   // while Apply waits for Shopify's stock to sync, look again every 20 seconds so it opens by itself
   let gateTimer = null;
   function watchGate() {
@@ -1335,6 +1348,8 @@
       if (t.dataset.f === "acct" && r) { r.account = t.value; ed.dirty = true; render(); return; }
       if (t.dataset.f === "alt" && r && t.value) { r.vid = t.value; r.how = "manual"; r.conf = "sure"; r.confirmed = true; syncLines(ed); ed.dirty = true; render(); return; }
     });
+    box.addEventListener("input", () => setTimeout(syncTop, 0));     // typing marks the PO unsaved: update the Save button now
+    box.addEventListener("change", () => setTimeout(syncTop, 0));
     box.addEventListener("input", (e) => {
       const ed = S.ed, t = e.target; if (!ed) return;
       const iv = cur(ed);
@@ -1396,6 +1411,13 @@
     box.addEventListener("dragover", (e) => { const d = e.target.closest("#pe-drop"); if (d) d.classList.add("over"); });
     box.addEventListener("dragleave", (e) => { const d = e.target.closest("#pe-drop"); if (d) d.classList.remove("over"); });
     window.addEventListener("beforeunload", (e) => { if (S.ed && S.ed.dirty) { e.preventDefault(); e.returnValue = ""; } });
+    // ⌘S / Ctrl+S saves the open purchase order
+    document.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "s" && S.ed && !$("tab-po").hidden) {
+        e.preventDefault(); if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        setTimeout(() => { if (S.ed && (S.ed.dirty || !S.ed.id) && !S.busy && !S.ed.recv) save(null); }, 0);
+      }
+    });
     let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (S.ed && S.ed.showPdf && !$("tab-po").hidden) { const h = $("pe-pdf"); if (h) h.innerHTML = ""; renderPdf(); } }, 250); });
   }
 

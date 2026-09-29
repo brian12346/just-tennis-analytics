@@ -486,6 +486,13 @@ html{scroll-padding-top:130px}
 .po-list tbody tr.po-row:hover td,.po-list tbody tr.po-row:focus td{background:var(--line-soft)}
 .po-list .pill{margin:0 4px 2px 0}
 .po-crumb{display:flex;gap:10px;align-items:center}
+/* PO editor: the header (back, title, stages, totals, Save) stays at the top while the page scrolls */
+.po-top{position:sticky;top:var(--appbar-h,94px);z-index:30;background:var(--ground);padding:8px 0 10px;margin-top:-8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+.po-top .po-head{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.po-top .po-head h2{margin:0;font-size:20px}
+.po-top .po-head .steps{margin-left:auto}
+.po-top .po-sum{margin:0;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:13px}
+.po-crumb .right{margin-left:auto}
 .po-head h2{margin-right:auto}
 .po-head .steps{margin-left:0;flex-wrap:wrap}
 .po-head .steps button.step{background:var(--panel);font:inherit;font-size:12px;cursor:pointer}
@@ -526,7 +533,7 @@ html{scroll-padding-top:130px}
 .ivchip.add{border-style:dashed;background:var(--ground)}
 .ivchip.add:hover,.po-inv.over .ivchip.add{border-color:var(--sales);background:var(--sales-soft)}
 .po-ivlines{display:flex;flex-direction:column;gap:10px;min-width:0}
-.po-inv .po-pdf{position:sticky;top:120px;max-height:calc(100vh - 140px);overflow:auto;border:1px solid var(--line);border-radius:var(--radius-md);padding:10px}
+.po-inv .po-pdf{position:sticky;top:calc(var(--appbar-h,94px) + var(--potop-h,110px) + 8px);max-height:calc(100vh - var(--appbar-h,94px) - var(--potop-h,110px) - 24px);overflow:auto;border:1px solid var(--line);border-radius:var(--radius-md);padding:10px}
 .qb{border:1px solid var(--line);border-radius:var(--radius-md);padding:12px 14px;display:flex;flex-direction:column;gap:10px;background:var(--surface-sunken)}
 .qb-head{display:flex;gap:10px;align-items:baseline}
 .qb-head .mini{margin-left:auto}
@@ -691,3 +698,4 @@ dialog.dlg::backdrop{background:rgba(0,20,60,.35)}
 .chg-sum{font-size:14px}
 .chg-t td{vertical-align:top}
 #chg-run{width:auto;min-width:230px}#chg-q{width:auto;min-width:220px}.dlg-body .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+@media (max-width:700px){.po-top{position:static;margin-top:0}}
