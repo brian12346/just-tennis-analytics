@@ -64,6 +64,8 @@ def main(argv: list[str] | None = None) -> None:
             run("shopify_orders", lambda: sh.sync_orders(shop, conn, _utc(since - dt.timedelta(days=1))))
         if a.job in ("nightly", "catalog"):
             run("catalog", lambda: sh.sync_catalog(shop, conn, today))
+            # linked Shopify POs' status (Shopify's PO API is preview-only: this records "not available" until it opens)
+            run("shopify_po_status", lambda: sh.sync_po_status(shop, conn))
 
     if a.job in ("hourly", "nightly", "cost-updates"):
         # costs typed in the dashboard -> Shopify (a save starts job cost-updates right away; hourly catches any missed)

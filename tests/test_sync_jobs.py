@@ -203,3 +203,28 @@ def test_invoice_apply_queues_cost_and_price(conn):
     assert cur.fetchone() == (D("9.13"), D("15.99"))
     cur.execute("select status from jt.invoices where id = %s", (iid,))
     assert cur.fetchone()[0] == "applied"
+
+
+def test_po_status_not_available_then_read(conn):
+    from sync import shopify as sh
+    cur = conn.cursor()
+    cur.execute("insert into jt.prep_orders (vendor, po_no, shopify_po_url) values ('Head', 'A', 'https://admin.shopify.com/store/x/purchase_orders/111') returning id")
+    a = cur.fetchone()[0]
+    cur.execute("insert into jt.prep_orders (vendor, po_no, shopify_po_url) values ('Head', 'B', 'https://admin.shopify.com/store/x/purchase_orders/222') returning id")
+    b = cur.fetchone()[0]
+
+    class Refused:
+        def graphql(self, q, v=None, version=None):
+            raise RuntimeError("Shopify GraphQL error: Field 'inventoryPurchaseOrders' doesn't exist on type 'QueryRoot'")
+    assert sh.sync_po_status(Refused(), conn) == 0
+    cur.execute("select value->>'ok', value->>'why' from jt.settings where key = 'shopify_po_api'")
+    ok, why = cur.fetchone(); assert ok == "false" and "doesn't exist" in why
+
+    class Open:
+        def graphql(self, q, v=None, version=None):
+            return {"inventoryPurchaseOrders": {"nodes": [{"id": "gid://shopify/InventoryPurchaseOrder/111", "name": "#PO1", "status": "PARTIALLY_RECEIVED"},
+                                                          {"id": "gid://shopify/InventoryPurchaseOrder/222", "name": "#PO2", "status": "RECEIVED"}],
+                                                "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+    assert sh.sync_po_status(Open(), conn) == 2
+    cur.execute("select id, shopify_po_status, shopify_received_by from jt.prep_orders where id in (%s, %s) order by id", (a, b))
+    assert cur.fetchall() == [(a, "PARTIALLY_RECEIVED", ""), (b, "RECEIVED", "Shopify")]

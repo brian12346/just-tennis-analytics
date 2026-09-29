@@ -43,8 +43,8 @@ class Shopify:
         return self._token
 
     # -------------------------------------------------------------- GraphQL
-    def graphql(self, query: str, variables: dict | None = None) -> dict:
-        url = f"{self.base}/admin/api/{API_VERSION}/graphql.json"
+    def graphql(self, query: str, variables: dict | None = None, version: str = API_VERSION) -> dict:
+        url = f"{self.base}/admin/api/{version}/graphql.json"
         for attempt in range(8):
             r = self.session.post(url, json={"query": query, "variables": variables or {}}, timeout=120,
                                   headers={"X-Shopify-Access-Token": self.token()})
@@ -391,3 +391,54 @@ def apply_cost_updates(shop: Shopify, conn, today: dt.date) -> int:
                                 (today, vid, old, new, price, flag))
         conn.commit()
     return done
+
+
+# ---------------------------------------------------------------- Shopify purchase order status
+# Shopify's purchase orders API (inventoryPurchaseOrders, scope read_inventory_purchase_orders) is a preview that
+# live stores can't use yet. Try it: when the store is refused, record why and carry on; when it works, each linked
+# PO (jt.prep_orders.shopify_po_url ends in /purchase_orders/<id>) gets Shopify's status.
+PO_API_VERSIONS = ("2026-10", "unstable")
+PO_QUERY = """query($after: String) { inventoryPurchaseOrders(first: 100, after: $after) {
+  nodes { id name status } pageInfo { hasNextPage endCursor } } }"""
+
+
+def sync_po_status(shop: Shopify, conn) -> int:
+    import json
+    import re
+    with conn.cursor() as cur:
+        cur.execute("select id, shopify_po_url from jt.prep_orders where shopify_po_url ~ '/purchase_orders/[0-9]+'")
+        linked = {int(re.search(r"/purchase_orders/(\d+)", u).group(1)): oid for oid, u in cur.fetchall()}
+    if not linked:
+        return 0
+    found, why, used = {}, "", ""
+    for version in PO_API_VERSIONS:
+        try:
+            found, after = {}, None
+            while True:
+                data = shop.graphql(PO_QUERY, {"after": after}, version=version)
+                conn_ = data["inventoryPurchaseOrders"]
+                for n in conn_["nodes"]:
+                    found[gid_num(n["id"])] = (n.get("status") or "", n.get("name") or "")
+                if not conn_["pageInfo"]["hasNextPage"]:
+                    break
+                after = conn_["pageInfo"]["endCursor"]
+            used, why = version, ""
+            break
+        except Exception as e:  # noqa: BLE001 - not open to this store (yet): note it and move on
+            why = str(e)[:300]
+    with conn.cursor() as cur:
+        state = {"ok": bool(used), "version": used, "why": why, "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "pos": len(found)}
+        cur.execute("""insert into jt.settings (key, value, updated_at) values ('shopify_po_api', %s::jsonb, now())
+                       on conflict (key) do update set value = excluded.value, updated_at = now()""", (json.dumps(state),))
+        n = 0
+        for sid, oid in linked.items():
+            if sid not in found:
+                continue
+            status = found[sid][0]
+            cur.execute("""update jt.prep_orders set shopify_po_status = %s, shopify_po_status_at = now() where id = %s""", (status, oid))
+            if re.search(r"RECEIVED|CLOSED", status or "") and "PARTIAL" not in (status or ""):
+                cur.execute("""update jt.prep_orders set shopify_received_at = now(), shopify_received_by = 'Shopify'
+                               where id = %s and shopify_received_at is null""", (oid,))
+            n += 1
+    conn.commit()
+    return n

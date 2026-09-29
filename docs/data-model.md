@@ -279,3 +279,10 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
   - Returns go back at the cost they left at.
 - `jt.v_shopify_sales_costed` uses it, so the daily totals and the Product sales tab ("Current cost · FIFO layers") follow.
 - `jt.prep_orders.shopify_received_at` / `_by` records "Received in Shopify", set with `jt.po_shopify_received`, which starts a catalog sync. `jt.po_apply_costs` refuses a PO with received Shopify-store products until it's set and Shopify's stock has synced after it (max `jt.variants.seen_at`).
+
+### Shopify PO status (030)
+
+- `jt.prep_orders.shopify_po_status` / `shopify_po_status_at`: the linked Shopify PO's own status, read by the nightly and catalog syncs (`sync_po_status`) with `inventoryPurchaseOrders` on API 2026-10 or unstable.
+- That API is preview-only for now. Until a live store is allowed, the sync records why in `jt.settings['shopify_po_api']` and the dashboard says "not available yet".
+- A Shopify status of received or closed marks the PO "Received in Shopify" (by 'Shopify') if it wasn't already.
+- Needs the scope `read_inventory_purchase_orders` on the Shopify app once Shopify offers it.

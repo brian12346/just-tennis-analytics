@@ -75,12 +75,12 @@
       "(select min(l.eta)::text from jt.prep_order_lines l where l.order_id = o.id and l.backorder and l.qty_received < l.qty_ordered)",
       `(select count(*) ${IV} and ii.paid_on is null)`, `(select min(ii.due_date)::text ${IV} and ii.paid_on is null)`, `(select sum(coalesce(ii.total, ii.subtotal)) ${IV} and ii.paid_on is null)`, "o.shopify_po_url",
       "(select coalesce(sum(l.qty_ordered), 0) from jt.prep_order_lines l where l.order_id = o.id and l.dest = 'prep')", "o.receive_into",
-      "o.shopify_check->>'diffs'", "o.shopify_check is not null"],
+      "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status"],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
-      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null }))
+      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "" }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
   }
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
@@ -258,7 +258,8 @@
       await catalog();
       const [h, ol, sh, ivs, lp] = await Promise.all([
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check", "o.shopify_received_at::text", "o.shopify_received_by",
-          "(select max(seen_at) from jt.variants)::text"],
+          "(select max(seen_at) from jt.variants)::text", "o.shopify_po_status", "o.shopify_po_status_at::text",
+          "(select value::text from jt.settings where key = 'shopify_po_api')"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
@@ -271,7 +272,7 @@
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
-        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
+        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
@@ -558,7 +559,7 @@
       list.map(o => {
         const fl = listFlags(o), got = GOT.includes(o.status);
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
-        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${o.shopifyUrl ? `<div><a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a>${o.shopDiffs === 0 ? ' <span class="pill ok" title="Checked against the Shopify PO">matches</span>' : ""}</div>` : ""}</td>
+        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${o.shopifyUrl ? `<div><a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a>${o.shopDiffs === 0 ? ' <span class="pill ok" title="Checked against the Shopify PO">matches</span>' : ""}${o.shopStatus ? " " + shopStatusPill(o.shopStatus) : ""}</div>` : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
           <td class="l"><span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span></td>
           <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
@@ -658,7 +659,7 @@
           <label class="stack">Type<span class="seg"><button data-pkind="order" aria-pressed="${ed.kind !== "booking"}" ${ed.status !== "draft" ? "disabled" : ""}>Order</button><button data-pkind="booking" aria-pressed="${ed.kind === "booking"}" ${ed.status !== "draft" ? "disabled" : ""}>Booking</button></span></label>
           ${ed.kind === "booking" ? `<label class="stack" for="pe-placeby">Place by<input id="pe-placeby" class="inp" type="date" value="${esc(ed.placeBy)}" ${ed.status !== "draft" ? "disabled" : ""}></label>` : ""}
           <label class="stack" for="pe-exp">Expected<input id="pe-exp" class="inp" type="date" value="${esc(ed.expected)}" ${ro ? "disabled" : ""}></label>
-          <label class="stack" for="pe-shopify"><span>Shopify PO${shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? ` <a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open ↗</a>` : ` <a class="small dim" href="${ADMIN}/purchase_orders" target="_blank" rel="noopener">Shopify POs ↗</a>`}</span><input id="pe-shopify" class="inp" value="${esc(ed.shopifyUrl)}" placeholder="optional · paste the link from Shopify" autocomplete="off"></label>
+          <label class="stack" for="pe-shopify"><span>Shopify PO${ed.shopStatus ? " " + shopStatusPill(ed.shopStatus) : ""}${shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? ` <a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open ↗</a>` : ` <a class="small dim" href="${ADMIN}/purchase_orders" target="_blank" rel="noopener">Shopify POs ↗</a>`}</span><input id="pe-shopify" class="inp" value="${esc(ed.shopifyUrl)}" placeholder="optional · paste the link from Shopify" autocomplete="off"></label>
           <label class="stack" for="pe-dest">Receive into<select id="pe-dest" class="inp" ${ro ? "disabled" : ""}><option value="shopify" ${ed.dest === "shopify" ? "selected" : ""}>Shopify store</option><option value="prep" ${ed.dest === "prep" ? "selected" : ""}>Prep center (Amazon)</option><option value="both" ${both ? "selected" : ""}>Both — choose per product</option></select></label>
           <label class="stack" for="pe-note" style="grid-column:1 / -1">Note<input id="pe-note" class="inp" value="${esc(ed.note)}" ${ro ? "disabled" : ""} placeholder="e.g. ships in two drops"></label>
         </div>
@@ -1079,6 +1080,10 @@
       note("info", `${n} Shopify cost${n === 1 ? "" : "s"} queued — the sync sends ${n === 1 ? "it" : "them"} to Shopify in a minute or two. Inventory value now keeps this PO's units at the PO cost.`);
     } catch (err) { S.busy = ""; render(); note("bad", "Couldn't apply the costs: " + esc(JT.message(err))); }
   }
+  // Shopify's own status for the linked PO (read by the sync once Shopify's PO API is open to the store)
+  const SSTAT = { DRAFT: ["Draft", "pos"], ORDERED: ["Ordered", "manual"], PARTIALLY_RECEIVED: ["Partly received", "warn"], RECEIVED: ["Received", "ok"], CLOSED: ["Closed", "ok"], CANCELLED: ["Cancelled", "miss"], CANCELED: ["Cancelled", "miss"] };
+  const shopStatusPill = (st) => { if (!st) return ""; const k = String(st).toUpperCase(), d = SSTAT[k] || [k.charAt(0) + k.slice(1).toLowerCase().replace(/_/g, " "), "pos"];
+    return `<span class="pill ${d[1]}" title="Status of the PO in Shopify">Shopify: ${esc(d[0])}</span>`; };
   // ---------- checking against the Shopify PO ----------
   // Shopify's API doesn't open POs to apps on a live store yet, so Shopify's side comes from the PO's PDF.
   const SDIFF = { qty: "quantity", cost: "cost", missing: "not on the Shopify PO", extra: "only on the Shopify PO", unmatched: "not matched to a product", supplier: "supplier" };
@@ -1166,7 +1171,9 @@
     if (!ed.id || !(ed.shopifyUrl.trim() || ed.shopCheck)) return "";
     const up = `<label class="btn ${ed.shopCheck ? "" : "primary"}" for="pe-shopfile">${ed.shopCheck ? "Re-check (new PDF)" : "Upload Shopify PO PDF"}</label><input type="file" id="pe-shopfile" accept=".pdf,application/pdf" hidden>`;
     const link = shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? `<a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open it in Shopify ↗</a>` : "";
-    if (!ed.shopCheck) return `<section class="panel shopchk" id="pe-shopcheck"><div class="panel-head"><h2>Shopify PO check</h2><span class="muted small">not checked yet</span><span class="dbtns right">${up}</span></div>
+    const api = ed.shopStatus ? `${shopStatusPill(ed.shopStatus)} <span class="muted small">as of ${esc(when(ed.shopStatusAt))}</span>`
+      : ed.poApi && !ed.poApi.ok ? `<span class="muted small" title="${esc(ed.poApi.why || "")}">Shopify status: not available yet — Shopify hasn't opened its PO API to live stores; checked nightly</span>` : "";
+    if (!ed.shopCheck) return `<section class="panel shopchk" id="pe-shopcheck"><div class="panel-head"><h2>Shopify PO check</h2>${api}<span class="muted small">not checked yet</span><span class="dbtns right">${up}</span></div>
       <div class="small muted">Open the PO in Shopify ${link ? `(${link})` : ""}, download it as a PDF (or print it and save as PDF), and upload it here. Every product, quantity and cost is compared with this PO.</div></section>`;
     const sc = ed.shopCheck, d = shopDiffs(ed), hasPrep = ed.lines.some(l => l.dest === "prep");
     const shown = ed.shopAll ? d.rows : d.rows.filter(r => r.kinds.length);
@@ -1188,7 +1195,7 @@
       <td class="l">${r.kinds.length ? r.kinds.map(k => `<span class="pill miss">${SDIFF[k]}${k === "qty" ? ` ${r.sq - r.oq > 0 ? "+" : ""}${n0(r.sq - r.oq)}` : k === "cost" ? ` ${r.scost - r.oc > 0 ? "+" : ""}${m(r.scost - r.oc)}` : ""}</span>`).join(" ") : '<span class="pill ok">matches</span>'}</td>
       <td class="l"><span class="dbtns">${fixes(r)}</span></td></tr>`).join("");
     return `<section class="panel shopchk ${d.n ? "bad" : "good"}" id="pe-shopcheck">
-      <div class="panel-head"><h2>Shopify PO check</h2>${d.n ? `<span class="pill miss">${d.n} difference${d.n === 1 ? "" : "s"}</span>` : '<span class="pill ok">Matches ✓</span>'}
+      <div class="panel-head"><h2>Shopify PO check</h2>${api}${d.n ? `<span class="pill miss">${d.n} difference${d.n === 1 ? "" : "s"}</span>` : '<span class="pill ok">Matches ✓</span>'}
         <span class="muted small">${esc(sc.name || "Shopify PO")} · checked ${when(sc.checked_at)} from ${esc(sc.file_name || "PDF")} ${link ? "· " + link : ""}</span>
         <span class="dbtns right">${up}<button class="mini" data-pact="shop-rm">Remove check</button></span></div>
       <div class="shopsum small">
