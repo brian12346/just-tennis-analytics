@@ -71,7 +71,7 @@
 
   async function loadDaily(refresh) {
     const r = await JT.rowsSplit(["day", "orders", "gross", "discounts", "returns", "net", "shipping", "taxes", "total", "cogs", "gross_profit", "net_no_cost"],
-      `from jt.shopify_daily where day between ${JT.day(state.start)} and ${JT.day(state.end)}`, "day", 1, refresh);
+      `from ${JT.src.daily} where day between ${JT.day(state.start)} and ${JT.day(state.end)}`, "day", 1, refresh);
     const byDay = new Map();
     for (const x of r) byDay.set(x[0], { day:x[0], orders:num(x[1]), gross:num(x[2]), discounts:num(x[3]), returns:num(x[4]), net:num(x[5]), shipping:num(x[6]), taxes:num(x[7]), total:num(x[8]), cogs:num(x[9]), gp:num(x[10]), nocost:num(x[11]) });
     const out = [];
@@ -83,7 +83,7 @@
 
   async function loadOrderCosts(refresh) {
     const r = await JT.rowsSplit(["order_name", "sum(net)", "sum(cogs)", "sum(net_no_cost)"],
-      `from jt.shopify_sales where day between ${JT.day(state.start)} and ${JT.day(state.end)} group by order_name`,
+      `from ${JT.src.sales} where day between ${JT.day(state.start)} and ${JT.day(state.end)} group by order_name`,
       "order_name", Math.max(1, Math.ceil(spanDays() / 90)), refresh);
     const map = new Map();
     for (const [name, net, cogs, nc] of r) map.set(String(name), { net: num(net), cogs: num(cogs), gp: num(net) - num(cogs), nocost: num(nc) });
@@ -93,7 +93,7 @@
   // Sales without a cost, by the day Shopify records them (a return lands on the return day) and order.
   async function loadNoCostRows(refresh) {
     const r = await JT.rowsSplit(["day", "order_id::text", "sum(net_no_cost)", "sum(cogs)"],
-      `from jt.shopify_sales where day between ${JT.day(state.start)} and ${JT.day(state.end)} and order_id <> 0 group by day, order_id having abs(sum(net_no_cost)) >= 0.005`, "order_id", 1, refresh);
+      `from ${JT.src.sales} where day between ${JT.day(state.start)} and ${JT.day(state.end)} and order_id <> 0 group by day, order_id having abs(sum(net_no_cost)) >= 0.005`, "order_id", 1, refresh);
     const by = new Map();   // order id -> [{day, nc, cogs}]
     for (const [day, sid, nc, cogs] of r) { const l = by.get(sid) || []; l.push({ day, nc: num(nc), cogs: num(cogs) }); by.set(sid, l); }
     return by;

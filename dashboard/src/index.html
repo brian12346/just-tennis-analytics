@@ -49,6 +49,7 @@
         <span>–</span>
         <input type="date" id="d-end" aria-label="End date">
       </div>
+<label class="small muted basis">Costs <select class="inp sm basis-sel" aria-label="Which product cost to use for past sales"><option value="current">Current Shopify cost</option><option value="recorded">As recorded on each order</option></select></label>
       <button class="btn primary" id="refresh">Refresh</button>
     </div>
   </header>
@@ -110,6 +111,7 @@
         <h1>Product sales</h1>
       </div>
       <div class="controls">
+        <label class="small muted basis">Costs <select class="inp sm basis-sel" aria-label="Which product cost to use for past sales"><option value="current">Current Shopify cost</option><option value="recorded">As recorded on each order</option></select></label>
         <div class="seg" id="ps-rangeseg" role="group" aria-label="Product sales range">
           <button data-r="ytd" aria-pressed="true">YTD</button>
           <button data-r="90">90d</button>

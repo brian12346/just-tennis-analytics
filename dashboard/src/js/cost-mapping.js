@@ -47,11 +47,11 @@
     if (!C.mcp) return;
     const id = ++C.reqId; C.loading = true; C.err = null; C.page = 0; C.vcostReady = false; render();
     try {
-      const where = `from jt.shopify_sales s where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0`;
+      const where = `from ${JT.src.sales} s where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0`;
       const [or, lr] = await Promise.all([
         JT.rowsSplit(["s.order_id::text", "s.order_name", "sum(s.net)", "sum(s.cogs)", "sum(s.net_no_cost)"], `${where} group by s.order_id, s.order_name having sum(s.net_no_cost) > 0.005`, "s.order_id", 1, refresh),
         JT.rowsSplit(["s.order_id::text", "s.variant_id::text", "s.product_id::text", "s.product_title", "s.variant_title", "s.sku", "sum(s.units)", "sum(s.net)", "sum(s.net_no_cost)", "max(v.unit_cost)", "bool_or(v.variant_id is not null)", "max(s.vendor)", "max(s.product_type)"],
-          `from jt.shopify_sales s left join jt.variants v on v.variant_id = s.variant_id where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0 group by s.order_id, s.variant_id, s.product_id, s.product_title, s.variant_title, s.sku having sum(s.net_no_cost) > 0.005`,
+          `from ${JT.src.sales} s left join jt.variants v on v.variant_id = s.variant_id where s.day between ${JT.day(C.start)} and ${JT.day(C.end)} and s.order_id <> 0 group by s.order_id, s.variant_id, s.product_id, s.product_title, s.variant_title, s.sku having sum(s.net_no_cost) > 0.005`,
           "s.order_id", 2, refresh),
       ]);
       if (id !== C.reqId) return;

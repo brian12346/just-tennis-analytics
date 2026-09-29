@@ -170,7 +170,20 @@
   window.addEventListener("error", (ev) => { if (ev && ev.error) showError(ev.error); });
   window.addEventListener("unhandledrejection", (ev) => { const r = ev && ev.reason; if (r && r.code && /^(not_granted|capability_disabled|cancelled)$/.test(r.code)) return; showError(r && r.message ? r : { message: (r && (r.code || r.message)) || "request failed" }); });
 
+  // Which cost to put on past Shopify sales: "current" = today's Shopify cost on every sale (views *_costed, default),
+  // "recorded" = the cost Shopify stored on each order when it was placed. Per viewer; changing it reloads the page.
+  let costBasis = "current";
+  try { costBasis = localStorage.getItem("jt-cost-basis") === "recorded" ? "recorded" : "current"; } catch (_) {}
+  const SRC = costBasis === "current"
+    ? { sales: "jt.v_shopify_sales_costed", daily: "jt.v_shopify_daily_costed", psales: "jt.v_product_sales_daily_costed" }
+    : { sales: "jt.shopify_sales", daily: "jt.shopify_daily", psales: "jt.v_product_sales_daily" };
+  function setCostBasis(b) { try { localStorage.setItem("jt-cost-basis", b); } catch (_) {} location.reload(); }
+  document.addEventListener("DOMContentLoaded", () => document.querySelectorAll("select.basis-sel").forEach(el => {
+    el.value = costBasis; el.addEventListener("change", () => setCostBasis(el.value));
+  }));
+
   window.JT = {
+    costBasis, src: SRC, setCostBasis,
     showError,
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB,
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),

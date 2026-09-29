@@ -69,3 +69,13 @@ corrections while costs were being cleaned up). Changes take effect the day afte
   `amzdeny/<sku>.variants` so the next guess shows; "No match" sets `amzdeny/<sku>.none`.
 - Checked against the 85 hand-made mappings (Sep 25): top guess agreed on 77; most of the rest are duplicate products
   in Shopify (e.g. two Hyper-G set products).
+
+## Cost basis for past Shopify sales
+
+- Shopify stores the cost of goods on each order as it was when the order was placed. The dashboard instead uses the
+  variant's **current** Shopify cost for every past sale by default (views `jt.v_shopify_sales_costed`,
+  `jt.v_shopify_daily_costed`, `jt.v_product_sales_daily_costed`, migration 010), so fixing a wrong cost fixes history.
+- Rule: a sales row for a variant with a cost today = units × today's cost, no longer "sold without cost". Custom items
+  and variants still without a cost keep what Shopify recorded. Saved per-order costs still apply on top.
+- The "Costs" switch (Shopify and Product sales tabs) flips to "As recorded on each order" (per viewer, stored in the
+  browser). Amazon profit uses current costs for all history while `settings/costs.historyStart` is null (cleanup mode).
