@@ -149,3 +149,6 @@ New checks are one more entry in `issuesOf`.
   no invoice linked from the Invoice stage on, invoice total ≠ order total, missing cost, no PO #, received 14+ days
   and not on an Amazon shipment.
 - Web wrappers: `public.jt_prep_order_save / _status / _receive / _delete`.
+- Step back (migration 016): shipments shipped → started put the units back (moves `unship`) and send a linked order
+  back to received; orders received → an earlier stage take the received units back out (moves `unreceive`,
+  refused if the prep center no longer has them), shipped → received changes no stock.

@@ -248,3 +248,43 @@ def test_prep_order_receive_and_ship(conn):
     cur.execute("select coalesce(sum(qty), 0) from jt.prep_items"); assert cur.fetchone()[0] == 0
     draft = call("prep_order_save", {"vendor": "Head", "lines": [{"variant_id": 701, "qty": 1}]})
     assert call("prep_order_delete", {"id": draft}) is True
+
+
+def test_prep_step_back(conn):
+    import pytest
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost) values (801, 80, 5), (802, 80, 7)")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    stock = lambda: (cur.execute("select variant_id, qty from jt.prep_items order by 1"), cur.fetchall())[1]
+    oid = call("prep_order_save", {"vendor": "Head", "lines": [{"variant_id": 801, "qty": 10}, {"variant_id": 802, "qty": 4}]})
+    call("prep_order_status", {"id": oid, "status": "packing_slip"})
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 801, "qty": 10}, {"variant_id": 802, "qty": 4}]})
+    assert stock() == [(801, 10), (802, 4)]
+    # outgoing shipment from the order: ship, then step back -> stock returns, order back to received
+    sid = call("prep_shipment_save", {"name": "FBA3", "order_id": oid, "lines": [{"variant_id": 801, "qty": 6}]})
+    call("prep_shipment_status", {"id": sid, "status": "shipped"})
+    assert stock() == [(801, 4), (802, 4)]
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "shipped"
+    assert call("prep_shipment_status", {"id": sid, "status": "started"}) == "started"
+    assert stock() == [(801, 10), (802, 4)]
+    cur.execute("select status, shipped_at from jt.prep_shipments where id = %s", (sid,)); assert cur.fetchone() == ("started", None)
+    cur.execute("select status, stage_at ? 'shipped' from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == ("received", False)
+    cur.execute("select count(*), sum(qty_change) from jt.prep_moves where kind = 'unship'"); assert cur.fetchone() == (1, 6)
+    assert call("prep_shipment_status", {"id": sid, "status": "open"}) == "open"
+    call("prep_shipment_delete", {"id": sid})
+    # order: shipped -> received (no stock change), received -> packing slip takes the units back out
+    call("prep_order_status", {"id": oid, "status": "shipped"})
+    assert call("prep_order_status", {"id": oid, "status": "received"}) == "received"
+    assert stock() == [(801, 10), (802, 4)]
+    assert call("prep_order_status", {"id": oid, "status": "packing_slip"}) == "packing_slip"
+    assert stock() == []
+    cur.execute("select sum(qty_received) from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] == 0
+    cur.execute("select count(*) from jt.prep_moves where kind = 'unreceive'"); assert cur.fetchone()[0] == 2
+    # can't un-receive stock that already went out
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 801, "qty": 10}]})
+    s2 = call("prep_shipment_save", {"name": "FBA4", "lines": [{"variant_id": 801, "qty": 8}]})
+    call("prep_shipment_status", {"id": s2, "status": "shipped"})
+    cur.execute("savepoint a")
+    with pytest.raises(Exception, match="only 2"):
+        call("prep_order_status", {"id": oid, "status": "packing_slip"})
+    cur.execute("rollback to savepoint a")

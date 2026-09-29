@@ -206,6 +206,7 @@
     renderModal();
   }
   const STATUS = { open: ["Open", "pos"], started: ["Started", "web"], shipped: ["Shipped", "ok"] };
+  const SPREV = { started: "open", shipped: "started" };
   const statusPill = (st) => `<span class="pill ${STATUS[st][1]}">${STATUS[st][0]}</span>`;
   const shipTitle = (sh) => sh.name || `Shipment #${sh.id}`;
 
@@ -294,6 +295,7 @@
       const next = lvl === "bad" ? `<button class="mini" data-sact="fix" data-sid="${sh.id}">Fix</button>`
         : sh.status === "open" ? `<button class="mini" data-sact="started" data-sid="${sh.id}">Start</button>`
         : sh.status === "started" ? `<button class="mini primary" data-sact="ship" data-sid="${sh.id}">Mark shipped</button>` : "";
+      const back = SPREV[sh.status] ? `<button class="mini" data-sact="back" data-sid="${sh.id}" title="Move back to ${STATUS[SPREV[sh.status]][0].toLowerCase()}${sh.status === "shipped" ? " — the units go back into the prep center" : ""}">← ${STATUS[SPREV[sh.status]][0]}</button>` : "";
       const when2 = sh.status === "shipped" ? `Shipped ${when(sh.shipped)}${sh.shippedBy ? " · " + esc(sh.shippedBy) : ""}` : sh.status === "started" ? `Started ${when(sh.started)}` : `Created ${when(sh.created)}${sh.createdBy ? " · " + esc(sh.createdBy) : ""}`;
       const contents = contentsOf(sh);
       return `<div class="shipcard ${sh.status}${lvl === "bad" || lvl === "warn" ? " issue-" + lvl : ""}" data-sid="${sh.id}" tabindex="0" role="button" aria-label="Open shipment: ${esc(contents)}${sum ? " — needs attention: " + esc(sum) : ""}">
@@ -301,7 +303,7 @@
         <div class="sc-qty"><b class="num">${n0(units)}</b><span>unit${units === 1 ? "" : "s"}</span><span class="dim">· ${sh.lines.length} product${sh.lines.length === 1 ? "" : "s"} · ${m0(cost)}</span></div>
         <div class="sc-meta">${statusPill(sh.status)}<span class="pill ${sh.dest === "AWD" ? "manual" : "web"}">${esc(sh.dest)}</span><span class="mono">${esc(shipTitle(sh))}</span></div>
         ${sum ? `<div class="sc-issue"><span aria-hidden="true">${lvl === "bad" ? "●" : "▲"}</span><span>${esc(sum)}</span></div>` : ""}
-        <div class="sc-foot"><span class="dim small">${when2}</span><span class="dbtns">${next}</span></div>
+        <div class="sc-foot"><span class="dim small">${when2}</span><span class="dbtns">${back}${next}</span></div>
       </div>`;
     };
     el.innerHTML = (P.shipView === "open" ? `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">Add products by ASIN or SKU</span></button>` : "")
@@ -315,6 +317,7 @@
   const OSTAGE = new Map(OSTAGES), OORDER = OSTAGES.map(x => x[0]);
   const PRE = ["draft", "ordered", "invoice", "packing_slip"];
   const ONEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoice", "Invoice in"], invoice: ["packing_slip", "Packing slip in"] };
+  const OPREV = { ordered: "draft", invoice: "ordered", packing_slip: "invoice", received: "packing_slip", shipped: "received" };
   const OPILL = { draft: "pos", ordered: "manual", invoice: "other", packing_slip: "other", received: "ok", shipped: "web" };
   const RECEIVED_IDLE_DAYS = 14;
   const lineCost = (l) => l.unitCost != null ? l.unitCost : l.shopCost;
@@ -384,6 +387,7 @@
       const next = ONEXT[o.status] ? `<button class="mini" data-oact="next" data-oid="${o.id}">${ONEXT[o.status][1]}</button>`
         : o.status === "packing_slip" ? `<button class="mini primary" data-oact="recv" data-oid="${o.id}">Receive</button>`
         : o.status === "received" ? (out ? `<button class="mini" data-oact="goship" data-oid="${o.id}" data-sid="${out.id}">Open shipment</button>` : `<button class="mini primary" data-oact="ship" data-oid="${o.id}">Ship to Amazon</button>`) : "";
+      const back = OPREV[o.status] ? `<button class="mini" data-oact="back" data-oid="${o.id}" title="Move back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}${o.status === "received" ? " — the received units come out of the prep center" : ""}">← ${OSTAGE.get(OPREV[o.status])}</button>` : "";
       const whenTxt = o.status === "shipped" ? `Shipped ${when(o.stageAt.shipped || o.updated)}` : got ? `Received ${when(o.stageAt.received)}`
         : o.expected ? `Expected ${shortDate(o.expected)}` : `${OSTAGE.get(o.status)} ${when(o.stageAt[o.status] || o.created)}`;
       const t = o.lines.map(l => l.title), contents = !t.length ? "No products yet" : t.length === 1 ? t[0] : t.length === 2 ? t[0] + " + " + t[1] : `${t[0]} + ${t.length - 1} more`;
@@ -393,7 +397,7 @@
         ${got && ord ? `<div class="sc-bar"><i style="width:${Math.min(100, rec / ord * 100).toFixed(0)}%"></i></div>` : ""}
         <div class="sc-meta"><span class="pill ${OPILL[o.status]}">${OSTAGE.get(o.status)}</span><span>${esc(o.vendor || "No vendor")}</span><span class="mono">${esc(orderTitle(o))}</span></div>
         ${sum ? `<div class="sc-issue"><span aria-hidden="true">▲</span><span>${esc(sum)}</span></div>` : ""}
-        <div class="sc-foot"><span class="dim small">${whenTxt}</span><span class="dbtns">${next}</span></div>
+        <div class="sc-foot"><span class="dim small">${whenTxt}</span><span class="dbtns">${back}${next}</span></div>
       </div>`;
     };
     el.innerHTML = (P.oView === "open" ? `<button class="shipcard newcard" data-oact="new"><span class="plus">+</span><b>New vendor order</b><span class="dim small">Products by Shopify SKU, UPC, ASIN or Amazon SKU</span></button>` : "")
@@ -483,10 +487,12 @@
       ${editLines ? `<div class="addbox"><label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(M.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
         ${M.add.trim() ? `<div class="mres">${!cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((v, i) => `<button data-oadd="${i}"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.sku)} · ${esc(v.vendor)}${v.asku ? " · for " + esc(v.asku) : ""} · ${m(v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}
       ${out.length ? `<div class="row small muted">Amazon Outgoing: ${out.map(sh => `<button class="linkbtn small" data-fix="goto" data-arg="${sh.id}">${esc(shipTitle(sh))} (${STATUS[sh.status][0].toLowerCase()})</button>`).join(" · ")}</div>` : ""}
+      ${M.confirm === "unrecv" ? (() => { const u = M.lines.reduce((a, l) => a + (l.received || 0), 0);
+        return `<div class="note warn">Move this order back to packing slip? The ${n0(u)} received unit${u === 1 ? "" : "s"} come back out of the prep center (it's refused if some have already shipped out). <span class="dbtns"><button class="mini primary" data-oact="do-back" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, move it back"}</button><button class="mini" data-oact="no">Cancel</button></span></div>`; })() : ""}
       ${M.confirm === "del" ? `<div class="note warn">Delete this order? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-oact="do-del" ${P.busy ? "disabled" : ""}>Yes, delete</button><button class="mini" data-oact="no">Cancel</button></span></div>` : ""}
       ${M.confirm === "shipped" ? `<div class="note warn">Mark this order shipped without an Amazon Outgoing shipment? Prep center stock doesn't change — use this when it went out some other way, and fix the counts with Count stock. <span class="dbtns"><button class="mini primary" data-oact="do-shipped" ${P.busy ? "disabled" : ""}>Yes, mark shipped</button><button class="mini" data-oact="no">Cancel</button></span></div>` : ""}
       <div class="row"><span class="muted small">${M.recv ? `Receiving ${n0(recvUnits)} unit${recvUnits === 1 ? "" : "s"} into the prep center` : `${n0(units)} units ordered${got ? ` · ${n0(rec)} received` : ""} · ${m0(cost)} at cost`}</span>
-        <span class="dbtns right">${ro ? '<button class="btn" data-act="close">Close</button>' : M.recv ? `
+        <span class="dbtns right">${OPREV[M.status] && M.id && !M.recv ? `<button class="btn" data-oact="back">← Back to ${OSTAGE.get(OPREV[M.status]).toLowerCase()}</button>` : ""}${ro ? '<button class="btn" data-act="close">Close</button>' : M.recv ? `
           <button class="btn" data-oact="recv-cancel">Cancel</button><button class="btn primary" data-oact="recv-go" ${!recvUnits || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : `Receive ${n0(recvUnits)} units`}</button>` : `
           ${M.id && !got ? '<button class="btn" data-oact="del">Delete</button>' : ""}
           <button class="btn" data-oact="save" ${P.busy ? "disabled" : ""}>Save</button>
@@ -506,8 +512,8 @@
     try {
       const id = await JT.prep.saveOrder(orderBody(M)); M.id = String(id);
       if (next) await JT.prep.setOrderStatus(id, next);
-      if (!quiet) { const nm = (M.vendor || "Order") + (M.po ? " " + poLabel(M.po) : ""); P.modal = null; note("info", `<b>${esc(nm)}</b> ${next ? "moved to " + OSTAGE.get(next).toLowerCase() : "saved"}.`); }
-      await load(true); P.busy = false; render(); return id;
+      if (!quiet) { const nm = (M.vendor || "Order") + (M.po ? " " + poLabel(M.po) : ""); P.modal = null; note("info", `<b>${esc(nm)}</b> ${next ? (OORDER.indexOf(next) < OORDER.indexOf(M.status) ? "moved back to " : "moved to ") + OSTAGE.get(next).toLowerCase() : "saved"}.`); }
+      await load(true); P.busy = false; render(); refreshTotals(); return id;
     } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't save the order: " + esc(JT.message(e))); return null; }
   }
   async function receiveNow() {
@@ -576,6 +582,9 @@
         if (a === "recv") { openOrder(o.id); orderFix({ fix: "orecv" }); return; }
         if (a === "ship") return shipFromOrder(o);
         if (a === "goship") return openShipment(b.dataset.sid);
+        if (a === "back") { if (o.status === "received") { openOrder(o.id); P.modal.confirm = "unrecv"; renderModal(); return; }
+          try { await JT.prep.setOrderStatus(Number(o.id), OPREV[o.status]); note("info", `${esc(o.vendor)} ${esc(orderTitle(o))} moved back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}.`); await load(true); render(); }
+          catch (err) { note("bad", "Couldn't move it back: " + esc(JT.message(err))); } return; }
         return;
       }
       const c = e.target.closest(".shipcard[data-oid]"); if (c) openOrder(c.dataset.oid);
@@ -620,6 +629,8 @@
       else if (a === "shipped") { M.confirm = "shipped"; renderModal(); }
       else if (a === "do-shipped") saveOrder("shipped");
       else if (a === "del") { M.confirm = "del"; renderModal(); }
+      else if (a === "back") { if (M.status === "received") { M.confirm = "unrecv"; renderModal(); } else saveOrder(OPREV[M.status]); }
+      else if (a === "do-back") saveOrder(OPREV[M.status]);
       else if (a === "no") { M.confirm = false; renderModal(); }
       else if (a === "do-del") { P.busy = true; renderModal(); JT.prep.deleteOrder(Number(M.id)).then(async () => { P.busy = false; P.modal = null; note("info", "Order deleted."); await load(true); render(); })
         .catch(err => { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't delete: " + esc(JT.message(err))); }); }
@@ -628,10 +639,10 @@
 
   function renderMoves() {
     const d = cache; const el = $("prep-moves");
-    const list = d.moves.filter(x => P.moveKind === "all" || x[1] === P.moveKind);
+    const list = d.moves.filter(x => P.moveKind === "all" || x[1] === P.moveKind || x[1] === "un" + P.moveKind);
     document.querySelectorAll("#prep-mkind button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.k === P.moveKind)));
     if (!d.moves.length) { el.innerHTML = `<div class="muted small" style="padding:8px 2px">No activity yet. Counts, shipments to Amazon and the starting inventory will be listed here.</div>`; return; }
-    const KIND = { adjust: '<span class="pill pos">Count</span>', ship: '<span class="pill web">Shipped</span>', seed: '<span class="pill ok">Starting stock</span>', receive: '<span class="pill other">Received</span>' };
+    const KIND = { adjust: '<span class="pill pos">Count</span>', ship: '<span class="pill web">Shipped</span>', seed: '<span class="pill ok">Starting stock</span>', receive: '<span class="pill other">Received</span>', unship: '<span class="pill warn">Un-shipped</span>', unreceive: '<span class="pill warn">Un-received</span>' };
     el.innerHTML = `<div class="tbl-wrap tall"><table class="prepm"><thead><tr><th class="l">When</th><th class="l">What</th><th class="l">Product</th><th>Change</th><th>After</th><th class="l">Shipment</th><th class="l">By</th><th class="l">Note</th></tr></thead><tbody>${
       list.map(x => { const [at, kind, vid, asku, chg, after, shipment, dest, nt, by, title, sku] = x;
         return `<tr><td class="l small">${when(at)}</td><td class="l">${KIND[kind] || esc(kind)}</td>
@@ -758,9 +769,11 @@
             || '<span class="muted small">Nothing in the prep center matches that ASIN or SKU.</span>'}</div>` : ""}
         </div>`}
         ${M.confirm === "ship" ? `<div class="note warn">Mark <b>${esc(M.shipment || "this shipment")}</b> shipped to ${esc(M.dest)}? ${n0(units)} units (${lines} product${lines === 1 ? "" : "s"}, ${m0(cost)} at cost) leave the prep center. This can't be undone. <span class="dbtns"><button class="mini primary" data-act="do-ship" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, shipped"}</button><button class="mini" data-act="no-ship">Cancel</button></span></div>` : ""}
+        ${M.confirm === "unship" ? (() => { const u = M.lines.reduce((a, k) => a + (Number(M.qty[k]) || 0), 0), o = M.sh && M.sh.orderId && cache.orders.find(x => x.id === String(M.sh.orderId));
+          return `<div class="note warn">Move <b>${esc(M.shipment || "this shipment")}</b> back to started? ${n0(u)} units go back into the prep center${o && o.status === "shipped" ? `, and ${esc(o.vendor)} ${esc(orderTitle(o))} goes back to received` : ""}. <span class="dbtns"><button class="mini primary" data-act="do-unship" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, move it back"}</button><button class="mini" data-act="no-ship">Cancel</button></span></div>`; })() : ""}
         ${M.confirm === "del" ? `<div class="note warn">Delete this shipment? Nothing has left the prep center, so no stock changes. <span class="dbtns"><button class="mini primary" data-act="do-del" ${P.busy ? "disabled" : ""}>Yes, delete</button><button class="mini" data-act="no-ship">Cancel</button></span></div>` : ""}
         <div class="row"><span class="muted small">${lines ? `${n0(units)} units · ${lines} product${lines === 1 ? "" : "s"} · ${m0(cost)} at cost` : ro ? "" : rows.length ? "Enter how many units of each product are going." : "Add the products in this shipment."}${blocked && M.status === "started" ? ' · <span class="neg">fix the red items above to mark it shipped</span>' : ""}</span>
-          <span class="dbtns right">${ro ? '<button class="btn" data-act="close">Close</button>' : `
+          <span class="dbtns right">${ro ? '<button class="btn" data-act="unship-ask">← Back to started</button><button class="btn" data-act="close">Close</button>' : `
             ${M.id ? '<button class="btn" data-act="del">Delete</button>' : ""}
             <button class="btn" data-act="save" ${bad || P.busy ? "disabled" : ""}>Save</button>
             ${M.status === "open" ? `<button class="btn primary" data-act="save-start" ${!lines || bad || P.busy ? "disabled" : ""}>Save &amp; start</button>` : ""}
@@ -811,8 +824,18 @@
       await load(true); render(); refreshTotals();
     } catch (e) { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't save the shipment: " + esc(JT.message(e))); }
   }
+  async function unship() {
+    const M = P.modal; if (!M || !M.id) return;
+    P.busy = true; renderModal();
+    try {
+      await JT.prep.setShipmentStatus(Number(M.id), "started");
+      const nm = M.shipment || "Shipment #" + M.id; P.busy = false; P.modal = null;
+      note("info", `<b>${esc(nm)}</b> moved back to started; its units are back in the prep center.`);
+      P.shipView = "open"; await load(true); render(); refreshTotals();
+    } catch (e) { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't move it back: " + esc(JT.message(e))); }
+  }
   async function quickStatus(id, next) {
-    try { await JT.prep.setShipmentStatus(Number(id), next); note("info", next === "started" ? "Shipment started." : ""); await load(true); render(); }
+    try { await JT.prep.setShipmentStatus(Number(id), next); note("info", next === "started" ? "Shipment started." : next === "open" ? "Shipment moved back to open." : ""); await load(true); render(); }
     catch (e) { note("bad", "Couldn't update the shipment: " + esc(JT.message(e))); }
   }
   async function deleteShipment() {
@@ -835,6 +858,8 @@
       const b = e.target.closest("button[data-sact]");
       if (b) { e.stopPropagation(); if (b.dataset.sact === "new") return openShip(); if (b.dataset.sact === "started") return quickStatus(b.dataset.sid, "started");
         if (b.dataset.sact === "fix") return openShipment(b.dataset.sid);
+        if (b.dataset.sact === "back") { const sh = cache.shipments.find(x => x.id === b.dataset.sid);
+          if (sh.status === "shipped") { openShipment(sh.id); P.modal.confirm = "unship"; renderModal(); } else quickStatus(sh.id, SPREV[sh.status]); return; }
         if (b.dataset.sact === "ship") { openShipment(b.dataset.sid); P.modal.confirm = "ship"; renderModal(); } return; }
       const c = e.target.closest(".shipcard[data-sid]"); if (c) openShipment(c.dataset.sid);
     });
@@ -890,6 +915,8 @@
       if (b.dataset.act === "no-ship") { M.confirm = false; renderModal(); return; }
       if (b.dataset.act === "do-ship") return saveShipment("shipped");
       if (b.dataset.act === "do-del") return deleteShipment();
+      if (b.dataset.act === "unship-ask") { M.confirm = "unship"; renderModal(); return; }
+      if (b.dataset.act === "do-unship") return unship();
     });
   }
 
