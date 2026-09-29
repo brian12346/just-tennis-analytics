@@ -129,7 +129,7 @@ table.lines tr.need input{border-color:var(--warn)}
 .tabs button{border:0;background:transparent;padding:8px 14px;cursor:pointer;color:var(--muted);font-weight:600;font-family:var(--display);font-size:16px;letter-spacing:.01em;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--sales)}
 #tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices,#tab-amzmatch,#tab-costs,#tab-fba,#tab-prep{display:flex;flex-direction:column;gap:18px}
-#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#tab-costs[hidden],#tab-fba[hidden],#tab-prep[hidden],#prep-note[hidden],#prep-modal[hidden],#prep-filters[hidden],#fba-note[hidden],#pc-note[hidden],#pc-confirm[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
+#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#tab-costs[hidden],#tab-fba[hidden],#tab-prep[hidden],#prep-unloaded[hidden],#prep-note[hidden],#prep-modal[hidden],#prep-filters[hidden],#fba-note[hidden],#pc-note[hidden],#pc-confirm[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
 /* product sales */
 .tbl-wrap.xl{max-height:720px}
 .tree{display:inline-flex;align-items:center;gap:4px;white-space:normal}
@@ -386,3 +386,4 @@ table.prept tr.picked td{background:var(--sales-soft)}
 .pmgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 14px;align-items:end}
 .pmgrid .inp{width:100%}
 .inp.bad{border-color:var(--bad);background:var(--bad-bg)}
+#prep-unloaded summary{cursor:pointer}

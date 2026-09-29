@@ -21,7 +21,7 @@
     if (loading) return loading;
     if (cache && !refresh) return cache;
     loading = (async () => {
-      const [items, moves, maps, lst] = await Promise.all([
+      const [items, moves, maps, lst, seed] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
           "from jt.prep_items i left join jt.variants v on v.variant_id = i.variant_id order by i.updated_at desc", refresh),
@@ -32,8 +32,13 @@
           "from jt.docs where collection = 'amzmap'", "id", 4, refresh),
         // Amazon listing titles, ASINs and prices (All Listings report; FBA report price wins when there is one)
         JT.rowsSplit(["r->>0", "r->>1", "r->>2", "r->>3"], "from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'amzlistings'", "d.id", 2, refresh),
+        // starting-inventory file(s): [seller SKU(s), ASIN, units] — ASINs for listings missing elsewhere, and lines that couldn't be loaded
+        JT.rows(["d.id", "d.data->>'file'", "r->>0", "r->>1", "(r->>2)::int"], "from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'prepseed'", refresh),
       ]);
       const listing = new Map(lst.map(([sku, asin, title, price]) => [sku, { sku, asin: asin || "", title: title || "", price: price == null ? null : +price }]));
+      for (const [, , skus, asin] of seed) for (const k of String(skus || "").split(",").map(s => s.trim()).filter(Boolean)) {
+        const l = listing.get(k); if (!l) listing.set(k, { sku: k, asin: asin || "", title: "", price: null }); else if (!l.asin) l.asin = asin || "";
+      }
       const fd = JT.fba && JT.fba.data;
       if (fd) for (const it of fd.items) { const l = listing.get(it.sku) || { sku: it.sku, asin: it.asin, title: it.name }; if (it.price) l.price = it.price; listing.set(it.sku, l); }
       const byVariant = new Map();    // variant id -> Amazon listings mapped to it
@@ -53,7 +58,11 @@
           cost: cost == null ? null : +cost, price: price == null ? null : +price, shopQty, listings, target, val,
           amzUnits, amzPrice: val && val.price != null ? val.price : null, amzValue: val && val.price != null ? amzUnits * val.price : null };
       });
-      cache = { rows, moves, byVariant, loadedAt: Date.now() };
+      // seed lines whose seller SKU(s) have no Shopify mapping: not in the prep center until mapped and counted in
+      const mapped = new Set(maps.filter(x => x[3] === "shopify" && x[1]).map(x => x[0]));
+      const unloaded = seed.filter(([, , skus]) => !String(skus || "").split(",").some(k => mapped.has(k.trim())))
+        .map(([id, file, skus, asin, qty]) => ({ id, file, skus, asin, qty: +qty || 0 }));
+      cache = { rows, moves, byVariant, unloaded, loadedAt: Date.now() };
       return cache;
     })();
     try { return await loading; } finally { loading = null; }
@@ -140,7 +149,7 @@
       $("prep-body").innerHTML = `<div class="tbl-wrap tall"><table class="prept"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th>On hand</th><th>Unit cost</th><th>Ext. cost</th><th>Amazon price</th><th>Ext. at Amazon</th><th class="l">Updated</th><th class="l"></th></tr></thead><tbody>${
         rows.map(r => {
           const tg = r.target;
-          const lst = tg ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(tg.asin || "")}" target="_blank" rel="noopener">${esc(tg.title || tg.sku)}</a><div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.units > 1 ? ` · ${tg.units} per Amazon unit` : ""}</div>`
+          const lst = tg ? `${tg.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(tg.asin)}" target="_blank" rel="noopener">${esc(tg.title || tg.asin)}</a>` : esc(tg.title || "")}<div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.asin ? ` · <span class="mono">${esc(tg.asin)}</span>` : ""}${tg.units > 1 ? ` · ${tg.units} per Amazon unit` : ""}</div>`
             : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
           return `<tr><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}${r.type ? " · " + esc(r.type) : ""}</div></td>
             <td class="l">${lst}</td>
@@ -152,6 +161,10 @@
         }).join("") || `<tr><td class="l muted" colspan="9">No products match.</td></tr>`}</tbody>
         <tfoot><tr><td class="l">Total · ${rows.length.toLocaleString()} products</td><td></td><td>${n0(t.units)}</td><td></td><td>${m0(t.cost)}</td><td></td><td>${m0(t.amz)}</td><td></td><td></td></tr></tfoot></table></div>`;
     }
+    const un = d.unloaded || [];
+    $("prep-unloaded").hidden = !un.length;
+    if (un.length) $("prep-unloaded").innerHTML = `<details class="note warn"><summary><b>${un.length} line${un.length === 1 ? "" : "s"} from the starting file weren't loaded (${n0(un.reduce((a, x) => a + x.qty, 0))} Amazon units)</b> — their Amazon SKU isn't mapped to a Shopify product yet. Map them on the Amazon matching tab, then add them here with Count stock.</summary>
+      <table class="prepm" style="margin-top:8px"><thead><tr><th class="l">Amazon SKU</th><th class="l">ASIN</th><th>Units</th></tr></thead><tbody>${un.map(x => `<tr><td class="l mono">${esc(x.skus)}</td><td class="l">${x.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(x.asin)}" target="_blank" rel="noopener">${esc(x.asin)}</a>` : ""}</td><td>${n0(x.qty)}</td></tr>`).join("")}</tbody></table></details>`;
     renderMoves();
     renderModal();
   }
