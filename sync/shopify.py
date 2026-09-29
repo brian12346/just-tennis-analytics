@@ -264,10 +264,12 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
     """Snapshot every variant's cost; record cost changes against the previous snapshot."""
     from .common import upsert
     with conn.cursor() as cur:
-        cur.execute("select variant_id, unit_cost from jt.variants")
-        prev = {v: (float(c) if c is not None else None) for v, c in cur.fetchall()}
+        cur.execute("""select variant_id, unit_cost, sku, product_title, variant_title, vendor, product_type, status, price,
+                              inventory_qty, barcode from jt.variants""")
+        snap = {r[0]: r for r in cur.fetchall()}
+        prev = {v: (float(r[1]) if r[1] is not None else None) for v, r in snap.items()}
     baseline = not prev
-    rows, changes, after = [], [], None
+    rows, changes, log, after = [], [], [], None
     now = dt.datetime.now(dt.timezone.utc)
     while True:
         page = shop.graphql(VARIANTS_Q, {"first": 200, "after": after})["productVariants"]
@@ -284,6 +286,7 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
                          v.get("inventoryQuantity"), inv.get("tracked"), (v.get("barcode") or "").strip()))
             if baseline:
                 continue
+            log_changes(log, now, snap.get(vid), rows[-1])
             if vid not in prev:
                 if cost is not None:
                     changes.append((today, vid, None, cost, price, "new variant"))
@@ -307,13 +310,49 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
     # returned under half of what we had, which would mean a partial fetch rather than a cleanup.
     removed = restored = 0
     with conn.cursor() as cur:
-        cur.execute("update jt.variants set removed_at = null where seen_at >= %s and removed_at is not null", (now,))
-        restored = cur.rowcount
+        cur.execute("update jt.variants set removed_at = null where seen_at >= %s and removed_at is not null returning variant_id", (now,))
+        back = [r[0] for r in cur.fetchall()]; restored = len(back)
+        gone = []
         if len(rows) >= 0.5 * len(prev):
-            cur.execute("update jt.variants set removed_at = now() where seen_at < %s and removed_at is null", (now,))
-            removed = cur.rowcount
+            cur.execute("update jt.variants set removed_at = now() where seen_at < %s and removed_at is null returning variant_id", (now,))
+            gone = [r[0] for r in cur.fetchall()]; removed = len(gone)
+        if not baseline:
+            log += [(now, v, "restored", None, None) for v in back] + [(now, v, "removed", None, None) for v in gone]
+            if log:
+                cur.executemany("insert into jt.catalog_changes (synced_at, variant_id, kind, old, new) values (%s, %s, %s, %s, %s)", log)
+            cur.execute("delete from jt.catalog_changes where synced_at < now() - interval '120 days'")
     return {"variants": len(rows), "changes": len(changes), "baseline": baseline,
-            "no_cost": sum(1 for r in rows if r[10] is None), "removed": removed, "restored": restored}
+            "no_cost": sum(1 for r in rows if r[10] is None), "removed": removed, "restored": restored, "logged": len(log)}
+
+
+def _txt(v):
+    if v is None:
+        return None
+    if isinstance(v, float) or hasattr(v, "quantize"):
+        return f"{float(v):.2f}"
+    return str(v)
+
+
+def log_changes(log: list, now, old, new) -> None:
+    """One catalog change row per field that changed: (synced_at, variant_id, kind, old, new)."""
+    vid = new[0]
+    if old is None:
+        log.append((now, vid, "new", None, None))
+        return
+    # old: variant_id, unit_cost, sku, product_title, variant_title, vendor, product_type, status, price, inventory_qty, barcode
+    # new: vid, pid, sku, ptitle, vtitle, display, vendor, ptype, status, price, cost, updated, now, item, qty, tracked, barcode
+    num = lambda x: None if x is None else round(float(x), 2)  # noqa: E731
+    title = lambda t, v: t + (" - " + v if v else "")  # noqa: E731
+    pairs = [("cost", num(old[1]), num(new[10])), ("price", num(old[8]), num(new[9])),
+             ("stock", old[9], new[14]), ("status", old[7] or "", new[8] or ""),
+             ("title", title(old[3] or "", old[4] or ""), title(new[3] or "", new[4] or "")),
+             ("sku", old[2] or "", new[2] or ""), ("barcode", old[10] or "", new[16] or ""),
+             ("vendor", old[5] or "", new[6] or ""), ("type", old[6] or "", new[7] or "")]
+    for kind, a, b in pairs:
+        if kind == "stock" and b is None:
+            continue
+        if a != b:
+            log.append((now, vid, kind, _txt(a), _txt(b)))
 
 
 COST_UPDATE_M = """mutation($id: ID!, $input: InventoryItemInput!) {

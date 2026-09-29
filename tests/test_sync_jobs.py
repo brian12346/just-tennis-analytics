@@ -106,7 +106,7 @@ def test_sales_daily_orders_and_catalog(conn):
     assert cur.fetchall() == [(7788625494301, "#21677")]
 
     first = sh.sync_catalog(shop, conn, dt.date(2026, 9, 24))
-    assert first == {"variants": 2, "changes": 0, "baseline": True, "no_cost": 1, "removed": 0, "restored": 0}
+    assert first == {"variants": 2, "changes": 0, "baseline": True, "no_cost": 1, "removed": 0, "restored": 0, "logged": 0}
     changed = [dict(VARIANTS[0], inventoryItem={"unitCost": {"amount": "6.83"}}), VARIANTS[1]]
     second = sh.sync_catalog(FakeShopify(changed), conn, dt.date(2026, 9, 25))
     assert second["changes"] == 1
@@ -228,3 +228,15 @@ def test_po_status_not_available_then_read(conn):
     assert sh.sync_po_status(Open(), conn) == 2
     cur.execute("select id, shopify_po_status, shopify_received_by from jt.prep_orders where id in (%s, %s) order by id", (a, b))
     assert cur.fetchall() == [(a, "PARTIALLY_RECEIVED", ""), (b, "RECEIVED", "Shopify")]
+
+
+def test_catalog_change_log(conn):
+    sh.sync_catalog(FakeShopify(), conn, dt.date(2026, 9, 24))                      # baseline: nothing logged
+    changed = [dict(VARIANTS[0], price="14.99", sku="HG17-X", inventoryQuantity=11, inventoryItem={"id": "gid://shopify/InventoryItem/705", "unitCost": {"amount": "7.25"}}),
+               dict(VARIANTS[1], id="gid://shopify/ProductVariant/7")]               # 6 gone, 7 new (2 of 2 kept: no partial-fetch guard)
+    out = sh.sync_catalog(FakeShopify(changed), conn, dt.date(2026, 9, 25))
+    cur = conn.cursor()
+    cur.execute("select variant_id, kind, old, new from jt.catalog_changes order by variant_id, kind")
+    assert cur.fetchall() == [(5, "cost", "8.50", "7.25"), (5, "price", "13.99", "14.99"), (5, "sku", "HG17", "HG17-X"), (5, "stock", "14", "11"),
+                              (6, "removed", None, None), (7, "new", None, None)]
+    assert out["logged"] == 6

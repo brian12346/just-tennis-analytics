@@ -286,3 +286,11 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - That API is preview-only for now. Until a live store is allowed, the sync records why in `jt.settings['shopify_po_api']` and the dashboard says "not available yet".
 - A Shopify status of received or closed marks the PO "Received in Shopify" (by 'Shopify') if it wasn't already.
 - Needs the scope `read_inventory_purchase_orders` on the Shopify app once Shopify offers it.
+
+### Catalog change log (031)
+
+- `jt.catalog_changes` records what each catalog sync changed per product: new, removed, restored, cost, price, stock, status, title, sku, barcode, vendor, type.
+  - Each change has its old and new value as text.
+  - `synced_at` is the sync's run time.
+  - Kept 120 days.
+- The dashboard's "What changed" pop-up (changes.js) shows one sync at a time. It opens by itself after Sync from Shopify on the Shopify cost mapping tab, and from the What changed button next to it.

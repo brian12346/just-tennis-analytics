@@ -176,7 +176,7 @@
       : "Type the cost of one unit. Enter moves to the next box. When you enter a cost, other empty rows with the same item fill in too.";
     $("cm-pfilters").hidden = C.mode !== "products"; $("cm-ofilters").hidden = C.mode === "products";
     $("cm-useshop").hidden = C.mode === "products";
-    $("cm-catsync").hidden = C.mode !== "products";
+    $("cm-catsync").hidden = C.mode !== "products"; $("cm-changes").hidden = C.mode !== "products";
     if (C.mode === "products") { $("cm-bulk").hidden = true; renderProducts(); return; }
     const t = $("cm-table");
     const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("cmi-") && t.contains(ae) ? ae.id : null;
@@ -458,6 +458,7 @@
           (+d.removed ? ` · ${d.removed} no longer in Shopify (hidden; see Status: Removed from Shopify)` : "") +
           (+d.restored ? ` · ${d.restored} back in Shopify` : "") + (+d.changes ? ` · ${d.changes} cost change${+d.changes > 1 ? "s" : ""}` : "") + ".");
         C.cat = null; await loadCatalog(true);
+        if (window.JTChanges) window.JTChanges.open({ since: t0 });        // what this sync changed
       }
     } catch (e) { note("bad", "Couldn't start a sync from Shopify: " + esc(errMsg(e))); }
     btn.disabled = false; btn.textContent = "Sync from Shopify";
@@ -520,6 +521,7 @@
   document.querySelectorAll("#cm-mode button").forEach(b => b.addEventListener("click", () => { C.mode = b.dataset.mode; C.page = 0; render(); }));
   ["cm-pstatus", "cm-pcost", "cm-psort"].forEach(id => $(id).addEventListener("change", () => { C.page = 0; render(); }));
   $("cm-catsync").addEventListener("click", syncCatalog);
+  $("cm-changes").addEventListener("click", () => window.JTChanges && window.JTChanges.open());
   $("cm-useshop").addEventListener("click", () => {
     const touched = new Set();
     document.querySelectorAll("#cm-table input.cmin").forEach(i => {
