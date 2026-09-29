@@ -521,6 +521,10 @@ html{scroll-padding-top:130px}
 .lockup{display:inline-flex;align-items:center;gap:10px;color:inherit;text-decoration:none}
 .lockup .word{font-size:20px;font-weight:600;letter-spacing:-0.02em;line-height:1}
 .pro{font-size:10px;font-weight:700;letter-spacing:.14em;background:var(--brand-gold);color:#002676;padding:3px 6px;border-radius:var(--radius-sm);line-height:1.2}
+.bar-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.bar-right .acct{margin-left:0}
+.ver{font-size:12px;font-weight:600;color:var(--header-ink);background:var(--header-raised);border:1px solid rgba(255,255,255,.18);border-radius:var(--radius-pill);padding:3px 10px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.ver .sha{font-weight:400;color:var(--header-muted)}
 .ws{font-size:13px;color:var(--header-muted);padding-left:10px;border-left:1px solid rgba(255,255,255,.22);white-space:nowrap}
 .appbar .mini{background:var(--header-raised);border-color:rgba(255,255,255,.18);color:var(--header-ink)}
 .appbar .tabs{margin:0 -4px;padding:2px 0}
@@ -531,7 +535,7 @@ html{scroll-padding-top:130px}
   .appbar-in{padding:8px 16px 6px;gap:6px}
   .lockup .word{font-size:17px}
   .lockup .mark{width:26px;height:26px}
-  .ws,.build{display:none}
+  .ws,.build,.ver .sha,#whoami{display:none}
   .appbar .tabs button{padding:6px 10px;font-size:14px}
 }
 

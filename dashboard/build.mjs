@@ -26,6 +26,9 @@ if (MARK.test(html)) { console.error("nested @inline markers are not supported")
 let sha = process.env.VERCEL_GIT_COMMIT_SHA || "";
 if (!sha) { try { sha = execSync("git rev-parse HEAD", { cwd: here, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch (_) {} }
 html = html.replace(/__BUILD__/g, (sha || "local").slice(0, 7));
+// Version number in the header bar (dashboard/VERSION, bumped with each release while in active development).
+const version = readFileSync(join(here, "VERSION"), "utf8").trim();
+html = html.replace(/__VERSION__/g, version);
 
 mkdirSync(join(DIST, "web"), { recursive: true });
 writeFileSync(join(DIST, "just-tennis-sales.html"), html);

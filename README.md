@@ -45,3 +45,8 @@ Check job health with `select * from jt.v_sync_status;`.
 
 Secrets (database URL, Shopify app credentials, ShipStation key) live only in GitHub Actions secrets
 and your local `.env`, never in the repo.
+
+## Version number
+
+The header bar shows `v<version> · <commit>`. The version is `dashboard/VERSION`; bump it with every release
+(patch number while in active development: 0.9.0 → 0.9.1 …). The commit hash comes from Vercel or `git rev-parse`.
