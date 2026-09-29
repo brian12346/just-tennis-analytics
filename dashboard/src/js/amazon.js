@@ -559,10 +559,11 @@
     const body = [...rows].reverse().map(r => {
       keys.forEach(k => T[k] += r[k]);
       const ob = Object.entries(r.otherBreak).map(([k, v]) => `${({ storage: "Storage", fbaother: "FBA other", service: "Service", labels: "Labels", adjust: "Adjustments" })[k] || k} ${m(v)}`).join(" · ");
-      return `<tr><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td>${r.orders.toLocaleString()}</td><td>${r.units.toLocaleString()}</td><td><b>${m(r.sales)}</b></td>${cell(r.promo)}${cell(r.sellfees)}${cell(r.fbafees)}<td>${m(r.ordersNet)}</td>${cell(r.refunds)}<td>${m(r.cogs)}</td>${cell(r.gp)}<td class="${r.other < 0 ? "neg" : ""}" title="${esc(ob)}">${m(r.other)}</td><td class="${r.profit < 0 ? "neg" : ""}"><b>${m(r.profit)}</b></td><td class="dim">${r.sales ? pct(r.profit / r.sales) : ""}</td><td class="dim">${r.sales ? pct(r.mappedSales / r.sales) : ""}</td></tr>`;
+      return `<tr class="${r.profit < 0 ? "lossday" : r.sales && r.mappedSales / r.sales < 0.95 ? "flag" : ""}"><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td>${r.orders.toLocaleString()}</td><td>${r.units.toLocaleString()}</td><td><b>${m(r.sales)}</b></td>${cell(r.promo)}${cell(r.sellfees)}${cell(r.fbafees)}<td>${m(r.ordersNet)}</td>${cell(r.refunds)}<td>${m(r.cogs)}</td>${cell(r.gp)}<td class="${r.other < 0 ? "neg" : ""}" title="${esc(ob)}">${m(r.other)}</td><td class="${r.profit < 0 ? "neg" : ""}"><b>${m(r.profit)}</b></td><td class="dim">${r.sales ? pct(r.profit / r.sales) : ""}</td><td class="dim">${r.sales ? pct(r.mappedSales / r.sales) : ""}</td></tr>`;
     }).join("");
     $("az-daily").innerHTML = `<thead><tr>${cols.map((c, i) => `<th class="${i === 0 ? "l" : ""}">${c}</th>`).join("")}</tr></thead><tbody>${body}</tbody>
       <tfoot><tr><td class="l">Total</td><td>${T.orders.toLocaleString()}</td><td>${T.units.toLocaleString()}</td><td>${m(T.sales)}</td><td>${m(T.promo)}</td><td>${m(T.sellfees)}</td><td>${m(T.fbafees)}</td><td>${m(T.ordersNet)}</td><td>${m(T.refunds)}</td><td>${m(T.cogs)}</td><td>${m(T.gp)}</td><td>${m(T.other)}</td><td class="${T.profit < 0 ? "neg" : ""}">${m(T.profit)}</td><td>${T.sales ? pct(T.profit / T.sales) : ""}</td><td>${T.sales ? pct(T.mappedSales / T.sales) : ""}</td></tr></tfoot>`;
+    window.jtLabelCells($("az-daily"));
   }
 
   function renderAzSkus(ag) {

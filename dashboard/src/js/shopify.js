@@ -239,7 +239,7 @@
 
   function render() {
     const dv = derive();
-    renderKpis(dv); renderChart(dv); renderDaily(dv); renderOrders(); renderShipSummary();
+    renderKpis(dv); renderChart(dv); renderDaily(dv); renderOrders(); renderShipSummary(); renderAttn(dv);
     note("daily-note", "bad", state.dailyErr ? esc(mcpMessage(state.dailyErr)) : "");
     note("orders-note", state.ordersErr ? "bad" : "warn",
       state.ordersErr ? esc(mcpMessage(state.ordersErr)) :
@@ -330,11 +330,39 @@
       const c = (dv.perDay.get(r.day) || {}).cost || 0;
       for (const k in tot) tot[k] += k === "cost" ? c : r[k];
       const pas = profitAfterShip(r.gp, r.shipping, c);
-      return `<tr><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td>${r.orders}</td>${cell(r.gross)}${cell(r.discounts)}${cell(r.returns)}<td><b>${m(r.net)}</b></td><td>${m(r.cogs)}${r.nocost ? ' <span class="pill miss" title="Sales with no product cost set in Shopify">' + m0(r.nocost) + ' no cost</span>' : ""}</td>${cell(r.gp)}<td>${m(r.shipping)}</td><td>${state.orders ? m(c) : '<span class="dim">…</span>'}</td>${state.orders ? `<td class="${pas<0?"neg":""}"><b>${m(pas)}</b></td>` : "<td></td>"}<td class="dim">${state.orders && r.net ? pct(pas/r.net) : ""}</td><td>${m(r.taxes)}</td><td>${m(r.total)}</td></tr>`;
+      return `<tr class="${state.orders && pas < 0 ? "lossday" : r.nocost ? "flag" : ""}"><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td>${r.orders}</td>${cell(r.gross)}${cell(r.discounts)}${cell(r.returns)}<td><b>${m(r.net)}</b></td><td>${m(r.cogs)}${r.nocost ? ' <span class="pill miss" title="Sales with no product cost set in Shopify">' + m0(r.nocost) + ' no cost</span>' : ""}</td>${cell(r.gp)}<td>${m(r.shipping)}</td><td>${state.orders ? m(c) : '<span class="dim">…</span>'}</td>${state.orders ? `<td class="${pas<0?"neg":""}"><b>${m(pas)}</b></td>` : "<td></td>"}<td class="dim">${state.orders && r.net ? pct(pas/r.net) : ""}</td><td>${m(r.taxes)}</td><td>${m(r.total)}</td></tr>`;
     }).join("");
     const tpas = profitAfterShip(tot.gp, tot.shipping, tot.cost);
     t.innerHTML = `<thead><tr>${cols.map((c,i)=>`<th class="${i===0?"l":""}">${c}</th>`).join("")}</tr></thead><tbody>${body}</tbody>
       <tfoot><tr><td class="l">Total</td><td>${tot.orders}</td><td>${m(tot.gross)}</td><td>${m(tot.discounts)}</td><td>${m(tot.returns)}</td><td>${m(tot.net)}</td><td>${m(tot.cogs)}</td><td>${m(tot.gp)}</td><td>${m(tot.shipping)}</td><td>${m(tot.cost)}</td><td class="${tpas<0?"neg":""}">${m(tpas)}</td><td>${tot.net ? pct(tpas/tot.net) : ""}</td><td>${m(tot.taxes)}</td><td>${m(tot.total)}</td></tr></tfoot>`;
+    window.jtLabelCells(t);
+  }
+
+  // Phone "Needs attention" list: what in this date range is wrong or incomplete, with a way to fix it.
+  function renderAttn(dv) {
+    const list = $("attn-list"); if (!list) return;
+    const items = [];
+    const err = state.dailyErr || state.ordersErr || state.costsErr;
+    if (err) items.push({ k: "bad", t: "Some data didn't load", s: esc(mcpMessage(err)), a: '<button class="mini" data-attn="refresh">Refresh</button>' });
+    if (state.orders) {
+      const noLabel = dv.webShipped - dv.webShippedWithCost;
+      if (noLabel > 0) items.push({ k: "warn", t: `${noLabel} shipped order${noLabel > 1 ? "s" : ""} with no label cost`, s: "Profit after shipping is overstated until these are entered.", a: '<button class="mini" data-attn="miss">Review</button>' });
+    }
+    if (state.daily) {
+      const d = adjustedDaily(dv);
+      const nc = d.reduce((a, r) => a + r.nocost, 0);
+      const n = state.orders && state.costs ? state.orders.filter(o => { const k = costFor(o); return k && k.nocost > 0; }).length : 0;
+      if (nc > 0) items.push({ k: "warn", t: n ? `${n} order${n > 1 ? "s" : ""} missing a product cost` : "Sales missing a product cost", s: `${m0(nc)} of sales have no cost, so gross profit is overstated.`, a: n ? '<button class="mini" data-attn="nocost">Enter costs</button>' : "" });
+      if (state.orders) {
+        const neg = d.filter(r => profitAfterShip(r.gp, r.shipping, (dv.perDay.get(r.day) || {}).cost || 0) < 0);
+        if (neg.length) items.push({ k: "bad", t: `${neg.length} day${neg.length > 1 ? "s" : ""} lost money after shipping`, s: neg.slice(-3).reverse().map(r => `${wkDay(r.day)} ${shortDay(r.day)}`).join(", ") + (neg.length > 3 ? "…" : ""), a: '<button class="mini" data-attn="days">See days</button>' });
+      }
+    }
+    if (state.ordersTruncated) items.push({ k: "info", t: "Not every order is shown", s: "This range has too many orders. Narrow the dates.", a: "" });
+    const loading = (!state.daily && !state.dailyErr) || (!state.orders && !state.ordersErr);
+    $("attn-h").innerHTML = `Needs attention${items.filter(x => x.k !== "info").length ? `<span class="cnt">${items.filter(x => x.k !== "info").length}</span>` : ""}`;
+    list.innerHTML = items.map(x => `<div class="ai ${x.k}"><div class="at"><b>${x.t}</b><span>${x.s}</span></div>${x.a}</div>`).join("")
+      + (loading ? '<div class="skel">Still loading, more may appear…</div>' : !items.length ? '<div class="clear">Nothing needs attention for these dates.</div>' : "");
   }
 
   function filteredOrders() {
@@ -563,6 +591,14 @@
   $("f-chan").addEventListener("change", renderOrders);
   $("f-miss").addEventListener("change", renderOrders);
   $("f-nocost").addEventListener("change", renderOrders);
+  $("attn").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-attn]"); if (!b) return;
+    const a = b.dataset.attn;
+    if (a === "refresh") { loadAll(true); return; }
+    if (a === "days") { $("daily-panel").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+    $("f-chan").value = "all"; $("f-miss").checked = a === "miss"; $("f-nocost").checked = a === "nocost"; renderOrders();
+    $("orders").closest(".panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
   // "show the N without one" on the Label cost coverage tile: filter Orders to shipped orders with no label cost
   $("kpis").addEventListener("click", (e) => {
     if (!e.target.closest("[data-kpi-miss]")) return;

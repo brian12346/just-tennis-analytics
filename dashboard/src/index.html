@@ -50,6 +50,11 @@
   <div class="status" id="status" aria-live="polite">Connecting to Shopify…</div>
   <div id="page-note" hidden></div>
 
+  <section class="panel attn m-only" id="attn" aria-label="Needs attention">
+    <div class="panel-head"><h2 id="attn-h">Needs attention</h2></div>
+    <div id="attn-list" style="display:flex;flex-direction:column;gap:8px"><div class="skel">Checking…</div></div>
+  </section>
+
   <section class="kpis" id="kpis" aria-label="Range totals"></section>
 
   <section class="panel">
@@ -60,9 +65,10 @@
     <div class="chart" id="chart"><div class="skel">Loading…</div></div>
   </section>
 
-  <section class="panel">
+  <section class="panel daycards" id="daily-panel">
     <div class="panel-head">
       <h2>By day</h2>
+      <button class="mini m-only" type="button" data-daycols>All columns</button>
       <span class="muted" style="font-size:12px">Sales columns match Shopify Analytics; label cost is attributed to the day the order was placed.</span>
     </div>
     <div id="daily-note" hidden></div>
@@ -431,9 +437,10 @@
       <div class="chart" id="az-chart"><div class="skel">Loading…</div></div>
     </section>
 
-    <section class="panel">
+    <section class="panel daycards" id="az-daily-panel">
       <div class="panel-head">
         <h2>By day</h2>
+        <button class="mini m-only" type="button" data-daycols>All columns</button>
         <span class="muted small">Product cost only counts for mapped listings. Refunds don't credit product cost back.</span>
       </div>
       <div class="tbl-wrap"><table id="az-daily"></table></div>
@@ -571,6 +578,9 @@
   </div>
 </div>
 
+<script>
+<!-- @inline js/phone.js -->
+</script>
 <script>
 <!-- @inline js/web.js -->
 </script>
