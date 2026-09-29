@@ -649,3 +649,16 @@ html{scroll-padding-top:130px}
   #az-daily-panel:not(.full) #az-daily td:is(:nth-child(3),:nth-child(5),:nth-child(6),:nth-child(7),:nth-child(8),:nth-child(10),:nth-child(12)){display:none}
 }
 .po-inv > .panel-head label.btn{margin-left:auto}
+/* PO receive into both: buckets, per-product toggle, split */
+.seg.sm button{padding:4px 9px;font-size:12px}
+.nowrap{white-space:nowrap}
+.po-t tr.bucket td{background:var(--surface-sunken);border-top:2px solid var(--line);padding-top:10px;padding-bottom:8px;font-size:13px}
+.po-t tr.bucket.shopify td{box-shadow:inset 4px 0 0 var(--founders-rock,#3B7EA1)}
+.po-t tr.bucket.prep td{box-shadow:inset 4px 0 0 var(--brand-gold,#FDB515)}
+.po-t tr.splitrow td{background:var(--surface-sunken)}
+.splitbox{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;font-size:13px}
+.splitbox .dbtns{margin-left:auto}
+.po-sum.dests{margin-top:6px}
+.dchip{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px}
+.dchip.shopify{border-left:4px solid var(--founders-rock,#3B7EA1)}
+.dchip.prep{border-left:4px solid var(--brand-gold,#FDB515)}

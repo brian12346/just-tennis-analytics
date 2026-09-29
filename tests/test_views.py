@@ -375,6 +375,15 @@ def test_purchase_order_save(conn):
     cur.execute("select shopify_po_url from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == url
     call("po_save", {"order": dict(order, id=oid, shopify_po_url=""), "invoices": []})
     cur.execute("select shopify_po_url from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == ""
+    # receive into both, with one product split between the Shopify store and the prep center
+    split = [{"variant_id": 911, "dest": "shopify", "qty": 1, "unit_cost": 40}, {"variant_id": 911, "dest": "prep", "qty": 1, "unit_cost": 40},
+             {"variant_id": 912, "amazon_sku": "HG-FBA", "dest": "prep", "qty": 4, "unit_cost": 5}]
+    call("po_save", {"order": dict(order, id=oid, receive_into="both"), "lines": split, "invoices": []})
+    cur.execute("select receive_into from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "both"
+    cur.execute("select variant_id, dest, qty_ordered from jt.prep_order_lines where order_id = %s order by 1, 2", (oid,))
+    assert cur.fetchall() == [(911, "prep", 1), (911, "shopify", 1), (912, "prep", 4)]
+    call("po_save", {"order": dict(order, id=oid, receive_into="nonsense"), "invoices": []})
+    cur.execute("select receive_into from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "both"
     cur.execute("select count(*) from jt.invoice_lines where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 1
     # the PDF in two parts; part 0 replaces an older file
     call("invoice_file_put", {"invoice_id": iid, "part": 0, "parts": 2, "data": "QUJD", "name": "h.pdf", "type": "application/pdf", "size": 6})
