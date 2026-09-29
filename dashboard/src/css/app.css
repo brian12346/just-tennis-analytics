@@ -665,3 +665,5 @@ html{scroll-padding-top:130px}
 .po-t td.rcv .rq{display:flex;gap:6px;align-items:center;justify-content:flex-end}
 .po-t td.rcv .meta.warnt{color:var(--warn, #9a6700)}
 .po-t td.nowrap{white-space:nowrap}
+.forcell{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
+.splittot{font-size:12px;color:var(--muted);margin-top:3px}

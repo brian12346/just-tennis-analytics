@@ -239,6 +239,7 @@
       if (a.cost === "") a.cost = l.cost; a.backorder = a.backorder || l.backorder; if (l.eta > a.eta) a.eta = l.eta; a.auto = a.auto && l.auto;
     }
     ed.lines = out;
+    if (ed.splitTot) for (const vid of Object.keys(ed.splitTot)) if (out.filter(l => l.vid === vid).length < 2) delete ed.splitTot[vid];
   }
   const keyOf = (l) => l.vid + "|" + (l.dest === "prep" ? l.asku || "" : "") + "|" + (l.dest || "prep");
   const variant = (vid) => vid && S.byVid ? S.byVid.get(String(vid)) : null;
@@ -577,6 +578,11 @@
     const both = ed.dest === "both" || new Set(ed.lines.map(l => l.dest)).size > 1;
     const rcv = receiving(ed), anyInv = ed.invoices.length > 0;
     const NC = ed.recv || rcv ? 11 : 10;
+    // a product split across the Shopify store and the prep center: its total on every part
+    const splitTot = (l) => { const parts = ed.lines.filter(x => x.vid === l.vid); if (parts.length < 2) return "";
+      const q = (x) => Number(x.qty) || 0, sum = parts.reduce((a, x) => a + q(x), 0), tot = ed.splitTot && ed.splitTot[l.vid] != null ? ed.splitTot[l.vid] : sum;
+      const rec = parts.reduce((a, x) => a + (x.received || 0), 0), sh = parts.filter(x => x.dest === "shopify").reduce((a, x) => a + q(x), 0), pp = sum - sh;
+      return `<div class="splittot"><span class="pill manual">Split</span> <b class="num">${n0(tot)}</b> total · ${n0(sh)} Shopify + ${n0(pp)} prep${rec ? ` · ${n0(rec)} received` : ""}${sum !== tot ? ` <span class="neg">· parts add to ${n0(sum)}</span>` : ""}</div>`; };
     const canSplit = (l) => !ro && !ed.recv && !(l.received > 0) && (Number(l.qty) || 0) > 1;
     const destSel = (l) => {
       const canPick = !ro && !(l.received > 0) && (!ed.recv || PRE.includes(ed.status) || true);
@@ -591,8 +597,8 @@
       const v = variant(l.vid), p = pr.get(l.id), badQ = l.qty !== "" && !(Number.isInteger(Number(l.qty)) && Number(l.qty) >= 0), badC = l.cost !== "" && !(Number(l.cost) >= 0);
       const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
       return `<tr data-line="${l.id}">
-        <td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}</td>
-        <td class="l small">${destSel(l)}</td>
+        <td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>${splitTot(l)}` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}</td>
+        <td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Send part to the Shopify store and part to the prep center">Split</button>` : ""}</div></td>
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badQ || p.ordered < p.received ? "bad" : ""}" data-f="qty" data-k="${l.id}" value="${esc(l.qty)}" inputmode="numeric" placeholder="0" style="width:64px">` : n0(p.ordered)}</td>
         <td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td>
         <td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}</td>
@@ -605,7 +611,7 @@
         <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : '<span class="dim">—</span>'}</td>
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">${chg != null && Math.abs(chg) >= 0.0005 ? `<div class="meta ${chg > 0 ? "neg" : "pos"}">${pct(chg)} vs Shopify</div>` : ""}` : m(l.cost === "" ? v && v.cost : Number(l.cost))}</td>
         <td>${m(lineAmt(l))}</td>
-        <td class="nowrap">${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Send part to the Shopify store and part to the prep center">Split</button> ` : ""}${!ro && !ed.recv && !(l.received > 0) ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${ed.split && ed.split.id === l.id ? splitRow(l) : ""}`;
+        <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${ed.split && ed.split.id === l.id ? splitRow(l) : ""}`;
     };
     const splitRow = (l) => {
       const sp = ed.split, v = variant(l.vid) || {}, ls = (S.listings.get(l.vid) || []).slice().sort((a, b) => a.units - b.units);
@@ -958,6 +964,20 @@
     if (a === "amzship") { if (window.JTPrepTab && window.JTPrepTab.shipFromOrder) window.JTPrepTab.shipFromOrder(ed.id); return; }
   }
   const box = () => $("po-edit-view");
+  // A split product keeps its total: changing one part's quantity moves the difference to the other part
+  // (the other bucket first). ed.splitTot holds each split product's total.
+  const qn = (x) => Number(x.qty) || 0;
+  function rebalance(ed, l, val) {
+    const parts = ed.lines.filter(x => x.vid === l.vid);
+    if (parts.length < 2) { l.qty = val; return; }
+    ed.splitTot = ed.splitTot || {};
+    const tot = ed.splitTot[l.vid] ?? parts.reduce((a, x) => a + qn(x), 0); ed.splitTot[l.vid] = tot;
+    l.qty = val; const v = Number(val); if (val === "" || !Number.isInteger(v) || v < 0) return;
+    const others = parts.filter(x => x !== l).sort((a, b) => (b.dest !== l.dest) - (a.dest !== l.dest));
+    let diff = tot - parts.reduce((a, x) => a + qn(x), 0);       // + means the others take more, - means they give some up
+    for (const o of others) { if (!diff) break; const nq = Math.max(o.received || 0, qn(o) + diff); diff -= nq - qn(o); o.qty = String(nq); }
+    for (const o of others) { const i = document.querySelector(`#po-edit-view [data-f="qty"][data-k="${o.id}"]`); if (i) i.value = o.qty; }
+  }
   // one product, part to the Shopify store and part to the prep center
   function doSplit(ed) {
     const sp = ed.split, src = sp && ed.lines.find(x => x.id === sp.id); if (!src) { ed.split = null; render(); return; }
@@ -973,6 +993,7 @@
     if (src !== S2 && src !== P2) src.qty = "0";
     addTo(S2, sQ); addTo(P2, pQ);
     ed.lines = ed.lines.filter(x => (Number(x.qty) || 0) > 0 || x.received > 0 || (x !== src && x !== S2 && x !== P2));
+    ed.splitTot = ed.splitTot || {}; ed.splitTot[src.vid] = ed.lines.filter(x => x.vid === src.vid).reduce((a, x) => a + qn(x), 0);
     ed.dest = "both"; ed.split = null; ed.dirty = true; render();
     note("info", `Split: ${n0(sQ)} to the Shopify store, ${n0(pQ)} to the prep center. Save to keep it.`);
   }
@@ -1046,7 +1067,7 @@
       if (t.id === "po-add") { ed.add = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); if (!S.cat) catalog().then(render).catch(() => {}); return; }
       if (t.id === "pe-sq") { ed.search.q = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); return; }
       const k = t.dataset.k, l = k && ed.lines.find(x => x.id === k), r = k && iv && iv.rows.find(x => x.id === k);
-      if (t.dataset.f === "qty" && l) { l.qty = t.value.trim(); l.auto = false; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
+      if (t.dataset.f === "qty" && l) { rebalance(ed, l, t.value.trim()); l.auto = false; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "cost" && l) { l.cost = t.value.trim().replace(/^\$/, ""); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "recv" && l) { ed.recv[keyOf(l)] = t.value.trim(); }
       if (t.dataset.f === "rq" && l) { ed.rq = ed.rq || {}; ed.rq[keyOf(l)] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 500); }
