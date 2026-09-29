@@ -27,6 +27,7 @@
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
     <button role="tab" data-tab="amzmatch" aria-selected="false">Amazon matching</button>
+    <button role="tab" data-tab="po" aria-selected="false">Purchase orders</button>
     <button role="tab" data-tab="invoices" aria-selected="false">Invoices</button>
     <span id="acct" class="acct" hidden><span class="build" title="Dashboard version">v __BUILD__</span><span id="whoami"></span><button class="mini" id="signout" type="button">Sign out</button></span>
   </nav>
@@ -517,6 +518,37 @@
       <div class="row"><button class="btn" id="am-prev" hidden>Previous</button><button class="btn" id="am-next" hidden>Next page</button><span class="muted small" id="am-count"></span></div>
     </section>
   </div>
+  <div id="tab-po" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Vendor orders · build a PO, fill it from the invoice PDF</span>
+        <h1>Purchase orders</h1>
+      </div>
+      <div class="controls">
+        <button class="btn" id="po-refresh">Refresh</button>
+        <button class="btn" id="po-new">New PO</button>
+        <label class="btn primary" for="po-file">Upload invoice PDF<input type="file" id="po-file" accept=".pdf,application/pdf" hidden></label>
+      </div>
+    </header>
+    <div class="status" id="po-status" aria-live="polite">Loading purchase orders…</div>
+    <div class="note info" id="po-busy" hidden aria-live="polite"></div>
+    <div id="po-note" hidden></div>
+    <div id="po-list-view">
+      <section class="kpis" id="po-kpis" aria-label="Purchase order totals"></section>
+      <section class="panel">
+        <div class="panel-head">
+          <div class="seg" id="po-stage" role="group" aria-label="Stage"></div>
+          <div class="filters">
+            <label for="po-vendor">Vendor <select id="po-vendor" class="inp sm" style="width:auto"></select></label>
+            <label for="po-q">Search <input id="po-q" class="inp" type="search" placeholder="PO #, vendor, invoice #, product"></label>
+          </div>
+        </div>
+        <div class="tbl-wrap xl"><table class="prept po-list" id="po-table"></table></div>
+        <p class="muted small">Drop a vendor invoice PDF anywhere on this page to start a PO from it (or to add it to the open PO with the same PO #).</p>
+      </section>
+    </div>
+    <div id="po-edit-view" hidden></div>
+  </div>
   <div id="tab-invoices" hidden>
     <header class="top">
       <div class="title">
@@ -615,6 +647,12 @@
 </script>
 <script>
 <!-- @inline js/amz-review.js -->
+</script>
+<script>
+<!-- @inline js/invparse.js -->
+</script>
+<script>
+<!-- @inline js/po.js -->
 </script>
 <script>
 <!-- @inline js/invoices.js -->

@@ -320,6 +320,22 @@
         return run(`select jt.prep_order_delete(${q(JSON.stringify({ id }))}::jsonb) as ok`, true);
       },
     },
+    // Purchase orders tab: an order + its invoice (parsed from the PDF) in one save; the PDF in parts; delete a draft
+    po: {
+      async save(body) {
+        if (WEB) return await WEB.write("jt_po_save", { p: body });
+        const out = await run(`select jt.po_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);
+        return out[0] && out[0].r;
+      },
+      async putFilePart(body) {
+        if (WEB) return WEB.write("jt_invoice_file_put", { p: body });
+        return run(`select jt.invoice_file_put(${q(JSON.stringify(body))}::jsonb) as k`, true);
+      },
+      async remove(id) {
+        if (WEB) return WEB.write("jt_po_delete", { p: { id } });
+        return run(`select jt.po_delete(${q(JSON.stringify({ id }))}::jsonb) as ok`, true);
+      },
+    },
     // Ask for a catalog sync from Shopify now (the sync job runs in about 30 seconds). false = one was just started.
     async requestCatalogSync() {
       if (WEB) return WEB.write("jt_request_catalog_sync", {});

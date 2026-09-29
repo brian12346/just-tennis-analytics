@@ -399,6 +399,8 @@
     return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
   }
   const OKIND = { placeby: "past place-by date", noqty: "no quantity", noplace: "no place-by date", partial: "not received in full", late: "late", noinv: "no invoice", invdiff: "invoice doesn't match", nocost: "missing cost", empty: "no products", idle: "waiting to ship", nopo: "no PO #", over: "extra received" };
+  // shared with the Purchase orders tab
+  window.JTOrderIssues = { orderIssuesOf, OSTAGES, ONEXT, OPREV, OPILL, poLabel, get orderSummary() { return orderSummary; } };
   const orderSummary = (list) => { const by = new Map(); for (const x of list) if (x.lvl !== "info") by.set(x.kind, (by.get(x.kind) || 0) + 1); return [...by].map(([k, n]) => (n > 1 && k === "nocost" ? n + " products " : "") + OKIND[k]).join(" · "); };
 
   function renderOrders() {
@@ -507,7 +509,7 @@
         ${editLines ? `<td><button class="linkbtn small" data-orm="${esc(l.key)}" aria-label="Remove ${esc(l.title)}">✕</button></td>` : ""}</tr>`; }).join("");
     const inv = M.invoiceId && invList ? invList.find(x => x.id === String(M.invoiceId)) : null;
     const out = M.o ? (M.o.shipments || []) : [];
-    return `<div class="panel-head"><h2>${M.id ? esc(M.vendor || "Vendor order") + " · " + esc(M.po ? poLabel(M.po) : "#" + M.id) : "New vendor order"}</h2><span class="steps six">${steps}</span><button class="mini" data-act="close">Close</button></div>
+    return `<div class="panel-head"><h2>${M.id ? esc(M.vendor || "Vendor order") + " · " + esc(M.po ? poLabel(M.po) : "#" + M.id) : "New vendor order"}</h2><span class="steps six">${steps}</span>${M.id && window.JTPO ? `<button class="mini" data-fix="pofull">Open in Purchase orders</button>` : ""}<button class="mini" data-act="close">Close</button></div>
       ${issuesHtml(iss)}
       <div class="pmgrid">
         <label class="stack" for="po-vendor">Vendor<input id="po-vendor" class="inp" list="po-vendors" value="${esc(M.vendor)}" ${got ? "disabled" : ""} autocomplete="off"><datalist id="po-vendors">${vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>
@@ -599,6 +601,7 @@
   }
   function orderFix(d) {
     const M = P.modal;
+    if (d.fix === "pofull") { const id = M.id; P.modal = null; renderModal(); window.JTPO.open(id); return true; }
     if (d.fix === "orecv") { M.recv = {}; for (const l of M.lines) M.recv[l.key] = String(Math.max(0, (Number(l.ordered) || 0) - (l.received || 0))); renderModal(); return true; }
     if (d.fix === "oshort") { M.shortOk = true; saveOrder(null); return true; }
     if (d.fix === "oinv") { const id = M.invoiceId; P.modal = null; renderModal(); const t = document.querySelector('.tabs button[data-tab="invoices"]'); if (t) t.click(); setTimeout(() => window.JTInvoices && window.JTInvoices.open(id), 50); return true; }
@@ -1085,6 +1088,9 @@
   bindOrders();
   bindList();
   window.prepShow = () => { if (!P.shown) { P.shown = true; refresh(false); } else render(); };
-  window.JTPrepTab = { _state: P };
+  window.JTPrepTab = { _state: P,
+    // from the Purchase orders tab: an Amazon Outgoing shipment made from a received order
+    async shipFromOrder(id) { const b = document.querySelector('.tabs button[data-tab="prep"]'); if (b) b.click(); await load(true); P.shown = true; render();
+      const o = cache.orders.find(x => x.id === String(id)); if (o) shipFromOrder(o); } };
   if ((location.hash || "") === "#prep") setTimeout(() => window.prepShow(), 0);
 })();

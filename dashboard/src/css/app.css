@@ -469,6 +469,45 @@ html{scroll-padding-top:120px}
 .seg button{white-space:nowrap;flex:none}
 @media (max-width:700px){ .top .controls{min-width:0;width:100%} .top .controls .seg{width:100%} }
 
+/* Purchase orders */
+#tab-po{display:flex;flex-direction:column;gap:14px}
+#tab-po[hidden]{display:none}
+#tab-po.filedrop{outline:2px dashed var(--sales);outline-offset:6px;border-radius:10px}
+#po-list-view,#po-edit-view{display:flex;flex-direction:column;gap:14px}
+#po-list-view[hidden],#po-edit-view[hidden]{display:none}
+#po-busy{margin:0}
+.po-list tbody tr.po-row{cursor:pointer}
+.po-list tbody tr.po-row:hover td,.po-list tbody tr.po-row:focus td{background:var(--line-soft)}
+.po-list .pill{margin:0 4px 2px 0}
+.po-crumb{display:flex;gap:10px;align-items:center}
+.po-head h2{margin-right:auto}
+.po-head .steps{margin-left:0;flex-wrap:wrap}
+.po-head .steps button.step{background:var(--panel);font:inherit;font-size:12px;cursor:pointer}
+.po-head .steps button.step:hover{border-color:var(--sales);color:var(--sales)}
+.po-inv{gap:10px}
+.po-invbar{display:flex;flex-wrap:wrap;gap:8px 14px;justify-content:space-between;align-items:center;font-size:14px}
+.po-invbar label.mini{cursor:pointer}
+.pmgrid.small-grid{grid-template-columns:repeat(auto-fit,minmax(160px,220px))}
+.po-drop{display:flex;flex-direction:column;gap:4px;align-items:center;justify-content:center;text-align:center;border:1.5px dashed var(--line);border-radius:10px;padding:18px 14px;cursor:pointer;background:var(--ground)}
+.po-drop:hover,.po-drop.over{border-color:var(--sales);background:var(--sales-soft)}
+.po-body{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;align-items:start}
+.po-body.with-pdf{grid-template-columns:minmax(0,1fr) minmax(300px,30%)}
+.po-pdf{position:sticky;top:64px;max-height:calc(100vh - 80px);overflow:auto}
+.pdfpages{display:flex;flex-direction:column;gap:8px}
+.pdfpages canvas{display:block;border:1px solid var(--line);border-radius:4px;background:#fff;max-width:100%}
+.po-t td.inv{min-width:170px;max-width:240px}
+.po-t td.inv .mono{white-space:nowrap}
+.po-t tr.skipped td{color:var(--muted)}
+.po-t td.match{min-width:240px;max-width:340px}
+.po-t .mrow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px}
+.po-t select.alts{width:auto;max-width:200px}
+.po-t tr.guess td{background:var(--warn-bg)}
+.po-t tr.nomatch td{background:var(--bad-bg)}
+.po-t .meta .pill{margin-left:2px}
+.po-t .warnt{color:var(--warn)}
+.po-foot{justify-content:space-between;flex-wrap:wrap;gap:8px}
+@media (max-width:1100px){ .po-body.with-pdf{grid-template-columns:minmax(0,1fr)} .po-pdf{position:static;max-height:none} }
+
 /* ---------- phone layout: daily sales + issues first ---------- */
 .m-only{display:none!important}
 .attn .ai{display:flex;gap:10px;align-items:center;justify-content:space-between;border-radius:8px;padding:10px 12px;border-left:4px solid var(--warn);background:var(--warn-bg)}

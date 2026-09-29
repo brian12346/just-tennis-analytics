@@ -174,3 +174,22 @@ New checks are one more entry in `issuesOf`.
   `jt.shopify_order_tracking` (normalized, no spaces). `jt.v_combined_shipments` lists orders with no label of their
   own whose tracking number is on another order's ShipStation label (ShipStation combined them); the Shopify tab
   counts those as combined at $0 automatically. A hand-entered cost wins over the automatic match.
+
+## Purchase orders (migration 020)
+
+The **Purchase orders** tab is the full-page home for vendor orders — the same `jt.prep_orders` rows that
+Incoming Inventory shows on the Prep center tab (one set of orders, same stages).
+
+- Upload a vendor invoice PDF (on the list, or onto an open PO). It's read in the browser
+  (`dashboard/src/js/invparse.js`, shared with the Invoices tab): vendor, invoice #, date, PO #, subtotal and item lines.
+  An open PO from the same vendor with the invoice's PO # takes the invoice; otherwise a new PO starts.
+- Each line gets a Shopify product: sure matches (a code remembered for this vendor in `jt.vendor_items`, the SKU,
+  the UPC) or a guess from the product words (`window.JTMatch`, the Amazon matching scorer) to confirm or change.
+  Lines like freight or fees are marked "not a product" (`match_how = 'skip'`).
+- `jt.po_save(p)` saves in one transaction: the invoice (`jt.save_invoice`: every line as read, matched or not,
+  with `dest` / `amazon_sku`), the order (`jt.prep_order_save`: the matched lines, linked by `invoice_id`) and the
+  confirmed matches (`jt.remember_vendor_items`). Saving a newly attached invoice moves a draft/ordered PO to "invoice".
+- The PDF is kept in `jt.invoice_files` (base64, ~66 KB of file per row so one row fits one database reply),
+  written with `jt.invoice_file_put`; `jt.invoices.file_parts` says how many parts are stored.
+- `jt.po_delete` deletes a draft order and its draft invoice when no other order uses it.
+- `match_how` values: remembered, sku, upc, manual, confirmed (sure); skupart, guess-high/medium/low (to check); skip.

@@ -338,3 +338,37 @@ def test_ship_cost_overrides(conn):
     assert call("save_ship_cost", {"order_id": 5001, "cost": 8.4, "note": "USPS label bought on the site"}) is True
     cur.execute("select cost::float, combined_with, note from jt.ship_cost_overrides"); assert cur.fetchone() == (8.4, "", "USPS label bought on the site")
     assert call("delete_ship_cost", {"order_id": 5001}) is True
+
+
+def test_purchase_order_save(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (911, 91, 5, 'Head'), (912, 91, 7, 'Head')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    inv = {"vendor": "Head", "invoice_no": "H-100", "invoice_date": "2026-09-20", "file_name": "h.pdf", "subtotal": 110, "stage": "new",
+           "lines": [{"item_code": "abc-1", "description": "Speed MP", "qty": 2, "unit_cost": 40, "amount": 80, "variant_id": 911, "match_how": "manual", "dest": "shopify"},
+                     {"item_code": "FRT", "description": "Freight", "qty": 1, "unit_cost": 10, "amount": 10, "variant_id": None, "match_how": ""},
+                     {"item_code": "x-9", "description": "Grip", "qty": 4, "unit_cost": 5, "amount": 20, "variant_id": 912, "match_how": "guess-high", "dest": "prep", "amazon_sku": "HG-FBA"}]}
+    order = {"vendor": "Head", "po_no": "4471", "lines": [{"variant_id": 911, "dest": "shopify", "qty": 2, "unit_cost": 40}, {"variant_id": 912, "amazon_sku": "HG-FBA", "dest": "prep", "qty": 4, "unit_cost": 5}]}
+    r = call("po_save", {"order": order, "invoice": inv, "remember": [{"item_code": "abc-1", "variant_id": 911}], "by": "t"})
+    oid, iid = r["order_id"], r["invoice_id"]
+    cur.execute("select invoice_id, po_no, vendor from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone() == (iid, "4471", "Head")
+    cur.execute("select po_no from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0] == "4471"
+    cur.execute("select line_no, variant_id, dest, amazon_sku from jt.invoice_lines where invoice_id = %s order by 1", (iid,))
+    assert cur.fetchall() == [(1, 911, "shopify", ""), (2, None, "prep", ""), (3, 912, "prep", "HG-FBA")]
+    cur.execute("select variant_id, dest, qty_ordered from jt.prep_order_lines where order_id = %s order by 1", (oid,)); assert cur.fetchall() == [(911, "shopify", 2), (912, "prep", 4)]
+    cur.execute("select item_code, variant_id from jt.vendor_items where vendor = 'Head'"); assert cur.fetchall() == [("ABC1", 911)]
+    # saving again keeps the same invoice (lines replaced)
+    inv2 = dict(inv, id=iid, lines=inv["lines"][:1])
+    r2 = call("po_save", {"order": dict(order, id=oid), "invoice": inv2, "remember": []})
+    assert r2 == {"order_id": oid, "invoice_id": iid}
+    cur.execute("select count(*) from jt.invoice_lines where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 1
+    # the PDF in two parts; part 0 replaces an older file
+    call("invoice_file_put", {"invoice_id": iid, "part": 0, "parts": 2, "data": "QUJD", "name": "h.pdf", "type": "application/pdf", "size": 6})
+    cur.execute("select file_parts from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0] == 0
+    call("invoice_file_put", {"invoice_id": iid, "part": 1, "parts": 2, "data": "REVG"})
+    cur.execute("select file_parts, file_size from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == (2, 6)
+    cur.execute("select string_agg(data, '' order by part) from jt.invoice_files where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == "QUJDREVG"
+    # deleting the draft order takes its draft invoice (and file) with it
+    assert call("po_delete", {"id": oid}) is True
+    cur.execute("select count(*) from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0] == 0
+    cur.execute("select count(*) from jt.invoice_files where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 0
