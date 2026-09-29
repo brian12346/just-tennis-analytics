@@ -75,12 +75,13 @@
       "(select min(l.eta)::text from jt.prep_order_lines l where l.order_id = o.id and l.backorder and l.qty_received < l.qty_ordered)",
       `(select count(*) ${IV} and ii.paid_on is null)`, `(select min(ii.due_date)::text ${IV} and ii.paid_on is null)`, `(select sum(coalesce(ii.total, ii.subtotal)) ${IV} and ii.paid_on is null)`, "o.shopify_po_url",
       "(select coalesce(sum(l.qty_ordered), 0) from jt.prep_order_lines l where l.order_id = o.id and l.dest = 'prep')", "o.receive_into",
-      "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status"],
+      "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status",
+      "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)"],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
-      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "" }))
+      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "", costsReady: +x[36] || 0 }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
   }
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
@@ -476,6 +477,10 @@
       fixes: [{ label: "Show the differences", fix: "focus", arg: "pe-shopcheck" }] }); }
     else if (ed.id && ed.shopifyUrl.trim() && ed.lines.length) out.push({ lvl: "info", kind: "shopnocheck", title: "Linked to a Shopify PO — check that it matches",
       text: "Download the PO as a PDF in Shopify and upload it here; every product, quantity and cost is compared with this PO.", fixes: [{ label: "Upload the Shopify PO PDF", fix: "focus", arg: "pe-shopfile" }] });
+    { const ready = costGroups(ed).filter(a => a.rec > 0), g = ready.length ? shopGate(ed) : null;
+      if (ready.length) out.push({ lvl: "warn", kind: "costs", title: `${ready.length} new Shopify cost${ready.length === 1 ? " is" : "s are"} marked but not sent to Shopify yet`,
+        text: g.block ? esc(g.text) + " — then press Apply to Shopify." : "Press Apply to Shopify to check the new costs and send them.",
+        fixes: g.block ? [{ label: "Show me", fix: "focus", arg: "pe-costbar" }] : [{ label: "Apply to Shopify", fix: "papply" }] }); }
     if (ed.status === "received") out.push({ lvl: "info", kind: "toqb", title: "Received — enter the bills in QuickBooks",
       text: "Use the For QuickBooks box on each invoice, then mark this PO QB ready.", fixes: [{ label: "Mark QB ready", fix: "onext" }] });
     if (ed.status === "qb_ready") out.push(unpaid.length
@@ -520,6 +525,7 @@
     if (o.nBack) f.push([o.backEta && o.backEta < today() ? "warn" : "info", `${o.nBack} backordered${o.backEta ? " · ETA " + shortDate(o.backEta) : ""}`]);
     if (o.status === "partial" && !o.nBack) f.push(["info", "rest not backordered"]);
     if (o.nUnpaid && o.unpaidDue && o.unpaidDue < today()) f.push(["warn", "bill overdue"]);
+    if (o.costsReady) f.push(["warn", `${o.costsReady} Shopify cost${o.costsReady === 1 ? "" : "s"} to apply`]);
     if (o.status === "received") f.push(["info", "enter in QuickBooks"]);
     if (o.status === "qb_ready" && !o.nUnpaid) f.push(["info", "all paid · complete it"]);
     return f;
@@ -691,6 +697,7 @@
       if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} }
     }
     if (pdfOn && $("pe-pdf") && !$("pe-pdf").childElementCount) renderPdf();
+    watchGate();
   }
   function invoicesHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
@@ -903,7 +910,7 @@
 
   // ---------- events ----------
   function focusArg(a) { const id = { "po-add": "po-add", "po-exp": "pe-exp", "po-inv": "pe-file", "po-placeby": "pe-placeby", "po-po": "pe-po" }[a] || a;
-    setTimeout(() => { const el = $(id); if (!el) return; if (id === "pe-file" || id === "pe-shopfile") el.click(); else if (el.tagName === "SECTION") el.scrollIntoView({ behavior: "smooth", block: "start" }); else { el.focus(); if (el.select) el.select(); } }, 0); }
+    setTimeout(() => { const el = $(id); if (!el) return; if (id === "pe-file" || id === "pe-shopfile") el.click(); else if (el.tagName === "SECTION" || el.id === "pe-costbar") el.scrollIntoView({ behavior: "smooth", block: "start" }); else { el.focus(); if (el.select) el.select(); } }, 0); }
   function markBackordered(ed, eta) {
     const pr = progress(ed); let n = 0;
     for (const l of ed.lines) if (pr.get(l.id).open > 0 && !l.backorder) { l.backorder = true; l.eta = eta || ""; n++; }
@@ -921,6 +928,7 @@
     if (f === "pbo") { const n = markBackordered(ed, ""); note("info", `${n} product${n === 1 ? "" : "s"} marked backordered. Add an ETA on each if you have one, then Save.`); render(); return; }
     if (f === "orecv") return act("recv");
     if (f === "oshort") return act("short");
+    if (f === "papply") { focusArg("pe-costbar"); return act("apply-costs"); }
     if (f === "ppaid") { const i = +d.arg; if (ed.invoices[i]) { ed.cur = i; markPaid(ed, ed.invoices[i]); render(); focusArg("pe-paymethod"); } return; }
     if (f === "onext") { save(NEXT[ed.status] && NEXT[ed.status][0]); return; }
     if (f === "oship") return act("amzship");
@@ -1011,7 +1019,7 @@
     const changed = ed.lines.filter(l => !l.upd && l.cost !== "" && variant(l.vid) && (variant(l.vid).cost == null || Math.abs(Number(l.cost) - variant(l.vid).cost) >= 0.005));
     if (!marked.length && !changed.length && !ed.costPreview) return "";
     const pv = ed.costPreview, gate = shopGate(ed);
-    return `<div class="costbar ${ready.length ? "hot" : ""}"><span><b>Shopify costs</b> · ${marked.length ? `${marked.length} marked to update${ready.length ? ` · <b>${ready.length} received, ready</b>` : ""}${waiting.length ? ` · ${waiting.length} waiting to be received` : ""}` : `${changed.length} cost${changed.length === 1 ? " differs" : "s differ"} from Shopify`}</span>
+    return `<div class="costbar ${ready.length ? "hot" : ""}" id="pe-costbar" tabindex="-1"><span><b>Shopify costs</b> · ${marked.length ? `${marked.length} marked to update${ready.length ? ` · <b>${ready.length} received, ready</b>` : ""}${waiting.length ? ` · ${waiting.length} waiting to be received` : ""}` : `${changed.length} cost${changed.length === 1 ? " differs" : "s differ"} from Shopify`}</span>
       <span class="dbtns">${changed.length ? `<button class="btn" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy || gate.block ? "disabled" : ""} title="${esc(gate.text || "")}">Apply to Shopify (${ready.length})</button>` : ""}</span>
       ${ready.length && gate.html ? `<div class="gate small">${gate.html}</div>` : ""}
       ${pv ? `<div class="costprev"><div class="small">Shopify gets the <b>average cost of everything on hand</b>: the older units at their old cost and the units received on this PO at the PO cost. Inventory value keeps them apart (FIFO), so the older units stay at the old cost until they sell.</div>
@@ -1029,6 +1037,18 @@
     if (!ed.stockSyncedAt || new Date(ed.stockSyncedAt) < new Date(ed.shopRecvAt)) return { block: true, text: "Waiting for Shopify's stock to sync",
       html: `${done} · <b>waiting for Shopify's stock to sync</b> (started when you marked it; usually a few minutes). <button class="linkbtn small" data-pact="shoprecv-check">Check again</button>` };
     return { block: false, text: "", html: done };
+  }
+  // while Apply waits for Shopify's stock to sync, look again every 20 seconds so it opens by itself
+  let gateTimer = null;
+  function watchGate() {
+    clearTimeout(gateTimer);
+    const ed = S.ed; if (!ed || !ed.id || !ed.shopRecvAt || $("tab-po").hidden) return;
+    const g = shopGate(ed); if (!g.block || !ed.shopRecvAt || !costGroups(ed).some(a => a.rec > 0)) return;
+    gateTimer = setTimeout(async () => {
+      if (S.ed !== ed || ed.dirty || S.busy) return watchGate();
+      try { const r = await JT.rows(["max(seen_at)::text"], "from jt.variants", true); if (r[0] && r[0][0]) ed.stockSyncedAt = r[0][0]; } catch (_) {}
+      if (!shopGate(ed).block) { render(); note("info", "Shopify's stock has synced — <b>Apply to Shopify</b> is ready."); } else watchGate();
+    }, 20000);
   }
   async function markShopRecv(on) {
     const ed = S.ed; if (!ed || !ed.id) return;

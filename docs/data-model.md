@@ -294,3 +294,9 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
   - `synced_at` is the sync's run time.
   - Kept 120 days.
 - The dashboard's "What changed" pop-up (changes.js) shows one sync at a time. It opens by itself after Sync from Shopify on the Shopify cost mapping tab, and from the What changed button next to it.
+
+### No bare DELETEs in functions (032)
+
+- Supabase's API connection runs pg_safeupdate, which refuses a DELETE or UPDATE without a WHERE clause, even inside a security-definer function.
+- `jt.refresh_fifo_costs()` and `jt.prep_seed()` now use `where true`. Before this, Apply to Shopify failed with "DELETE requires a WHERE clause".
+- Any new function that clears a table needs the same.
