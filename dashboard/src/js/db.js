@@ -323,6 +323,13 @@
         const out = await run(`select jt.prep_order_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
         return Number(out[0] && out[0].id);
       },
+      // mark an invoice received by hand, or reopen it — jt.invoice_set_received
+      async invoiceReceived(invoiceId, received) {
+        const body = { invoice_id: Number(invoiceId), received: !!received };
+        if (WEB) return WEB.write("jt_invoice_set_received", { p: body });
+        const out = await run(`select jt.invoice_set_received(${q(JSON.stringify(body))}::jsonb) as r`, true);
+        return out[0] && out[0].r;
+      },
       // un-receive part of one product on a PO — jt.prep_order_unreceive_line
       async unreceiveLine(body) {
         if (WEB) return Number(await WEB.write("jt_prep_order_unreceive_line", { p: body }));
@@ -334,7 +341,14 @@
         const out = await run(`select jt.prep_order_status(${q(JSON.stringify({ id, status, by: "Claude dashboard" }))}::jsonb) as s`, true);
         return out[0] && out[0].s;
       },
-      async receiveOrder(id, lines, note) {
+      // with invoiceId the units are also counted on that invoice (jt.po_receive_invoice)
+      async receiveOrder(id, lines, note, invoiceId) {
+        if (invoiceId) {
+          const body = { id, invoice_id: Number(invoiceId), lines, note: note || "" };
+          if (WEB) return Number(await WEB.write("jt_po_receive_invoice", { p: body }));
+          const o2 = await run(`select jt.po_receive_invoice(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
+          return Number(o2[0] && o2[0].n) || 0;
+        }
         if (WEB) return Number(await WEB.write("jt_prep_order_receive", { p: { id, lines, note: note || "" } }));
         const out = await run(`select jt.prep_order_receive(${q(JSON.stringify({ id, lines, note: note || "", by: "Claude dashboard" }))}::jsonb) as n`, true);
         return Number(out[0] && out[0].n) || 0;

@@ -227,8 +227,25 @@
   //   rows      the invoice's lines: {id, src: {item_code, upc, description, qty, unit_cost, amount}, vid, how, conf, alts, confirmed, skip, account, charge, qty, cost}
   // receiving happens right on the PO once it's invoiced (or partly received)
   const receiving = (ed) => !!ed.id && !ed.recv && ["invoiced", "partial"].includes(ed.status);
-  const rqDef = (ed, p) => ed.invoices.length ? p.toReceive : Math.max(0, p.ordered - p.received);
-  const rqVal = (ed, l, p) => { const k = keyOf(l); return ed.rq && k in ed.rq ? ed.rq[k] : String(rqDef(ed, p)); };
+  // Receiving is against one invoice at a time (ed.rcvInv): each product starts at what that invoice billed and
+  // hasn't come in yet, shared over the PO's lines for it. With no invoice picked, it's what's still open.
+  const billed = (iv) => { const b = new Map(); for (const r of iv.rows) if (r.vid && !r.skip && isSure(r)) b.set(r.vid, (b.get(r.vid) || 0) + (Number(r.qty) || 0)); return b; };
+  const invLeft = (iv) => { const out = new Map(); for (const [vid, q] of billed(iv)) out.set(vid, Math.max(0, q - ((iv.got && iv.got.get(vid)) || 0))); return out; };
+  const invTot = (iv) => { let b = 0, g = 0; for (const [vid, q] of billed(iv)) { b += q; g += Math.min(q, (iv.got && iv.got.get(vid)) || 0); } return { b, g }; };
+  const rcvIv = (ed) => ed.rcvInv ? ed.invoices.find(v => v.id === ed.rcvInv) || null : null;
+  function pickRcvInv(ed) { const saved = ed.invoices.filter(v => v.id && !v.isNew); ed.rcvInv = ((saved.find(v => !v.recvAt && invTot(v).b > invTot(v).g)) || {}).id || ""; }
+  function invAlloc(ed) {
+    const iv = rcvIv(ed), out = new Map(); if (!iv) return out;
+    const left = invLeft(iv), lastOf = new Map(); ed.lines.forEach(l => lastOf.set(l.vid, l.id));
+    for (const l of ed.lines) {
+      const have = left.get(l.vid) || 0; let give = Math.min(have, Math.max(0, (Number(l.qty) || 0) - (l.received || 0)));
+      if (lastOf.get(l.vid) === l.id) give = have;
+      left.set(l.vid, have - give); out.set(l.id, give);
+    }
+    return out;
+  }
+  const rqDef = (ed, l, p) => rcvIv(ed) ? invAlloc(ed).get(l.id) || 0 : ed.invoices.length ? p.toReceive : Math.max(0, p.ordered - p.received);
+  const rqVal = (ed, l, p) => { const k = keyOf(l); return ed.rq && k in ed.rq ? ed.rq[k] : String(rqDef(ed, l, p)); };
   const newDest = (ed) => ed.dest === "both" ? ed.addTo || "shopify" : ed.dest === "prep" ? "prep" : "shopify";
   const DESTN = { shopify: "Shopify store", prep: "Prep center" };
   // two lines for the same product and place become one
@@ -251,7 +268,7 @@
       lines: [], invoices: [], cur: -1, removed: [], dest: "shopify", addTo: "shopify", split: null, add: "", recv: null, confirm: false, dirty: false, search: null, showPdf: false, boPrompt: false };
   }
   const blankInv = () => ({ id: null, no: "", date: "", due: "", total: null, terms: "", subtotal: null, fileName: "", parts: 0, status: "draft", notes: "", file: null, raw: null, rows: [], filter: "all", isNew: true,
-    paidOn: "", payMethod: "", payRef: "", paidFrom: "", paidAmount: null });
+    paidOn: "", payMethod: "", payRef: "", paidFrom: "", paidAmount: null, recvAt: "", recvManual: false, got: new Map() });
   async function openPO(id, keep) {
     if (!id) { S.ed = Object.assign(blankEd(), keep || {}); render(); catalog().then(render).catch(() => {}); return; }
     S.ed = null; S.busy = "Opening the purchase order…"; render();
@@ -265,7 +282,7 @@
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
         JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
-          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount"],
+          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual"],
           `from jt.invoices i where i.order_id = ${JT.int(id)} or i.id = (select invoice_id from jt.prep_orders where id = ${JT.int(id)}) order by i.id`, true),
         // how this vendor was paid last time (for Mark paid)
         JT.rows(["i.pay_method", "i.paid_from"], `from jt.invoices i where i.vendor = (select vendor from jt.prep_orders where id = ${JT.int(id)}) and i.pay_method <> '' order by i.paid_on desc nulls last, i.id desc limit 1`, true),
@@ -278,7 +295,7 @@
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
         notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
-        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15] }));
+        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17] }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       if (ed.invoices.length) {
         const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account"],
@@ -292,10 +309,13 @@
             qty: l[5] == null ? "" : String(+l[5]), cost: fmtCost(l[6]) });
         }
         for (const iv of ed.invoices) for (const r of iv.rows) if (needsCheck(r)) r.alts = guessLine(r.src, ed.vendor).alts;
+        const rc = await JT.rows(["invoice_id::text", "variant_id::text", "qty"], `from jt.invoice_receipts where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")})`, true).catch(() => []);
+        for (const [iid, vid, q] of rc) { const iv = byId.get(iid); if (iv) iv.got.set(vid, +q || 0); }
         ed.cur = ed.invoices.length - 1;
       }
       const dests = new Set(ed.lines.map(l => l.dest));
       ed.dest = dests.size > 1 || ed.into === "both" ? "both" : dests.size === 1 ? [...dests][0] : ed.into || "shopify";
+      pickRcvInv(ed);
       ed.showPdf = window.innerWidth >= 1100 && !!(cur(ed) && cur(ed).parts);
       S.ed = ed; S.busy = "";
       if (cur(ed) && cur(ed).parts) loadFile(cur(ed)).then(() => { if (S.ed === ed) { const h2 = $("pe-pdf"); if (h2) h2.innerHTML = ""; renderPdf(); } }).catch(() => {});
@@ -631,7 +651,8 @@
         ${ed.recv ? `<td><input class="inp num sm" data-f="recv" data-k="${l.id}" value="${esc(ed.recv[keyOf(l)] ?? "")}" inputmode="numeric" placeholder="0" style="width:64px"></td>` : ""}
         ${rcv ? `<td class="rcv">${p.ordered - p.received > 0 || p.toReceive > 0 ? (() => { const val = rqVal(ed, l, p), bad = val !== "" && !(Number.isInteger(Number(val)) && Number(val) >= 0);
             return `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"><button class="mini primary" data-pact="rq-go" data-k="${l.id}">Receive</button></div>`
-              + (anyInv && !p.invoiced && !p.received ? '<div class="meta">not on an invoice yet</div>' : anyInv && val !== String(p.toReceive) ? `<div class="meta warnt">invoice: ${n0(p.toReceive)}</div>` : ""); })()
+              + (rcvIv(ed) ? (() => { const d = rqDef(ed, l, p); return d === 0 ? '<div class="meta">not on this invoice</div>' : val !== String(d) ? `<div class="meta warnt">invoice: ${n0(d)}</div>` : ""; })()
+                : anyInv && !p.invoiced && !p.received ? '<div class="meta">not on an invoice yet</div>' : anyInv && val !== String(p.toReceive) ? `<div class="meta warnt">invoice: ${n0(p.toReceive)}</div>` : ""); })()
           : '<span class="pill ok">All in</span>'}</td>` : ""}
         <td class="l small"><span class="pill ${p.st[1]}">${esc(p.st[0])}</span>${p.open > 0 && (p.invoiced || p.received) ? `<div class="meta">${n0(p.open)} still to come</div>` : ""}</td>
         <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : '<span class="dim">—</span>'}</td>
@@ -689,6 +710,7 @@
         ${openLines.length && !ro && !ed.recv && ed.invoices.length ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
+        ${rcvBar(ed)}
         ${costBar(ed, pr, ro)}
         ${ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th><th>Invoiced</th><th>Received</th>${ed.recv ? "<th>Arrived now</th>" : rcv ? "<th>Receive</th>" : ""}<th class="l">Status</th><th class="l">Backorder · ETA</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
@@ -712,10 +734,21 @@
     { const bar = document.querySelector(".appbar"), top = box.querySelector(".po-top"), st = document.documentElement.style;
       if (bar) st.setProperty("--appbar-h", bar.offsetHeight + "px"); if (top) st.setProperty("--potop-h", top.offsetHeight + "px"); }
   }
+  const recvPill = (v) => { if (v.isNew || !v.id) return ""; const t = invTot(v);
+    return v.recvAt ? `<span class="pill ok" title="${v.recvManual ? "Marked received" : "Everything on it came in"}">Received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : ""; };
+  // which invoice the Receive column is working from
+  function rcvBar(ed) {
+    if (!receiving(ed)) return "";
+    const saved = ed.invoices.filter(v => v.id && !v.isNew); if (!saved.length) return "";
+    const iv = rcvIv(ed), t = iv && invTot(iv), back = ed.lines.filter(l => l.backorder && (Number(l.qty) || 0) > (l.received || 0));
+    return `<div class="bobar rcvbar"><span><label class="small" for="pe-rcvinv"><b>Receiving against</b></label>
+      <select id="pe-rcvinv" class="inp sm" style="width:auto">${saved.map(v => { const x = invTot(v); return `<option value="${esc(v.id)}" ${v.id === ed.rcvInv ? "selected" : ""}>Invoice ${esc(v.no || v.id)} — ${v.recvAt ? "received" : `${n0(x.g)} of ${n0(x.b)} in`}</option>`; }).join("")}<option value="" ${!ed.rcvInv ? "selected" : ""}>No invoice (what's still open)</option></select>
+      <span class="small muted">${iv ? (iv.recvAt ? "This invoice is received in full." : `${n0(t.b - t.g)} units on this invoice still to come in.`) : "Quantities start from what's still open on the PO."}${back.length ? ` The PO stays open for ${back.length} backordered product${back.length === 1 ? "" : "s"}.` : ""}</span></span></div>`;
+  }
   function invoicesHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
     const chips = ed.invoices.map((v, i) => { const c = count(v), bad = c.check + c.none;
-      return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}${v.due ? " · due " + shortDate(v.due) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${v.isNew ? '<span class="pill warn">new</span>' : v.paidOn ? '<span class="pill ok">Paid</span>' : overdue(v) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</button>`; }).join("");
+      return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}${v.due ? " · due " + shortDate(v.due) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${recvPill(v)}${v.isNew ? '<span class="pill warn">new</span>' : v.paidOn ? '<span class="pill ok">Paid</span>' : overdue(v) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</button>`; }).join("");
     const head = `<div class="panel-head"><h2>Invoices</h2><span class="muted small">${ed.invoices.length ? `${ed.invoices.length} on this PO` : "none yet"} · a vendor can bill in parts</span>${!ro ? `<label class="btn ${ed.invoices.length ? "" : "primary"} right" for="pe-file">Upload invoice PDF</label>` : ""}</div>
       <div class="ivchips">${chips}${!ro ? `<label class="ivchip add" for="pe-file"><b>+ Add invoice</b><span>upload the PDF or drop it here</span></label>` : ""}</div>`;
     if (!iv) return `<section class="panel po-inv" id="pe-drop">${head}</section>`;
@@ -737,7 +770,7 @@
     }).join("");
     return `<section class="panel po-inv" id="pe-drop">${head}
       <div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""} ${iv.paidOn ? '<span class="pill ok">Paid</span>' : overdue(iv) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</span>
-        <span class="dbtns">${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro ? `<button class="mini" data-pact="rminv">Remove from PO</button>` : ""}</span></div>
+        <span class="dbtns">${iv.id && !iv.isNew && !ro ? (iv.recvAt ? `${recvPill(iv)}${iv.recvManual ? '<button class="mini" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : ""}` : `${recvPill(iv)}<button class="mini" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>`) : ""}${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro ? `<button class="mini" data-pact="rminv">Remove from PO</button>` : ""}</span></div>
       ${ed.confirm === "rminv" ? `<div class="note warn">Take invoice ${esc(iv.no || "")} off this PO? ${iv.id && iv.status === "applied" ? "It was applied on the Invoices tab, so it's only detached." : "It's deleted when you save."} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
       <div class="pmgrid small-grid">
         <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lock ? "disabled" : ""}></label>
@@ -895,6 +928,11 @@
     try { await JT.prep.setOrderStatus(Number(ed.id), status); S.busy = ""; await loadOrders(true); await openPO(ed.id); note("info", msg || `Moved to ${STAGE.get(status).toLowerCase()}.`); }
     catch (e) { S.busy = ""; if (S.ed) S.ed.confirm = false; render(); note("bad", "Couldn't change the stage: " + esc(JT.message(e))); }
   }
+  async function invReceived(iv, on) {
+    const ed = S.ed; S.busy = "Saving…"; render();
+    try { await JT.prep.invoiceReceived(iv.id, on); S.busy = ""; await openPO(ed.id); note("info", on ? `Invoice ${esc(iv.no || iv.id)} marked received.` : `Invoice ${esc(iv.no || iv.id)} reopened.`); }
+    catch (e) { S.busy = ""; render(); note("bad", "Couldn't change the invoice: " + esc(JT.message(e))); }
+  }
   async function receiveNow(obj) {
     const ed = S.ed; obj = obj || (ed && ed.recv); if (!ed || !obj) return;
     const lines = [];
@@ -905,14 +943,16 @@
       if (q > 0) lines.push({ variant_id: Number(vid), amazon_sku: dest === "prep" ? asku || "" : "", dest: dest || "prep", qty: q });
     }
     if (!lines.length) { note("warn", "Enter how many arrived."); return; }
-    const recv = ed.recv;
-    if (ed.dirty || !ed.id) { const id = await save(null, true); if (!id) return; S.ed.recv = recv; }
+    const recv = ed.recv, ri = ed.rcvInv;
+    if (ed.dirty || !ed.id) { const id = await save(null, true); if (!id) return; S.ed.recv = recv; if (S.ed.invoices.some(v => v.id === ri)) S.ed.rcvInv = ri; }
     S.busy = "Receiving…"; render();
     try {
-      const n = await JT.prep.receiveOrder(Number(S.ed.id), lines);
+      const inv = receiving(S.ed) ? rcvIv(S.ed) : null;
+      const n = await JT.prep.receiveOrder(Number(S.ed.id), lines, "", inv && inv.id);
       const id = S.ed.id; S.busy = ""; await loadOrders(true); await openPO(id);
+      const iv2 = inv && S.ed && S.ed.invoices.find(v => v.id === inv.id);
       const left = S.ed ? [...progress(S.ed).values()].reduce((a, p) => a + Math.max(0, p.ordered - p.received), 0) : 0;
-      note("info", `Received ${n0(n)} units.${lines.some(l => l.dest === "prep") ? " Prep-center lines are in the prep center." : ""}${lines.some(l => l.dest === "shopify") ? " Shopify-store lines are recorded on the PO (Shopify's own stock isn't changed)." : ""}${left ? ` ${n0(left)} still to come on this PO.` : ""}`);
+      note("info", `Received ${n0(n)} units${inv ? ` against invoice ${esc(inv.no || inv.id)}` : ""}.${iv2 && iv2.recvAt ? " That invoice is now received in full." : ""}${lines.some(l => l.dest === "prep") ? " Prep-center lines are in the prep center." : ""}${lines.some(l => l.dest === "shopify") ? " Shopify-store lines are recorded on the PO (Shopify's own stock isn't changed)." : ""}${left ? ` ${n0(left)} still to come on this PO.` : ""}`);
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't receive: " + esc(JT.message(e))); }
   }
   function leave() {
@@ -1019,6 +1059,7 @@
       return receiveNow(o);
     }
     if (a === "recv-go") return receiveNow();
+    if ((a === "inv-recvd" || a === "inv-reopen") && cur(ed) && cur(ed).id) return invReceived(cur(ed), a === "inv-recvd");
     if (a === "amzship") { if (window.JTPrepTab && window.JTPrepTab.shipFromOrder) window.JTPrepTab.shipFromOrder(ed.id); return; }
   }
   const box = () => $("po-edit-view");
@@ -1363,6 +1404,7 @@
         if (stuck.length) note("warn", `${stuck.length} product${stuck.length === 1 ? " was" : "s were"} already received into the ${DESTN[stuck[0].dest].toLowerCase()}, so this PO stays on Both.`);
         render(); return; }
       if (t.id === "pe-boeta") return;
+      if (t.id === "pe-rcvinv") { ed.rcvInv = t.value; ed.rq = {}; render(); return; }
       if (t.dataset.f === "spA" && ed.split) { ed.split.asku = t.value; return; }
       const k = t.dataset.k, l = k && ed.lines.find(x => x.id === k), r = k && iv && iv.rows.find(x => x.id === k);
       if (t.dataset.f === "dest" && l) { const oldK = keyOf(l); if (t.value === "@shopify") { l.dest = "shopify"; l.asku = ""; } else { l.dest = "prep"; l.asku = t.value; }

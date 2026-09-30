@@ -311,3 +311,13 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - `jt.prep_order_unreceive_line(p)` takes some or all of one PO line back off its received count. Prep-center units come back out of the prep center, logged as 'unreceive'.
 - The PO's stage follows: invoiced or ordered when nothing's received, otherwise partly received.
 - Refused once the PO is QB ready or complete.
+
+## 035 — receiving against an invoice
+
+- `jt.invoice_receipts (invoice_id, variant_id, qty)`: units received against each invoice, by product. Kept apart from `jt.invoice_lines` so re-saving an invoice doesn't lose it.
+- `jt.invoices.received_at` is set once every product on the invoice has come in (or it was marked by hand: `received_manual`).
+- `jt.po_receive_invoice(p {id, invoice_id, lines, note, by})` receives into the PO as `jt.prep_order_receive` does, and also counts the units on that invoice, up to what it billed.
+- `jt.invoice_set_received(p {invoice_id, received})` marks an invoice received by hand, or undoes that.
+- `jt.prep_order_unreceive_line` also takes units off the order's invoices, newest invoice first.
+- The PO keeps its own status: it stays partly received while backordered products are still to come.
+- Web wrappers: `public.jt_po_receive_invoice`, `public.jt_invoice_set_received`.

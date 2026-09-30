@@ -588,3 +588,33 @@ def test_unreceive_one_line(conn):
     call("prep_order_unreceive_line", {"id": oid, "variant_id": 971, "amazon_sku": "A-FBA", "dest": "prep", "qty": 100})
     cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "ordered"
     cur.execute("select count(*) from jt.prep_items where variant_id = 971"); assert cur.fetchone()[0] == 0
+
+
+def test_receive_against_invoice(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (981, 98, 5, 'Wilson'), (982, 98, 6, 'Wilson')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    # ordered 20 + 10 (backordered); the invoice bills only the 20
+    inv = {"vendor": "Wilson", "invoice_no": "INV-9", "invoice_date": "2026-09-01", "subtotal": 100,
+           "lines": [{"item_code": "a", "description": "A", "qty": 20, "unit_cost": 5, "amount": 100, "variant_id": 981, "match_how": "manual", "dest": "shopify"},
+                     {"item_code": "FRT", "description": "Freight", "qty": 1, "unit_cost": 9, "amount": 9, "variant_id": None, "match_how": ""}]}
+    r = call("po_save", {"order": {"vendor": "Wilson", "po_no": "R1"}, "lines": [{"variant_id": 981, "dest": "shopify", "qty": 20},
+             {"variant_id": 982, "dest": "shopify", "qty": 10, "backorder": True}], "invoices": [inv]})
+    oid, iid = r["order_id"], r["invoice_ids"][0]
+    call("po_receive_invoice", {"id": oid, "invoice_id": iid, "lines": [{"variant_id": 981, "dest": "shopify", "qty": 12}]})
+    cur.execute("select received_at is null from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0]
+    call("po_receive_invoice", {"id": oid, "invoice_id": iid, "lines": [{"variant_id": 981, "dest": "shopify", "qty": 8}]})
+    cur.execute("select received_at is not null from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0]
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "partial"  # backorder still open
+    # saving the PO again keeps what was received on the invoice
+    call("po_save", {"order": {"id": oid, "vendor": "Wilson", "po_no": "R1"}, "invoices": [dict(inv, id=iid)]})
+    cur.execute("select qty from jt.invoice_receipts where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 20
+    # un-receiving reopens the invoice
+    call("prep_order_unreceive_line", {"id": oid, "variant_id": 981, "dest": "shopify", "qty": 3})
+    cur.execute("select received_at is null, (select qty from jt.invoice_receipts where invoice_id = %s) from jt.invoices where id = %s", (iid, iid))
+    assert cur.fetchone() == (True, 17)
+    # marked received by hand, then reopened
+    call("invoice_set_received", {"invoice_id": iid, "received": True})
+    cur.execute("select received_at is not null from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0]
+    call("invoice_set_received", {"invoice_id": iid, "received": False})
+    cur.execute("select received_at is null from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0]
