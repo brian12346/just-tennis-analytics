@@ -300,3 +300,8 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - Supabase's API connection runs pg_safeupdate, which refuses a DELETE or UPDATE without a WHERE clause, even inside a security-definer function.
 - `jt.refresh_fifo_costs()` and `jt.prep_seed()` now use `where true`. Before this, Apply to Shopify failed with "DELETE requires a WHERE clause".
 - Any new function that clears a table needs the same.
+
+### Removing a product from Incoming products (033)
+
+- `jt.prep_order_lines.incoming_hidden_qty` is how many had been received when the product was taken off the prep center's Incoming products list; null means it isn't hidden.
+- Set with `jt.prep_incoming_hide`. The product shows again if more arrive, and the PO itself is unchanged.

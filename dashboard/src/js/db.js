@@ -280,6 +280,12 @@
     },
     // Prep center (Prep center tab): set counts, or ship units to Amazon. Returns the number of lines changed.
     prep: {
+      // take a product off (hide: true) or put it back on (false) the prep center's Incoming products list
+      async incomingHide(body) {
+        if (WEB) return await WEB.write("jt_prep_incoming_hide", { p: body });
+        const out = await run(`select jt.prep_incoming_hide(${q(JSON.stringify(body))}::jsonb) as ok`, true);
+        return out[0] && out[0].ok;
+      },
       async adjust(body) {
         if (WEB) return Number(await WEB.write("jt_prep_adjust", { p: body }));
         const out = await run(`select jt.prep_adjust(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);

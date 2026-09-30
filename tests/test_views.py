@@ -551,3 +551,17 @@ def test_apply_needs_shopify_receipt(conn):
     cur.execute("rollback to savepoint b")
     cur.execute("update jt.variants set seen_at = now() + interval '1 minute'")
     assert call("po_apply_costs", body) == 1
+
+
+def test_incoming_hide(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (961, 96, 5, 'Wilson')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    oid = call("po_save", {"order": {"vendor": "Wilson", "po_no": "H1"}, "lines": [{"variant_id": 961, "dest": "prep", "qty": 60, "backorder": True}], "invoices": []})["order_id"]
+    assert call("prep_incoming_hide", {"order_id": oid, "variant_id": 961, "dest": "prep"}) is True
+    cur.execute("select incoming_hidden_qty from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] == 0
+    # saving the PO again keeps it hidden
+    call("po_save", {"order": {"id": oid, "vendor": "Wilson", "po_no": "H1"}, "lines": [{"variant_id": 961, "dest": "prep", "qty": 60, "backorder": True}], "invoices": []})
+    cur.execute("select incoming_hidden_qty from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] == 0
+    call("prep_incoming_hide", {"order_id": oid, "variant_id": 961, "dest": "prep", "hide": False})
+    cur.execute("select incoming_hidden_qty from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] is None
