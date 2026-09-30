@@ -608,7 +608,8 @@
       if (!differs && !l.upd) return applied;
       return `<button class="mini updc ${l.upd ? "on" : ""}" data-pact="updc" data-k="${l.id}" aria-pressed="${l.upd}" title="${l.upd ? "Marked: apply it with Apply to Shopify (received units only)" : "Mark this cost to update Shopify"}">${l.upd ? "✓ Update Shopify" : "Update Shopify"}</button>${applied}`;
     };
-    const canSplit = (l) => !ro && !ed.recv && !(l.received > 0) && (Number(l.qty) || 0) > 1;
+    const canSplit = (l) => !ro && !ed.recv && (Number(l.qty) || 0) > 1;
+    const canUnrecv = (l) => l.received > 0 && ed.id && !ed.recv && !["qb_ready", "complete"].includes(ed.status);
     const destSel = (l) => {
       const canPick = !ro && !(l.received > 0) && (!ed.recv || PRE.includes(ed.status) || true);
       if (!canPick) return l.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep center</span>${l.asku ? `<div class="meta mono">${esc(lbl((S.listings.get(l.vid) || []).find(x => x.sku === l.asku) || { sku: l.asku }))}</div>` : '<div class="meta">any ASIN</div>'}`;
@@ -626,7 +627,7 @@
         <td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Send part to the Shopify store and part to the prep center">Split</button>` : ""}</div></td>
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badQ || p.ordered < p.received ? "bad" : ""}" data-f="qty" data-k="${l.id}" value="${esc(l.qty)}" inputmode="numeric" placeholder="0" style="width:64px">` : n0(p.ordered)}</td>
         <td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td>
-        <td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}</td>
+        <td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}${canUnrecv(l) ? `<div><button class="linkbtn small" data-pact="unrecv1" data-k="${l.id}" title="Take some or all of these back off the received count">un-receive</button></div>` : ""}</td>
         ${ed.recv ? `<td><input class="inp num sm" data-f="recv" data-k="${l.id}" value="${esc(ed.recv[keyOf(l)] ?? "")}" inputmode="numeric" placeholder="0" style="width:64px"></td>` : ""}
         ${rcv ? `<td class="rcv">${p.ordered - p.received > 0 || p.toReceive > 0 ? (() => { const val = rqVal(ed, l, p), bad = val !== "" && !(Number.isInteger(Number(val)) && Number(val) >= 0);
             return `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"><button class="mini primary" data-pact="rq-go" data-k="${l.id}">Receive</button></div>`
@@ -636,7 +637,14 @@
         <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : '<span class="dim">—</span>'}</td>
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">${chg != null && Math.abs(chg) >= 0.0005 ? `<div class="meta ${chg > 0 ? "neg" : "pos"}">${pct(chg)} vs Shopify</div>` : ""}` : m(l.cost === "" ? v && v.cost : Number(l.cost))}${costCell(l, v, chg)}</td>
         <td>${m(lineAmt(l))}</td>
-        <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${ed.split && ed.split.id === l.id ? splitRow(l) : ""}`;
+        <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${ed.split && ed.split.id === l.id ? splitRow(l) : ""}${ed.unrecv && ed.unrecv.id === l.id ? unrecvRow(l) : ""}`;
+    };
+    const unrecvRow = (l) => {
+      const v = variant(l.vid) || {}, n = ed.unrecv.n, bad = n !== "" && !(Number.isInteger(Number(n)) && Number(n) > 0 && Number(n) <= l.received);
+      return `<tr class="splitrow"><td colspan="${NC}" class="l"><div class="splitbox"><b>Un-receive ${esc(v.title || "this product")}</b>
+        <label class="inline"><input id="pe-unrq" class="inp num sm ${bad ? "bad" : ""}" data-f="unrq" value="${esc(n)}" inputmode="numeric" style="width:64px"> of ${n0(l.received)} received</label>
+        <span class="small muted">${l.dest === "prep" ? "They come back out of the prep center (refused if they already shipped out)." : "They come off this PO's received count (Shopify's own stock isn't changed)."}</span>
+        <span class="dbtns"><button class="mini primary" data-pact="unrecv1-go" ${bad || S.busy ? "disabled" : ""}>Un-receive</button><button class="mini" data-pact="unrecv1-no">Cancel</button></span></div></td></tr>`;
     };
     const splitRow = (l) => {
       const sp = ed.split, v = variant(l.vid) || {}, ls = (S.listings.get(l.vid) || []).slice().sort((a, b) => a.units - b.units);
@@ -968,6 +976,9 @@
     if (a === "apply-go") return applyCosts();
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
     if (a === "shop-rm") { ed.shopCheck = null; ed.dirty = true; render(); note("info", "Shopify PO check removed. Save to keep that."); return; }
+    if (a === "unrecv1" && l) { ed.unrecv = { id: l.id, n: String(l.received) }; render(); setTimeout(() => { const i = box().querySelector('[data-f="unrq"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
+    if (a === "unrecv1-no") { ed.unrecv = null; render(); return; }
+    if (a === "unrecv1-go") return unreceiveLine(ed);
     if (a === "split-no") { ed.split = null; render(); return; }
     if (a === "split-go") return doSplit(ed);
     if (a === "rmline" && l) { ed.lines = ed.lines.filter(x => x !== l); ed.dirty = true; render(); return; }
@@ -1272,11 +1283,25 @@
     for (const o of others) { if (!diff) break; const nq = Math.max(o.received || 0, qn(o) + diff); diff -= nq - qn(o); o.qty = String(nq); }
     for (const o of others) { const i = document.querySelector(`#po-edit-view [data-f="qty"][data-k="${o.id}"]`); if (i) i.value = o.qty; }
   }
+  async function unreceiveLine(ed) {
+    const u = ed.unrecv, l = u && ed.lines.find(x => x.id === u.id); if (!l) return;
+    const q = Number(u.n); if (!(Number.isInteger(q) && q > 0 && q <= l.received)) { note("bad", `Enter a whole number from 1 to ${n0(l.received)}.`); return; }
+    if (ed.dirty) { const id = await save(null, true); if (!id) return; }
+    S.busy = "Un-receiving…"; render();
+    try {
+      const n = await JT.prep.unreceiveLine({ id: Number(S.ed.id), variant_id: Number(l.vid), amazon_sku: l.dest === "prep" ? l.asku || "" : "", dest: l.dest, qty: q });
+      const id = S.ed.id; S.busy = ""; await loadOrders(true); await openPO(id);
+      note("info", `Un-received ${n0(n)} of ${esc((variant(l.vid) || {}).title || "the product")}${l.dest === "prep" ? " — they came back out of the prep center" : ""}.`);
+    } catch (err) { S.busy = ""; render(); note("bad", "Couldn't un-receive: " + esc(JT.message(err))); }
+  }
   // one product, part to the Shopify store and part to the prep center
   function doSplit(ed) {
     const sp = ed.split, src = sp && ed.lines.find(x => x.id === sp.id); if (!src) { ed.split = null; render(); return; }
     const sQ = Number(sp.s), pQ = Number(sp.p);
     if (![sQ, pQ].every(n => Number.isInteger(n) && n >= 0) || sQ + pQ === 0) { note("bad", "Enter whole numbers for each side."); return; }
+    // a received line can't be split below what it received: un-receive the units that belong on the other side first
+    const keeps = src.dest === "shopify" ? sQ : src.asku === (sp.asku || "") ? pQ : 0;
+    if (src.received > keeps) { note("warn", `${n0(src.received)} of these were already received into the ${src.dest === "shopify" ? "Shopify store" : "prep center"}. Un-receive ${n0(src.received - keeps)} first (the un-receive link under Received), then split, then receive them on the other side.`); return; }
     const mk = (dest, asku) => ({ id: newId(), vid: src.vid, asku, dest, qty: "0", cost: src.cost, received: 0, backorder: src.backorder, eta: src.eta, auto: false });
     const shop = src.dest === "shopify" ? src : ed.lines.find(x => x.vid === src.vid && x.dest === "shopify") || null;
     const prep = src.dest === "prep" && src.asku === sp.asku ? src : ed.lines.find(x => x.vid === src.vid && x.dest === "prep" && x.asku === sp.asku) || null;
@@ -1369,6 +1394,7 @@
       if (t.dataset.f === "cost" && l) { l.cost = t.value.trim().replace(/^\$/, ""); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "recv" && l) { ed.recv[keyOf(l)] = t.value.trim(); }
       if (t.dataset.f === "rq" && l) { ed.rq = ed.rq || {}; ed.rq[keyOf(l)] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 500); }
+      if (t.dataset.f === "unrq" && ed.unrecv) { ed.unrecv.n = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if ((t.dataset.f === "spS" || t.dataset.f === "spP") && ed.split) {
         const tot = ed.split.total, v2 = t.value.trim(), n = Number(v2);
         if (t.dataset.f === "spS") { ed.split.s = v2; if (Number.isInteger(n) && n >= 0 && n <= tot) { ed.split.p = String(tot - n); const o = box.querySelector('[data-f="spP"]'); if (o) o.value = ed.split.p; } }

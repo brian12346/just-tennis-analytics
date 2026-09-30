@@ -323,6 +323,12 @@
         const out = await run(`select jt.prep_order_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
         return Number(out[0] && out[0].id);
       },
+      // un-receive part of one product on a PO — jt.prep_order_unreceive_line
+      async unreceiveLine(body) {
+        if (WEB) return Number(await WEB.write("jt_prep_order_unreceive_line", { p: body }));
+        const out = await run(`select jt.prep_order_unreceive_line(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
+        return Number(out[0] && out[0].n) || 0;
+      },
       async setOrderStatus(id, status) {
         if (WEB) return WEB.write("jt_prep_order_status", { p: { id, status } });
         const out = await run(`select jt.prep_order_status(${q(JSON.stringify({ id, status, by: "Claude dashboard" }))}::jsonb) as s`, true);

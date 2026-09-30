@@ -305,3 +305,9 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 
 - `jt.prep_order_lines.incoming_hidden_qty` is how many had been received when the product was taken off the prep center's Incoming products list; null means it isn't hidden.
 - Set with `jt.prep_incoming_hide`. The product shows again if more arrive, and the PO itself is unchanged.
+
+### Un-receive one product (034)
+
+- `jt.prep_order_unreceive_line(p)` takes some or all of one PO line back off its received count. Prep-center units come back out of the prep center, logged as 'unreceive'.
+- The PO's stage follows: invoiced or ordered when nothing's received, otherwise partly received.
+- Refused once the PO is QB ready or complete.

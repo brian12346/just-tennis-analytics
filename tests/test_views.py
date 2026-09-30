@@ -565,3 +565,26 @@ def test_incoming_hide(conn):
     cur.execute("select incoming_hidden_qty from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] == 0
     call("prep_incoming_hide", {"order_id": oid, "variant_id": 961, "dest": "prep", "hide": False})
     cur.execute("select incoming_hidden_qty from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] is None
+
+
+def test_unreceive_one_line(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (971, 97, 5, 'Wilson'), (972, 97, 6, 'Wilson')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    oid = call("po_save", {"order": {"vendor": "Wilson", "po_no": "U1"}, "lines": [{"variant_id": 971, "amazon_sku": "A-FBA", "dest": "prep", "qty": 114},
+                                                                            {"variant_id": 972, "dest": "shopify", "qty": 10}], "invoices": []})["order_id"]
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 971, "amazon_sku": "A-FBA", "dest": "prep", "qty": 114}, {"variant_id": 972, "dest": "shopify", "qty": 10}]})
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "received"
+    assert call("prep_order_unreceive_line", {"id": oid, "variant_id": 971, "amazon_sku": "A-FBA", "dest": "prep", "qty": 14}) == 14
+    cur.execute("select qty from jt.prep_items where variant_id = 971"); assert cur.fetchone()[0] == 100
+    cur.execute("select qty_received from jt.prep_order_lines where order_id = %s and variant_id = 971", (oid,)); assert cur.fetchone()[0] == 100
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "partial"
+    cur.execute("select kind, qty_change from jt.prep_moves where variant_id = 971 order by id desc limit 1"); assert cur.fetchone() == ("unreceive", -14)
+    cur.execute("savepoint s")
+    with pytest.raises(Exception, match="only 10"):
+        call("prep_order_unreceive_line", {"id": oid, "variant_id": 972, "dest": "shopify", "qty": 11})
+    cur.execute("rollback to savepoint s")
+    call("prep_order_unreceive_line", {"id": oid, "variant_id": 972, "dest": "shopify", "qty": 10})
+    call("prep_order_unreceive_line", {"id": oid, "variant_id": 971, "amazon_sku": "A-FBA", "dest": "prep", "qty": 100})
+    cur.execute("select status from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == "ordered"
+    cur.execute("select count(*) from jt.prep_items where variant_id = 971"); assert cur.fetchone()[0] == 0
