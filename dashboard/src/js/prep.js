@@ -25,7 +25,7 @@
       const [h0, h1] = histRange(), la = (c) => `(${c} at time zone 'America/Los_Angeles')::date between ${JT.day(h0)} and ${JT.day(h1)}`;
       const SHIPWHERE = `where s.status <> 'shipped' or ${la("s.shipped_at")}`;
       const ORDWHERE = `where o.status <> 'complete' or ${la("o.updated_at")}`;
-      const [items, moves, maps, lst, seed, ships, slines, ords, olines, list] = await Promise.all([
+      const [items, moves, maps, lst, seed, ships, slines, ords, olines, list, ordship] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
           "from jt.prep_items i left join jt.variants v on v.variant_id = i.variant_id order by i.updated_at desc", refresh),
@@ -53,6 +53,9 @@
         JT.rows(["i.id::text", "i.variant_id::text", "i.amazon_sku", "i.dest", "i.qty", "i.note", "i.source", "i.order_id::text", "i.added_at", "i.added_by", "i.closed_at",
           "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.vendor", "v.unit_cost", "v.inventory_qty", "v.product_id::text"],
           `from jt.prep_list i left join jt.variants v on v.variant_id = i.variant_id where i.closed_at is null or ${la("i.closed_at")} order by i.added_at desc`, refresh),
+        // Amazon shipments made from open vendor orders (any date), so Incoming products can count down
+        JT.rows(["s.order_id::text", "s.status", "l.variant_id::text", "l.amazon_sku", "l.qty"],
+          `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id join jt.prep_orders o on o.id = s.order_id where o.status in ('ordered', 'invoiced', 'partial', 'received', 'qb_ready')`, refresh),
       ]);
       const listing = new Map(lst.map(([sku, asin, title, price]) => [sku, { sku, asin: asin || "", title: title || "", price: price == null ? null : +price }]));
       for (const [, , skus, asin] of seed) for (const k of String(skus || "").split(",").map(s => s.trim()).filter(Boolean)) {
@@ -102,24 +105,45 @@
       const listItems = list.map(x => ({ id: x[0], vid: x[1], asku: x[2] || "", dest: x[3], qty: x[4] == null ? null : +x[4], note: x[5] || "", source: x[6] || "", orderId: x[7] || null,
         added: x[8], addedBy: x[9] || "", closed: x[10] || null, title: x[11] || `variant ${x[1]}`, sku: x[12] || "", vendor: x[13] || "", cost: x[14] == null ? null : +x[14], shopQty: x[15] == null ? null : +x[15], pid: x[16] || "" }));
       for (const it of listItems) it.order = it.orderId ? oById.get(it.orderId) || null : null;
-      // Incoming products: prep-center units still to come on placed vendor orders, by prep row (product + listing).
-      // Shipments in progress take stock first; what they need beyond the stock comes out of these.
+      // Units still to come on placed vendor orders, by prep row (product + listing): the shipment editor counts these
+      // as available when planning, and flags lines that are waiting on them.
       const incoming = new Map();
-      for (const o of orders) if (["ordered", "invoiced", "partial"].includes(o.status)) for (const l of o.lines) {
-        const left = Math.max(0, l.ordered - l.received); if (l.dest !== "prep" || !left) continue;
-        const k = l.vid + "|" + l.asku;
-        let r = incoming.get(k);
-        if (!r) {
-          const listings = byVariant.get(l.vid) || [];
-          const target = l.asku ? (listings.find(x => x.sku === l.asku) || { ...(listing.get(l.asku) || {}), sku: l.asku, units: 1 }) : null;
-          r = { vid: l.vid, asku: l.asku, qty: 0, coming: 0, title: l.title, sku: l.sku, vendor: l.vendor, type: "", pid: l.pid, cost: lineCost(l), listings, target, from: [] };
-          incoming.set(k, r);
+      // Incoming products: every prep-center product on an open vendor order (placed, not complete), received or
+      // still coming, until it's all in Amazon shipments made from that order.
+      const OPEN = ["ordered", "invoiced", "partial", "received", "qb_ready"], poRows = [];
+      for (const o of orders) if (OPEN.includes(o.status)) for (const l of o.lines) {
+        if (l.dest !== "prep") continue;
+        const k = l.vid + "|" + l.asku, left = Math.max(0, l.ordered - l.received);
+        const listings = byVariant.get(l.vid) || [];
+        const target = l.asku ? (listings.find(x => x.sku === l.asku) || { ...(listing.get(l.asku) || {}), sku: l.asku, units: 1 }) : null;
+        const name = (o.vendor ? o.vendor + " " : "") + (o.po ? poLabel(o.po) : "order #" + o.id), when = l.eta || o.expected || "";
+        poRows.push({ key: k, oid: o.id, name, when, status: o.status, vid: l.vid, asku: l.asku, title: l.title, sku: l.sku, vendor: l.vendor, pid: l.pid, cost: lineCost(l),
+          listings, target, ordered: l.ordered, received: l.received, coming: left, backorder: !!l.backorder, used: 0, shipped: 0 });
+        if (left && ["ordered", "invoiced", "partial"].includes(o.status)) {
+          let r = incoming.get(k);
+          if (!r) { r = { vid: l.vid, asku: l.asku, qty: 0, coming: 0, title: l.title, sku: l.sku, vendor: l.vendor, type: "", pid: l.pid, cost: lineCost(l), listings, target, from: [] }; incoming.set(k, r); }
+          r.coming += left; r.from.push({ oid: o.id, name, qty: left, when });
         }
-        r.coming += left; r.from.push({ oid: o.id, name: (o.vendor ? o.vendor + " " : "") + (o.po ? poLabel(o.po) : "order #" + o.id), qty: left, when: l.eta || o.expected || "" });
       }
+      // shipments from those orders count down their products (a product the shipment's own order doesn't have
+      // counts against the oldest open order that does)
+      for (const [oid, st, vid, asku, qty] of ordship) {
+        const k = vid + "|" + (asku || "");
+        const r = poRows.find(x => x.oid === oid && x.key === k) || poRows.filter(x => x.key === k).sort((a, b) => Number(a.oid) - Number(b.oid))[0];
+        if (!r) continue;
+        r.used += +qty || 0; if (st === "shipped") r.shipped += +qty || 0;
+      }
+      // what's here now can't be more than the prep center's free stock of that product (not in any shipment in
+      // progress); older orders' units went out first, so the free stock is given to the newest orders first
       const stockOf = (k) => { const r = rows.find(x => x.vid + "|" + x.asku === k); return r ? r.qty : 0; };
-      for (const [k, r] of incoming) { r.inShip = Math.min(r.coming, Math.max(0, (alloc.get(k) || 0) - stockOf(k))); r.free = r.coming - r.inShip; }
-      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, list: listItems, loadedAt: Date.now() };
+      const cap = new Map();
+      for (const r of [...poRows].sort((a, b) => Number(b.oid) - Number(a.oid))) {
+        if (!cap.has(r.key)) cap.set(r.key, Math.max(0, stockOf(r.key) - (alloc.get(r.key) || 0)));
+        const c = cap.get(r.key), here = Math.min(Math.max(0, r.received - r.used), c);
+        cap.set(r.key, c - here);
+        r.ready = here; r.comingLeft = Math.max(0, r.coming - Math.max(0, r.used - r.received)); r.left = r.ready + r.comingLeft;
+      }
+      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, poRows, list: listItems, loadedAt: Date.now() };
       return cache;
     })();
     try { return await loading; } finally { loading = null; }
@@ -467,30 +491,35 @@
       + (list.map(card).join("") || (P.oView === "open" ? "" : '<div class="muted small">No completed orders in the history range above.</div>'));
   }
 
-  // Incoming products: what open vendor orders will bring into the prep center, so shipments can be planned before
-  // it lands. The Ship button starts a shipment with it; units put in shipments come off "free to ship".
+  // Incoming products: the prep-center products on open vendor orders — received or still coming — until they're all
+  // in Amazon shipments made from that order. Ship starts a shipment from the order with what's left.
   function renderIncoming() {
     const el = $("prep-inc"), panel = $("prep-inc-panel"); if (!el || !cache) return;
     const q = P.q.trim().toLowerCase();
-    const all = [...(cache.incoming || new Map()).values()];
+    const all = (cache.poRows || []).filter(r => r.left > 0);
     panel.hidden = !all.length;
     if (!all.length) { el.innerHTML = ""; return; }
-    const list = all.filter(r => (P.vendor === "all" || r.vendor === P.vendor) && (!q || [r.title, r.sku, r.vendor, r.asku, r.target && r.target.title].join(" ").toLowerCase().includes(q)))
-      .sort((a, b) => b.free - a.free || a.title.localeCompare(b.title));
-    const tot = list.reduce((t, r) => ({ coming: t.coming + r.coming, ship: t.ship + r.inShip, free: t.free + r.free, cost: t.cost + r.coming * (r.cost || 0) }), { coming: 0, ship: 0, free: 0, cost: 0 });
-    const nPo = new Set(all.flatMap(r => r.from.map(f => f.oid))).size;
-    $("prep-inc-sum").textContent = `${n0(tot.coming)} units on ${nPo} open vendor order${nPo === 1 ? "" : "s"} · ${n0(tot.free)} free to ship`;
-    el.innerHTML = `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th>Incoming</th><th>In shipments</th><th>Free to ship</th><th class="l">From · expected</th><th>Unit cost</th><th>Ext. cost</th><th class="l"></th></tr></thead><tbody>${
+    const list = all.filter(r => (P.vendor === "all" || r.vendor === P.vendor) && (!q || [r.title, r.sku, r.vendor, r.asku, r.name, r.target && r.target.title].join(" ").toLowerCase().includes(q)))
+      .sort((a, b) => Number(a.oid) - Number(b.oid) || (b.ready > 0) - (a.ready > 0) || a.title.localeCompare(b.title));
+    const tot = list.reduce((t, r) => ({ left: t.left + r.left, ready: t.ready + r.ready, coming: t.coming + r.comingLeft, used: t.used + r.used, cost: t.cost + r.left * (r.cost || 0) }), { left: 0, ready: 0, coming: 0, used: 0, cost: 0 });
+    const nPo = new Set(all.map(r => r.oid)).size;
+    $("prep-inc-sum").textContent = `${n0(tot.left)} units left to ship from ${nPo} open vendor order${nPo === 1 ? "" : "s"} · ${n0(tot.ready)} here now · ${n0(tot.coming)} still coming`;
+    el.innerHTML = `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th class="l">Vendor order</th><th>Ordered</th><th>Received</th><th>Still coming</th><th>In shipments</th><th>Left to ship</th><th>Unit cost</th><th class="l"></th></tr></thead><tbody>${
       list.map(r => {
         const tg = r.target;
         const lst = tg ? `${esc(tg.title || tg.asin || "")}<div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.asin ? ` · <span class="mono">${esc(tg.asin)}</span>` : ""}</div>` : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
-        return `<tr class="${r.free ? "" : "dimrow"}"><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}</div></td>
-          <td class="l small">${lst}</td><td>${n0(r.coming)}</td><td>${r.inShip ? n0(r.inShip) : '<span class="dim">—</span>'}</td><td><b>${n0(r.free)}</b></td>
-          <td class="l small">${r.from.map(f => `<button class="linkbtn small" data-act="gotoorder" data-oid="${esc(f.oid)}">${esc(f.name)}</button> · ${n0(f.qty)}${f.when ? ` · ${shortDate(f.when)}` : ""}`).join("<br>")}</td>
-          <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? '<span class="dim">—</span>' : m0(r.coming * r.cost)}</td>
-          <td class="l">${r.free ? `<button class="mini primary" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Plan these units into an Amazon shipment now">Ship</button>` : '<span class="pill ok">all in shipments</span>'}</td></tr>`;
-      }).join("") || '<tr><td class="l muted" colspan="9">No incoming products match.</td></tr>'}</tbody>
-      <tfoot><tr><td class="l">Total · ${list.length} product${list.length === 1 ? "" : "s"}</td><td></td><td>${n0(tot.coming)}</td><td>${n0(tot.ship)}</td><td>${n0(tot.free)}</td><td></td><td></td><td>${m0(tot.cost)}</td><td></td></tr></tfoot></table></div>`;
+        const coming = r.comingLeft;
+        return `<tr><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}</div></td>
+          <td class="l small">${lst}</td>
+          <td class="l small"><button class="linkbtn small" data-act="gotoorder" data-oid="${esc(r.oid)}">${esc(r.name)}</button><div class="meta">${esc(OSTAGE.get(r.status) || r.status)}</div></td>
+          <td>${n0(r.ordered)}</td><td>${r.received ? n0(r.received) : '<span class="dim">—</span>'}</td>
+          <td>${coming ? `${n0(coming)}${r.backorder ? ' <span class="pill warn">backordered</span>' : ""}${r.when ? `<div class="meta">${shortDate(r.when)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
+          <td>${r.used ? `${n0(r.used)}${r.shipped ? `<div class="meta">${n0(r.shipped)} shipped</div>` : ""}` : '<span class="dim">—</span>'}</td>
+          <td><b>${n0(r.left)}</b>${r.ready && r.ready < r.left ? `<div class="meta">${n0(r.ready)} here now</div>` : !r.ready ? '<div class="meta">none here yet</div>' : ""}</td>
+          <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td>
+          <td class="l"><button class="mini ${r.ready ? "primary" : ""}" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}" data-n="${r.left}" title="${r.ready ? "Put these units into an Amazon shipment" : "Plan these units into an Amazon shipment before they arrive"}">Ship</button></td></tr>`;
+      }).join("") || '<tr><td class="l muted" colspan="10">No incoming products match.</td></tr>'}</tbody>
+      <tfoot><tr><td class="l">Total · ${list.length} product${list.length === 1 ? "" : "s"}</td><td></td><td></td><td></td><td>${n0(tot.ready)} here</td><td>${n0(tot.coming)}</td><td>${n0(tot.used)}</td><td>${n0(tot.left)}</td><td></td><td></td></tr></tfoot></table></div>`;
   }
   // Incoming Inventory is what's coming to the prep center: POs with prep-center lines (a PO split with the
   // Shopify store shows only its prep-center part), and empty POs not set to go to the Shopify store.
@@ -920,9 +949,10 @@
   }
   // Shipment editor. From a stock row: a new shipment holding that row (or add it to one in progress).
   // From a card: that shipment. More products are added by ASIN, Amazon SKU or Shopify SKU.
-  function openShip(vid, sku) {
-    const key = vid ? vid + "|" + (sku || "") : null;
-    P.modal = { kind: "ship", id: null, status: "open", shipment: "", dest: "FBA", note: "", lines: key ? [key] : [], qty: key ? { [key]: "" } : {}, info: {}, add: "", confirm: false, fromRow: key };
+  function openShip(vid, sku, oid, n) {
+    const key = vid ? vid + "|" + (sku || "") : null, o = oid && cache.orders.find(x => x.id === String(oid));
+    P.modal = { kind: "ship", id: null, status: "open", shipment: "", dest: "FBA", note: o ? (o.vendor ? o.vendor + " " : "") + (o.po ? poLabel(o.po) : "order #" + o.id) : "",
+      lines: key ? [key] : [], qty: key ? { [key]: n ? String(n) : "" } : {}, info: {}, add: "", confirm: false, fromRow: key, ...(o ? { orderId: o.id } : {}) };
     renderModal(); setTimeout(() => { const i = key ? document.querySelector(`#prep-modal input[data-k="${CSS.escape(key)}"]`) : $("pm-ship"); if (i) i.focus(); }, 0);
   }
   function openShipment(id, extraKey) {
@@ -1130,7 +1160,7 @@
     $("tab-prep").addEventListener("click", (e) => {
       const b = e.target.closest("[data-act]"); if (!b || b.closest("#prep-modal")) return;
       if (b.dataset.act === "count") openCount(b.dataset.vid, b.dataset.sku);
-      if (b.dataset.act === "ship") openShip(b.dataset.vid, b.dataset.sku);
+      if (b.dataset.act === "ship") openShip(b.dataset.vid, b.dataset.sku, b.dataset.oid, b.dataset.n ? Number(b.dataset.n) : 0);
       if (b.dataset.act === "gotoorder") openOrder(b.dataset.oid);
       if (b.dataset.act === "assign") openAssign(b.dataset.vid, b.dataset.sku);
       if (b.dataset.act === "list") { b.disabled = true; addToList({ variant_id: Number(b.dataset.vid), amazon_sku: b.dataset.sku || "", dest: "prep", source: "prep" })
@@ -1153,7 +1183,12 @@
     box.addEventListener("change", (e) => {
       const M = P.modal; if (!M) return;
       if (e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); }
-      if (e.target.id === "pm-into" && e.target.value) openShipment(e.target.value, M.fromRow);
+      if (e.target.id === "pm-into" && e.target.value) {
+        const oid = M.orderId, k = M.fromRow, qv = M.qty[k];
+        openShipment(e.target.value, k);
+        if (P.modal && !P.modal.orderId && oid) P.modal.orderId = oid;          // made from a vendor order: count it against that order
+        if (P.modal && k && qv && !P.modal.qty[k]) { P.modal.qty[k] = qv; renderModal(); }
+      }
     });
     box.addEventListener("keydown", (e) => {
       const M = P.modal; if (!M || e.key !== "Enter") return;
