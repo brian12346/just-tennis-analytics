@@ -628,6 +628,8 @@
     // updating the Shopify cost from this PO: mark it here, apply in bulk (received units only)
     const costCell = (l, v, chg, mode) => {
       const applied = l.costApplied != null ? `<div class="meta" title="Sent to Shopify ${esc(when(l.costAppliedAt))} — the average of everything on hand">Shopify set to ${m(l.costApplied)}</div>` : "";
+      const pvx = ed.costPreview && ed.costPreview.find(x => String(x.vid) === String(l.vid));
+      if (pvx && (mode !== "po" || !anyInv)) return `<div class="meta newc" title="${esc(pvx.how)} · ${n0(pvx.onHand)} on hand, ${n0(pvx.rec)} from this PO">New Shopify cost <b>${m(pvx.cost)}</b> <span class="dim">(now ${m(pvx.old)})</span></div>`;
       if (ro || ed.recv || l.cost === "" || !v || (mode === "po" && anyInv)) return applied;
       const differs = chg != null && Math.abs(chg) >= 0.0005 || (v.cost == null && l.cost !== "");
       if (!differs && !l.upd) return applied;
@@ -712,7 +714,7 @@
           <span class="muted small">${ivNow.recvAt ? "Received in full." : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
           <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length ? `<button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Receive all${left ? ` (${n0(left)} units)` : ""}</button>` : ""}</span></div>
         ${c.check ? `<div class="note warn">${c.check} guessed product${c.check === 1 ? "" : "s"} on this invoice ${c.check === 1 ? "needs" : "need"} confirming in the invoice lines below before ${c.check === 1 ? "it" : "they"} can be received.</div>` : ""}
-        ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
+        ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>${costBar(ed, pr, ro)}` : '<div class="muted small">No matched products on this invoice yet.</div>'}
       </div>`;
     })();
     const destTot = (d) => { const ls = ed.lines.filter(l => l.dest === d); return [ls.reduce((a, l) => a + (Number(l.qty) || 0), 0), ls.reduce((a, l) => a + lineAmt(l), 0)]; };
@@ -744,10 +746,10 @@
         ${openLines.length && !ro && !ed.recv && ed.invoices.length ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
-        ${costBar(ed, pr, ro)}
         ${anyInv && ed.lines.length && !topLines.length ? `<div class="note ok">Everything on this PO is on an invoice — receive it in the invoice below.</div>`
           : ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th>${anyInv ? "<th>Invoiced</th><th>Not invoiced</th>" : "<th>Received</th>"}${ed.recv ? "<th>Arrived now</th>" : ""}<th class="l">${anyInv ? "Backorder · ETA" : "Status · backorder"}</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
+        ${!anyInv ? costBar(ed, pr, ro) : ""}
         ${!ro && !ed.recv ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
           ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}
         ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order and its draft invoices? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
@@ -1098,19 +1100,21 @@
     for (const a of g.values()) { const w = a.rec || a.qty; a.cost = w ? Math.round(a.amt / w * 10000) / 10000 : null; }
     return [...g.values()];
   }
+  // Shopify costs, under the products that were received: mark costs on the rows, then Apply sends them (a preview first;
+  // each row then shows its new Shopify cost)
   function costBar(ed, pr, ro) {
     if (ro || ed.recv) return "";
     const marked = costGroups(ed), ready = marked.filter(a => a.rec > 0), waiting = marked.filter(a => !a.rec);
-    const changed = ed.lines.filter(l => !l.upd && l.cost !== "" && variant(l.vid) && (variant(l.vid).cost == null || Math.abs(Number(l.cost) - variant(l.vid).cost) >= 0.005));
+    const changed = ed.lines.filter(l => !l.upd && l.received > 0 && l.cost !== "" && variant(l.vid) && (variant(l.vid).cost == null || Math.abs(Number(l.cost) - variant(l.vid).cost) >= 0.005));
     if (!marked.length && !changed.length && !ed.costPreview) return "";
     const pv = ed.costPreview, gate = shopGate(ed);
-    return `<div class="costbar ${ready.length ? "hot" : ""}" id="pe-costbar" tabindex="-1"><span><b>Shopify costs</b> · ${marked.length ? `${marked.length} marked to update${ready.length ? ` · <b>${ready.length} received, ready</b>` : ""}${waiting.length ? ` · ${waiting.length} waiting to be received` : ""}` : `${changed.length} cost${changed.length === 1 ? " differs" : "s differ"} from Shopify`}</span>
-      <span class="dbtns">${changed.length ? `<button class="btn" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy || gate.block ? "disabled" : ""} title="${esc(gate.text || "")}">${ed.costWorking ? "Working out the new costs…" : `Apply to Shopify (${ready.length})`}</button>` : ""}</span>
-      ${ready.length && gate.html ? `<div class="gate small">${gate.html}</div>` : ""}
-      ${pv ? `<div class="costprev">${ed.costAmzNote ? `<div class="small warnt">Amazon (FBA/AWD) stock isn't counted in "On hand" yet. <button class="linkbtn small" data-pact="apply-amz">Include Amazon stock</button> (loads the Amazon report; can take a minute)</div>` : ""}<div class="small">Shopify gets the <b>average cost of everything on hand</b>: the older units at their old cost and the units received on this PO at the PO cost. Inventory value keeps them apart (FIFO), so the older units stay at the old cost until they sell.</div>
-        <table class="prept po-t"><thead><tr><th class="l">Product</th><th>On hand</th><th>Received on this PO</th><th>Shopify now</th><th>PO cost</th><th>New Shopify cost</th></tr></thead><tbody>${pv.map(x => `<tr><td class="l">${esc((variant(x.vid) || {}).title || x.vid)}<div class="meta">${esc(x.how)}</div></td><td>${n0(x.onHand)}</td><td>${n0(x.rec)}</td><td>${m(x.old)}</td><td>${m(x.poCost)}</td><td><b>${m(x.cost)}</b></td></tr>`).join("")}</tbody></table>
-        <div class="dbtns"><button class="btn primary" data-pact="apply-go" ${S.busy ? "disabled" : ""}>${S.busy ? "Sending…" : `Send ${pv.length} cost${pv.length === 1 ? "" : "s"} to Shopify`}</button><button class="btn" data-pact="apply-no">Cancel</button></div></div>` : ""}
-    </div>`;
+    const btns = pv ? `<button class="btn primary" data-pact="apply-go" ${S.busy ? "disabled" : ""}>${S.busy ? "Sending…" : `Send ${pv.length} new cost${pv.length === 1 ? "" : "s"} to Shopify`}</button><button class="btn" data-pact="apply-no">Cancel</button>`
+      : `${changed.length ? `<button class="mini" data-pact="updc-all">Mark ${changed.length === 1 ? "it" : "all " + changed.length}</button>` : ""}${ready.length ? `<button class="btn primary" data-pact="apply-costs" ${S.busy || gate.block ? "disabled" : ""} title="${esc(gate.text || "Shopify gets the average cost of everything on hand")}">${ed.costWorking ? "Working out the new costs…" : `Apply ${ready.length} cost${ready.length === 1 ? "" : "s"} to Shopify`}</button>` : ""}`;
+    const what = pv ? `New Shopify costs are shown on each product — the average of everything on hand (older units at their old cost, this PO's at the PO cost).`
+      : marked.length ? `${marked.length} marked to update Shopify${waiting.length ? ` · ${waiting.length} not received yet` : ""}` : `${changed.length} received cost${changed.length === 1 ? " differs" : "s differ"} from Shopify`;
+    return `<div class="costfoot" id="pe-costbar" tabindex="-1"><span class="small"><b>Shopify cost</b> · ${what}</span><span class="dbtns">${btns}</span>
+      ${pv && ed.costAmzNote ? `<div class="small warnt">Amazon (FBA/AWD) stock isn't counted in on hand yet. <button class="linkbtn small" data-pact="apply-amz">Include Amazon stock</button></div>` : ""}
+      ${!pv && ready.length && gate.html ? `<div class="gate small">${gate.html}</div>` : ""}</div>`;
   }
   // Apply to Shopify waits until the PO is received in Shopify and Shopify's stock has synced since (Shopify-store products)
   function shopGate(ed) {

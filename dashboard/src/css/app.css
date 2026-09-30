@@ -709,3 +709,7 @@ dialog.dlg::backdrop{background:rgba(0,20,60,.35)}
 .shopbadge .shopok{border:0;background:var(--ok-bg,#e3f4e8);color:var(--ok,#1a7f37);font-weight:700;border-radius:999px;width:24px;height:24px;cursor:pointer;font-size:14px;line-height:24px;padding:0}
 .shopbadge .shopdif{cursor:pointer;border:0;font:inherit;font-size:12px}
 .shopbadge .shopbtn{cursor:pointer}
+/* Shopify cost, under the products */
+.costfoot{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:space-between;padding:8px 2px 0;margin-top:6px;border-top:1px dashed var(--line)}
+.costfoot .gate,.costfoot .warnt{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+.newc b{color:var(--primary)}
