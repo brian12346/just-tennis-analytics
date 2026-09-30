@@ -227,25 +227,26 @@
   //   rows      the invoice's lines: {id, src: {item_code, upc, description, qty, unit_cost, amount}, vid, how, conf, alts, confirmed, skip, account, charge, qty, cost}
   // receiving happens right on the PO once it's invoiced (or partly received)
   const receiving = (ed) => !!ed.id && !ed.recv && ["invoiced", "partial"].includes(ed.status);
-  // Receiving is against one invoice at a time (ed.rcvInv): each product starts at what that invoice billed and
-  // hasn't come in yet, shared over the PO's lines for it. With no invoice picked, it's what's still open.
+  // Invoiced products are received on their invoice (the invoice area); the PO table keeps what isn't invoiced yet.
   const billed = (iv) => { const b = new Map(); for (const r of iv.rows) if (r.vid && !r.skip && isSure(r)) b.set(r.vid, (b.get(r.vid) || 0) + (Number(r.qty) || 0)); return b; };
-  const invLeft = (iv) => { const out = new Map(); for (const [vid, q] of billed(iv)) out.set(vid, Math.max(0, q - ((iv.got && iv.got.get(vid)) || 0))); return out; };
   const invTot = (iv) => { let b = 0, g = 0; for (const [vid, q] of billed(iv)) { b += q; g += Math.min(q, (iv.got && iv.got.get(vid)) || 0); } return { b, g }; };
-  const rcvIv = (ed) => ed.rcvInv ? ed.invoices.find(v => v.id === ed.rcvInv) || null : null;
-  function pickRcvInv(ed) { const saved = ed.invoices.filter(v => v.id && !v.isNew); ed.rcvInv = ((saved.find(v => !v.recvAt && invTot(v).b > invTot(v).g)) || {}).id || ""; }
-  function invAlloc(ed) {
-    const iv = rcvIv(ed), out = new Map(); if (!iv) return out;
-    const left = invLeft(iv), lastOf = new Map(); ed.lines.forEach(l => lastOf.set(l.vid, l.id));
+  // One invoice's products spread over the PO's lines for each product (a product split between the Shopify store and the
+  // prep center has two lines): {billed, got, left} per line id. Lines fill in order, up to what each ordered; the last takes the rest.
+  function invShares(ed, iv) {
+    const b = billed(iv), out = new Map(), lastOf = new Map(), bl = new Map(b), gl = new Map();
+    for (const [vid] of b) gl.set(vid, Math.min(b.get(vid), (iv.got && iv.got.get(vid)) || 0));
+    ed.lines.forEach(l => lastOf.set(l.vid, l.id));
     for (const l of ed.lines) {
-      const have = left.get(l.vid) || 0; let give = Math.min(have, Math.max(0, (Number(l.qty) || 0) - (l.received || 0)));
-      if (lastOf.get(l.vid) === l.id) give = have;
-      left.set(l.vid, have - give); out.set(l.id, give);
+      if (!b.has(l.vid)) continue;
+      const last = lastOf.get(l.vid) === l.id, ord = Number(l.qty) || 0;
+      const bb = last ? bl.get(l.vid) : Math.min(bl.get(l.vid), ord); bl.set(l.vid, bl.get(l.vid) - bb);
+      const gg = last ? gl.get(l.vid) : Math.min(gl.get(l.vid), bb); gl.set(l.vid, gl.get(l.vid) - gg);
+      out.set(l.id, { billed: bb, got: gg, left: Math.max(0, bb - gg) });
     }
     return out;
   }
-  const rqDef = (ed, l, p) => rcvIv(ed) ? invAlloc(ed).get(l.id) || 0 : ed.invoices.length ? p.toReceive : Math.max(0, p.ordered - p.received);
-  const rqVal = (ed, l, p) => { const k = keyOf(l); return ed.rq && k in ed.rq ? ed.rq[k] : String(rqDef(ed, l, p)); };
+  const rqKey = (iv, l) => iv.id + "#" + keyOf(l);
+  const rqVal = (ed, iv, l, sh) => { const k = rqKey(iv, l); return ed.rq && k in ed.rq ? ed.rq[k] : String(sh ? sh.left : 0); };
   const newDest = (ed) => ed.dest === "both" ? ed.addTo || "shopify" : ed.dest === "prep" ? "prep" : "shopify";
   const DESTN = { shopify: "Shopify store", prep: "Prep center" };
   // two lines for the same product and place become one
@@ -315,7 +316,6 @@
       }
       const dests = new Set(ed.lines.map(l => l.dest));
       ed.dest = dests.size > 1 || ed.into === "both" ? "both" : dests.size === 1 ? [...dests][0] : ed.into || "shopify";
-      pickRcvInv(ed);
       ed.showPdf = window.innerWidth >= 1100 && !!(cur(ed) && cur(ed).parts);
       S.ed = ed; S.busy = "";
       if (cur(ed) && cur(ed).parts) loadFile(cur(ed)).then(() => { if (S.ed === ed) { const h2 = $("pe-pdf"); if (h2) h2.innerHTML = ""; renderPdf(); } }).catch(() => {});
@@ -613,17 +613,22 @@
     const found = !ro && !ed.recv && ed.add.trim() ? findProducts(ed.add) : [];
     const lbl = (l) => window.JTListingLabel ? window.JTListingLabel(l) : l.sku;
     const both = ed.dest === "both" || new Set(ed.lines.map(l => l.dest)).size > 1;
-    const rcv = receiving(ed), anyInv = ed.invoices.length > 0;
-    const NC = ed.recv || rcv ? 11 : 10;
+    const anyInv = ed.invoices.length > 0;
+    // the PO table keeps what isn't on an invoice yet; invoiced products are received on their invoice
+    const onTop = (l) => { const p = pr.get(l.id); return !anyInv || p.open > 0 || (p.invoiced === 0 && p.received === 0); };
+    const topLines = ed.lines.filter(onTop);
+    const NC = 9 + (anyInv ? 0 : 1) + (ed.recv ? 1 : 0), NCI = 8;
+    const ivNow = cur(ed), ivSh = ivNow && ivNow.id && !ivNow.isNew ? invShares(ed, ivNow) : new Map();
+    const canRecv = !!ed.id && !ro && !["qb_ready", "complete"].includes(ed.status);
     // a product split across the Shopify store and the prep center: its total on every part
     const splitTot = (l) => { const parts = ed.lines.filter(x => x.vid === l.vid); if (parts.length < 2) return "";
       const q = (x) => Number(x.qty) || 0, sum = parts.reduce((a, x) => a + q(x), 0), tot = ed.splitTot && ed.splitTot[l.vid] != null ? ed.splitTot[l.vid] : sum;
       const rec = parts.reduce((a, x) => a + (x.received || 0), 0), sh = parts.filter(x => x.dest === "shopify").reduce((a, x) => a + q(x), 0), pp = sum - sh;
       return `<div class="splittot"><span class="pill manual">Split</span> <b class="num">${n0(tot)}</b> total · ${n0(sh)} Shopify + ${n0(pp)} prep${rec ? ` · ${n0(rec)} received` : ""}${sum !== tot ? ` <span class="neg">· parts add to ${n0(sum)}</span>` : ""}</div>`; };
     // updating the Shopify cost from this PO: mark it here, apply in bulk (received units only)
-    const costCell = (l, v, chg) => {
+    const costCell = (l, v, chg, mode) => {
       const applied = l.costApplied != null ? `<div class="meta" title="Sent to Shopify ${esc(when(l.costAppliedAt))} — the average of everything on hand">Shopify set to ${m(l.costApplied)}</div>` : "";
-      if (ro || ed.recv || l.cost === "" || !v) return applied;
+      if (ro || ed.recv || l.cost === "" || !v || (mode === "po" && anyInv)) return applied;
       const differs = chg != null && Math.abs(chg) >= 0.0005 || (v.cost == null && l.cost !== "");
       if (!differs && !l.upd) return applied;
       return `<button class="mini updc ${l.upd ? "on" : ""}" data-pact="updc" data-k="${l.id}" aria-pressed="${l.upd}" title="${l.upd ? "Marked: apply it with Apply to Shopify (received units only)" : "Mark this cost to update Shopify"}">${l.upd ? "✓ Update Shopify" : "Update Shopify"}</button>${applied}`;
@@ -639,35 +644,48 @@
         + (l.dest === "prep" ? `<select class="inp sm" data-f="dest" data-k="${l.id}" style="width:auto;max-width:150px;margin-top:4px" aria-label="ASIN"><option value="" ${val === "" ? "selected" : ""}>any ASIN (assign later)</option>${ls.map(x => `<option value="${esc(x.sku)}" ${val === x.sku ? "selected" : ""} title="${esc(x.title || "")}">${esc(lbl(x))}</option>`).join("")}${l.asku && !ls.some(x => x.sku === l.asku) ? `<option selected value="${esc(l.asku)}">${esc(l.asku)}</option>` : ""}</select>` : "");
       return `<select class="inp sm" data-f="dest" data-k="${l.id}" style="width:auto;max-width:150px"><option value="@shopify" ${val === "@shopify" ? "selected" : ""}>Shopify store</option><option value="" ${val === "" ? "selected" : ""}>Prep center · any ASIN (assign later)</option>${ls.map(x => `<option value="${esc(x.sku)}" ${val === x.sku ? "selected" : ""} title="${esc(x.title || "")}">Prep · ${esc(lbl(x))}</option>`).join("")}${l.asku && !ls.some(x => x.sku === l.asku) ? `<option selected value="${esc(l.asku)}">Prep · ${esc(l.asku)}</option>` : ""}</select>`;
     };
+    const costInp = (l, v, chg, mode) => `${!ro && !ed.recv ? `<input class="inp num sm ${l.cost !== "" && !(Number(l.cost) >= 0) ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">${chg != null && Math.abs(chg) >= 0.0005 ? `<div class="meta ${chg > 0 ? "neg" : "pos"}">${pct(chg)} vs Shopify</div>` : ""}` : m(l.cost === "" ? v && v.cost : Number(l.cost))}${costCell(l, v, chg, mode)}`;
+    const prodCell = (l, v) => `<td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>${splitTot(l)}` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}</td>`;
+    const forCell = (l) => `<td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Send part to the Shopify store and part to the prep center">Split</button>` : ""}</div></td>`;
+    const unitOf = (l, v) => l.cost === "" ? (v && v.cost) || 0 : Number(l.cost) || 0;
+    // the purchase order: what hasn't been invoiced yet
     const lineRow = (l) => {
-      const v = variant(l.vid), p = pr.get(l.id), badQ = l.qty !== "" && !(Number.isInteger(Number(l.qty)) && Number(l.qty) >= 0), badC = l.cost !== "" && !(Number(l.cost) >= 0);
+      const v = variant(l.vid), p = pr.get(l.id), badQ = l.qty !== "" && !(Number.isInteger(Number(l.qty)) && Number(l.qty) >= 0);
       const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
-      return `<tr data-line="${l.id}">
-        <td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>${splitTot(l)}` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}</td>
-        <td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Send part to the Shopify store and part to the prep center">Split</button>` : ""}</div></td>
+      const extra = ivSh.has(l.id) ? "" : (ed.split && ed.split.id === l.id ? splitRow(l, NC) : "") + (ed.unrecv && ed.unrecv.id === l.id ? unrecvRow(l, NC) : "");
+      return `<tr data-line="${l.id}">${prodCell(l, v)}${forCell(l)}
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badQ || p.ordered < p.received ? "bad" : ""}" data-f="qty" data-k="${l.id}" value="${esc(l.qty)}" inputmode="numeric" placeholder="0" style="width:64px">` : n0(p.ordered)}</td>
-        <td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td>
-        <td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}${canUnrecv(l) ? `<div><button class="linkbtn small" data-pact="unrecv1" data-k="${l.id}" title="Take some or all of these back off the received count">un-receive</button></div>` : ""}</td>
+        ${anyInv ? `<td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td><td><b class="num">${n0(p.open)}</b></td>`
+          : `<td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}${canUnrecv(l) ? `<div><button class="linkbtn small" data-pact="unrecv1" data-k="${l.id}" title="Take some or all of these back off the received count">un-receive</button></div>` : ""}</td>`}
         ${ed.recv ? `<td><input class="inp num sm" data-f="recv" data-k="${l.id}" value="${esc(ed.recv[keyOf(l)] ?? "")}" inputmode="numeric" placeholder="0" style="width:64px"></td>` : ""}
-        ${rcv ? `<td class="rcv">${p.ordered - p.received > 0 || p.toReceive > 0 ? (() => { const val = rqVal(ed, l, p), bad = val !== "" && !(Number.isInteger(Number(val)) && Number(val) >= 0);
-            return `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"><button class="mini primary" data-pact="rq-go" data-k="${l.id}">Receive</button></div>`
-              + (rcvIv(ed) ? (() => { const d = rqDef(ed, l, p); return d === 0 ? '<div class="meta">not on this invoice</div>' : val !== String(d) ? `<div class="meta warnt">invoice: ${n0(d)}</div>` : ""; })()
-                : anyInv && !p.invoiced && !p.received ? '<div class="meta">not on an invoice yet</div>' : anyInv && val !== String(p.toReceive) ? `<div class="meta warnt">invoice: ${n0(p.toReceive)}</div>` : ""); })()
-          : '<span class="pill ok">All in</span>'}</td>` : ""}
-        <td class="l small"><span class="pill ${p.st[1]}">${esc(p.st[0])}</span>${p.open > 0 && (p.invoiced || p.received) ? `<div class="meta">${n0(p.open)} still to come</div>` : ""}</td>
-        <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : '<span class="dim">—</span>'}</td>
-        <td>${!ro && !ed.recv ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">${chg != null && Math.abs(chg) >= 0.0005 ? `<div class="meta ${chg > 0 ? "neg" : "pos"}">${pct(chg)} vs Shopify</div>` : ""}` : m(l.cost === "" ? v && v.cost : Number(l.cost))}${costCell(l, v, chg)}</td>
-        <td>${m(lineAmt(l))}</td>
-        <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${ed.split && ed.split.id === l.id ? splitRow(l) : ""}${ed.unrecv && ed.unrecv.id === l.id ? unrecvRow(l) : ""}`;
+        <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : !anyInv ? `<span class="pill ${p.st[1]}">${esc(p.st[0])}</span>` : '<span class="dim">—</span>'}</td>
+        <td>${costInp(l, v, chg, "po")}</td>
+        <td>${m(anyInv ? p.open * unitOf(l, v) : lineAmt(l))}</td>
+        <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) && !p.invoiced ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${extra}`;
     };
-    const unrecvRow = (l) => {
+    // one invoice's products: receive them here
+    const invRow = (l) => {
+      const v = variant(l.vid), sh = ivSh.get(l.id);
+      const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
+      let rq = sh.left > 0 ? '' : '<span class="pill ok">All in</span>';
+      if (sh.left > 0 && canRecv) { const val = rqVal(ed, ivNow, l, sh), bad = val !== "" && !(Number.isInteger(Number(val)) && Number(val) >= 0);
+        rq = `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"><button class="mini primary" data-pact="rq-go" data-k="${l.id}">Receive</button></div>${val !== String(sh.left) ? `<div class="meta warnt">invoice: ${n0(sh.left)}</div>` : ""}`; }
+      else if (sh.left > 0) rq = `<span class="dim">${n0(sh.left)} to come</span>`;
+      return `<tr data-line="${l.id}">${prodCell(l, v)}${forCell(l)}
+        <td>${n0(sh.billed)}</td>
+        <td>${sh.got ? n0(sh.got) : '<span class="dim">—</span>'}${canUnrecv(l) ? `<div><button class="linkbtn small" data-pact="unrecv1" data-k="${l.id}" title="Take some or all of these back off the received count">un-receive</button></div>` : ""}</td>
+        <td class="rcv">${rq}</td>
+        <td>${costInp(l, v, chg, "inv")}</td>
+        <td>${m(sh.billed * unitOf(l, v))}</td><td></td></tr>${ed.split && ed.split.id === l.id ? splitRow(l, NCI) : ""}${ed.unrecv && ed.unrecv.id === l.id ? unrecvRow(l, NCI) : ""}`;
+    };
+    const unrecvRow = (l, NC) => {
       const v = variant(l.vid) || {}, n = ed.unrecv.n, bad = n !== "" && !(Number.isInteger(Number(n)) && Number(n) > 0 && Number(n) <= l.received);
       return `<tr class="splitrow"><td colspan="${NC}" class="l"><div class="splitbox"><b>Un-receive ${esc(v.title || "this product")}</b>
         <label class="inline"><input id="pe-unrq" class="inp num sm ${bad ? "bad" : ""}" data-f="unrq" value="${esc(n)}" inputmode="numeric" style="width:64px"> of ${n0(l.received)} received</label>
         <span class="small muted">${l.dest === "prep" ? "They come back out of the prep center (refused if they already shipped out)." : "They come off this PO's received count (Shopify's own stock isn't changed)."}</span>
         <span class="dbtns"><button class="mini primary" data-pact="unrecv1-go" ${bad || S.busy ? "disabled" : ""}>Un-receive</button><button class="mini" data-pact="unrecv1-no">Cancel</button></span></div></td></tr>`;
     };
-    const splitRow = (l) => {
+    const splitRow = (l, NC) => {
       const sp = ed.split, v = variant(l.vid) || {}, ls = (S.listings.get(l.vid) || []).slice().sort((a, b) => a.units - b.units);
       return `<tr class="splitrow"><td colspan="${NC}" class="l"><div class="splitbox"><b>Split ${esc(v.title || "this product")}</b>
         <label class="inline"><input class="inp num sm" data-f="spS" value="${esc(sp.s)}" inputmode="numeric" style="width:64px"> to the Shopify store</label>
@@ -676,11 +694,27 @@
         <span class="dbtns"><button class="mini primary" data-pact="split-go">Split</button><button class="mini" data-pact="split-no">Cancel</button></span></div></td></tr>`;
     };
     const bucket = (d) => {
-      const ls = ed.lines.filter(l => l.dest === d), u = ls.reduce((a, l) => a + (Number(l.qty) || 0), 0), c = ls.reduce((a, l) => a + lineAmt(l), 0);
-      return `<tr class="bucket ${d}"><td colspan="${NC}" class="l"><b>→ ${DESTN[d]}</b><span class="muted small"> · ${ls.length} product${ls.length === 1 ? "" : "s"} · ${n0(u)} units · ${m(c)}</span></td></tr>`
-        + (ls.map(lineRow).join("") || `<tr><td colspan="${NC}" class="l muted small">Nothing going here yet — switch products here in the first column, or Split one.</td></tr>`);
+      const ls = topLines.filter(l => l.dest === d), u = ls.reduce((a, l) => a + (anyInv ? pr.get(l.id).open : Number(l.qty) || 0), 0), c = ls.reduce((a, l) => a + (anyInv ? pr.get(l.id).open * unitOf(l, variant(l.vid)) : lineAmt(l)), 0);
+      return `<tr class="bucket ${d}"><td colspan="${NC}" class="l"><b>→ ${DESTN[d]}</b><span class="muted small"> · ${ls.length} product${ls.length === 1 ? "" : "s"} · ${n0(u)} units${anyInv ? " not invoiced" : ""} · ${m(c)}</span></td></tr>`
+        + (ls.map(lineRow).join("") || `<tr><td colspan="${NC}" class="l muted small">${anyInv ? "Nothing here left to invoice." : "Nothing going here yet — switch products here in the first column, or Split one."}</td></tr>`);
     };
-    const lineRows = both ? bucket("shopify") + bucket("prep") : ed.lines.map(lineRow).join("");
+    const lineRows = both ? bucket("shopify") + bucket("prep") : topLines.map(lineRow).join("");
+    // the current invoice's receiving table, shown in the invoice area
+    const recvHtml = (() => {
+      if (!ivNow) return "";
+      if (!ivNow.id || ivNow.isNew) return '<div class="note info">Save to start receiving against this invoice.</div>';
+      const ls = ed.lines.filter(l => ivSh.has(l.id)), c = count(ivNow), t = invTot(ivNow);
+      const back = ed.lines.filter(l => l.backorder && pr.get(l.id).open > 0).length;
+      const left = ls.reduce((a, l) => { const x = Number(rqVal(ed, ivNow, l, ivSh.get(l.id))); return a + (ivSh.get(l.id).left > 0 && Number.isInteger(x) && x > 0 ? x : 0); }, 0);
+      const btn = ivNow.recvAt ? (ivNow.recvManual && !ro ? '<button class="mini" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "")
+        : !ro && t.g > 0 ? '<button class="mini" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : "";
+      return `<div class="po-recv"><div class="panel-head"><h3 class="h3">Receive this invoice ${recvPill(ivNow)}</h3>
+          <span class="muted small">${ivNow.recvAt ? "Received in full." : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
+          <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length ? `<button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Receive all${left ? ` (${n0(left)} units)` : ""}</button>` : ""}</span></div>
+        ${c.check ? `<div class="note warn">${c.check} guessed product${c.check === 1 ? "" : "s"} on this invoice ${c.check === 1 ? "needs" : "need"} confirming in the invoice lines below before ${c.check === 1 ? "it" : "they"} can be received.</div>` : ""}
+        ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
+      </div>`;
+    })();
     const destTot = (d) => { const ls = ed.lines.filter(l => l.dest === d); return [ls.reduce((a, l) => a + (Number(l.qty) || 0), 0), ls.reduce((a, l) => a + lineAmt(l), 0)]; };
     const iv = cur(ed);
     const pdfOn = !!(iv && ed.showPdf && (iv.file || iv.parts));
@@ -706,13 +740,13 @@
       ${shopCheckHtml(ed, ro)}
       ${iss.length ? `<section class="po-issues">${window.JTIssues.issuesHtml(iss)}</section>` : ""}
       <section class="panel po-lines">
-        <div class="panel-head"><h2>Products on this PO</h2><span class="muted small">${receiving(ed) ? "receiving: enter what arrived for each product and press Receive — it starts from the invoice" : "what was ordered · receiving is against these"}</span></div>
+        <div class="panel-head"><h2>${anyInv ? "Purchase order · not invoiced yet" : "Products on this PO"}</h2><span class="muted small">${anyInv ? "as the vendor invoices products they move to that invoice below, where they're received" : "what was ordered · receiving is against these"}</span></div>
         ${openLines.length && !ro && !ed.recv && ed.invoices.length ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
-        ${rcvBar(ed)}
         ${costBar(ed, pr, ro)}
-        ${ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th><th>Invoiced</th><th>Received</th>${ed.recv ? "<th>Arrived now</th>" : rcv ? "<th>Receive</th>" : ""}<th class="l">Status</th><th class="l">Backorder · ETA</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
+        ${anyInv && ed.lines.length && !topLines.length ? `<div class="note ok">Everything on this PO is on an invoice — receive it in the invoice below.</div>`
+          : ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th>${anyInv ? "<th>Invoiced</th><th>Not invoiced</th>" : "<th>Received</th>"}${ed.recv ? "<th>Arrived now</th>" : ""}<th class="l">${anyInv ? "Backorder · ETA" : "Status · backorder"}</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
         ${!ro && !ed.recv ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
           ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}
@@ -723,7 +757,7 @@
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
           <span class="dbtns right">${footButtons(ed, got, ro)}</span></div>
       </section>
-      ${invoicesHtml(ed, ro, pdfOn)}
+      ${invoicesHtml(ed, ro, pdfOn, recvHtml)}
       <input type="file" id="pe-file" accept=".pdf,application/pdf" hidden>`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
@@ -736,16 +770,7 @@
   }
   const recvPill = (v) => { if (v.isNew || !v.id) return ""; const t = invTot(v);
     return v.recvAt ? `<span class="pill ok" title="${v.recvManual ? "Marked received" : "Everything on it came in"}">Received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : ""; };
-  // which invoice the Receive column is working from
-  function rcvBar(ed) {
-    if (!receiving(ed)) return "";
-    const saved = ed.invoices.filter(v => v.id && !v.isNew); if (!saved.length) return "";
-    const iv = rcvIv(ed), t = iv && invTot(iv), back = ed.lines.filter(l => l.backorder && (Number(l.qty) || 0) > (l.received || 0));
-    return `<div class="bobar rcvbar"><span><label class="small" for="pe-rcvinv"><b>Receiving against</b></label>
-      <select id="pe-rcvinv" class="inp sm" style="width:auto">${saved.map(v => { const x = invTot(v); return `<option value="${esc(v.id)}" ${v.id === ed.rcvInv ? "selected" : ""}>Invoice ${esc(v.no || v.id)} — ${v.recvAt ? "received" : `${n0(x.g)} of ${n0(x.b)} in`}</option>`; }).join("")}<option value="" ${!ed.rcvInv ? "selected" : ""}>No invoice (what's still open)</option></select>
-      <span class="small muted">${iv ? (iv.recvAt ? "This invoice is received in full." : `${n0(t.b - t.g)} units on this invoice still to come in.`) : "Quantities start from what's still open on the PO."}${back.length ? ` The PO stays open for ${back.length} backordered product${back.length === 1 ? "" : "s"}.` : ""}</span></span></div>`;
-  }
-  function invoicesHtml(ed, ro, pdfOn) {
+  function invoicesHtml(ed, ro, pdfOn, recvHtml) {
     const iv = cur(ed);
     const chips = ed.invoices.map((v, i) => { const c = count(v), bad = c.check + c.none;
       return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}${v.due ? " · due " + shortDate(v.due) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${recvPill(v)}${v.isNew ? '<span class="pill warn">new</span>' : v.paidOn ? '<span class="pill ok">Paid</span>' : overdue(v) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</button>`; }).join("");
@@ -770,8 +795,9 @@
     }).join("");
     return `<section class="panel po-inv" id="pe-drop">${head}
       <div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""} ${iv.paidOn ? '<span class="pill ok">Paid</span>' : overdue(iv) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</span>
-        <span class="dbtns">${iv.id && !iv.isNew && !ro ? (iv.recvAt ? `${recvPill(iv)}${iv.recvManual ? '<button class="mini" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : ""}` : `${recvPill(iv)}<button class="mini" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>`) : ""}${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro ? `<button class="mini" data-pact="rminv">Remove from PO</button>` : ""}</span></div>
+        <span class="dbtns">${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro ? `<button class="mini" data-pact="rminv">Remove from PO</button>` : ""}</span></div>
       ${ed.confirm === "rminv" ? `<div class="note warn">Take invoice ${esc(iv.no || "")} off this PO? ${iv.id && iv.status === "applied" ? "It was applied on the Invoices tab, so it's only detached." : "It's deleted when you save."} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
+      ${recvHtml || ""}
       <div class="pmgrid small-grid">
         <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lock ? "disabled" : ""}></label>
         <label class="stack" for="pe-invdate">Invoice date<input id="pe-invdate" class="inp" type="date" value="${esc(iv.date)}" ${lock ? "disabled" : ""}></label>
@@ -857,9 +883,9 @@
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     out.push(`<button class="btn ${ed.dirty && !NEXT[ed.status] ? "primary" : ""}" data-pact="save" ${busy}>Save</button>`);
     if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
-    if (receiving(ed) && ed.lines.length) { const pr = progress(ed), u = ed.lines.reduce((a, l) => { const v = Number(rqVal(ed, l, pr.get(l.id))); return a + (Number.isInteger(v) && v > 0 && (pr.get(l.id).ordered - pr.get(l.id).received > 0 || pr.get(l.id).toReceive > 0) ? v : 0); }, 0);
-      out.push(`<button class="btn primary" data-pact="rq-all" ${busy || !u ? "disabled" : ""}>Receive all${u ? ` (${n0(u)} units)` : ""}</button>`); }
-    else if (ed.lines.length && !["qb_ready", "complete"].includes(ed.status)) out.push(`<button class="btn" data-pact="recv" ${busy}>${got ? "Receive more…" : "Receive…"}</button>`);
+    // invoiced products are received on their invoice; this receives what isn't on one
+    const anyInv = ed.invoices.length > 0, pr = progress(ed), notInv = ed.lines.some(l => pr.get(l.id).open > 0);
+    if (ed.lines.length && !["qb_ready", "complete"].includes(ed.status) && (!anyInv || notInv)) out.push(`<button class="btn" data-pact="recv" ${busy}>${anyInv ? "Receive without an invoice…" : got ? "Receive more…" : "Receive…"}</button>`);
     if (ed.status === "partial") out.push(`<button class="btn" data-pact="short" ${busy}>Close short</button>`);
     if (got && ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn" data-pact="amzship">Create Amazon shipment</button>`);
     return out.join("");
@@ -930,10 +956,10 @@
   }
   async function invReceived(iv, on) {
     const ed = S.ed; S.busy = "Saving…"; render();
-    try { await JT.prep.invoiceReceived(iv.id, on); S.busy = ""; await openPO(ed.id); note("info", on ? `Invoice ${esc(iv.no || iv.id)} marked received.` : `Invoice ${esc(iv.no || iv.id)} reopened.`); }
+    try { await JT.prep.invoiceReceived(iv.id, on); S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); } note("info", on ? `Invoice ${esc(iv.no || iv.id)} marked received.` : `Invoice ${esc(iv.no || iv.id)} reopened.`); }
     catch (e) { S.busy = ""; render(); note("bad", "Couldn't change the invoice: " + esc(JT.message(e))); }
   }
-  async function receiveNow(obj) {
+  async function receiveNow(obj, invId) {
     const ed = S.ed; obj = obj || (ed && ed.recv); if (!ed || !obj) return;
     const lines = [];
     for (const [k, v] of Object.entries(obj)) {
@@ -943,14 +969,15 @@
       if (q > 0) lines.push({ variant_id: Number(vid), amazon_sku: dest === "prep" ? asku || "" : "", dest: dest || "prep", qty: q });
     }
     if (!lines.length) { note("warn", "Enter how many arrived."); return; }
-    const recv = ed.recv, ri = ed.rcvInv;
-    if (ed.dirty || !ed.id) { const id = await save(null, true); if (!id) return; S.ed.recv = recv; if (S.ed.invoices.some(v => v.id === ri)) S.ed.rcvInv = ri; }
+    const recv = ed.recv;
+    if (ed.dirty || !ed.id) { const id = await save(null, true); if (!id) return; S.ed.recv = recv; }
     S.busy = "Receiving…"; render();
     try {
-      const inv = receiving(S.ed) ? rcvIv(S.ed) : null;
+      const inv = invId ? S.ed.invoices.find(v => v.id === invId) || { id: invId } : null;
       const n = await JT.prep.receiveOrder(Number(S.ed.id), lines, "", inv && inv.id);
       const id = S.ed.id; S.busy = ""; await loadOrders(true); await openPO(id);
       const iv2 = inv && S.ed && S.ed.invoices.find(v => v.id === inv.id);
+      if (iv2) S.ed.cur = S.ed.invoices.indexOf(iv2);
       const left = S.ed ? [...progress(S.ed).values()].reduce((a, p) => a + Math.max(0, p.ordered - p.received), 0) : 0;
       note("info", `Received ${n0(n)} units${inv ? ` against invoice ${esc(inv.no || inv.id)}` : ""}.${iv2 && iv2.recvAt ? " That invoice is now received in full." : ""}${lines.some(l => l.dest === "prep") ? " Prep-center lines are in the prep center." : ""}${lines.some(l => l.dest === "shopify") ? " Shopify-store lines are recorded on the PO (Shopify's own stock isn't changed)." : ""}${left ? ` ${n0(left)} still to come on this PO.` : ""}`);
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't receive: " + esc(JT.message(e))); }
@@ -1044,19 +1071,17 @@
     if (a === "unpay" && iv) { iv.paidOn = ""; iv.paidAmount = null; iv.payRef = ""; ed.dirty = true; render(); return; }
     if (a === "recv") {
       const n = allChecks(ed);
-      if (n) { note("warn", `Confirm or change the ${n} guessed product${n === 1 ? "" : "s"} on the invoices before receiving, so the right stock comes in.`); const i = ed.invoices.findIndex(v => count(v).check); if (i >= 0) { ed.cur = i; ed.invoices[i].filter = "check"; } render(); return; }
+      if (n && !ed.invoices.length) { note("warn", `Confirm or change the ${n} guessed product${n === 1 ? "" : "s"} on the invoices before receiving, so the right stock comes in.`); const i = ed.invoices.findIndex(v => count(v).check); if (i >= 0) { ed.cur = i; ed.invoices[i].filter = "check"; } render(); return; }
       const pr = progress(ed), anyInv = ed.invoices.length > 0; ed.recv = {};
-      for (const x of ed.lines) { const p = pr.get(x.id); ed.recv[keyOf(x)] = String(anyInv ? p.toReceive : Math.max(0, p.ordered - p.received)); }
+      for (const x of ed.lines) { const p = pr.get(x.id); ed.recv[keyOf(x)] = String(anyInv ? 0 : Math.max(0, p.ordered - p.received)); }
       render(); return;
     }
     if (a === "recv-cancel") { ed.recv = null; render(); return; }
-    if (a === "rq-go" && l) { const p = progress(ed).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, l, p) }); }
-    if (a === "rq-all") {
-      const n = allChecks(ed);
-      if (n) { note("warn", `Confirm or change the ${n} guessed product${n === 1 ? "" : "s"} on the invoices before receiving everything, so the right stock comes in. (Receive on a line works for the ones you're sure of.)`); const i = ed.invoices.findIndex(v => count(v).check); if (i >= 0) { ed.cur = i; ed.invoices[i].filter = "check"; } render(); return; }
-      const pr = progress(ed), o = {};
-      for (const x of ed.lines) { const p = pr.get(x.id); if (p.ordered - p.received > 0 || p.toReceive > 0) o[keyOf(x)] = rqVal(ed, x, p); }
-      return receiveNow(o);
+    if (a === "rq-go" && l && iv && iv.id) { const sh = invShares(ed, iv).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, iv, l, sh) }, iv.id); }
+    if (a === "rq-all" && iv && iv.id) {
+      const sh = invShares(ed, iv), o = {};
+      for (const x of ed.lines) { const y = sh.get(x.id); if (y && y.left > 0) o[keyOf(x)] = rqVal(ed, iv, x, y); }
+      return receiveNow(o, iv.id);
     }
     if (a === "recv-go") return receiveNow();
     if ((a === "inv-recvd" || a === "inv-reopen") && cur(ed) && cur(ed).id) return invReceived(cur(ed), a === "inv-recvd");
@@ -1404,7 +1429,6 @@
         if (stuck.length) note("warn", `${stuck.length} product${stuck.length === 1 ? " was" : "s were"} already received into the ${DESTN[stuck[0].dest].toLowerCase()}, so this PO stays on Both.`);
         render(); return; }
       if (t.id === "pe-boeta") return;
-      if (t.id === "pe-rcvinv") { ed.rcvInv = t.value; ed.rq = {}; render(); return; }
       if (t.dataset.f === "spA" && ed.split) { ed.split.asku = t.value; return; }
       const k = t.dataset.k, l = k && ed.lines.find(x => x.id === k), r = k && iv && iv.rows.find(x => x.id === k);
       if (t.dataset.f === "dest" && l) { const oldK = keyOf(l); if (t.value === "@shopify") { l.dest = "shopify"; l.asku = ""; } else { l.dest = "prep"; l.asku = t.value; }
@@ -1435,7 +1459,7 @@
       if (t.dataset.f === "qty" && l) { rebalance(ed, l, t.value.trim()); l.auto = false; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "cost" && l) { l.cost = t.value.trim().replace(/^\$/, ""); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "recv" && l) { ed.recv[keyOf(l)] = t.value.trim(); }
-      if (t.dataset.f === "rq" && l) { ed.rq = ed.rq || {}; ed.rq[keyOf(l)] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 500); }
+      if (t.dataset.f === "rq" && l && cur(ed)) { ed.rq = ed.rq || {}; ed.rq[rqKey(cur(ed), l)] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 500); }
       if (t.dataset.f === "unrq" && ed.unrecv) { ed.unrecv.n = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if ((t.dataset.f === "spS" || t.dataset.f === "spP") && ed.split) {
         const tot = ed.split.total, v2 = t.value.trim(), n = Number(v2);
