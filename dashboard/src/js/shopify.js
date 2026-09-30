@@ -281,7 +281,7 @@
   }
 
   function renderChart(dv) {
-    const host = $("chart");
+    const host = $("chart"); if (!host) return;      // the chart was taken off the page
     if (!state.daily) { host.innerHTML = `<div class="skel">${state.dailyErr ? "No data" : "Loading…"}</div>`; return; }
     const rows = state.daily.map(r => ({ ...r, cost: (dv.perDay.get(r.day) || {}).cost || 0 }));
     const W = Math.max(320, host.clientWidth || 800), H = W < 560 ? 220 : 280;
