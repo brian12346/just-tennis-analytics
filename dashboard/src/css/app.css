@@ -704,3 +704,8 @@ dialog.dlg::backdrop{background:rgba(0,20,60,.35)}
 /* receiving on an invoice */
 .po-recv { margin: 12px 0 16px; padding: 12px; border: 1px solid var(--line, #d8dde6); border-radius: 10px; }
 .po-recv .panel-head { flex-wrap: wrap; gap: 8px; }
+/* Shopify PO check, next to the PO name */
+.shopbadge{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;margin-left:6px;font-size:13px;font-weight:400}
+.shopbadge .shopok{border:0;background:var(--ok-bg,#e3f4e8);color:var(--ok,#1a7f37);font-weight:700;border-radius:999px;width:24px;height:24px;cursor:pointer;font-size:14px;line-height:24px;padding:0}
+.shopbadge .shopdif{cursor:pointer;border:0;font:inherit;font-size:12px}
+.shopbadge .shopbtn{cursor:pointer}

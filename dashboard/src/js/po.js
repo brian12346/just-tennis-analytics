@@ -722,7 +722,7 @@
       <div class="po-top">
         <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right"><button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
-        <div class="po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</h2><span class="steps six seven">${steps}</span></div>
+        <div class="po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
         ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
       </div>
       <section class="panel">
@@ -989,7 +989,7 @@
   }
 
   // ---------- events ----------
-  function focusArg(a) { const id = { "po-add": "po-add", "po-exp": "pe-exp", "po-inv": "pe-file", "po-placeby": "pe-placeby", "po-po": "pe-po" }[a] || a;
+  function focusArg(a) { if (a === "pe-shopcheck" && S.ed && !S.ed.shopOpen) { S.ed.shopOpen = true; render(); } const id = { "po-add": "po-add", "po-exp": "pe-exp", "po-inv": "pe-file", "po-placeby": "pe-placeby", "po-po": "pe-po" }[a] || a;
     setTimeout(() => { const el = $(id); if (!el) return; if (id === "pe-file" || id === "pe-shopfile") el.click(); else if (el.tagName === "SECTION" || el.id === "pe-costbar") el.scrollIntoView({ behavior: "smooth", block: "start" }); else { el.focus(); if (el.select) el.select(); } }, 0); }
   function markBackordered(ed, eta) {
     const pr = progress(ed); let n = 0;
@@ -1041,6 +1041,7 @@
       JT.fba.load(false).catch(() => {}).then(() => { S.busy = ""; ed.costWorking = false; prepareApply(); }); return; }
     if (a === "apply-no") { ed.costPreview = null; render(); return; }
     if (a === "apply-go") return applyCosts();
+    if (a === "shop-open") { ed.shopOpen = !ed.shopOpen; render(); if (ed.shopOpen) setTimeout(() => { const el = $("pe-shopcheck"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
     if (a === "shop-rm") { ed.shopCheck = null; ed.dirty = true; render(); note("info", "Shopify PO check removed. Save to keep that."); return; }
     if (a === "unrecv1" && l) { ed.unrecv = { id: l.id, n: String(l.received) }; render(); setTimeout(() => { const i = box().querySelector('[data-f="unrq"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
@@ -1256,10 +1257,10 @@
         if (!l.sku && l.supplier_sku) { const g2 = guessLine({ item_code: l.supplier_sku, upc: "", description: l.title }, ed.vendor); if (g2.how === "remembered" || g2.how === "sku") g = g2; } l.variant_id = g.vid; l.how = g.how; l.alts = g.alts; }
       ed.shopCheck = { checked_at: new Date().toISOString(), source: "pdf", file_name: file.name, name: sp.name, supplier: sp.supplier, total: sp.total, subtotal: sp.subtotal, shipping: sp.shipping,
         scope: (ed.shopCheck && ed.shopCheck.scope) || "all", lines: sp.lines };
-      ed.dirty = true; ed.shopAll = false; render();
-      const d = shopDiffs(ed);
-      note(d.n ? "warn" : "info", `Read Shopify PO ${esc(sp.name || file.name)}: ${sp.lines.length} product line${sp.lines.length === 1 ? "" : "s"}. ${d.n ? `<b>${d.n} difference${d.n === 1 ? "" : "s"}</b> from this PO — see below.` : "It matches this PO."} Save to keep the check.`);
-      focusArg("pe-shopcheck");
+      ed.dirty = true; ed.shopAll = false;
+      const d = shopDiffs(ed); ed.shopOpen = d.n > 0; render();
+      note(d.n ? "warn" : "info", `Read Shopify PO ${esc(sp.name || file.name)}: ${sp.lines.length} product line${sp.lines.length === 1 ? "" : "s"}. ${d.n ? `<b>${d.n} difference${d.n === 1 ? "" : "s"}</b> from this PO — see below.` : "It matches this PO ✓."} Save to keep the check.`);
+      if (d.n) focusArg("pe-shopcheck");
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't read that PDF: " + esc(JT.message(e))); }
   }
   // this PO against the Shopify PO, product by product (split products are added up)
@@ -1283,9 +1284,21 @@
     out.n = out.rows.filter(r => r.kinds.length).length + (out.supplier ? 1 : 0);
     return out;
   }
-  function shopCheckHtml(ed, ro) {
+  // next to the PO name: ✓ when the Shopify PO was checked and matches, the number of differences when it doesn't
+  // (click to see them), and a button to check again from a new PDF
+  function shopBadge(ed, ro) {
     if (!ed.id || !(ed.shopifyUrl.trim() || ed.shopCheck)) return "";
-    const up = `<label class="btn ${ed.shopCheck ? "" : "primary"}" for="pe-shopfile">${ed.shopCheck ? "Re-check (new PDF)" : "Upload Shopify PO PDF"}</label><input type="file" id="pe-shopfile" accept=".pdf,application/pdf" hidden>`;
+    const sc = ed.shopCheck, inp = '<input type="file" id="pe-shopfile" accept=".pdf,application/pdf" hidden>';
+    const btn = ro ? "" : `<label class="mini shopbtn" for="pe-shopfile" title="Download the PO from Shopify as a PDF and upload it; every product, quantity and cost is compared">${sc ? "Re-check Shopify" : "Check vs Shopify PO"}</label>`;
+    if (!sc) return ` <span class="shopbadge">${btn}${inp}</span>`;
+    const d = shopDiffs(ed), tip = `Checked against ${sc.name || "the Shopify PO"} ${when(sc.checked_at)}`;
+    const mark = d.n ? `<button class="pill miss shopdif" data-pact="shop-open" title="${esc(tip)} — click to see">${d.n} Shopify difference${d.n === 1 ? "" : "s"}</button>`
+      : `<button class="shopok" data-pact="shop-open" title="${esc(tip)} — matches" aria-label="Matches the Shopify PO">✓</button>`;
+    return ` <span class="shopbadge">${mark}${btn}${inp}</span>`;
+  }
+  function shopCheckHtml(ed, ro) {
+    if (!ed.id || !ed.shopCheck || !ed.shopOpen) return "";
+    const up = "";
     const link = shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? `<a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open it in Shopify ↗</a>` : "";
     const api = ed.shopStatus ? `${shopStatusPill(ed.shopStatus)} <span class="muted small">as of ${esc(when(ed.shopStatusAt))}</span>`
       : ed.poApi && !ed.poApi.ok ? `<span class="muted small" title="${esc(ed.poApi.why || "")}">Shopify status: not available yet — Shopify hasn't opened its PO API to live stores; checked nightly</span>` : "";
@@ -1313,7 +1326,7 @@
     return `<section class="panel shopchk ${d.n ? "bad" : "good"}" id="pe-shopcheck">
       <div class="panel-head"><h2>Shopify PO check</h2>${api}${d.n ? `<span class="pill miss">${d.n} difference${d.n === 1 ? "" : "s"}</span>` : '<span class="pill ok">Matches ✓</span>'}
         <span class="muted small">${esc(sc.name || "Shopify PO")} · checked ${when(sc.checked_at)} from ${esc(sc.file_name || "PDF")} ${link ? "· " + link : ""}</span>
-        <span class="dbtns right">${up}<button class="mini" data-pact="shop-rm">Remove check</button></span></div>
+        <span class="dbtns right"><button class="mini" data-pact="shop-rm">Remove check</button><button class="mini" data-pact="shop-open">Close</button></span></div>
       <div class="shopsum small">
         <span><b>This PO</b> ${n0(d.ours.u)} units · ${m(d.ours.c)}</span><span><b>Shopify PO</b> ${n0(d.theirs.u)} units · ${m(d.theirs.c)}${sc.shipping ? ` · shipping ${m(sc.shipping)}` : ""}${sc.total != null ? ` · total ${m(sc.total)}` : ""}</span>
         ${d.supplier ? `<span class="pill miss">supplier: Shopify says ${esc(sc.supplier)}</span>` : ""}
