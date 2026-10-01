@@ -635,5 +635,10 @@ def test_qbo_bill_data_and_link(conn):
     cur.execute("select public.jt_qbo_bill_saved(%s::jsonb)", (json.dumps({"invoice_id": iid, "bill_id": "55", "doc": "H-7", "how": "created", "by": "t", "vendor": "Head", "vendor_id": "12", "vendor_name": "Head/Penn Racquet"}),))
     cur.execute("select public.jt_qbo_bill_data(%s)", (iid,)); d = cur.fetchone()[0]
     assert d["qbo_bill_id"] == "55" and d["qbo_vendor"] == {"id": "12", "name": "Head/Penn Racquet"}
+    cur.execute("select public.jt_qbo_invoice_file(%s)", (iid,)); assert cur.fetchone()[0] is None
+    call("invoice_file_put", {"invoice_id": iid, "part": 0, "parts": 2, "data": "QUJD", "name": "h.pdf", "type": "application/pdf", "size": 6})
+    call("invoice_file_put", {"invoice_id": iid, "part": 1, "parts": 2, "data": "REVG", "name": "h.pdf", "type": "application/pdf", "size": 6})
+    cur.execute("select public.jt_qbo_invoice_file(%s)", (iid,)); assert cur.fetchone()[0] == {"name": "h.pdf", "type": "application/pdf", "parts": ["QUJD", "REVG"]}
+    cur.execute("select public.jt_qbo_attached(%s, '77')", (iid,))
     call("invoice_qbo_unlink", {"invoice_id": iid})
-    cur.execute("select qbo_bill_id, qbo_how from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == (None, "")
+    cur.execute("select qbo_bill_id, qbo_how, qbo_attach_id from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == (None, "", None)

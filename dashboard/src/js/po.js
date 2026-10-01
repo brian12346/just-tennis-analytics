@@ -283,7 +283,7 @@
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
         JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
-          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by"],
+          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id"],
           `from jt.invoices i where i.order_id = ${JT.int(id)} or i.id = (select invoice_id from jt.prep_orders where id = ${JT.int(id)}) order by i.id`, true),
         // how this vendor was paid last time (for Mark paid)
         JT.rows(["i.pay_method", "i.paid_from"], `from jt.invoices i where i.vendor = (select vendor from jt.prep_orders where id = ${JT.int(id)}) and i.pay_method <> '' order by i.paid_on desc nulls last, i.id desc limit 1`, true),
@@ -296,7 +296,7 @@
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
         notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
-        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "" } : null }));
+        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "", att: v[23] || "" } : null }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       if (ed.invoices.length) {
         const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account"],
@@ -874,6 +874,7 @@
   const QBO_BILL = "https://app.qbo.intuit.com/app/bill?txnId=";
   function qbState(ed, iv, ba, diff) {
     if (iv.qbo) return `<span class="pill ok" title="${esc(iv.qbo.how === "linked" ? "Was already in QuickBooks — linked" : "Entered from here")} ${esc(when(iv.qbo.at))}${iv.qbo.by ? " · " + esc(iv.qbo.by) : ""}">In QuickBooks · bill ${esc(iv.qbo.doc || iv.no)}</span>
+      ${iv.qbo.att ? '<span class="small muted" title="The invoice PDF is attached to the bill">📎 PDF attached</span>' : iv.parts ? `<button class="mini" data-pact="qbo-attach" ${S.busy ? "disabled" : ""} title="Attach the invoice PDF to the bill in QuickBooks">Attach PDF</button>` : ""}
       <a class="small" href="${QBO_BILL}${encodeURIComponent(iv.qbo.id)}" target="_blank" rel="noopener">open ↗</a>${ed.confirm === "qbo-unlink" ? ` <span class="small">Unlink it? (deletes nothing in QuickBooks) <button class="mini" data-pact="qbo-unlink-go">Unlink</button><button class="mini" data-pact="no">Cancel</button></span>` : ` <button class="linkbtn small" data-pact="qbo-unlink" title="If the bill was deleted in QuickBooks">unlink</button>`}`;
     const why = !iv.id || iv.isNew ? "Save the invoice first" : !iv.no ? "The invoice needs a number" : !iv.date ? "The invoice needs a date" : !(ba.all > 0) ? "Nothing to bill" : "";
     const busy = S.busy === "Sending to QuickBooks…";
@@ -905,6 +906,14 @@
       if (r && (r.need_vendor || r.mismatch)) { ed2.qbo = { inv: iv2.id, ...r, pick: r.need_vendor ? ((r.suggestions || [])[0] || {}).id || "" : "", vendor_id: extra && extra.vendor_id }; render(); return; }
       render(); note("bad", "QuickBooks: " + esc((r && r.error) || "no answer"));
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't send to QuickBooks: " + esc(JT.message(e))); }
+  }
+  async function qboAttach(iv) {
+    const ed = S.ed; S.busy = "Attaching the PDF…"; render();
+    try {
+      const r = await JT.qbo({ action: "attach", invoice_id: Number(iv.id) });
+      S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); }
+      note(r && r.ok ? "info" : "bad", esc((r && (r.message || r.error)) || "No answer from QuickBooks."));
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't attach the PDF: " + esc(JT.message(e))); }
   }
   async function qboUnlink(iv) {
     const ed = S.ed; S.busy = "Saving…"; render();
@@ -1132,6 +1141,7 @@
     if (a === "qbo-vend") { const v = ($("pe-qbovend") || {}).value; if (!v) { note("warn", "Pick the QuickBooks vendor."); return; } return qboSend({ vendor_id: v }); }
     if (a === "qbo-force") return qboSend({ force: true, ...(ed.qbo && ed.qbo.vendor_id ? { vendor_id: ed.qbo.vendor_id } : {}) });
     if (a === "qbo-cancel") { ed.qbo = null; render(); return; }
+    if (a === "qbo-attach" && iv && iv.qbo) return qboAttach(iv);
     if (a === "qbo-unlink") { ed.confirm = "qbo-unlink"; render(); return; }
     if (a === "qbo-unlink-go" && iv && iv.qbo) { ed.confirm = false; return qboUnlink(iv); }
     if ((a === "inv-recvd" || a === "inv-reopen") && cur(ed) && cur(ed).id) return invReceived(cur(ed), a === "inv-recvd");

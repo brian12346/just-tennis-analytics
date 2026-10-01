@@ -3,7 +3,9 @@
 // POST {action: "query", q: "select …"} -> a read-only QuickBooks query
 // POST {action: "vendors"}           -> active QuickBooks vendors (for matching)
 // POST {action: "create_bill", invoice_id, vendor_id?, force?} -> enters the invoice as a bill, once
-//   (links an existing bill with the same number for the same vendor instead of entering it twice)
+//   (links an existing bill with the same number for the same vendor instead of entering it twice),
+//   with the invoice PDF attached
+// POST {action: "attach", invoice_id}  -> attaches the invoice PDF to its bill (bills entered earlier)
 // Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.qbo_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -78,6 +80,37 @@ async function caller(req: Request, c: Creds): Promise<string | null> {
   return ok ? data.user.email || "app user" : null;
 }
 
+// the invoice PDF onto the bill (QuickBooks "upload": a JSON part describing it, then the file); its Attachable id
+async function attachFile(c: Creds, invId: number, billId: string): Promise<string | null> {
+  const { data: f, error } = await admin.rpc("jt_qbo_invoice_file", { inv: invId });
+  if (error) throw new Error(error.message);
+  if (!f || !Array.isArray(f.parts) || !f.parts.length) return null;
+  const chunks = f.parts.map((b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)));
+  const bytes = new Uint8Array(chunks.reduce((a: number, x: Uint8Array) => a + x.length, 0)); let o = 0; for (const x of chunks) { bytes.set(x, o); o += x.length; }
+  const type = f.type || "application/pdf", name = (f.name || `invoice-${invId}.pdf`).replace(/[\\/:*?"<>|]/g, "_");
+  await token(c);
+  if (!c.qbo_env) await api(c, `companyinfo/${c.qbo_realm_id}`);
+  const fd = new FormData();
+  fd.append("file_metadata_0", new Blob([JSON.stringify({ AttachableRef: [{ EntityRef: { type: "Bill", value: billId } }], FileName: name, ContentType: type })], { type: "application/json" }), "metadata.json");
+  fd.append("file_content_0", new Blob([bytes], { type }), name);
+  const r = await fetch(`${BASES[c.qbo_env]}/v3/company/${c.qbo_realm_id}/upload?minorversion=${MINOR}`, { method: "POST", headers: { Authorization: "Bearer " + c.qbo_access_token, Accept: "application/json" }, body: fd });
+  const b = await r.json().catch(() => ({}));
+  const a = b?.AttachableResponse?.[0];
+  if (!r.ok || !a?.Attachable?.Id) { const f2 = a?.Fault?.Error?.[0] || b?.Fault?.Error?.[0]; throw new Error(`the PDF didn't attach (${r.status}): ${f2 ? `${f2.Message} — ${f2.Detail || ""}` : JSON.stringify(b).slice(0, 200)}`); }
+  await admin.rpc("jt_qbo_attached", { inv: invId, att: a.Attachable.Id });
+  return a.Attachable.Id;
+}
+// attach, but never fail the bill over it
+async function tryAttach(c: Creds, d: any, billId: string): Promise<string> {
+  if (!d.has_file) return " (no invoice PDF to attach)";
+  try { return (await attachFile(c, d.id, billId)) ? " The invoice PDF is attached." : ""; }
+  catch (e) { return ` The invoice PDF didn't attach: ${(e as Error).message}. Use Attach PDF to try again.`; }
+}
+async function billHasFiles(c: Creds, billId: string): Promise<boolean | null> {
+  try { return ((await query(c, `select Id from Attachable where AttachableRef.EntityRef.Type = 'Bill' and AttachableRef.EntityRef.value = ${qs(billId)}`)).QueryResponse?.Attachable || []).length > 0; }
+  catch (_) { return null; }
+}
+
 const ACCT_NAMES: Record<string, string> = { inventory: "Inventory", inbound_shipping: "Inbound Shipping" };
 async function accounts(c: Creds, have: any): Promise<Record<string, { id: string; name: string }>> {
   const out: Record<string, { id: string; name: string }> = { ...(have || {}) };
@@ -115,7 +148,13 @@ async function createBill(c: Creds, p: any, by: string) {
   const saved = (bill: any, how: string) => admin.rpc("jt_qbo_bill_saved", { p: { invoice_id: d.id, bill_id: bill.Id, doc: bill.DocNumber || doc, how, by, vendor: d.vendor, vendor_id: vend.Id, vendor_name: vend.DisplayName } });
   // the same bill number for the same vendor is already in QuickBooks: link it, don't enter it twice
   const dup = (await query(c, `select Id, DocNumber, TotalAmt, TxnDate from Bill where DocNumber = ${qs(doc)} and VendorRef = ${qs(vend.Id)}`)).QueryResponse?.Bill?.[0];
-  if (dup) { await saved(dup, "linked"); return { ok: true, duplicate: true, bill_id: dup.Id, doc: dup.DocNumber, total: dup.TotalAmt, vendor: vend.DisplayName, message: `Bill ${dup.DocNumber} was already in QuickBooks for ${vend.DisplayName} — linked it instead of entering it again.` }; }
+  if (dup) {
+    await saved(dup, "linked");
+    // a bill entered by hand may already carry the PDF: attach only when it has no files
+    const has = d.has_file ? await billHasFiles(c, dup.Id) : true;
+    const att = has === false ? await tryAttach(c, d, dup.Id) : has === null ? " (couldn't check its attachments — use Attach PDF if it needs the invoice)" : "";
+    return { ok: true, duplicate: true, bill_id: dup.Id, doc: dup.DocNumber, total: dup.TotalAmt, vendor: vend.DisplayName, message: `Bill ${dup.DocNumber} was already in QuickBooks for ${vend.DisplayName} — linked it instead of entering it again.${att}` };
+  }
   const acc = await accounts(c, d.accounts);
   const lines = Object.entries(d.by_account || {}).map(([k, v]) => [k, Math.round(Number(v) * 100) / 100] as [string, number]).filter(([, v]) => v > 0);
   if (!lines.length) return { ok: false, error: "The invoice comes to $0 — nothing to enter." };
@@ -132,7 +171,8 @@ async function createBill(c: Creds, p: any, by: string) {
   if (d.due_date) body.DueDate = d.due_date;
   const bill = (await post(c, "bill", body)).Bill;
   await saved(bill, "created");
-  return { ok: true, created: true, bill_id: bill.Id, doc: bill.DocNumber, total: bill.TotalAmt, vendor: vend.DisplayName, message: `Bill ${bill.DocNumber} entered in QuickBooks for ${vend.DisplayName} (${Number(bill.TotalAmt).toFixed(2)}).` };
+  const att = await tryAttach(c, d, bill.Id);
+  return { ok: true, created: true, bill_id: bill.Id, doc: bill.DocNumber, total: bill.TotalAmt, vendor: vend.DisplayName, message: `Bill ${bill.DocNumber} entered in QuickBooks for ${vend.DisplayName} (${Number(bill.TotalAmt).toFixed(2)}).${att}` };
 }
 
 Deno.serve(async (req) => {
@@ -160,6 +200,15 @@ Deno.serve(async (req) => {
       return json({ ok: true, vendors: all.map((v: any) => ({ id: v.Id, name: v.DisplayName })).sort((a: any, b: any) => a.name.localeCompare(b.name)) });
     }
     if (p.action === "create_bill") return json(await createBill(c, p, by));
+    if (p.action === "attach") {
+      const { data: d, error } = await admin.rpc("jt_qbo_bill_data", { inv: Number(p.invoice_id) });
+      if (error || !d) return json({ ok: false, error: error?.message || "invoice not found" });
+      if (!d.qbo_bill_id) return json({ ok: false, error: "Send the invoice to QuickBooks first." });
+      if (d.qbo_attach_id) return json({ ok: true, already: true, message: "The invoice PDF is already attached to the bill." });
+      if (!d.has_file) return json({ ok: false, error: "There's no PDF stored for this invoice." });
+      const id = await attachFile(c, d.id, d.qbo_bill_id);
+      return json({ ok: true, attach_id: id, message: "The invoice PDF is attached to the bill in QuickBooks." });
+    }
     return json({ ok: false, error: "unknown action" }, 400);
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message || e) }, 500);

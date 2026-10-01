@@ -347,3 +347,11 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
   4. Refuses when the lines don't add up to the invoice total, unless called with `force`.
 - Service-role helpers: `public.jt_qbo_bill_data`, `public.jt_qbo_bill_saved` and `public.jt_qbo_setting`.
 - `public.jt_invoice_qbo_unlink(p {invoice_id})` lets an app user unlink an invoice from its bill.
+
+## 038 — the invoice PDF on the QuickBooks bill
+
+- `jt.invoices` gains `qbo_attach_id` and `qbo_attach_at`.
+- `create_bill` uploads the stored invoice PDF to the new bill, using QuickBooks' Attachable upload.
+- For a bill that was linked rather than created, the PDF is uploaded only if that bill has no attachments yet.
+- The `attach` action attaches the PDF to a bill sent earlier.
+- Service-role helpers: `public.jt_qbo_invoice_file` and `public.jt_qbo_attached`.
