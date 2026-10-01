@@ -283,7 +283,7 @@
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
         JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
-          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual"],
+          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by"],
           `from jt.invoices i where i.order_id = ${JT.int(id)} or i.id = (select invoice_id from jt.prep_orders where id = ${JT.int(id)}) order by i.id`, true),
         // how this vendor was paid last time (for Mark paid)
         JT.rows(["i.pay_method", "i.paid_from"], `from jt.invoices i where i.vendor = (select vendor from jt.prep_orders where id = ${JT.int(id)}) and i.pay_method <> '' order by i.paid_on desc nulls last, i.id desc limit 1`, true),
@@ -296,7 +296,7 @@
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
         notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
-        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17] }));
+        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "" } : null }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       if (ed.invoices.length) {
         const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account"],
@@ -864,11 +864,52 @@
   function qbHtml(ed, iv) {
     if (!iv.rows.length) return "";
     const ba = byAccount(iv), diff = iv.total != null ? Math.round((iv.total - ba.all) * 100) / 100 : null;
-    return `<div class="qb"><div class="qb-head"><b>For QuickBooks</b><span class="muted small">enter as a bill</span><button class="mini" data-pact="qbcopy">Copy</button></div>
+    return `<div class="qb"><div class="qb-head"><b>QuickBooks</b><span class="qb-state">${qbState(ed, iv, ba, diff)}</span><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button></div>${qbPick(ed, iv)}
       <dl class="qb-meta"><div><dt>Vendor</dt><dd>${esc(ed.vendor || "—")}</dd></div><div><dt>Bill no.</dt><dd class="mono">${esc(iv.no || "—")}</dd></div><div><dt>Bill date</dt><dd>${esc(iv.date || "—")}</dd></div>
         <div><dt>Due date</dt><dd>${esc(iv.due || "—")}</dd></div><div><dt>Terms</dt><dd>${esc(iv.terms || "—")}</dd></div>${ed.po ? `<div><dt>PO / memo</dt><dd class="mono">${esc(ed.po)}</dd></div>` : ""}<div><dt>Payment</dt><dd>${iv.paidOn ? esc(payTxt(iv)) : "Unpaid"}</dd></div></dl>
       <table class="qb-t"><thead><tr><th class="l">Account</th><th>Amount</th></tr></thead><tbody>${ACCOUNTS.map(([k, n]) => `<tr><td class="l">${n}</td><td>${m(ba.out.get(k) || 0)}</td></tr>`).join("")}</tbody>
         <tfoot><tr><td class="l">Total</td><td>${m(ba.all)}</td></tr>${diff != null ? `<tr class="${Math.abs(diff) >= 0.01 ? "off" : "ok"}"><td class="l">Invoice total</td><td>${m(iv.total)}${Math.abs(diff) >= 0.01 ? ` <span class="small">(${diff > 0 ? "+" : ""}${m(diff)} not assigned)</span>` : ' <span class="small">✓ matches</span>'}</td></tr>` : ""}</tfoot></table></div>`;
+  }
+  // sent to QuickBooks as a bill, or the button to send it (once: QuickBooks is checked for the same bill number first)
+  const QBO_BILL = "https://app.qbo.intuit.com/app/bill?txnId=";
+  function qbState(ed, iv, ba, diff) {
+    if (iv.qbo) return `<span class="pill ok" title="${esc(iv.qbo.how === "linked" ? "Was already in QuickBooks — linked" : "Entered from here")} ${esc(when(iv.qbo.at))}${iv.qbo.by ? " · " + esc(iv.qbo.by) : ""}">In QuickBooks · bill ${esc(iv.qbo.doc || iv.no)}</span>
+      <a class="small" href="${QBO_BILL}${encodeURIComponent(iv.qbo.id)}" target="_blank" rel="noopener">open ↗</a>${ed.confirm === "qbo-unlink" ? ` <span class="small">Unlink it? (deletes nothing in QuickBooks) <button class="mini" data-pact="qbo-unlink-go">Unlink</button><button class="mini" data-pact="no">Cancel</button></span>` : ` <button class="linkbtn small" data-pact="qbo-unlink" title="If the bill was deleted in QuickBooks">unlink</button>`}`;
+    const why = !iv.id || iv.isNew ? "Save the invoice first" : !iv.no ? "The invoice needs a number" : !iv.date ? "The invoice needs a date" : !(ba.all > 0) ? "Nothing to bill" : "";
+    const busy = S.busy === "Sending to QuickBooks…";
+    return `<span class="muted small">${why ? esc(why) : "not entered yet"}</span><button class="mini primary" data-pact="qbo-send" ${why || S.busy ? "disabled" : ""}>${busy ? "Sending…" : "Send to QuickBooks"}</button>`;
+  }
+  // picking the QuickBooks vendor the first time, or confirming a total that doesn't match
+  function qbPick(ed, iv) {
+    const x = ed.qbo && ed.qbo.inv === iv.id ? ed.qbo : null; if (!x || iv.qbo) return "";
+    if (x.mismatch) return `<div class="note warn small">${esc(x.error)} <span class="dbtns"><button class="mini primary" data-pact="qbo-force">Send it anyway</button><button class="mini" data-pact="qbo-cancel">Cancel</button></span></div>`;
+    if (!x.need_vendor) return "";
+    const sug = new Set((x.suggestions || []).map(v => v.id));
+    return `<div class="note info small"><b>Which QuickBooks vendor is ${esc(x.vendor || ed.vendor)}?</b> It's remembered for next time.
+      <select id="pe-qbovend" class="inp sm" style="width:auto;max-width:260px">${(x.suggestions || []).map(v => `<option value="${esc(v.id)}" ${v.id === x.pick ? "selected" : ""}>${esc(v.name)}</option>`).join("")}${x.suggestions && x.suggestions.length ? '<option disabled>──────────</option>' : '<option value="">Pick the vendor…</option>'}${(x.vendors || []).filter(v => !sug.has(v.id)).map(v => `<option value="${esc(v.id)}" ${v.id === x.pick ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
+      <span class="dbtns"><button class="mini primary" data-pact="qbo-vend">Send</button><button class="mini" data-pact="qbo-cancel">Cancel</button></span></div>`;
+  }
+  async function qboSend(extra) {
+    const ed = S.ed, iv = cur(ed); if (!ed || !iv) return;
+    if (ed.dirty || !iv.id) { const id = await save(null, true); if (!id) return; }
+    const ed2 = S.ed, iv2 = ed2.invoices.find(v => v.no === iv.no && v.id) || cur(ed2); if (!iv2 || !iv2.id) return;
+    S.busy = "Sending to QuickBooks…"; render();
+    try {
+      const r = await JT.qbo({ action: "create_bill", invoice_id: Number(iv2.id), ...(extra || {}) });
+      S.busy = "";
+      if (r && r.ok) {
+        ed2.qbo = null; await openPO(ed2.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv2.id); if (i >= 0) S.ed.cur = i; render(); }
+        note(r.duplicate || r.already ? "warn" : "info", esc(r.message || "Sent to QuickBooks."));
+        return;
+      }
+      if (r && (r.need_vendor || r.mismatch)) { ed2.qbo = { inv: iv2.id, ...r, pick: r.need_vendor ? ((r.suggestions || [])[0] || {}).id || "" : "", vendor_id: extra && extra.vendor_id }; render(); return; }
+      render(); note("bad", "QuickBooks: " + esc((r && r.error) || "no answer"));
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't send to QuickBooks: " + esc(JT.message(e))); }
+  }
+  async function qboUnlink(iv) {
+    const ed = S.ed; S.busy = "Saving…"; render();
+    try { await JT.prep.qboUnlink(iv.id); S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); } note("info", "Unlinked from QuickBooks. Send it again if the bill should be there."); }
+    catch (e) { S.busy = ""; render(); note("bad", "Couldn't unlink: " + esc(JT.message(e))); }
   }
   function qbText(ed, iv) {
     const ba = byAccount(iv);
@@ -1087,6 +1128,12 @@
       return receiveNow(o, iv.id);
     }
     if (a === "recv-go") return receiveNow();
+    if (a === "qbo-send") return qboSend();
+    if (a === "qbo-vend") { const v = ($("pe-qbovend") || {}).value; if (!v) { note("warn", "Pick the QuickBooks vendor."); return; } return qboSend({ vendor_id: v }); }
+    if (a === "qbo-force") return qboSend({ force: true, ...(ed.qbo && ed.qbo.vendor_id ? { vendor_id: ed.qbo.vendor_id } : {}) });
+    if (a === "qbo-cancel") { ed.qbo = null; render(); return; }
+    if (a === "qbo-unlink") { ed.confirm = "qbo-unlink"; render(); return; }
+    if (a === "qbo-unlink-go" && iv && iv.qbo) { ed.confirm = false; return qboUnlink(iv); }
     if ((a === "inv-recvd" || a === "inv-reopen") && cur(ed) && cur(ed).id) return invReceived(cur(ed), a === "inv-recvd");
     if (a === "amzship") { if (window.JTPrepTab && window.JTPrepTab.shipFromOrder) window.JTPrepTab.shipFromOrder(ed.id); return; }
   }

@@ -1,6 +1,9 @@
 // QuickBooks Online for the Just Tennis dashboard.
 // POST {action: "status"}            -> company, accounts, vendor count (checks the connection)
 // POST {action: "query", q: "select …"} -> a read-only QuickBooks query
+// POST {action: "vendors"}           -> active QuickBooks vendors (for matching)
+// POST {action: "create_bill", invoice_id, vendor_id?, force?} -> enters the invoice as a bill, once
+//   (links an existing bill with the same number for the same vendor instead of entering it twice)
 // Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.qbo_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -52,24 +55,92 @@ async function api(c: Creds, path: string, tries = 0): Promise<any> {
   const f = last?.body?.Fault?.Error?.[0] || last?.body?.fault?.error?.[0];
   throw new Error(`QuickBooks API ${last?.status} (${last?.env}): ${f ? `${f.Message || f.message} — ${f.Detail || f.detail || ""}` : JSON.stringify(last?.body).slice(0, 300)}`);
 }
+async function post(c: Creds, path: string, body: unknown): Promise<any> {
+  await api(c, `companyinfo/${c.qbo_realm_id}`);   // makes sure the token and environment are worked out
+  const r = await fetch(`${BASES[c.qbo_env]}/v3/company/${c.qbo_realm_id}/${path}?minorversion=${MINOR}`, {
+    method: "POST", headers: { Authorization: "Bearer " + c.qbo_access_token, Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) { const f = b?.Fault?.Error?.[0]; throw new Error(`QuickBooks didn't take it (${r.status}): ${f ? `${f.Message} — ${f.Detail || ""}` : JSON.stringify(b).slice(0, 300)}`); }
+  return b;
+}
+const qs = (v: string) => "'" + String(v).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
 const query = (c: Creds, q: string) => api(c, "query?query=" + encodeURIComponent(q));
 
-async function allowed(req: Request, c: Creds): Promise<boolean> {
+// who is calling: an app user's email, "Claude dashboard" for the function key, or null (not allowed)
+async function caller(req: Request, c: Creds): Promise<string | null> {
   const k = req.headers.get("x-jt-key");
-  if (k && c.jt_fn_key && k === c.jt_fn_key) return true;
+  if (k && c.jt_fn_key && k === c.jt_fn_key) return "Claude dashboard";
   const jwt = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
-  if (!jwt) return false;
+  if (!jwt) return null;
   const { data } = await admin.auth.getUser(jwt);
-  if (!data?.user) return false;
+  if (!data?.user) return null;
   const { data: ok } = await admin.rpc("jt_qbo_allowed", { uid: data.user.id });
-  return !!ok;
+  return ok ? data.user.email || "app user" : null;
+}
+
+const ACCT_NAMES: Record<string, string> = { inventory: "Inventory", inbound_shipping: "Inbound Shipping" };
+async function accounts(c: Creds, have: any): Promise<Record<string, { id: string; name: string }>> {
+  const out: Record<string, { id: string; name: string }> = { ...(have || {}) };
+  let changed = false;
+  for (const [k, n] of Object.entries(ACCT_NAMES)) {
+    if (out[k]?.id) continue;
+    const a = (await query(c, `select Id, Name from Account where Name = ${qs(n)} and Active = true`)).QueryResponse?.Account?.[0];
+    if (!a) throw new Error(`there's no "${n}" account in QuickBooks`);
+    out[k] = { id: a.Id, name: a.Name }; changed = true;
+  }
+  if (changed) await admin.rpc("jt_qbo_setting", { k: "qbo_accounts", v: out });
+  return out;
+}
+const words = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(w => w.length > 2 && !["inc", "llc", "the", "corp", "company", "sporting", "goods"].includes(w));
+
+async function createBill(c: Creds, p: any, by: string) {
+  const { data: d, error } = await admin.rpc("jt_qbo_bill_data", { inv: Number(p.invoice_id) });
+  if (error) throw new Error(error.message);
+  if (!d) return { ok: false, error: "invoice not found" };
+  if (d.qbo_bill_id) return { ok: true, already: true, bill_id: d.qbo_bill_id, doc: d.qbo_doc, message: "This invoice is already in QuickBooks." };
+  if (!String(d.invoice_no || "").trim()) return { ok: false, error: "The invoice needs an invoice number (it becomes the bill number)." };
+  if (!d.invoice_date) return { ok: false, error: "The invoice needs an invoice date (it becomes the bill date)." };
+  // vendor: picked now, remembered, or ask (with name matches first)
+  const vid = String(p.vendor_id || d.qbo_vendor?.id || "");
+  if (!vid) {
+    const all = (await query(c, "select Id, DisplayName from Vendor where Active = true maxresults 1000")).QueryResponse?.Vendor || [];
+    const w = words(d.vendor);
+    const score = (n: string) => { const x = words(n); return w.filter(a => x.some(b => b.startsWith(a) || a.startsWith(b))).length; };
+    const ranked = all.map((v: any) => ({ id: v.Id, name: v.DisplayName, s: score(v.DisplayName) })).sort((a: any, b: any) => b.s - a.s || a.name.localeCompare(b.name));
+    return { ok: false, need_vendor: true, vendor: d.vendor, suggestions: ranked.filter((v: any) => v.s > 0).slice(0, 5), vendors: ranked.map(({ id, name }: any) => ({ id, name })) };
+  }
+  const vend = (await query(c, `select Id, DisplayName from Vendor where Id = ${qs(vid)}`)).QueryResponse?.Vendor?.[0];
+  if (!vend) return { ok: false, error: "That QuickBooks vendor wasn't found.", need_vendor: true };
+  const doc = String(d.invoice_no).trim().slice(0, 21);
+  const saved = (bill: any, how: string) => admin.rpc("jt_qbo_bill_saved", { p: { invoice_id: d.id, bill_id: bill.Id, doc: bill.DocNumber || doc, how, by, vendor: d.vendor, vendor_id: vend.Id, vendor_name: vend.DisplayName } });
+  // the same bill number for the same vendor is already in QuickBooks: link it, don't enter it twice
+  const dup = (await query(c, `select Id, DocNumber, TotalAmt, TxnDate from Bill where DocNumber = ${qs(doc)} and VendorRef = ${qs(vend.Id)}`)).QueryResponse?.Bill?.[0];
+  if (dup) { await saved(dup, "linked"); return { ok: true, duplicate: true, bill_id: dup.Id, doc: dup.DocNumber, total: dup.TotalAmt, vendor: vend.DisplayName, message: `Bill ${dup.DocNumber} was already in QuickBooks for ${vend.DisplayName} — linked it instead of entering it again.` }; }
+  const acc = await accounts(c, d.accounts);
+  const lines = Object.entries(d.by_account || {}).map(([k, v]) => [k, Math.round(Number(v) * 100) / 100] as [string, number]).filter(([, v]) => v > 0);
+  if (!lines.length) return { ok: false, error: "The invoice comes to $0 — nothing to enter." };
+  const sum = Math.round(lines.reduce((a, [, v]) => a + v, 0) * 100) / 100;
+  if (d.total != null && Math.abs(Number(d.total) - sum) >= 0.01 && !p.force) return { ok: false, mismatch: true, total: Number(d.total), lines_total: sum, error: `The lines add to ${sum.toFixed(2)} but the invoice total is ${Number(d.total).toFixed(2)}.` };
+  const po = d.po_no ? `PO ${d.po_no}` : d.order_id ? `PO #${d.order_id}` : "";
+  const body: any = {
+    VendorRef: { value: vend.Id }, DocNumber: doc, TxnDate: d.invoice_date, PrivateNote: [po, "entered from Seller Sage"].filter(Boolean).join(" · "),
+    Line: lines.map(([k, v]) => {
+      const a = acc[k] || acc.inventory;
+      return { DetailType: "AccountBasedExpenseLineDetail", Amount: v, Description: [po, ACCT_NAMES[k] || k].filter(Boolean).join(" · "), AccountBasedExpenseLineDetail: { AccountRef: { value: a.id } } };
+    }),
+  };
+  if (d.due_date) body.DueDate = d.due_date;
+  const bill = (await post(c, "bill", body)).Bill;
+  await saved(bill, "created");
+  return { ok: true, created: true, bill_id: bill.Id, doc: bill.DocNumber, total: bill.TotalAmt, vendor: vend.DisplayName, message: `Bill ${bill.DocNumber} entered in QuickBooks for ${vend.DisplayName} (${Number(bill.TotalAmt).toFixed(2)}).` };
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
     const c = await creds();
-    if (!(await allowed(req, c))) return json({ ok: false, error: "not allowed" }, 403);
+    const by = await caller(req, c);
+    if (!by) return json({ ok: false, error: "not allowed" }, 403);
     for (const k of ["qbo_client_id", "qbo_client_secret", "qbo_refresh_token", "qbo_realm_id"]) if (!c[k]) return json({ ok: false, error: `${k} is missing from Vault` }, 400);
     const p = await req.json().catch(() => ({}));
     if (p.action === "status") {
@@ -84,6 +155,11 @@ Deno.serve(async (req) => {
       if (!/^\s*select\s/i.test(q)) return json({ ok: false, error: "only select queries" }, 400);
       return json({ ok: true, env: c.qbo_env, result: (await query(c, q)).QueryResponse || {} });
     }
+    if (p.action === "vendors") {
+      const all = (await query(c, "select Id, DisplayName from Vendor where Active = true maxresults 1000")).QueryResponse?.Vendor || [];
+      return json({ ok: true, vendors: all.map((v: any) => ({ id: v.Id, name: v.DisplayName })).sort((a: any, b: any) => a.name.localeCompare(b.name)) });
+    }
+    if (p.action === "create_bill") return json(await createBill(c, p, by));
     return json({ ok: false, error: "unknown action" }, 400);
   } catch (e) {
     return json({ ok: false, error: String((e as Error).message || e) }, 500);

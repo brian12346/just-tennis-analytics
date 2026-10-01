@@ -334,3 +334,16 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
   - a signed-in app user;
   - SQL, through `jt.qbo_call(p)` → request id, then `jt.qbo_result(id)`. SQL authenticates with the function key in Vault `jt_fn_key`.
 - `jt.settings.fn_base` holds the project URL and the public anon key.
+
+## 037 — invoices to QuickBooks bills
+
+- `jt.invoices` gains `qbo_bill_id`, `qbo_doc`, `qbo_sent_at`, `qbo_sent_by` and `qbo_how` (`created` or `linked`).
+- `jt.qbo_vendors (vendor, qbo_id, qbo_name)` remembers which QuickBooks vendor each vendor name matches.
+- `jt.settings.qbo_accounts` holds the QuickBooks account ids for the bill lines. They're looked up by name on first use: Inventory, and Inbound Shipping.
+- The `qbo` edge function's `create_bill` action enters an invoice as a bill once. It does the following, in order:
+  1. Refuses if the invoice is already linked to a bill.
+  2. Asks for the vendor match the first time.
+  3. Links instead of creating when a bill with the same number already exists for that vendor.
+  4. Refuses when the lines don't add up to the invoice total, unless called with `force`.
+- Service-role helpers: `public.jt_qbo_bill_data`, `public.jt_qbo_bill_saved` and `public.jt_qbo_setting`.
+- `public.jt_invoice_qbo_unlink(p {invoice_id})` lets an app user unlink an invoice from its bill.

@@ -85,6 +85,17 @@
     return v;
   }
   async function write(fn, args) { const v = await rpc(fn, args); cache.clear(); return v; }
+  // a Supabase edge function (e.g. qbo); its JSON answer, also when it answers with an error status
+  async function fn(name, body) {
+    await ready;
+    const { data, error } = await sb.functions.invoke(name, { body });
+    if (error) {
+      let b = null; try { b = error.context && typeof error.context.json === "function" ? await error.context.json() : null; } catch (_) {}
+      if (b) return b;
+      throw toErr(error);
+    }
+    return data;
+  }
 
   // ---------- downloads ----------
   const downloads = {
@@ -106,5 +117,5 @@
       return Promise.resolve(null);
     },
   };
-  window.JTWeb = { ready, rpc, sql, write, clearCache: () => cache.clear() };
+  window.JTWeb = { ready, rpc, sql, write, fn, clearCache: () => cache.clear() };
 })();

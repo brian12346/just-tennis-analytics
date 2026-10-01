@@ -618,3 +618,22 @@ def test_receive_against_invoice(conn):
     cur.execute("select received_at is not null from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0]
     call("invoice_set_received", {"invoice_id": iid, "received": False})
     cur.execute("select received_at is null from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0]
+
+
+def test_qbo_bill_data_and_link(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (991, 99, 5, 'Head')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    inv = {"vendor": "Head", "invoice_no": "H-7", "invoice_date": "2026-09-30", "due_date": "2026-10-30", "total": 109,
+           "lines": [{"item_code": "a", "description": "A", "qty": 10, "unit_cost": 10, "amount": 100, "variant_id": 991, "match_how": "manual", "account": "inventory"},
+                     {"item_code": "FRT", "description": "Freight", "qty": 1, "unit_cost": 9, "amount": 9, "variant_id": None, "match_how": "", "account": "inbound_shipping"}]}
+    r = call("po_save", {"order": {"vendor": "Head", "po_no": "Q1"}, "lines": [{"variant_id": 991, "dest": "shopify", "qty": 10}], "invoices": [inv]})
+    iid = r["invoice_ids"][0]
+    cur.execute("select public.jt_qbo_bill_data(%s)", (iid,)); d = cur.fetchone()[0]
+    assert d["vendor"] == "Head" and d["po_no"] == "Q1" and d["qbo_bill_id"] is None and d["qbo_vendor"] is None
+    assert {k: float(v) for k, v in d["by_account"].items()} == {"inventory": 100.0, "inbound_shipping": 9.0}
+    cur.execute("select public.jt_qbo_bill_saved(%s::jsonb)", (json.dumps({"invoice_id": iid, "bill_id": "55", "doc": "H-7", "how": "created", "by": "t", "vendor": "Head", "vendor_id": "12", "vendor_name": "Head/Penn Racquet"}),))
+    cur.execute("select public.jt_qbo_bill_data(%s)", (iid,)); d = cur.fetchone()[0]
+    assert d["qbo_bill_id"] == "55" and d["qbo_vendor"] == {"id": "12", "name": "Head/Penn Racquet"}
+    call("invoice_qbo_unlink", {"invoice_id": iid})
+    cur.execute("select qbo_bill_id, qbo_how from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == (None, "")

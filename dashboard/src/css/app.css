@@ -713,3 +713,7 @@ dialog.dlg::backdrop{background:rgba(0,20,60,.35)}
 .costfoot{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:space-between;padding:8px 2px 0;margin-top:6px;border-top:1px dashed var(--line)}
 .costfoot .gate,.costfoot .warnt{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
 .newc b{color:var(--primary)}
+/* QuickBooks bill status on an invoice */
+.qb-head{flex-wrap:wrap;align-items:center}
+.qb-head .mini{margin-left:0}
+.qb-head .qb-state{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}

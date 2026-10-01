@@ -79,6 +79,22 @@
     throw last;
   }
 
+  // QuickBooks (the qbo edge function). On the web it's called directly; in Claude it goes through SQL (pg_net is
+  // asynchronous: jt.qbo_call starts the request, jt.qbo_result has the answer once it's in).
+  async function qboCall(body) {
+    if (WEB) return WEB.fn("qbo", body);
+    const st = await run(`select jt.qbo_call(${q(JSON.stringify(body))}::jsonb)::text as id`, true);
+    const id = st[0] && st[0].id; if (!id) throw { code: "tool_error", message: "Couldn't reach QuickBooks." };
+    for (let i = 0; i < 30; i++) {
+      await sleep(i ? 1500 : 2500);
+      const r = await run(`select jt.qbo_result(${int(id)})::text as r`, true);
+      const x = r[0] && r[0].r ? JSON.parse(r[0].r) : null;
+      if (!x) continue;
+      if (x.error && !x.body) throw { code: "tool_error", message: "QuickBooks call failed: " + x.error };
+      return typeof x.body === "string" ? { ok: false, error: x.body } : x.body;
+    }
+    throw { code: "server_unavailable", message: "QuickBooks took too long to answer — check the bill in QuickBooks before trying again.", retryable: true };
+  }
   async function run(sql, refresh) {
     refresh = refresh || Date.now() < freshUntil;
     if (WEB) {
@@ -229,6 +245,7 @@
     costBasis, src: SRC, setCostBasis,
     showError,
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB, catalogChanged, checkCatalog,
+    qbo: qboCall,
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
     // shipping cost entered by hand for an order with no ShipStation label
     saveShipCost: (body) => WEB ? WEB.write("jt_save_ship_cost", { p: body }) : call("save_ship_cost", q(JSON.stringify({ ...body, by: "Claude dashboard" })) + "::jsonb"),
@@ -322,6 +339,12 @@
         if (WEB) return Number(await WEB.write("jt_prep_order_save", { p: body }));
         const out = await run(`select jt.prep_order_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
         return Number(out[0] && out[0].id);
+      },
+      // unlink an invoice from its QuickBooks bill
+      async qboUnlink(invoiceId) {
+        const body = { invoice_id: Number(invoiceId) };
+        if (WEB) return WEB.write("jt_invoice_qbo_unlink", { p: body });
+        return run(`select jt.invoice_qbo_unlink(${q(JSON.stringify(body))}::jsonb)`, true);
       },
       // mark an invoice received by hand, or reopen it — jt.invoice_set_received
       async invoiceReceived(invoiceId, received) {
