@@ -717,3 +717,8 @@ dialog.dlg::backdrop{background:rgba(0,20,60,.35)}
 .qb-head{flex-wrap:wrap;align-items:center}
 .qb-head .mini{margin-left:0}
 .qb-head .qb-state{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
+/* Amazon: orders straight from Amazon (SP-API) */
+#az-live .kpis{margin-top:10px}
+#az-live .az-live-foot{margin:10px 0 0}
+#az-live .kpi .v.dimv{color:var(--muted)}

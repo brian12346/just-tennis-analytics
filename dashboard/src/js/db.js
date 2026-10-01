@@ -95,6 +95,21 @@
     }
     throw { code: "server_unavailable", message: "QuickBooks took too long to answer — check the bill in QuickBooks before trying again.", retryable: true };
   }
+  // The Amazon SP-API edge function (orders): {action: "sync", force?} etc.
+  async function amazonCall(body) {
+    if (WEB) return WEB.fn("amazon", body);
+    const st = await run(`select jt.amazon_call(${q(JSON.stringify(body))}::jsonb)::text as id`, true);
+    const id = st[0] && st[0].id; if (!id) throw { code: "tool_error", message: "Couldn't reach Amazon." };
+    for (let i = 0; i < 80; i++) {
+      await sleep(i ? 2000 : 3000);
+      const r = await run(`select jt.qbo_result(${int(id)})::text as r`, true);
+      const x = r[0] && r[0].r ? JSON.parse(r[0].r) : null;
+      if (!x) continue;
+      if (x.error && !x.body) throw { code: "tool_error", message: "Amazon call failed: " + x.error };
+      return typeof x.body === "string" ? { ok: false, error: x.body } : x.body;
+    }
+    throw { code: "server_unavailable", message: "Amazon took too long to answer.", retryable: true };
+  }
   async function run(sql, refresh) {
     refresh = refresh || Date.now() < freshUntil;
     if (WEB) {
@@ -246,6 +261,7 @@
     showError,
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB, catalogChanged, checkCatalog,
     qbo: qboCall,
+    amazon: amazonCall,
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
     // shipping cost entered by hand for an order with no ShipStation label
     saveShipCost: (body) => WEB ? WEB.write("jt_save_ship_cost", { p: body }) : call("save_ship_cost", q(JSON.stringify({ ...body, by: "Claude dashboard" })) + "::jsonb"),
