@@ -321,3 +321,16 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - `jt.prep_order_unreceive_line` also takes units off the order's invoices, newest invoice first.
 - The PO keeps its own status: it stays partly received while backordered products are still to come.
 - Web wrappers: `public.jt_po_receive_invoice`, `public.jt_invoice_set_received`.
+
+## 036 — QuickBooks Online connection
+
+- The credentials live in Supabase Vault: `qbo_client_id`, `qbo_client_secret`, `qbo_refresh_token` and `qbo_realm_id`.
+- The `qbo` edge function maintains three more Vault entries itself: `qbo_access_token`, `qbo_access_expires` and `qbo_env`.
+- The edge function source is in `supabase/functions/qbo`. Its actions:
+  - `status`: company, accounts and vendor count.
+  - `query`: a read-only QuickBooks query.
+- The function refreshes the access token when needed and saves the new tokens back through `public.jt_qbo_save_tokens`.
+- Who can call the function:
+  - a signed-in app user;
+  - SQL, through `jt.qbo_call(p)` → request id, then `jt.qbo_result(id)`. SQL authenticates with the function key in Vault `jt_fn_key`.
+- `jt.settings.fn_base` holds the project URL and the public anon key.
