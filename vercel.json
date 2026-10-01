@@ -4,6 +4,7 @@
   "outputDirectory": "dashboard/dist/web",
   "installCommand": "true",
   "framework": null,
+  "cleanUrls": true,
   "headers": [
     {
       "source": "/(.*)",

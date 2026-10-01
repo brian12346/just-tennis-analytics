@@ -48,4 +48,6 @@ writeFileSync(join(DIST, "web", "index.html"), web);
 // Tab icon (the Seller Sage mark) served next to the page.
 for (const [from, to] of [["favicon.svg", "favicon.svg"], ["icon-32.png", "icon-32.png"], ["icon-32.png", "favicon.ico"], ["icon-180.png", "apple-touch-icon.png"]])
   copyFileSync(join(SRC, "icon", from), join(DIST, "web", to));
+// public legal pages (needed for the QuickBooks app listing): /privacy and /eula
+for (const f of ["privacy.html", "eula.html"]) copyFileSync(join(SRC, "legal", f), join(DIST, "web", f));
 console.log(`built dashboard/dist/just-tennis-sales.html and dashboard/dist/web/index.html (${Math.round(html.length / 1024)} KB)`);
