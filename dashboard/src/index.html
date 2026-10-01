@@ -535,8 +535,8 @@
       </div>
     </header>
     <div class="status" id="po-status" aria-live="polite">Loading purchase orders…</div>
-    <div class="note info" id="po-busy" hidden aria-live="polite"></div>
-    <div id="po-note" hidden></div>
+    <div id="po-notes-host"><div class="note info" id="po-busy" hidden aria-live="polite"></div>
+    <div id="po-note" hidden></div></div>
     <div id="po-list-view">
       <section class="kpis" id="po-kpis" aria-label="Purchase order totals"></section>
       <section class="panel">
@@ -548,34 +548,38 @@
           </div>
         </div>
         <div class="tbl-wrap xl"><table class="prept po-list" id="po-table"></table></div>
-        <p class="muted small">Drop a vendor invoice PDF anywhere on this page to start a PO from it (or to add it to the open PO with the same PO #).</p>
+        <p class="muted small">Vendor invoices are uploaded on the Invoices tab; each one goes onto its PO here (by the PO # on it).</p>
       </section>
     </div>
-    <div id="po-edit-view" hidden></div>
+    <div id="po-edit-host"><div id="po-edit-view" hidden></div></div>
   </div>
   <div id="tab-invoices" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Vendor invoices · drag a card to move it between stages</span>
+        <span class="eyebrow">Vendor invoices · upload here, each goes onto its purchase order</span>
         <h1>Invoices</h1>
       </div>
       <div class="controls">
-        <input id="inv-q" class="inp" type="search" placeholder="Search vendor, invoice #, PO, notes" aria-label="Search invoices">
-        <button class="btn" id="inv-new">Add by hand</button>
-        <label class="btn primary" for="inv-file">Upload invoice PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
         <button class="btn" id="inv-refresh">Refresh</button>
+        <label class="btn primary" for="inv-file">Upload invoice PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
       </div>
     </header>
     <div class="status" id="inv-status" aria-live="polite">Loading invoices…</div>
-    <div id="inv-note" hidden></div>
-    <div class="board" id="inv-board"></div>
-
-    <div class="modal" id="inv-modal" hidden>
-      <div class="modal-card" role="dialog" aria-modal="true" aria-label="Invoice">
-        <div id="inv-mnote" hidden></div>
-        <section id="inv-edit"></section>
-      </div>
+    <div id="inv-notes-host"></div>
+    <div id="inv-list-view">
+      <section class="kpis" id="inv-kpis" aria-label="Invoice totals"></section>
+      <section class="panel">
+        <div class="panel-head">
+          <div class="seg" id="inv-seg" role="group" aria-label="Show"></div>
+          <div class="filters">
+            <label for="inv-q">Search <input id="inv-q" class="inp" type="search" placeholder="Vendor, invoice #, PO #"></label>
+          </div>
+        </div>
+        <div class="tbl-wrap xl"><table class="prept po-list" id="inv-table"></table></div>
+        <p class="muted small">Drop an invoice PDF anywhere on this page. It's read, matched to the vendor's open PO with the same PO # (or you pick the PO), and opens here for checking, payment and QuickBooks. Receiving is done on the PO.</p>
+      </section>
     </div>
+    <div id="inv-edit-host"></div>
   </div>
   <div id="tab-amzmap" hidden>
     <header class="top">
@@ -663,9 +667,6 @@
 </script>
 <script>
 <!-- @inline js/po.js -->
-</script>
-<script>
-<!-- @inline js/invoices.js -->
 </script>
 <script>
 <!-- @inline js/move.js -->

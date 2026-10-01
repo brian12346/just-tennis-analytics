@@ -642,3 +642,23 @@ def test_qbo_bill_data_and_link(conn):
     cur.execute("select public.jt_qbo_attached(%s, '77')", (iid,))
     call("invoice_qbo_unlink", {"invoice_id": iid})
     cur.execute("select qbo_bill_id, qbo_how, qbo_attach_id from jt.invoices where id = %s", (iid,)); assert cur.fetchone() == (None, "", None)
+
+
+def test_invoice_move(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (995, 99, 5, 'Babolat')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    inv = {"vendor": "Babolat", "invoice_no": "B-1", "invoice_date": "2026-10-01", "subtotal": 50,
+           "lines": [{"item_code": "a", "description": "A", "qty": 10, "unit_cost": 5, "amount": 50, "variant_id": 995, "match_how": "manual", "dest": "shopify"}]}
+    a = call("po_save", {"order": {"vendor": "Babolat", "po_no": "M1"}, "lines": [{"variant_id": 995, "dest": "shopify", "qty": 10}], "invoices": [inv]})
+    b = call("po_save", {"order": {"vendor": "Babolat", "po_no": "M2"}, "lines": [{"variant_id": 995, "dest": "shopify", "qty": 10}], "invoices": []})
+    iid = a["invoice_ids"][0]
+    assert call("invoice_move", {"invoice_id": iid, "order_id": b["order_id"]})
+    cur.execute("select order_id from jt.invoices where id = %s", (iid,)); assert cur.fetchone()[0] == b["order_id"]
+    cur.execute("select id, invoice_id from jt.prep_orders where id in (%s, %s) order by id", (a["order_id"], b["order_id"]))
+    assert cur.fetchall() == [(a["order_id"], None), (b["order_id"], iid)]
+    call("po_receive_invoice", {"id": b["order_id"], "invoice_id": iid, "lines": [{"variant_id": 995, "dest": "shopify", "qty": 2}]})
+    cur.execute("savepoint s")
+    with pytest.raises(Exception, match="already received"):
+        call("invoice_move", {"invoice_id": iid, "order_id": a["order_id"]})
+    cur.execute("rollback to savepoint s")

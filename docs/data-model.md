@@ -355,3 +355,15 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - For a bill that was linked rather than created, the PDF is uploaded only if that bill has no attachments yet.
 - The `attach` action attaches the PDF to a bill sent earlier.
 - Service-role helpers: `public.jt_qbo_invoice_file` and `public.jt_qbo_attached`.
+
+## 039 — invoices live on the Invoices tab
+
+- Invoices are uploaded on the Invoices tab.
+- Each uploaded invoice goes onto its purchase order:
+  - automatically, when the vendor and the PO # printed on the invoice match an open PO;
+  - otherwise you pick a PO, or start a new one.
+- The Invoices tab shows an invoice's details, lines, PDF, payment and QuickBooks.
+- The purchase order keeps the invoice chips, a summary line and the "Receive this invoice" section.
+- `jt.invoice_move(p {invoice_id, order_id})` puts a saved invoice on another PO, or links an older invoice that has none. It is refused once anything was received against the invoice, or when either PO is complete.
+- Web wrapper: `public.jt_invoice_move`.
+- The old swimlane board (`js/invoices.js`) was removed.
