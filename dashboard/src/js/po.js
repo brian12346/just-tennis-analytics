@@ -750,7 +750,9 @@
     const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, f: document.activeElement.dataset.f, s: document.activeElement.selectionStart } : null;
     const ro = ed.status === "complete", got = GOT.includes(ed.status);
     const at = ORDER.indexOf(ed.status);
-    const steps = STAGES.map(([k, n], i) => { const click = ed.id && !got && PRE.includes(k) && k !== ed.status && !ed.lines.some(l => l.received > 0);
+    // the stage pills: before anything is received you can jump between draft / ordered / invoiced; after that, the
+    // next stage (received → QB ready → complete) is a click too
+    const steps = STAGES.map(([k, n], i) => { const click = ed.id && k !== ed.status && ((!got && PRE.includes(k) && !ed.lines.some(l => l.received > 0)) || (NEXT[ed.status] && NEXT[ed.status][0] === k && GOT.includes(k)));
       return `<${click ? "button" : "span"} class="step ${k === ed.status ? "on" : i < at ? "done" : ""}" ${click ? `data-pgo="${k}" title="Move to ${n}"` : ""}>${n}</${click ? "button" : "span"}>`; }).join('<span class="step-sep">→</span>');
     const pr = progress(ed), iss = S.cat ? poIssues(ed) : [];
     let tot = { ordered: 0, invoiced: 0, received: 0, open: 0, back: 0, cost: 0 };
@@ -870,7 +872,7 @@
     box.innerHTML = `
       <div class="po-top">
         <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
-          <span class="dbtns right"><button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
+          <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
         <div class="po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
         ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
       </div>
@@ -1198,6 +1200,17 @@
       return null;
     }
   }
+  // moving to a stage: completing a PO with unpaid invoices asks first
+  function goStage(to) {
+    const ed = S.ed; if (!ed) return;
+    const unpaid = ed.invoices.filter(v => !v.paidOn);
+    if (to === "complete" && unpaid.length && ed.confirm !== "complete") {
+      ed.confirm = "complete"; render();
+      note("warn", `${unpaid.length === 1 ? `Invoice ${esc(unpaid[0].no || "")} isn't` : `${unpaid.length} invoices aren't`} marked paid yet. <span class="dbtns"><button class="mini primary" data-pact="do-complete">Complete it anyway</button><button class="mini" data-pact="open-unpaid">Mark it paid first</button><button class="mini" data-pact="no">Cancel</button></span>`);
+      return;
+    }
+    return save(to);
+  }
   async function setStatus2(status, msg) {
     const ed = S.ed; S.busy = "Saving…"; render();
     try { await JT.prep.setOrderStatus(Number(ed.id), status); S.busy = ""; await loadOrders(true); await openPO(ed.id); note("info", msg || `Moved to ${STAGE.get(status).toLowerCase()}.`); }
@@ -1260,7 +1273,7 @@
     if (f === "oshort") return act("short");
     if (f === "papply") { focusArg("pe-costbar"); return act("apply-costs"); }
     if (f === "ppaid") { const i = +d.arg; if (ed.invoices[i]) { ed.cur = i; markPaid(ed, ed.invoices[i]); if (S.mode !== "inv") showInvoicePage(); else render(); focusArg("pe-paymethod"); } return; }
-    if (f === "onext") { save(NEXT[ed.status] && NEXT[ed.status][0]); return; }
+    if (f === "onext") { if (NEXT[ed.status]) goStage(NEXT[ed.status][0]); return; }
     if (f === "oship") return act("amzship");
     if (f === "tab") { const b = document.querySelector(`.tabs button[data-tab="${d.arg}"]`); if (b) b.click(); return; }
     if (f === "ofill") { focusArg("po-inv"); return; }
@@ -1271,13 +1284,15 @@
     if (a === "back-list") return leave();
     if (a === "inv-list") return leave();
     if (a === "open-inv") return showInvoicePage();
+    if (a === "open-unpaid") { const i = ed.invoices.findIndex(v => !v.paidOn); ed.confirm = false; note("", ""); if (i >= 0) ed.cur = i; return showInvoicePage(); }
     if (a === "open-po") { S.invOpen = false; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); return; }
     if (a === "inv-move") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.confirm = "inv-move"; render(); return; }
     if (a === "inv-move-go" && iv) { const to = ($("pe-movepo") || {}).value; if (to) moveInvoice(iv, to); return; }
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
     if (a === "discard") { ed.leaveOk = true; return leave(); }
     if (a === "save") return save(null);
-    if (a === "save-next") return save(NEXT[ed.status][0]);
+    if (a === "save-next" || a === "next-stage") return goStage(NEXT[ed.status][0]);
+    if (a === "do-complete") { ed.confirm = false; return save("complete"); }
     if (a === "confirm" && r) { r.confirmed = true; syncLines(ed); ed.dirty = true; render(); return; }
     if (a === "search" && r) { ed.search = { id: r.id, q: r.src.item_code || (r.src.description || "").split(/\s+/).slice(0, 4).join(" ") }; render(); setTimeout(() => { const i = $("pe-sq"); if (i) { i.focus(); i.select(); } }, 0); return; }
     if (a === "search-cancel") { ed.search = null; render(); return; }
@@ -1785,7 +1800,7 @@
       const iv = cur(ed);
       if (b.dataset.fix) { fix(b.dataset); return; }
       if (b.dataset.pact) { act(b.dataset.pact, b.dataset.k); return; }
-      if (b.dataset.pgo) { save(b.dataset.pgo); return; }
+      if (b.dataset.pgo) { return goStage(b.dataset.pgo); }
       if (b.dataset.pkind) { ed.kind = b.dataset.pkind; ed.dirty = true; render(); return; }
       if (b.dataset.sfix) { shopFix(ed, b.dataset.sfix, b.dataset.vid, b.dataset.i); return; }
       if (b.dataset.sscope && ed.shopCheck) { ed.shopCheck.scope = b.dataset.sscope; ed.dirty = true; render(); return; }
