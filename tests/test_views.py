@@ -662,3 +662,20 @@ def test_invoice_move(conn):
     with pytest.raises(Exception, match="already received"):
         call("invoice_move", {"invoice_id": iid, "order_id": a["order_id"]})
     cur.execute("rollback to savepoint s")
+
+
+def test_receive_without_invoice_counts_on_invoice(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (996, 99, 5, 'Wilson')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    inv = {"vendor": "Wilson", "invoice_no": "S-1", "invoice_date": "2026-10-01", "subtotal": 50,
+           "lines": [{"item_code": "a", "description": "A", "qty": 10, "unit_cost": 5, "amount": 50, "variant_id": 996, "match_how": "sku", "dest": "shopify"}]}
+    r = call("po_save", {"order": {"vendor": "Wilson", "po_no": "S1"}, "lines": [{"variant_id": 996, "dest": "shopify", "qty": 10}], "invoices": [inv]})
+    oid, iid = r["order_id"], r["invoice_ids"][0]
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 996, "dest": "shopify", "qty": 10}]})
+    cur.execute("select (select qty from jt.invoice_receipts where invoice_id = %s), received_at is not null from jt.invoices where id = %s", (iid, iid))
+    assert cur.fetchone() == (10, True)
+    # receiving against the invoice doesn't count twice
+    call("prep_order_unreceive_line", {"id": oid, "variant_id": 996, "dest": "shopify", "qty": 4})
+    call("po_receive_invoice", {"id": oid, "invoice_id": iid, "lines": [{"variant_id": 996, "dest": "shopify", "qty": 4}]})
+    cur.execute("select qty from jt.invoice_receipts where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 10

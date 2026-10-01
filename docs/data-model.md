@@ -367,3 +367,10 @@ ETA, Invoiced, Partly received, Received. An invoiced product that wasn't on the
 - `jt.invoice_move(p {invoice_id, order_id})` puts a saved invoice on another PO, or links an older invoice that has none. It is refused once anything was received against the invoice, or when either PO is complete.
 - Web wrapper: `public.jt_invoice_move`.
 - The old swimlane board (`js/invoices.js`) was removed.
+
+## 040 — invoice receipts stay in step with the PO
+
+- `jt.invoice_receipts_sync(order)` adds units the PO received that no invoice has counted yet to the PO's invoices. It fills the oldest invoice first, up to what each billed.
+- A trigger on `jt.prep_order_lines.qty_received` runs it whenever the received count goes up. This covers receiving done without naming an invoice: "Receive without an invoice", older dashboard versions, and the Prep center.
+- `jt.po_receive_invoice` turns the trigger off while it counts units on the chosen invoice.
+- On Oct 1, 2026 this caught up PO1233, whose invoice had shown "not received" on a fully received PO.
