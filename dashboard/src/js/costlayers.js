@@ -25,7 +25,8 @@
   // Amazon units of a product (FBA + AWD incl. inbound), through the listings mapped to it
   function amzUnits(vid) {
     const fd = JT.fba && JT.fba.data; if (!fd) return 0;
-    let u = 0; for (const it of fd.items) if (it.map && it.map.vid === String(vid) && it.map.kind !== "manual") u += JT.fba.totals([it], true).units * (it.map.units || 1);
+    // units only (JT.fba.unitsOf): JT.fba.totals values items through unit() below, which would loop back here
+    let u = 0; for (const it of fd.items) if (it.map && it.map.vid === String(vid) && it.map.kind !== "manual") u += Math.max(0, JT.fba.unitsOf(it, true)) * (it.map.units || 1);
     return u;
   }
   const onHand = (vid) => (C.shop.get(String(vid)) || 0) + (C.prep.get(String(vid)) || 0) + amzUnits(vid);
