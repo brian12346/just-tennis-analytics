@@ -26,13 +26,15 @@ Both projects deploy on every push; each only uses its own folder.
 ## Cash flow page (`#cash`)
 
 17 weeks from this week. In: Amazon payouts (Finances API "Transfer" postings, `fin.v_amazon_payouts`; each payout
-stream = marketplace + weekday, every N weeks, estimate = average of its last 3), Shopify payouts (weekly on the day
-set on the page; average of the last 4 real payouts from `fin.shopify_payouts`, or a share of the last 4 weeks'
+stream = marketplace + weekday, every N weeks; estimate = the stream's payout share of sales this year × Amazon sales
+(`jt.v_amazon_api_daily`) for the same pay period 364 days earlier × the "vs last year" % in `fin.settings` key
+`amazon`; falls back to the average of its last 3), Shopify payouts (weekly on the day set on the page; each Sunday's
+payouts summed per week from `fin.shopify_payouts`, average of the last 4 weeks, or a share of the last 4 weeks'
 Shopify sales until those sync), other receipts typed in. Out: open QuickBooks bills by due date (overdue → this
 week) and other payments typed in. Typed amounts live in `fin.forecast` (cleared ones are kept with `active = false`);
 the starting balance and Shopify settings in `fin.settings`.
 
-Shopify payouts: sync job `shopify-payouts` (hourly), needs the Shopify app scope `read_shopify_payments_payouts`;
+Shopify payouts: sync job `shopify-payouts` (hourly), needs the Shopify app scope `read_shopify_payments_accounts`;
 without it the job skips quietly.
 
 Starting cash: by default the QuickBooks balances of the bank accounts ticked on the page (`fin.qbo_accounts`,

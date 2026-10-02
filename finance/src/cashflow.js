@@ -19,12 +19,12 @@
   const WEEKS = 17;
   const parseAmt = (s) => { const v = parseFloat(String(s ?? "").replace(/[$,\s]/g, "")); return isNaN(v) ? null : v; };
 
-  const S = { loaded: false, loading: false, err: null, accts: [], amz: [], shopPay: [], shopDays: [], bills: [], fc: [], cash: {}, shopCfg: { weekday: 1, pct_of_sales: 97 }, open: new Set(), busy: false };
+  const S = { loaded: false, loading: false, err: null, accts: [], amz: [], shopPay: [], shopDays: [], bills: [], fc: [], cash: {}, shopCfg: { weekday: 1, pct_of_sales: 97 }, amzCfg: { vs_last_year: 100 }, amzSales: new Map(), open: new Set(), busy: false };
 
   async function load(refresh) {
     S.loading = true; render();
     try {
-      const [amz, sp, sd, bills, fc, st, ac] = await Promise.all([
+      const [amz, sp, sd, bills, fc, st, ac, as] = await Promise.all([
         FIN.sql("select id, day, marketplace, currency, amount_local, amount from fin.v_amazon_payouts order by day", refresh),
         FIN.sql("select id, (issued_at at time zone 'America/Los_Angeles')::date as day, status, amount from fin.shopify_payouts where issued_at > now() - interval '200 days' order by issued_at", refresh),
         FIN.sql("select day, total from jt.shopify_daily where day >= current_date - 42 order by day", refresh),
@@ -32,13 +32,18 @@
         FIN.sql("select id, kind, stream, expected_on, amount, note, updated_by from fin.forecast where active", refresh),
         FIN.sql("select key, value from fin.settings", refresh),
         FIN.sql("select id, name, type, subtype, balance, qbo_updated, synced_at from fin.qbo_accounts where active order by type, balance desc", refresh).catch(() => []),
+        // Amazon sales by day: the last 10 weeks (to see what share of sales Amazon pays out) and the same stretch a
+        // year back plus the next 4 months a year back (the seasonal base for the estimates)
+        FIN.sql("select day, marketplace, sales from jt.v_amazon_api_daily where day >= current_date - 70 or (day >= current_date - 420 and day < current_date - 364 + 133)", refresh),
       ]);
+      S.amzSales = new Map(as.map(r => [`${r.marketplace}|${r.day}`, +r.sales || 0]));
       S.accts = ac.map(a => ({ ...a, balance: +a.balance }));
       S.amz = amz.map(x => ({ ...x, amount: +x.amount })); S.shopPay = sp.map(x => ({ ...x, amount: +x.amount }));
       S.shopDays = sd.map(x => ({ day: x.day, total: +x.total })); S.bills = bills.map(b => ({ ...b, balance: +b.balance }));
       S.fc = fc.map(x => ({ ...x, amount: +x.amount }));
       const set = Object.fromEntries(st.map(r => [r.key, r.value || {}]));
       S.cash = set.cash || {}; S.shopCfg = { weekday: 1, pct_of_sales: 97, ...(set.shopify || {}) };
+      S.amzCfg = { vs_last_year: 100, ...(set.amazon || {}) };
       S.err = null; S.loaded = true;
     } catch (e) { S.err = e; }
     S.loading = false; render();
@@ -56,13 +61,55 @@
       let gap = gaps.length ? gaps.sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 14;
       gap = Math.max(7, Math.round(gap / 7) * 7);
       const recent = ps.slice(-3), avg = recent.reduce((a, p) => a + p.amount, 0) / recent.length;
-      out.push({ id, kind: "amazon", mk: ps[0].marketplace, label: `Amazon ${MK[ps[0].marketplace] || ps[0].marketplace}`, weekday: wday(ps[0].day), gap, last: ps[ps.length - 1].day, avg, n: ps.length, actuals: ps,
-        basis: `average of the last ${recent.length} payout${recent.length > 1 ? "s" : ""}` });
+      const s = { id, kind: "amazon", mk: ps[0].marketplace, label: `Amazon ${MK[ps[0].marketplace] || ps[0].marketplace}`, weekday: wday(ps[0].day), gap, last: ps[ps.length - 1].day, avg, n: ps.length, actuals: ps,
+        basis: `average of the last ${recent.length} payout${recent.length > 1 ? "s" : ""}` };
+      // Seasonal: a payout covers the sales of the pay period before it. Each payout this year / that period's sales =
+      // the share Amazon pays out (after fees, refunds, ads, etc.); a future payout = that share × the sales of the same
+      // two weeks a year earlier (364 days back, same weekdays) × the "vs last year" setting.
+      const mk = MKCODE[s.mk];
+      if (mk) {
+        let paid = 0, sold = 0;
+        for (const p of ps) { const w = salesWin(mk, p.day, gap); if (w != null) { paid += p.amount; sold += w; } }
+        if (sold > 0) {
+          const share = paid / sold, k = amzFactor();
+          s.share = share;
+          s.estFor = (d) => { const w = salesWin(mk, addDays(d, -364), gap); return w == null ? avg : share * w * k; };
+          const nx = nextDate(s);
+          s.avg = s.estFor(nx);
+          s.basis = `${Math.round(share * 100)}% of last year's Amazon ${MK[s.mk] || ""} sales for the same ${gap / 7 === 1 ? "week" : gap / 7 + " weeks"}${k !== 1 ? ` × ${Math.round(k * 100)}%` : ""}`;
+          s.typical = "next";
+        }
+      }
+      out.push(s);
     }
     // name the second stream of a marketplace
     const byMk = {};
     out.sort((a, b) => b.avg - a.avg).forEach(s => { byMk[s.mk] = (byMk[s.mk] || 0) + 1; if (byMk[s.mk] > 1) s.label += ` · ${DAYS[s.weekday]} payout`; });
     return out;
+  }
+  const MKCODE = { ATVPDKIKX0DER: "us", A1AM78C64UM0Y8: "mx", A2EUQ1WTGCTBG2: "ca" };
+  const amzFactor = () => { const v = Number(S.amzCfg.vs_last_year); return v > 0 ? v / 100 : 1; };
+  // Amazon sales for the n days before `end` (null when any of those days is outside the data loaded)
+  function salesWin(mk, end, n) {
+    let tot = 0, seen = false;
+    for (let i = 1; i <= n; i++) {
+      const d = addDays(end, -i), v = S.amzSales.get(`${mk}|${d}`);
+      if (v != null) { tot += v; seen = true; }
+    }
+    return seen ? tot : null;
+  }
+  // this year vs last year, Amazon sales of the last 8 full weeks (all marketplaces)
+  function amzYoY() {
+    const end = monday(today()); let a = 0, b = 0;
+    for (const mk of ["us", "mx", "ca"]) { a += salesWin(mk, end, 56) || 0; b += salesWin(mk, addDays(end, -364), 56) || 0; }
+    return b > 0 ? a / b - 1 : null;
+  }
+  // first expected payout date of a stream from today on
+  function nextDate(s) {
+    const t = today(); let d;
+    if (s.last) { d = addDays(s.last, s.gap); while (d < t) d = addDays(d, s.gap); }
+    else { d = t; while (wday(d) !== s.weekday) d = addDays(d, 1); }
+    return d;
   }
   function shopifyStream() {
     const wd = Number(S.shopCfg.weekday ?? 1), pct = Number(S.shopCfg.pct_of_sales ?? 97) / 100;
@@ -113,13 +160,10 @@
       // real payouts after the balance date
       for (const a of s.actuals) if (a.day > asOf && a.day >= w0 && a.day < end) ev.push({ type: "in", src: s.kind, stream: s.id, label: s.label, day: a.day, amount: a.amount, state: "actual" });
       // expected ones from today on: the stream's next date after its last payout (or the next matching weekday)
-      let d;
-      if (s.last) { d = addDays(s.last, s.gap); while (d < t) d = addDays(d, s.gap); }
-      else { d = t; while (wday(d) !== s.weekday) d = addDays(d, 1); }
-      for (; d < end; d = addDays(d, s.gap)) {
+      for (let d = nextDate(s); d < end; d = addDays(d, s.gap)) {
         if (s.actuals.some(a => Math.abs(dnum(a.day) - dnum(d)) <= 2)) continue;   // already paid around then
-        const f = typed.get(`${s.id}|${d}`);
-        ev.push({ type: "in", src: s.kind, stream: s.id, label: s.label, day: d, amount: f ? f.amount : s.avg, est: s.avg, state: f ? "typed" : "estimate", note: f ? f.note : "" });
+        const f = typed.get(`${s.id}|${d}`), est = s.estFor ? s.estFor(d) : s.avg;
+        ev.push({ type: "in", src: s.kind, stream: s.id, label: s.label, day: d, amount: f ? f.amount : est, est, state: f ? "typed" : "estimate", note: f ? f.note : "" });
       }
     }
     for (const f of S.fc.filter(f => f.kind !== "payout")) {
@@ -238,13 +282,15 @@
   }
 
   function assumptions(streams) {
-    const shop = streams.find(s => s.kind === "shopify");
-    $("cf-assume").innerHTML = `<table><thead><tr><th>Payout</th><th>Lands</th><th>Last one</th><th class="n">Typical</th><th>Based on</th></tr></thead><tbody>
+    const shop = streams.find(s => s.kind === "shopify"), yoy = amzYoY();
+    $("cf-assume").innerHTML = `<table><thead><tr><th>Payout</th><th>Lands</th><th>Last one</th><th class="n">Next one</th><th>Based on</th></tr></thead><tbody>
       ${streams.map(s => `<tr><td><b>${esc(s.label)}</b></td><td>${s.kind === "shopify" ? `<select id="cf-shopday" aria-label="Shopify payout day">${DAYS.map((d, i) => `<option value="${i}" ${i === s.weekday ? "selected" : ""}>Every ${d}</option>`).join("")}</select>` : `Every ${s.gap === 7 ? "" : s.gap / 7 + " weeks on "}${DAYS[s.weekday]}`}</td>
         <td>${s.last ? fmtD(s.last) + (s.n ? "" : "") : '<span class="m">none yet</span>'}</td><td class="n">${money(s.avg)}</td>
         <td class="m">${esc(s.basis)}${s.kind === "shopify" && !shop.n ? ` · <label>share <input id="cf-shoppct" class="pct" value="${esc(S.shopCfg.pct_of_sales)}" inputmode="decimal">%</label>` : ""}</td></tr>`).join("")}
       </tbody></table>
-      <p class="m">Amazon history starts Sep 1, 2026 (when Amazon's payments data was connected), so early estimates rest on a few payouts. ${shop && shop.n ? "Shopify issues payouts on Sundays; each week's payouts are added together and shown on the landing day you pick." : "Shopify switches to real payouts once they sync from Shopify."}</p>`;
+      <p class="m cf-yoy"><label>Amazon vs last year <input id="cf-amzyoy" class="pct" value="${esc(S.amzCfg.vs_last_year)}" inputmode="decimal">%</label>
+        ${yoy == null ? "" : `<span>Last 8 weeks were ${yoy >= 0 ? "+" : "−"}${Math.abs(Math.round(yoy * 100))}% vs the same weeks last year.</span>`}</p>
+      <p class="m">Amazon keeps its two-week pay periods; each payout is estimated from what Amazon sold in the same two weeks last year, times the share of sales Amazon has paid out this year (payouts since Sep 1, 2026, when Amazon's payments data was connected). 100% = same as last year. ${shop && shop.n ? "Shopify issues payouts on Sundays; each week's payouts are added together and shown on the landing day you pick." : "Shopify switches to real payouts once they sync from Shopify."}</p>`;
   }
 
   // ---------- saving ----------
@@ -270,6 +316,7 @@
       else if (t.id === "cf-bal") { const v = parseAmt(t.value); save("fin_settings_set", { key: "cash", value: { balance: v, as_of: $("cf-asof").value || today() } }); }
       else if (t.id === "cf-asof") save("fin_settings_set", { key: "cash", value: { as_of: t.value || null } });
       else if (t.id === "cf-shopday") save("fin_settings_set", { key: "shopify", value: { weekday: Number(t.value) } });
+      else if (t.id === "cf-amzyoy") { const v = parseAmt(t.value); if (v != null && v > 0 && v <= 300) save("fin_settings_set", { key: "amazon", value: { vs_last_year: v } }); }
       else if (t.id === "cf-shoppct") { const v = parseAmt(t.value); if (v != null && v > 0 && v <= 100) save("fin_settings_set", { key: "shopify", value: { pct_of_sales: v } }); }
     });
     main.addEventListener("submit", (ev) => {
