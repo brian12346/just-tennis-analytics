@@ -60,7 +60,9 @@
   let active = 0, gate = null; const waiting = [];
   let freshUntil = 0;      // right after a catalog change every read skips the caches (see catalogChanged)
   const LIMIT = WEB ? 4 : 2;                     // the Claude connector throttles bursts; direct web calls don't
-  const acquire = () => new Promise(r => { if (active < LIMIT) { active++; r(); } else waiting.push(r); });
+  // Saves go to the front of the line: in Claude, page loads queue many reads, and a save shouldn't wait behind them.
+  const acquire = (first) => new Promise(r => { if (active < LIMIT) { active++; r(); } else if (first) waiting.unshift(r); else waiting.push(r); });
+  const isWrite = (sql) => /^\s*(insert|update|delete)\b/i.test(sql) || /^\s*select\s+(public\.)?jt[._]\w+\(/i.test(sql);
   const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -113,7 +115,7 @@
   async function run(sql, refresh) {
     refresh = refresh || Date.now() < freshUntil;
     if (WEB) {
-      await acquire();
+      await acquire(isWrite(sql));
       try { return await WEB.sql(sql, refresh); }
       catch (e) { console.warn("[JT] database call failed", e && e.code, e && e.message); throw e; }
       finally { release(); }
@@ -123,7 +125,7 @@
     let first = false;
     if (!gate) { first = true; let done; gate = new Promise(r => { done = r; }); gate.done = done; }
     else await gate.catch(() => {});
-    await acquire();
+    await acquire(isWrite(sql));
     try {
       const res = await once(mcp, sql, refresh);
       if (first) gate.done();
