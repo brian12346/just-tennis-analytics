@@ -212,8 +212,10 @@
   }
 
   // ---------- editor ----------
+  // a listing by seller SKU, including the rows a fixed SKU list adds (SKUs not in the listings report)
+  const findListing = (sku) => allListings().find(x => x.sku === sku) || (S.only ? filtered().find(x => x.sku === sku) : null);
   function openEditor(sku) {
-    const l = allListings().find(x => x.sku === sku); if (!l) return;
+    const l = findListing(sku); if (!l) return;
     if (!S.db) { note("warn", "Saving mappings isn't available until the database connects. Reload the page."); return; }
     const mp = S.maps.get(sku);
     S.open = sku; S.results = null; S.searchErr = null;
@@ -229,14 +231,14 @@
   }
   function pickResult(id) {
     const r = (S.results || []).find(x => x.id === id); if (!r) return false;
-    S.pick = r; const l = allListings().find(x => x.sku === S.open); const pk = l && packOf(l.title);
+    S.pick = r; const l = findListing(S.open); const pk = l && packOf(l.title);
     if (S.units === "1" && pk && !/\d+\s*[- ]?\s*(pack|pk|count|ct)/i.test(r.name)) S.units = String(pk);
     return true;
   }
   function closeEditor() { S.open = null; S.results = null; S.pick = null; render(); }
 
   async function save(next) {
-    const l = allListings().find(x => x.sku === S.open); if (!l) return;
+    const l = findListing(S.open); if (!l) return;
     let body = { sku: l.sku, asin: l.asin, title: l.title, updatedAt: new Date().toISOString() };
     if (S.mode === "manual") {
       const c = money(S.manual);
@@ -293,7 +295,14 @@
     for (const l of allListings()) { const mp = S.maps.get(l.sku), a = l.asin || (mp && mp.asin); if (!a || !mp) continue; const s = by.get(a) || new Set(); s.add(sigOf(mp)); by.set(a, s); }
     return new Set([...by].filter(([, s]) => s.size > 1).map(([a]) => a));
   }
+  // A fixed list of seller SKUs from another tab (e.g. the FBM tab's unmapped listings): only those show, with a
+  // banner to go back to the normal filters. SKUs not in the listings report still get a row so they can be mapped.
   function filtered() {
+    if (S.only) {
+      const L = allListings(), have = new Set(L.map(l => l.sku));
+      const extra = [...S.only.skus].filter(k => !have.has(k)).map(k => ({ sku: k, asin: S.only.asins[k] || "", title: S.only.titles[k] || k, price: null, qty: null, channel: "DEFAULT", status: "Not in listings report", extra: true, units: 0, sales: 0 }));
+      return L.filter(l => S.only.skus.has(l.sku)).concat(extra).sort((a, b) => a.title.localeCompare(b.title));
+    }
     const q = $("amz-q").value.trim().toLowerCase(), st = $("amz-fstatus").value, fm = $("amz-fmap").value, fc = $("amz-fchan").value;
     const conf = fm === "conflict" ? conflictAsins() : null;
     return allListings().filter(l => {
@@ -367,6 +376,12 @@
     const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("amz-") && t.contains(ae) ? ae.id : null;
     const sel = activeId ? [ae.selectionStart, ae.selectionEnd] : null;
     const rows = filtered();
+    const ob = $("amz-only");
+    if (S.only) {
+      const left = [...S.only.skus].filter(k => !S.maps.has(k)).length;
+      ob.hidden = false;
+      ob.innerHTML = `<span><b>${esc(S.only.label)}</b> · ${left ? `${left} still not mapped` : "all mapped now"}</span><span class="dbtns">${S.only.back ? `<button class="mini" type="button" data-only="back">Back to ${esc(S.only.backLabel || "the list")}</button>` : ""}<button class="mini" type="button" data-only="clear">Show all listings</button></span>`;
+    } else { ob.hidden = true; ob.innerHTML = ""; }
     const shown = rows.slice(0, S.shown);
     const body = shown.map(l => {
       const mp = S.maps.get(l.sku), c = costOf(mp), open = S.open === l.sku;
@@ -394,7 +409,21 @@
   }
 
   // ---------- events ----------
-  ["amz-q", "amz-fstatus", "amz-fmap", "amz-fchan"].forEach(id => $(id).addEventListener(id === "amz-q" ? "input" : "change", () => { S.shown = PAGE; render(); }));
+  ["amz-q", "amz-fstatus", "amz-fmap", "amz-fchan"].forEach(id => $(id).addEventListener(id === "amz-q" ? "input" : "change", () => { S.only = null; S.shown = PAGE; render(); }));
+  $("amz-only").addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-only]"); if (!b) return;
+    const back = S.only && S.only.back;
+    S.only = null; S.shown = PAGE;
+    if (b.dataset.only === "back" && back) showTab(back); else render();
+  });
+  // Open the mapping tab showing only these seller SKUs: {skus: [...], titles: {sku: title}, asins: {sku: asin},
+  // label, back: tab to return to, backLabel}. With one SKU its editor opens straight away.
+  window.amzMapOnly = (o) => {
+    S.only = { skus: new Set(o.skus || []), titles: o.titles || {}, asins: o.asins || {}, label: o.label || "Selected listings", back: o.back || null, backLabel: o.backLabel || "" };
+    S.shown = PAGE; S.open = null;
+    showTab("amzmap");
+    if (o.skus && o.skus.length === 1) openEditor(o.skus[0]);
+  };
   $("amz-more").addEventListener("click", () => { S.shown += PAGE; render(); });
   const tbl = $("amz-table");
   tbl.addEventListener("click", (ev) => {

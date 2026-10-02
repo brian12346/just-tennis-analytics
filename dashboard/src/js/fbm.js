@@ -77,12 +77,13 @@
     const conf = all.filter(o => o.open), wait = all.filter(o => o.waiting);
     const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
     const sentLines = (S.lines || []).filter(l => l.status === "done" && (l.applied_at || "") >= weekAgo);
-    const unmapped = conf.filter(o => o.lines.some(l => l.state === "unmapped")).length;
+    const um = unmappedSkus(), umSet = new Set(um.map(l => l.sku));
+    const umOrders = all.filter(o => o.lines.some(l => umSet.has(l.sku) && (l.state === "unmapped" || l.state === "waiting"))).length;
     const k = [
       { c: "sales", l: "To confirm", v: conf.length.toLocaleString(), s: `${conf.reduce((a, o) => a + o.units, 0).toLocaleString()} Shopify units shipped` },
       { l: "Waiting to ship", v: wait.length.toLocaleString(), s: "Confirm once Amazon shows them shipped" },
       { l: "Taken out, last 7 days", v: sentLines.reduce((a, l) => a + (l.decided_units || 0), 0).toLocaleString(), s: `units across ${new Set(sentLines.map(l => l.order_id)).size} orders` },
-      { c: unmapped ? "warnk" : "", l: "Not mapped", v: unmapped.toLocaleString(), s: unmapped ? "Map the listing to a Shopify product first" : "Every shipped item has a Shopify product" },
+      { c: um.length ? "warnk" : "", l: "Listings not mapped", v: um.length ? `<button class="kpilink" type="button" data-mapall title="Open Amazon mapping with just these listings">${um.length.toLocaleString()}</button>` : "0", s: um.length ? `On ${umOrders} order${umOrders > 1 ? "s" : ""} · click the number to map ${um.length > 1 ? "them" : "it"}` : "Every FBM item has a Shopify product" },
     ];
     $("fbm-kpis").innerHTML = k.map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
     $("fbm-title").textContent = { confirm: "Shipped — confirm each order", waiting: "Not shipped yet", sent: "Taken out of Shopify", skipped: "Not taken out", all: "All FBM orders" }[S.view];
@@ -122,6 +123,18 @@
       <span class="dbtns"><button class="mini primary" type="button" data-bulk="decrement" ${S.busy ? "disabled" : ""}>Take ${selOrders.length > 1 ? "them" : "it"} out of Shopify</button><button class="mini" type="button" data-bulk="skip" ${S.busy ? "disabled" : ""}>Don't take out</button><button class="mini" type="button" data-bulk="clear">Clear</button></span>`;
   }
 
+  // Amazon listings on this page that aren't mapped to a Shopify product (any order still undecided)
+  function unmappedSkus() {
+    const m = new Map();
+    for (const o of orders()) for (const l of o.lines) if (l.state === "unmapped" || (l.state === "waiting" && l.units == null)) m.set(l.sku, l);
+    return [...m.values()];
+  }
+  function openMapping(lines, label) {
+    if (!window.amzMapOnly) return;
+    window.amzMapOnly({ skus: lines.map(l => l.sku), titles: Object.fromEntries(lines.map(l => [l.sku, l.product_name || l.sku])),
+      asins: Object.fromEntries(lines.map(l => [l.sku, l.asin || ""])), label, back: "fbm", backLabel: "FBM stock" });
+  }
+
   async function decide(orderIds, decision) {
     if (S.busy) return;
     const all = orders().filter(o => orderIds.includes(o.id));
@@ -154,7 +167,8 @@
     if (b.dataset.act) decide([b.dataset.o], b.dataset.act);
     else if (b.dataset.bulk === "clear") { S.sel.clear(); render(); }
     else if (b.dataset.bulk) decide([...S.sel], b.dataset.bulk);
-    else if (b.dataset.map) { location.hash = "amzmap"; document.querySelector('.tabs button[data-tab="amzmap"]').click(); const qi = $("amz-q"); if (qi) { qi.value = b.dataset.map; qi.dispatchEvent(new Event("input")); } }
+    else if (b.dataset.map) { const l = (S.lines || []).find(x => x.sku === b.dataset.map); openMapping([l || { sku: b.dataset.map }], "FBM listing to map"); }
+    else if (b.hasAttribute("data-mapall")) { const u = unmappedSkus(); openMapping(u, `${u.length} FBM listing${u.length > 1 ? "s" : ""} not mapped to Shopify`); }
     else if (b.id === "fbm-more") { S.shown += 150; render(); }
   });
   tab.addEventListener("change", (ev) => {
