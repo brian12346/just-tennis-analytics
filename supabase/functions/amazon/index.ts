@@ -20,6 +20,12 @@
 //                                          VALIDATION_PREVIEW: checked, nothing changed. Each one is logged in jt.fbm_pushes.
 //                                          Stops before the time limit: {ok, results, next: [items not done]}.
 // POST {action: "probe", path}          -> read-only GET of a /finances/, /reports/, /listings/ or /fba/ endpoint, for troubleshooting
+// POST {action: "inbound_shipments", since?, until?, kinds?, backfill_items?} -> FBA shipments (Fulfillment Inbound v0) and
+//                                          AWD shipments (AWD 2024-05-09) updated since `since` (default: the last 3 days) into
+//                                          jt.inbound_shipments, with SKU quantities (jt.inbound_shipment_items) for open
+//                                          and changed ones (backfill_items: also closed ones saved without them) as time
+//                                          allows; rerun until {done: true}. kinds: ["fba"], ["awd"] or both. Hourly.
+//                                          AWD quantities are in units (Amazon reports cases; cases × units per case).
 // POST {action: "fba_inventory"}        -> FBA inventory now (FBA Inventory API getInventorySummaries, amazon.com pool, all
 //                                          pages, with details) into jt.fba_inventory (jt_fba_inventory_save). Scheduled hourly.
 // Listings: GET_MERCHANT_LISTINGS_ALL_DATA (the All Listings report), asked for once a day by sync and saved to jt.docs
@@ -301,6 +307,96 @@ async function collect(c: Creds, deadline: number) {
   return { st, done };
 }
 
+// ---- inbound shipments (FBA and AWD)
+// Headers for every shipment updated in the window; SKU quantities (one call per shipment) for open shipments, ones
+// whose status changed, and (backfill_items) closed ones saved without them, open ones first, as time allows.
+const wait = (ms: number) => new Promise((f) => setTimeout(f, ms));
+const FBA_STATUSES = "WORKING,READY_TO_SHIP,SHIPPED,IN_TRANSIT,DELIVERED,CHECKED_IN,RECEIVING,CLOSED,CANCELLED,DELETED,ERROR";
+const DONE = new Set(["CLOSED", "CANCELLED", "DELETED"]);
+async function inboundShipments(c: Creds, since: Date, until: Date, deadline: number, kinds: string[], backfillItems: boolean) {
+  const known: Record<string, string> = (await rpc("jt_inbound_shipments_known")) || {};   // id -> "STATUS|skus"
+  const res: any = {};
+  const save = async (list: any[]) => { let n = 0; for (let i = 0; i < list.length; i += 100) n += await rpc("jt_inbound_shipments_save", { p: { shipments: list.slice(i, i + 100) } }); return n; };
+  const wants = (id: string, st: string) => { const k = known[id]; if (!k) return true; const [ks, n] = k.split("|"); return !DONE.has(st) || ks !== st || (backfillItems && n === "0"); };
+  async function run(kind: string, list: () => Promise<any[]>, head: (x: any) => any, items: (row: any) => Promise<void>) {
+    const r: any = { found: 0, saved: 0, items: 0, items_left: 0, done: false, error: "" }; res[kind.toLowerCase()] = r;
+    try {
+      const ships = await list(); r.found = ships.length;
+      const rows = ships.map(head).sort((a: any, b: any) => (DONE.has(a.status) ? 1 : 0) - (DONE.has(b.status) ? 1 : 0));
+      r.saved = await save(rows);                       // headers first (items: null keeps any saved items)
+      let batch: any[] = [];
+      for (const row of rows) {
+        if (!wants(row.id, row.status)) continue;
+        if (Date.now() > deadline) { r.items_left++; continue; }
+        await items(row); r.items++; batch.push(row);
+        if (batch.length >= 10) { await save(batch); batch = []; }
+      }
+      await save(batch);
+      r.done = !r.items_left;
+    } catch (e) { r.error = (e as Error).message; }
+  }
+  const US = "ATVPDKIKX0DER";
+  if (kinds.includes("fba")) await run("FBA", async () => {
+    const ships: any[] = []; let next = "";
+    do {
+      const q = new URLSearchParams(next ? { MarketplaceId: US, QueryType: "NEXT_TOKEN", NextToken: next }
+        : { MarketplaceId: US, QueryType: "DATE_RANGE", ShipmentStatusList: FBA_STATUSES, LastUpdatedAfter: since.toISOString(), LastUpdatedBefore: until.toISOString() });
+      const r = await sp(c, "GET", "/fba/inbound/v0/shipments?" + q.toString());
+      ships.push(...(r.payload?.ShipmentData || []));
+      next = r.payload?.NextToken || "";
+      if (next) await wait(550);
+    } while (next);
+    return ships;
+  }, (x) => ({ id: x.ShipmentId, kind: "FBA", name: x.ShipmentName || "", status: x.ShipmentStatus || "", destination: x.DestinationFulfillmentCenterId || "", raw: x, items: null }),
+  async (row) => {
+    // first page by shipment ID; more pages (if any) through getShipmentItems with the NextToken. Amazon hands back a
+    // token even on the last page, so only a full page (50+ lines) goes on, at most 20 pages.
+    const items: any[] = []; let nt = "", pages = 0;
+    do {
+      await wait(550);
+      let r: any;
+      if (!nt) r = await sp(c, "GET", `/fba/inbound/v0/shipments/${encodeURIComponent(row.id)}/items?MarketplaceId=${US}`);
+      else { try { r = await sp(c, "GET", `/fba/inbound/v0/shipmentItems?` + new URLSearchParams({ MarketplaceId: US, QueryType: "NEXT_TOKEN", NextToken: nt }).toString()); } catch { break; } }
+      const got = (r.payload?.ItemData || []).filter((it: any) => !it.ShipmentId || it.ShipmentId === row.id);
+      for (const it of got) items.push({ sku: it.SellerSKU, fnsku: it.FulfillmentNetworkSKU || "", qty_expected: it.QuantityShipped || 0, qty_received: it.QuantityReceived || 0, qty_in_case: it.QuantityInCase || 0 });
+      const t = r.payload?.NextToken || "";
+      nt = got.length >= 50 && t && t !== nt ? t : ""; pages++;   // a short page is the last one
+    } while (nt && pages < 20);
+    row.items = items;
+  });
+  if (kinds.includes("awd")) await run("AWD", async () => {
+    const ships: any[] = []; let next = "";
+    do {
+      const q = new URLSearchParams({ updatedAfter: since.toISOString(), updatedBefore: until.toISOString(), maxResults: "200", sortBy: "UPDATED_AT", sortOrder: "DESCENDING" });
+      if (next) q.set("nextToken", next);
+      const r = await sp(c, "GET", "/awd/2024-05-09/inboundShipments?" + q.toString());
+      ships.push(...(r.shipments || []));
+      next = r.nextToken || "";
+      if (next) await wait(1100);
+    } while (next);
+    return ships;
+  }, (x) => ({ id: x.shipmentId, kind: "AWD", name: x.externalReferenceId || x.orderId || "", status: x.shipmentStatus || "", destination: x.destinationRegion || x.warehouseReferenceId || "",
+    created_at: x.createdAt || null, updated: x.updatedAt || null, raw: x, items: null }),
+  async (row) => {
+    await wait(600);
+    const d = await sp(c, "GET", `/awd/2024-05-09/inboundShipments/${encodeURIComponent(row.id)}?skuQuantities=SHOW`);
+    row.raw = { ...d, shipmentSkuQuantities: undefined };
+    row.name = d.externalReferenceId || d.orderId || row.name;
+    row.destination = d.destinationAddress?.name || d.destinationRegion || row.destination;
+    row.carrier = d.carrierCode?.carrierCodeValue || ""; row.tracking = d.trackingId || "";
+    row.created_at = d.createdAt || row.created_at; row.updated = d.updatedAt || row.updated;
+    // AWD counts SKUs in cases: units come from the containers (cases × units per case)
+    const units: Record<string, number> = {}, perCase: Record<string, number> = {};
+    for (const ct of d.shipmentContainerQuantities || []) for (const pr of ct.distributionPackage?.contents?.products || []) {
+      units[pr.sku] = (units[pr.sku] || 0) + (ct.count || 0) * (pr.quantity || 0); perCase[pr.sku] = pr.quantity || perCase[pr.sku] || 1; }
+    const unitsOf = (q: any, sku: string) => !q ? 0 : q.unitOfMeasurement === "PRODUCT_UNITS" ? q.quantity || 0 : (q.quantity || 0) * (perCase[sku] || 1);
+    row.items = (d.shipmentSkuQuantities || []).map((q: any) => ({ sku: q.sku, qty_expected: units[q.sku] || unitsOf(q.expectedQuantity, q.sku), qty_received: unitsOf(q.receivedQuantity, q.sku), qty_in_case: perCase[q.sku] || 0 }));
+    for (const sku of Object.keys(units)) if (!row.items.some((x: any) => x.sku === sku)) row.items.push({ sku, qty_expected: units[sku], qty_received: 0, qty_in_case: perCase[sku] || 0 });
+  });
+  res.done = Object.values(res).every((r: any) => r.done);
+  return res;
+}
+
 async function caller(req: Request, c: Creds): Promise<string | null> {
   const k = req.headers.get("x-jt-key");
   if (k && c.jt_fn_key && k === c.jt_fn_key) return "scheduler";
@@ -386,9 +482,18 @@ Deno.serve(async (req) => {
       if (!next) await rpc("jt_fba_inventory_save", { p: { rows: [], complete: true, skus: rows.map((r) => r.sku) } });
       return json({ ok: true, pages, rows: rows.length, saved, complete: !next });
     }
+    if (p.action === "inbound_shipments") {
+      const since = p.since ? new Date(String(p.since)) : new Date(Date.now() - 3 * 86400_000);
+      if (isNaN(since.getTime())) return json({ ok: false, error: "since must be a date" }, 400);
+      const until = p.until ? new Date(String(p.until)) : new Date(Date.now() - 120_000);
+      if (isNaN(until.getTime())) return json({ ok: false, error: "until must be a date" }, 400);
+      const kinds = Array.isArray(p.kinds) && p.kinds.length ? p.kinds.map((x: any) => String(x).toLowerCase()) : ["fba", "awd"];
+      const out = await inboundShipments(c, since, until, t0 + 85_000, kinds, !!p.backfill_items);
+      return json({ ok: true, since: since.toISOString(), until: until.toISOString(), ...out });
+    }
     if (p.action === "probe") {   // read-only look at a Finances, Reports or Listings endpoint (troubleshooting), trimmed
       const path = String(p.path || "");
-      if (!/^\/(finances|reports|listings|fba)\//.test(path)) return json({ ok: false, error: "only /finances/, /reports/, /listings/ and /fba/ paths" }, 400);
+      if (!/^\/(finances|reports|listings|fba|awd|inbound)\//.test(path)) return json({ ok: false, error: "only /finances/, /reports/, /listings/, /fba/, /awd/ and /inbound/ paths" }, 400);
       const r = await sp(c, "GET", path);
       return json({ ok: true, result: JSON.stringify(r).slice(0, Number(p.limit) || 4000) });
     }

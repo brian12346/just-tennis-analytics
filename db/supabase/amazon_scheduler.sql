@@ -22,3 +22,7 @@ select cron.schedule('jt-amazon-fba', '5 * * * *', $$select jt.amazon_call('{"ac
 select cron.unschedule(jobname) from cron.job where jobname in ('jt-asin-daily', 'jt-asin-daily-nightly');
 select cron.schedule('jt-asin-daily', '12 * * * *', $$select jt.refresh_asin_daily((now() at time zone 'America/Los_Angeles')::date - 4)$$);
 select cron.schedule('jt-asin-daily-nightly', '10 12 * * *', $$select jt.refresh_asin_daily((now() at time zone 'America/Los_Angeles')::date - 35)$$);
+
+-- FBA and AWD inbound shipments (migration 068): shipments updated in the last 3 days, every hour at :25.
+select cron.unschedule(jobname) from cron.job where jobname = 'jt-amazon-inbound';
+select cron.schedule('jt-amazon-inbound', '25 * * * *', $$select jt.amazon_call('{"action":"inbound_shipments"}'::jsonb)$$);
