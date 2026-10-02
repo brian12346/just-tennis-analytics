@@ -35,7 +35,7 @@
   const PAY = [["ach", "ACH"], ["check", "Check"], ["credit_card", "Credit card"], ["wire", "Wire"], ["cash", "Cash"], ["other", "Other"]], PAYN = new Map(PAY);
   const payTxt = (iv) => iv.paidOn ? [PAYN.get(iv.payMethod) || "Paid", shortDate(iv.paidOn), iv.payRef, iv.paidFrom ? "from " + iv.paidFrom : ""].filter(Boolean).join(" · ") : "";
   const overdue = (iv) => !iv.paidOn && iv.due && iv.due < today();
-  const poLabel = (po) => /^po\b/i.test(po) ? po : "PO " + po;
+  const poLabel = (po) => /^po(\b|\d)/i.test(po) ? po : "PO " + po;
   const SURE = new Set(["remembered", "sku", "upc", "manual", "confirmed"]);
   const HOW = { remembered: "Remembered", sku: "SKU match", upc: "UPC match", manual: "Picked", confirmed: "Confirmed", skupart: "Part of SKU", guess: "Guess" };
   const CONF = { high: "Likely", medium: "Maybe", low: "Unsure" };
@@ -731,7 +731,7 @@
       list.map(o => {
         const fl = listFlags(o), got = GOT.includes(o.status);
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
-        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${o.shopifyUrl ? `<div><a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a>${o.shopDiffs === 0 ? ' <span class="pill ok" title="Checked against the Shopify PO">matches</span>' : ""}${o.shopStatus ? " " + shopStatusPill(o.shopStatus) : ""}</div>` : ""}</td>
+        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${o.shopifyUrl || o.shopDiffs != null ? `<div>${o.shopifyUrl ? `<a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a>` : '<span class="small muted">Shopify PO</span>'}${o.shopDiffs === 0 ? ' <span class="pill ok" title="Checked against the Shopify PO">matches</span>' : o.shopDiffs ? ` <span class="pill miss" title="Checked against the Shopify PO">${o.shopDiffs} difference${o.shopDiffs === 1 ? "" : "s"}</span>` : ""}${o.shopStatus ? " " + shopStatusPill(o.shopStatus) : ""}</div>` : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
           <td class="l"><span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span></td>
           <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
@@ -1524,7 +1524,57 @@
       if (!sku) { const hit = before.concat(rows[i + 1] ? rows[i + 1].cells : []).find(c => S.bySku.has(norm(c))); if (hit) sku = hit; }
       items.push({ sku, supplier_sku: supSku, title: title.replace(/\s+-\s*$/, ""), qty: qp.qty, cost: qp.unit, amount: qp.amount });
     }
-    return { name, supplier: supplier.trim(), total, subtotal, shipping, lines: items };
+    // "Estimated arrival: Oct 15, 2026" (or 2026-10-15 / 10/15/2026) and "Payment terms: Net 30"
+    let arrival = "", terms = "";
+    const am = /estimated\s+arrival\s*:?\s*([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4})/i.exec(all);
+    if (am) { const d = new Date(/^\d{4}-/.test(am[1]) ? am[1] + "T12:00:00Z" : am[1].replace(/\./, "") + " 12:00 UTC"); if (!isNaN(d)) arrival = d.toISOString().slice(0, 10); }
+    const tm = /payment\s+terms\s*:?\s*([^\n]+?)(?=\s{2,}|\s+estimated\b|\s+ship\s+to\b|\n|$)/i.exec(all); if (tm) terms = tm[1].trim();
+    return { name, supplier: supplier.trim(), total, subtotal, shipping, arrival, terms, lines: items };
+  }
+  const poKey = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^po/, "");
+  // match each Shopify PO line to a Shopify variant (its SKU first, then the supplier SKU, then the name)
+  function matchShopLines(sp, vendor) {
+    for (const l of sp.lines) { let g = guessLine({ item_code: l.sku, upc: "", description: l.title }, vendor);
+      if (!l.sku && l.supplier_sku) { const g2 = guessLine({ item_code: l.supplier_sku, upc: "", description: l.title }, vendor); if (g2.how === "remembered" || g2.how === "sku") g = g2; } l.variant_id = g.vid; l.how = g.how; l.alts = g.alts; }
+  }
+  // New PO from the Shopify PO's PDF: vendor, PO number, expected date and every product, quantity and cost come from
+  // Shopify, and the Shopify check is filled in from the same file (so it matches). A PO with that number already here
+  // is opened and checked instead.
+  async function newFromShopPdf(file) {
+    if (!file) return;
+    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { note("warn", "That isn't a PDF. In Shopify, open the purchase order and download (or print to) a PDF."); return; }
+    S.busy = "Reading the Shopify PO…"; render();
+    try {
+      await catalog(); if (!S.orders) await loadOrders(false);
+      const rows = await IP.pdfRows(new Uint8Array(await file.arrayBuffer()));
+      const sp = parseShopPo(rows);
+      S.busy = "";
+      if (!sp.lines.length) { render(); note("bad", "Couldn't find any product lines in that PDF. Is it the purchase order PDF from Shopify?"); return; }
+      const have = sp.name && (S.orders || []).find(o => poKey(o.po) && poKey(o.po) === poKey(sp.name));
+      if (have) {
+        await openPO(have.id);
+        if (S.ed && S.ed.id === have.id) { await readShopPdf(file); note("info", `${esc(poLabel(have.po))} is already here, so it was checked against this PDF instead of making a second one. Save to keep the check.`); }
+        return;
+      }
+      const nv = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const sup = sp.supplier || "", vendor = S.vendors.find(v => nv(v) === nv(sup)) || S.vendors.find(v => nv(v) && nv(sup) && (nv(sup).includes(nv(v)) || nv(v).includes(nv(sup)))) || sup;
+      matchShopLines(sp, vendor);
+      const ed = blankEd();
+      Object.assign(ed, { vendor, po: (sp.name || "").replace(/^#\s*/, ""), expected: sp.arrival || "", note: sp.terms ? "Payment terms: " + sp.terms : "", dest: "shopify", addTo: "shopify", fromShop: true, dirty: true });
+      ed.shopCheck = { checked_at: new Date().toISOString(), source: "pdf", file_name: file.name, name: sp.name, supplier: sp.supplier, total: sp.total, subtotal: sp.subtotal, shipping: sp.shipping, scope: "all", lines: sp.lines, created_from: true };
+      const byVid = new Map();
+      for (const l of sp.lines) { if (!l.variant_id) continue; const x = byVid.get(l.variant_id); if (x) x.qty += l.qty || 0; else byVid.set(l.variant_id, { qty: l.qty || 0, cost: l.cost }); }
+      for (const [vid, x] of byVid) ed.lines.push({ id: newId(), vid, asku: "", dest: "shopify", qty: String(x.qty), cost: fmtCost(x.cost), received: 0, backorder: false, eta: "", auto: false, fromShop: true });
+      const unmatched = sp.lines.filter(l => !l.variant_id).length, guessed = sp.lines.filter(l => l.variant_id && l.how === "guess").length;
+      ed.shopOpen = unmatched > 0 || guessed > 0;
+      S.ed = ed; render();
+      const units = sp.lines.reduce((a, l) => a + (l.qty || 0), 0), cost = sp.lines.reduce((a, l) => a + (l.qty || 0) * (l.cost || 0), 0);
+      note(unmatched || guessed ? "warn" : "info", `Made from Shopify PO <b>${esc(sp.name || file.name)}</b>: ${sp.lines.length} line${sp.lines.length === 1 ? "" : "s"}, ${n0(units)} units, ${m(cost)}${sp.shipping ? ` + ${m(sp.shipping)} shipping` : ""}.` +
+        (unmatched ? ` <b>${unmatched} product${unmatched === 1 ? "" : "s"} couldn't be found in Shopify's catalog</b> — pick ${unmatched === 1 ? "it" : "them"} in the Shopify PO check below.` : "") +
+        (guessed ? ` ${guessed} matched by name — check ${guessed === 1 ? "it" : "them"} below.` : "") +
+        (sup && !S.vendors.includes(vendor) ? ` The supplier "${esc(sup)}" isn't a vendor in Shopify's catalog — check the vendor name.` : "") + " Check it over and Save.");
+      if (ed.shopOpen) focusArg("pe-shopcheck");
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't read that PDF: " + esc(JT.message(e))); }
   }
   async function readShopPdf(file) {
     const ed = S.ed; if (!file || !ed) return;
@@ -1536,8 +1586,7 @@
       const sp = parseShopPo(rows);
       S.busy = "";
       if (!sp.lines.length) { render(); note("bad", "Couldn't find any product lines in that PDF. Is it the purchase order PDF from Shopify?"); return; }
-      for (const l of sp.lines) { let g = guessLine({ item_code: l.sku, upc: "", description: l.title }, ed.vendor);
-        if (!l.sku && l.supplier_sku) { const g2 = guessLine({ item_code: l.supplier_sku, upc: "", description: l.title }, ed.vendor); if (g2.how === "remembered" || g2.how === "sku") g = g2; } l.variant_id = g.vid; l.how = g.how; l.alts = g.alts; }
+      matchShopLines(sp, ed.vendor);
       ed.shopCheck = { checked_at: new Date().toISOString(), source: "pdf", file_name: file.name, name: sp.name, supplier: sp.supplier, total: sp.total, subtotal: sp.subtotal, shipping: sp.shipping,
         scope: (ed.shopCheck && ed.shopCheck.scope) || "all", lines: sp.lines };
       ed.dirty = true; ed.shopAll = false;
@@ -1570,7 +1619,7 @@
   // next to the PO name: ✓ when the Shopify PO was checked and matches, the number of differences when it doesn't
   // (click to see them), and a button to check again from a new PDF
   function shopBadge(ed, ro) {
-    if (!ed.id || !(ed.shopifyUrl.trim() || ed.shopCheck)) return "";
+    if (!(ed.id || ed.shopCheck) || !(ed.shopifyUrl.trim() || ed.shopCheck)) return "";
     const sc = ed.shopCheck, inp = '<input type="file" id="pe-shopfile" accept=".pdf,application/pdf" hidden>';
     const btn = ro ? "" : `<label class="mini shopbtn" for="pe-shopfile" title="Download the PO from Shopify as a PDF and upload it; every product, quantity and cost is compared">${sc ? "Re-check Shopify" : "Check vs Shopify PO"}</label>`;
     if (!sc) return ` <span class="shopbadge">${btn}${inp}</span>`;
@@ -1580,7 +1629,7 @@
     return ` <span class="shopbadge">${mark}${btn}${inp}</span>`;
   }
   function shopCheckHtml(ed, ro) {
-    if (!ed.id || !ed.shopCheck || !ed.shopOpen) return "";
+    if (!ed.shopCheck || !ed.shopOpen) return "";
     const up = "";
     const link = shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? `<a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open it in Shopify ↗</a>` : "";
     const api = ed.shopStatus ? `${shopStatusPill(ed.shopStatus)} <span class="muted small">as of ${esc(when(ed.shopStatusAt))}</span>`
@@ -1588,7 +1637,7 @@
     if (!ed.shopCheck) return `<section class="panel shopchk" id="pe-shopcheck"><div class="panel-head"><h2>Shopify PO check</h2>${api}<span class="muted small">not checked yet</span><span class="dbtns right">${up}</span></div>
       <div class="small muted">Open the PO in Shopify ${link ? `(${link})` : ""}, download it as a PDF (or print it and save as PDF), and upload it here. Every product, quantity and cost is compared with this PO.</div></section>`;
     const sc = ed.shopCheck, d = shopDiffs(ed), hasPrep = ed.lines.some(l => l.dest === "prep");
-    const shown = ed.shopAll ? d.rows : d.rows.filter(r => r.kinds.length);
+    const shown = ed.shopAll ? d.rows : d.rows.filter(r => r.kinds.length || r.guess);   // matched by name: worth a look
     const cell = (v, bad, f) => v == null ? '<span class="dim">—</span>' : `<span class="${bad ? "dif" : ""}">${f(v)}</span>`;
     const fixes = (r) => {
       if (ro) return "";
@@ -1620,7 +1669,9 @@
     </section>`;
   }
   function shopFix(ed, kind, vid, i) {
-    if (kind === "unmatch") { for (const l of ed.shopCheck.lines) if (l.variant_id === vid && l.how === "guess") { l.alts = [vid, ...(l.alts || []).filter(x => x !== vid)]; l.variant_id = null; l.how = ""; } ed.dirty = true; render(); return; }
+    if (kind === "unmatch") { for (const l of ed.shopCheck.lines) if (l.variant_id === vid && l.how === "guess") { l.alts = [vid, ...(l.alts || []).filter(x => x !== vid)]; l.variant_id = null; l.how = ""; }
+      if (ed.fromShop) ed.lines = ed.lines.filter(l => !(l.vid === vid && l.fromShop && !l.received));   // it came from the wrong match
+      ed.dirty = true; render(); return; }
     const d = shopDiffs(ed), r = d.rows.find(x => x.vid === vid); if (!r) return;
     const scope = ed.shopCheck.scope === "shopify" ? ed.lines.filter(l => l.dest === "shopify") : ed.lines;
     const mine = scope.filter(l => l.vid === vid);
@@ -1689,6 +1740,9 @@
   function bind() {
     const tab = $("tab-po"), box = $("po-edit-view");
     $("po-new").addEventListener("click", () => { if (S.ed && S.ed.dirty) return leave(); note("", ""); openPO(null); });
+    $("po-shopnew").addEventListener("change", (ev) => { const f = ev.target.files[0]; ev.target.value = "";
+      if (S.ed && S.ed.dirty) { note("warn", "Save or leave the PO you're working on first, then upload the Shopify PO."); return; }
+      S.ed = null; note("", ""); newFromShopPdf(f); });
     $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), S.cat ? catalog(true) : null]); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
     $("po-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderList, 150); });
     $("po-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; renderList(); });
@@ -1724,7 +1778,10 @@
       const iv = cur(ed);
       if (t.id === "pe-file") { const f = t.files[0]; t.value = ""; readPdf(f); return; }
       if (t.id === "pe-shopfile") { const f = t.files[0]; t.value = ""; readShopPdf(f); return; }
-      if (t.dataset.f === "spick" && ed.shopCheck) { const sl = ed.shopCheck.lines[+t.dataset.i]; if (sl && t.value) { sl.variant_id = t.value; sl.how = "picked"; ed.dirty = true; render(); } return; }
+      if (t.dataset.f === "spick" && ed.shopCheck) { const sl = ed.shopCheck.lines[+t.dataset.i]; if (sl && t.value) { sl.variant_id = t.value; sl.how = "picked";
+        if (ed.fromShop) { const have = ed.lines.find(l => l.vid === t.value); if (have) have.qty = String((Number(have.qty) || 0) + (sl.qty || 0));
+          else ed.lines.push({ id: newId(), vid: t.value, asku: "", dest: "shopify", qty: String(sl.qty || 0), cost: fmtCost(sl.cost), received: 0, backorder: false, eta: "", auto: false, fromShop: true }); }
+        ed.dirty = true; render(); } return; }
       if (t.id === "pe-vendor") { ed.vendor = t.value.trim(); ed.dirty = true; reguess(ed); render(); return; }
       if (t.id === "pe-exp") { ed.expected = t.value; ed.dirty = true; render(); return; }
       if (t.id === "pe-placeby") { ed.placeBy = t.value; ed.dirty = true; render(); return; }
