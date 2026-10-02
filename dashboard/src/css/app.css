@@ -600,8 +600,8 @@ html{scroll-padding-top:130px}
   .tabs{margin:0 -4px;padding:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
   .tabs > *{flex:none}
   .tabs::-webkit-scrollbar{display:none}
-  .tabs button{padding:8px 11px;font-size:15px;order:6}
-  .tabs button[data-tab="shopify"]{order:1}.tabs button[data-tab="amazon"]{order:2}.tabs button[data-tab="psales"]{order:3}.tabs button[data-tab="prep"]{order:4}.tabs button[data-tab="fba"]{order:5}
+  .tabs button{padding:8px 11px;font-size:15px;order:7}
+  .tabs button[data-tab="shopify"]{order:1}.tabs button[data-tab="amazon"]{order:2}.tabs button[data-tab="psales"]{order:3}.tabs button[data-tab="prep"]{order:4}.tabs button[data-tab="fba"]{order:5}.tabs button[data-tab="shipments"]{order:6}
   .tabs .acct{order:9;padding-left:10px}
   h1{font-size:24px}
   .top{flex-direction:column;align-items:stretch;gap:10px}
@@ -842,3 +842,21 @@ table.sh-items th, table.sh-items td{padding:6px 10px;text-align:right;border-bo
 table.sh-items th.l, table.sh-items td.l{text-align:left}
 table.sh-items th{font-size:11px;color:var(--muted);font-weight:600}
 #sh-show{min-width:170px}
+td.sh-prod{min-width:220px;max-width:340px;white-space:normal}
+td.sh-prod a{color:inherit;text-decoration:none} td.sh-prod a:hover{text-decoration:underline}
+.sh-p1 + .sh-p1{margin-top:6px}
+.sh-t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+@media (max-width:640px){
+  #sh-table > tbody > tr > td.sh-prod{grid-column:1 / -1;max-width:none}
+  #sh-table td.sh-flag:not(:has(*)){display:none}
+  #sh-table td.sh-flag{grid-column:1 / -1}
+  #sh-table > tbody > tr.sh-det{padding:0;border:0;background:none}
+  #sh-table > tbody > tr.sh-det > td{padding:0!important}
+  #sh-table table.sh-items{border:0;background:none}
+  #sh-table table.sh-items tr{border-left-color:var(--sales)}
+  #sh-table .sh-bar{width:100%}
+  #sh-panel .tbl-wrap.tall{max-height:none}
+  #sh-table td.sh-prod{grid-column:1 / -1;min-width:0;max-width:none}
+  #sh-table table.sh-items td{text-align:left;border-bottom:0;font-weight:400}
+  #sh-table table.sh-items td:first-child{font-weight:600}
+}

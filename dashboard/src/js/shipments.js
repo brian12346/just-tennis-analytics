@@ -7,6 +7,7 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const n0 = (x) => Math.round(x || 0).toLocaleString();
   const JT = window.JT;
+  const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const PER = 100;
   const DAY = 86400000;
   const LATE_ARRIVED = 7, LATE_RECEIVING = 14, LATE_OLD = 21;   // days before a shipment needs attention
@@ -39,11 +40,14 @@
       const [ships, items] = await Promise.all([
         JT.rowsSplit(["id", "kind", "name", "status", "destination", "carrier", "tracking", "created_at::text", "status_since::text", "units_expected", "units_received",
           "skus", "coalesce(raw->>'orderId', '')", "first_seen::text", "synced_at::text"], "from jt.inbound_shipments", "id", 2, refresh),
-        JT.rowsSplit(["i.shipment_id", "i.sku", "i.fnsku", "i.qty_expected", "i.qty_received", "i.qty_in_case", "coalesce(f.asin, m.asin, '')", "coalesce(f.name, m.title, '')"],
+        JT.rowsSplit(["i.shipment_id", "i.sku", "i.fnsku", "i.qty_expected", "i.qty_received", "i.qty_in_case", "coalesce(f.asin, m.asin, '')", "coalesce(f.name, m.title, '')",
+          "coalesce(nullif(v.display_name, ''), v.product_title, '')", "coalesce(v.sku, '')", "coalesce(v.vendor, '')", "coalesce(v.product_id::text, '')", "coalesce(v.variant_id::text, '')", "coalesce(m.units, '1')"],
           `from jt.inbound_shipment_items i
            left join lateral (select nullif(x.asin, '') as asin, nullif(x.name, '') as name from jt.fba_inventory x where x.sku = i.sku order by (x.name <> '') desc limit 1) f on true
-           left join (select distinct on (data->>'sku') data->>'sku' as sku, nullif(data->>'asin', '') as asin, nullif(data->>'title', '') as title
+           left join (select distinct on (data->>'sku') data->>'sku' as sku, nullif(data->>'asin', '') as asin, nullif(data->>'title', '') as title,
+                             (regexp_match(data->>'variantId', '(\\d+)$'))[1]::bigint as vid, nullif(data->>'units', '') as units
                       from jt.docs where collection = 'amzmap' order by data->>'sku', data->>'updatedAt' desc nulls last) m on m.sku = i.sku
+           left join jt.variants v on v.variant_id = m.vid
            where i.qty_expected + i.qty_received > 0`, "i.shipment_id", 2, refresh),
       ]);
       const now = Date.now(), by = new Map();
@@ -71,11 +75,12 @@
       });
       for (const r of items) {
         const s = by.get(r[0]); if (!s) continue;
-        s.items.push({ sku: r[1], fnsku: r[2] || "", exp: +r[3] || 0, rec: +r[4] || 0, perCase: +r[5] || 0, asin: r[6] || "", title: r[7] || "" });
+        s.items.push({ sku: r[1], fnsku: r[2] || "", exp: +r[3] || 0, rec: +r[4] || 0, perCase: +r[5] || 0, asin: r[6] || "", title: r[7] || "",
+          shop: r[8] || "", vsku: r[9] || "", vendor: r[10] || "", pid: r[11] || "", vid: r[12] || "", units: +r[13] || 1 });
       }
       for (const s of list) {
         s.items.sort((a, b) => b.exp - a.exp || a.sku.localeCompare(b.sku));
-        s.hay = [s.id, s.name, s.order, s.dest, s.carrier, s.tracking, ...s.items.flatMap(i => [i.sku, i.fnsku, i.asin, i.title])].join(" ").toLowerCase();
+        s.hay = [s.id, s.name, s.order, s.dest, s.carrier, s.tracking, ...s.items.flatMap(i => [i.sku, i.fnsku, i.asin, i.title, i.shop, i.vsku, i.vendor])].join(" ").toLowerCase();
       }
       list.sort((a, b) => (b.created || 0) - (a.created || 0) || b.id.localeCompare(a.id));
       cache = { list, synced };
@@ -119,13 +124,24 @@
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
 
+  // Amazon listing (title, ASIN) and the Shopify product it's mapped to, for every row
+  const amzCell = (i) => `<td class="l sh-prod">${i.asin ? `<a href="https://www.amazon.com/dp/${encodeURIComponent(i.asin)}" target="_blank" rel="noopener">${esc(i.title || i.asin)}</a>` : esc(i.title || "—")}<div class="meta mono">${esc(i.asin || "no ASIN")}</div></td>`;
+  const shopCell = (i) => `<td class="l sh-prod">${i.shop ? (i.pid ? `<a href="${ADMIN}/products/${encodeURIComponent(i.pid)}${i.vid ? "/variants/" + encodeURIComponent(i.vid) : ""}" target="_blank" rel="noopener">${esc(i.shop)}</a>` : esc(i.shop)) : '<span class="dim">Not mapped</span>'}${
+    i.shop ? `<div class="meta">${[i.vsku && `<span class="mono">${esc(i.vsku)}</span>`, esc(i.vendor), i.units > 1 ? `${n0(i.units)} per Amazon unit` : ""].filter(Boolean).join(" · ")}</div>` : ""}</td>`;
+  // the shipment's products in its row: the biggest two, then a count of the rest
+  function prodSummary(s) {
+    if (!s.items.length) return `<td class="l sh-prod dim">${s.stage === "cancelled" ? "—" : "SKUs not loaded yet"}</td>`;
+    const top = s.items.slice(0, 2).map(i => `<div class="sh-p1"><span class="sh-t">${esc(i.title || i.sku)}</span><div class="meta"><span class="mono">${esc(i.asin || i.sku)}</span>${i.shop ? " · " + esc(i.shop) : ""}${s.items.length > 1 ? ` · ${n0(i.exp)}` : ""}</div></div>`).join("");
+    return `<td class="l sh-prod">${top}${s.items.length > 2 ? `<div class="meta">+ ${s.items.length - 2} more SKU${s.items.length > 3 ? "s" : ""}</div>` : ""}</td>`;
+  }
+
   function itemsTable(s) {
     if (!s.items.length) return `<div class="muted small">${s.stage === "cancelled" ? "Cancelled before anything shipped." : "Amazon hasn't sent this shipment's SKUs yet. The hourly sync fetches them on its next runs."}</div>`;
-    return `<table class="sh-items"><thead><tr><th class="l">SKU</th><th class="l">Product</th><th>${s.kind === "AWD" ? "Expected" : "Shipped"}</th><th>Received</th><th>${s.stage === "done" ? "Short / over" : "Still to check in"}</th>${s.kind === "AWD" ? "<th>Per case</th>" : ""}</tr></thead><tbody>${
+    return `<table class="sh-items"><thead><tr><th class="l">SKU</th><th class="l">Amazon listing</th><th class="l">Shopify product</th><th>${s.kind === "AWD" ? "Expected" : "Shipped"}</th><th>Received</th><th>${s.stage === "done" ? "Short / over" : "Still to check in"}</th>${s.kind === "AWD" ? "<th>Per case</th>" : ""}</tr></thead><tbody>${
       s.items.map(i => {
         const d = i.rec - i.exp;
         return `<tr><td class="l mono">${esc(i.sku)}${i.fnsku ? `<div class="meta">${esc(i.fnsku)}</div>` : ""}</td>
-          <td class="l">${esc(i.title || "—")}${i.asin ? `<div class="meta mono">${esc(i.asin)}</div>` : ""}</td>
+          ${amzCell(i)}${shopCell(i)}
           <td>${n0(i.exp)}</td><td>${n0(i.rec)}</td>${s.stage === "done" ? `<td class="${d < 0 ? "neg" : d > 0 ? "pos" : "dim"}">${d === 0 ? "—" : (d > 0 ? "+" : "") + n0(d)}</td>` : `<td>${d < 0 ? n0(-d) : "—"}</td>`}
           ${s.kind === "AWD" ? `<td>${i.perCase ? n0(i.perCase) : "—"}</td>` : ""}</tr>`;
       }).join("")}</tbody></table>`;
@@ -134,7 +150,7 @@
   function shipTable(rows) {
     const pages = Math.max(1, Math.ceil(rows.length / PER)); F.page = Math.min(F.page, pages - 1);
     const page = rows.slice(F.page * PER, F.page * PER + PER);
-    $("sh-table").innerHTML = `<thead><tr><th class="l">Shipment</th><th class="l">Type</th><th class="l">Status</th><th class="l">To</th><th class="l">Created</th><th>SKUs</th><th>Units</th><th>Received</th><th class="l"></th></tr></thead><tbody>${
+    $("sh-table").innerHTML = `<thead><tr><th class="l">Shipment</th><th class="l">Products</th><th class="l">Type</th><th class="l">Status</th><th class="l">To</th><th class="l">Created</th><th>SKUs</th><th>Units</th><th>Received</th><th class="l"></th></tr></thead><tbody>${
       page.map(s => {
         const st = STAGES[s.stage], open = F.openId === s.id;
         const pctR = s.ue ? Math.min(100, Math.round(s.ur / s.ue * 100)) : 0;
@@ -142,6 +158,7 @@
         const statusMeta = s.stage === "done" && s.status === "RECEIVING" ? "all units checked in" : s.status && nice(s.status) !== st.l ? nice(s.status) : "";
         return `<tr class="sh-row ${open ? "openrow" : ""}" data-id="${esc(s.id)}" tabindex="0" aria-expanded="${open}">
           <td class="l"><span class="mono">${esc(s.id)}</span>${label ? `<div class="meta">${esc(label)}</div>` : ""}</td>
+          ${prodSummary(s)}
           <td class="l"><span class="pill ${s.kind === "FBA" ? "web" : "pos"}">${s.kind}</span></td>
           <td class="l"><span class="pill ${st.cls}">${st.l}</span>${s.open && s.since ? `<div class="meta">${ago(s.days)}${statusMeta ? " · " + esc(statusMeta) : ""}</div>` : statusMeta ? `<div class="meta">${esc(statusMeta)}</div>` : ""}</td>
           <td class="l">${esc(s.dest || "—")}${s.carrier ? `<div class="meta">${esc(s.carrier)}${s.tracking ? " " + esc(s.tracking) : ""}</div>` : ""}</td>
@@ -149,9 +166,9 @@
           <td>${s.skus ? n0(s.skus) : "—"}</td>
           <td><b>${s.ue ? n0(s.ue) : "—"}</b></td>
           <td>${s.ue ? `${n0(s.ur)}<div class="sh-bar" aria-hidden="true"><span style="width:${pctR}%"></span></div>` : "—"}</td>
-          <td class="l">${s.flag ? `<span class="pill miss">${esc(s.flag)}</span>` : ""}</td></tr>${
-          open ? `<tr class="sh-det"><td colspan="9">${itemsTable(s)}</td></tr>` : ""}`;
-      }).join("") || `<tr><td class="l dim" colspan="9">${cache.list.length ? "No shipments match." : "No shipments yet. The hourly Amazon sync loads them."}</td></tr>`}</tbody>`;
+          <td class="l sh-flag">${s.flag ? `<span class="pill miss">${esc(s.flag)}</span>` : ""}</td></tr>${
+          open ? `<tr class="sh-det"><td colspan="10">${itemsTable(s)}</td></tr>` : ""}`;
+      }).join("") || `<tr><td class="l dim" colspan="10">${cache.list.length ? "No shipments match." : "No shipments yet. The hourly Amazon sync loads them."}</td></tr>`}</tbody>`;
     $("sh-prev").hidden = F.page === 0; $("sh-next").hidden = F.page >= pages - 1;
     $("sh-count").textContent = rows.length ? `${F.page * PER + 1}–${F.page * PER + page.length} of ${rows.length.toLocaleString()} shipments` : "";
   }
@@ -161,23 +178,31 @@
     const m = new Map();
     for (const s of rows) if (s.open) for (const i of s.items) {
       const left = Math.max(0, i.exp - i.rec); if (!left) continue;
-      const k = m.get(i.sku) || { sku: i.sku, title: i.title, asin: i.asin, moving: 0, arrived: 0, fba: 0, awd: 0, ships: new Set() };
+      const k = m.get(i.sku) || { ...i, moving: 0, arrived: 0, fba: 0, awd: 0, ships: new Set() };
       if (s.stage === "prep" || s.stage === "transit") k.moving += left; else k.arrived += left;
       k[s.kind === "FBA" ? "fba" : "awd"] += left; k.ships.add(s.id); m.set(i.sku, k);
     }
     const q = F.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const list = [...m.values()].filter(k => q.every(w => `${k.sku} ${k.title} ${k.asin}`.toLowerCase().includes(w)))
+    const list = [...m.values()].filter(k => q.every(w => `${k.sku} ${k.title} ${k.asin} ${k.shop} ${k.vsku} ${k.vendor}`.toLowerCase().includes(w)))
       .sort((a, b) => (b.moving + b.arrived) - (a.moving + a.arrived) || a.sku.localeCompare(b.sku));
     const pages = Math.max(1, Math.ceil(list.length / PER)); F.page = Math.min(F.page, pages - 1);
     const page = list.slice(F.page * PER, F.page * PER + PER);
-    $("sh-table").innerHTML = `<thead><tr><th class="l">SKU</th><th class="l">Product</th><th>On the way</th><th>Delivered / receiving</th><th>Total inbound</th><th>To FBA</th><th>To AWD</th><th>Shipments</th></tr></thead><tbody>${
+    $("sh-table").innerHTML = `<thead><tr><th class="l">SKU</th><th class="l">Amazon listing</th><th class="l">Shopify product</th><th>On the way</th><th>Delivered / receiving</th><th>Total inbound</th><th>To FBA</th><th>To AWD</th><th>Shipments</th></tr></thead><tbody>${
       page.map(k => `<tr class="sh-sku" data-sku="${esc(k.sku)}" tabindex="0" title="Show this SKU's shipments">
-        <td class="l mono">${esc(k.sku)}</td><td class="l">${esc(k.title || "—")}${k.asin ? `<div class="meta mono">${esc(k.asin)}</div>` : ""}</td>
+        <td class="l mono">${esc(k.sku)}</td>${amzCell(k)}${shopCell(k)}
         <td>${k.moving ? n0(k.moving) : "—"}</td><td>${k.arrived ? n0(k.arrived) : "—"}</td><td><b>${n0(k.moving + k.arrived)}</b></td>
         <td>${k.fba ? n0(k.fba) : "—"}</td><td>${k.awd ? n0(k.awd) : "—"}</td><td>${n0(k.ships.size)}</td></tr>`).join("")
-      || `<tr><td class="l dim" colspan="8">No units on the way${F.q ? " for that search" : ""}.</td></tr>`}</tbody>`;
+      || `<tr><td class="l dim" colspan="9">No units on the way${F.q ? " for that search" : ""}.</td></tr>`}</tbody>`;
     $("sh-prev").hidden = F.page === 0; $("sh-next").hidden = F.page >= pages - 1;
     $("sh-count").textContent = list.length ? `${F.page * PER + 1}–${F.page * PER + page.length} of ${list.length.toLocaleString()} SKUs` : "";
+  }
+
+  // phone card view: label each cell with its own table's header
+  function label(t) {
+    if (!t) return;
+    const hs = [...t.querySelectorAll(":scope > thead > tr > th")].map(th => th.textContent.trim());
+    t.querySelectorAll(":scope > tbody > tr").forEach(tr => [...tr.children].forEach((td, i) => { if (!td.hasAttribute("colspan") && hs[i]) td.setAttribute("data-label", hs[i]); }));
+    t.querySelectorAll("table.sh-items").forEach(label);
   }
 
   function render() {
@@ -194,6 +219,7 @@
     $("sh-hint").textContent = F.view === "ship" ? "Click a shipment to see its SKUs." : "Units not yet checked in on open shipments. Click a SKU to see its shipments.";
     if (F.view === "ship") shipTable(filtered());
     else skuTable(cache.list.filter(s => F.kind === "all" || s.kind === F.kind));
+    label($("sh-table"));
   }
 
   async function sync() {
@@ -219,6 +245,7 @@
     on("sh-next", "click", () => { F.page++; render(); $("sh-table").scrollIntoView({ block: "start" }); });
     const pick = (e) => {
       if (e.type === "keydown" && e.key !== "Enter" && e.key !== " ") return;
+      if (e.target.closest("a")) return;   // product links open Amazon / Shopify
       const r = e.target.closest("tr.sh-row"), k = e.target.closest("tr.sh-sku");
       if (r) { e.preventDefault(); F.openId = F.openId === r.dataset.id ? null : r.dataset.id; render(); }
       else if (k) { e.preventDefault(); F.view = "ship"; F.show = "open"; $("sh-show").value = "open"; F.q = k.dataset.sku; $("sh-q").value = F.q; F.page = 0; render(); }
