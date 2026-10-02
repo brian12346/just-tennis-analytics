@@ -14,7 +14,7 @@
 // POST {action: "fin_nightly"}          -> fin_days for the last 7 full days (scheduled nightly)
 // POST {action: "fin_recent"}           -> fin_days for yesterday and today so far (scheduled hourly, and Refresh)
 // POST {action: "listings"}            -> asks now for the All Listings report (US); the next sync saves it
-// POST {action: "probe", path}          -> read-only GET of a /finances/ or /reports/ endpoint, for troubleshooting
+// POST {action: "probe", path}          -> read-only GET of a /finances/, /reports/ or /listings/ endpoint, for troubleshooting
 // Listings: GET_MERCHANT_LISTINGS_ALL_DATA (the All Listings report), asked for once a day by sync and saved to jt.docs
 // 'amzlistings' (jt_amazon_listings_save) in the shape the dashboard's upload used.
 // Orders come from Amazon's flat-file order reports (one row per order item), saved to jt.amazon_order_lines.
@@ -312,9 +312,9 @@ Deno.serve(async (req) => {
       if (pend) return json({ ok: true, report_id: pend.report_id, already: true });
       return json({ ok: true, report_id: await requestListings(c, by) });
     }
-    if (p.action === "probe") {   // read-only look at a Finances or Reports endpoint (troubleshooting), trimmed
+    if (p.action === "probe") {   // read-only look at a Finances, Reports or Listings endpoint (troubleshooting), trimmed
       const path = String(p.path || "");
-      if (!/^\/(finances|reports)\//.test(path)) return json({ ok: false, error: "only /finances/ and /reports/ paths" }, 400);
+      if (!/^\/(finances|reports|listings)\//.test(path)) return json({ ok: false, error: "only /finances/, /reports/ and /listings/ paths" }, 400);
       const r = await sp(c, "GET", path);
       return json({ ok: true, result: JSON.stringify(r).slice(0, Number(p.limit) || 4000) });
     }
