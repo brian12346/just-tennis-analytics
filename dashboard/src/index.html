@@ -30,6 +30,7 @@
     <button role="tab" data-tab="costs" aria-selected="false">Inventory value</button>
     <button role="tab" data-tab="prep" aria-selected="false">Prep center</button>
     <button role="tab" data-tab="fba" aria-selected="false">Amazon inventory</button>
+    <button role="tab" data-tab="shipments" aria-selected="false">Shipments</button>
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="fbm" aria-selected="false">FBM stock</button>
@@ -254,6 +255,39 @@
     <div class="modal" id="prep-modal" hidden>
       <div class="modal-card prep-card" id="prep-mcard" role="dialog" aria-modal="true" aria-label="Prep center"></div>
     </div>
+  </div>
+  <div id="tab-shipments" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Amazon FBA + AWD · inbound shipments from Amazon, synced hourly</span>
+        <h1>Shipments</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="sh-view" role="group" aria-label="View">
+          <button data-v="ship" aria-pressed="true">By shipment</button><button data-v="sku" aria-pressed="false">By SKU</button>
+        </div>
+        <div class="seg" id="sh-kind" role="group" aria-label="Shipment type">
+          <button data-k="all" aria-pressed="true">All</button><button data-k="FBA" aria-pressed="false">FBA</button><button data-k="AWD" aria-pressed="false">AWD</button>
+        </div>
+        <button class="btn" id="sh-sync">Sync from Amazon</button>
+        <button class="btn" id="sh-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="sh-status" aria-live="polite">Loading shipments…</div>
+    <div id="sh-note" hidden></div>
+    <section class="kpis" id="sh-kpis" aria-label="Inbound shipment totals"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2 id="sh-head">Shipments</h2>
+        <div class="filters">
+          <label for="sh-show" id="sh-show-wrap">Show <select id="sh-show" class="inp sm"><option value="open">Open</option><option value="attention">Needs attention</option><option value="transit">Preparing or in transit</option><option value="arrived">Delivered or receiving</option><option value="done">Received</option><option value="cancelled">Cancelled</option><option value="all">All</option></select></label>
+          <label for="sh-q">Search <input id="sh-q" class="inp" type="search" placeholder="Shipment, SKU, ASIN, product or FC"></label>
+        </div>
+      </div>
+      <div class="cmbar"><span class="muted small" id="sh-hint"></span></div>
+      <div class="tbl-wrap tall xl"><table id="sh-table" class="sht"></table></div>
+      <div class="row"><button class="btn" id="sh-prev" hidden>Previous</button><button class="btn" id="sh-next" hidden>Next page</button><span class="muted small" id="sh-count"></span></div>
+    </section>
   </div>
   <div id="tab-fba" hidden>
     <header class="top">
@@ -742,6 +776,9 @@
 </script>
 <script>
 <!-- @inline js/fba.js -->
+</script>
+<script>
+<!-- @inline js/shipments.js -->
 </script>
 <script>
 <!-- @inline js/product-costs.js -->

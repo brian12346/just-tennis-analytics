@@ -830,3 +830,15 @@ table.fbl-t tr.fba-row td{color:var(--muted)}
 .sp-where{min-width:96px;color:var(--ink-2,inherit)}
 .sp-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%}
 .sp-foot .dbtns{margin-left:auto}
+
+/* Shipments tab */
+table.sht tr.sh-row, table.sht tr.sh-sku{cursor:pointer}
+table.sht tr.sh-row:hover td, table.sht tr.sh-sku:hover td{background:var(--line-soft)}
+table.sht tr.sh-det > td{background:var(--line-soft);padding:10px 14px 14px}
+.sh-bar{height:4px;border-radius:2px;background:var(--line);margin-top:4px;min-width:48px;overflow:hidden}
+.sh-bar span{display:block;height:100%;background:var(--sales)}
+table.sh-items{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm)}
+table.sh-items th, table.sh-items td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--line-soft)}
+table.sh-items th.l, table.sh-items td.l{text-align:left}
+table.sh-items th{font-size:11px;color:var(--muted);font-weight:600}
+#sh-show{min-width:170px}
