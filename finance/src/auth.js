@@ -78,5 +78,15 @@
     a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" })); a.download = filename;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
-  window.FIN = { ready, sql, fn, download, clear: () => cache.clear() };
+  async function write(fn, args) { const v = await rpc(fn, args); cache.clear(); return v; }
+  window.FIN = { ready, sql, fn, write, download, clear: () => cache.clear() };
+  // pages: #payables (default) and #cash
+  function route() {
+    const page = (location.hash || "#payables").slice(1) === "cash" ? "cash" : "payables";
+    for (const id of ["payables", "cash"]) document.getElementById(id).hidden = id !== page;
+    document.querySelectorAll(".nav a[data-page]").forEach(a => { const on = a.dataset.page === page; a.classList.toggle("on", on); if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
+    window.dispatchEvent(new CustomEvent("fin:page", { detail: page }));
+  }
+  window.addEventListener("hashchange", route);
+  document.addEventListener("DOMContentLoaded", route);
 })();

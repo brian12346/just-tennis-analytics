@@ -146,3 +146,37 @@ td .m{font-size:12px;color:var(--muted)}
   #ap-q{width:100%}
 }
 .side-foot .who .link{align-self:flex-start}
+/* cash flow */
+.cf-start{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.cf-start label{display:flex;flex-direction:column;gap:4px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.cf-start input{font:600 15px var(--sans);color:var(--ink);background:var(--card);border:1px solid var(--rule);border-radius:8px;padding:8px 10px;width:150px}
+.cf-start input[type=date]{width:auto;font-weight:500;font-size:14px}
+.cf-svg{width:100%;height:auto;display:block}
+.cf-svg .grid{stroke:var(--rule2)}
+.cf-svg .zero{stroke:var(--ink2);stroke-width:1}
+.cf-svg .ax{font:11px var(--sans);fill:var(--muted)}
+.cf-svg .balline{fill:none;stroke:var(--ink);stroke-width:2}
+.cf-svg .baldot{fill:var(--card);stroke:var(--ink);stroke-width:1.5}
+.cf-svg .baldot.neg{fill:var(--red);stroke:var(--red)}
+.cf-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink2)}
+.cf-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.cf-legend i.ln{height:2px;width:14px;background:var(--ink);vertical-align:3px}
+#cf-table td.out{color:var(--red)}
+#cf-table{max-height:none}
+#cf-table tfoot td{border-top:2px solid var(--rule);background:var(--card)}
+.negt{color:var(--red)}
+input.amt{font:14px var(--sans);font-variant-numeric:tabular-nums;text-align:right;width:120px;padding:5px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink)}
+input.amt.estv{font-style:italic;color:var(--muted)}
+.pill.est{background:transparent;border:1px dashed var(--muted);color:var(--muted);font-style:italic}
+.cf-add{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.cf-add input{font:13px var(--sans);padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink)}
+.cf-add input[name=note]{flex:1;min-width:160px}
+.cf-add input.amt{width:100px}
+#cf-assume table td,#cf-assume table th{padding:7px 10px}
+#cf-assume select{padding:4px 6px;font-size:13px}
+input.pct{width:48px;padding:2px 4px;border:1px solid var(--rule);border-radius:4px;background:var(--card);color:var(--ink);text-align:right}
+code{font-size:12px;background:var(--rule2);padding:1px 4px;border-radius:4px}
+@media (max-width:760px){.cf-start input{width:120px}}
+#cf-assume{overflow-x:auto}
+.panel{overflow:hidden}
+.det > div{min-width:0}

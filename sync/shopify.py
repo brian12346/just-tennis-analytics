@@ -594,6 +594,43 @@ def sync_location_stock(shop: "Shopify", conn) -> int:
     return len(rows)
 
 
+# ---------------------------------------------------------------- Shopify Payments payouts (finance dashboard)
+# Needs the read_shopify_payments_payouts scope; without it the job records why and does nothing else.
+PAYOUTS_Q = """query($after: String) { shopifyPaymentsAccount { payouts(first: 100, after: $after, sortKey: ISSUED_AT, reverse: true) {
+  nodes { id issuedAt status net { amount currencyCode } } pageInfo { hasNextPage endCursor } } } }"""
+
+
+def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int:
+    """Shopify Payments payouts from the last `months` months -> fin.shopify_payouts."""
+    cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=31 * months)).isoformat()
+    rows, after = [], None
+    while True:
+        try:
+            acct = (shop.graphql(PAYOUTS_Q, {"after": after}) or {}).get("shopifyPaymentsAccount") or {}
+        except RuntimeError as e:   # scope not granted yet: not a failure of the sync, just nothing to read
+            if any(w in str(e).lower() for w in ("access denied", "scope", "not approved", "unauthorized")):
+                print("shopify payouts: skipped —", str(e)[:200])
+                return 0
+            raise
+        po = acct.get("payouts") or {}
+        nodes = po.get("nodes") or []
+        for n in nodes:
+            net = n.get("net") or {}
+            rows.append((n["id"].split("/")[-1], n.get("issuedAt"), n.get("status") or "", float(net.get("amount") or 0), net.get("currencyCode") or "USD"))
+        page = po.get("pageInfo") or {}
+        if not page.get("hasNextPage") or not nodes or (nodes[-1].get("issuedAt") or "") < cutoff:
+            break
+        after = page["endCursor"]
+    if rows:
+        with conn.cursor() as cur:
+            cur.executemany("""insert into fin.shopify_payouts (id, issued_at, status, amount, currency, synced_at)
+                               values (%s, %s, %s, %s, %s, now())
+                               on conflict (id) do update set issued_at = excluded.issued_at, status = excluded.status,
+                                 amount = excluded.amount, currency = excluded.currency, synced_at = now()""", rows)
+        conn.commit()
+    return len(rows)
+
+
 # ---------------------------------------------------------------- Shopify purchase order status
 # Shopify's purchase orders API (inventoryPurchaseOrders, scope read_inventory_purchase_orders) is a preview that
 # live stores can't use yet. Try it: when the store is refused, record why and carry on; when it works, each linked

@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "labels", "amazon-transactions", "amazon-listings"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "labels", "amazon-transactions", "amazon-listings"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -76,6 +76,11 @@ def main(argv: list[str] | None = None) -> None:
         # Amazon FBM orders confirmed on the dashboard -> Shopify stock (a confirm starts job fbm-inventory right away)
         from . import shopify as sh3
         run("fbm_inventory", lambda: sh3.apply_fbm_adjustments(shopify(), conn))
+
+    if a.job in ("hourly", "nightly", "shopify-payouts"):
+        # Shopify Payments payouts for the finance dashboard's cash flow page (needs read_shopify_payments_payouts)
+        from . import shopify as sh5
+        run("shopify_payouts", lambda: sh5.sync_shopify_payouts(shopify(), conn))
 
     if a.job in ("hourly", "nightly", "location-stock"):
         # stock at the FBM location, for the FBM tab's listings panel (the page's refresh button starts location-stock)

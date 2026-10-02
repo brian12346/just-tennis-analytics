@@ -39,9 +39,9 @@
   <aside class="side">
     <div class="brand"><span class="mark" aria-hidden="true">F</span><span><b>Finance</b><small>Just Tennis</small></span></div>
     <nav class="nav" aria-label="Finance sections">
-      <a href="#payables" class="on" aria-current="page"><span class="ico">⇄</span>Payables</a>
+      <a href="#payables" data-page="payables" class="on" aria-current="page"><span class="ico">⇄</span>Payables</a>
+      <a href="#cash" data-page="cash"><span class="ico">◎</span>Cash flow</a>
       <span class="soon" title="Coming next"><span class="ico">≡</span>P&amp;L <i>soon</i></span>
-      <span class="soon" title="Coming next"><span class="ico">◎</span>Cash <i>soon</i></span>
     </nav>
     <div class="side-foot">
       <a class="xlink" href="https://dashboard.andersenlifestyle.com" target="_blank" rel="noopener">Sales dashboard ↗</a>
@@ -95,6 +95,34 @@
       <div class="foot" id="ap-foot"></div>
     </section>
   </main>
+
+  <main class="main" id="cash" hidden>
+    <header class="head">
+      <div>
+        <div class="eyebrow">Next 4 months · by week</div>
+        <h1>Cash flow</h1>
+        <div class="sub" id="cf-sub">Loading…</div>
+      </div>
+      <div class="head-actions cf-start">
+        <label>Cash in the bank<input id="cf-bal" type="text" inputmode="decimal" placeholder="$0"></label>
+        <label>as of<input id="cf-asof" type="date"></label>
+      </div>
+    </header>
+    <div id="cf-note" class="note" hidden></div>
+    <section class="cards" id="cf-cards" aria-label="Cash flow summary"></section>
+    <section class="panel">
+      <div class="panel-h"><h2>Week by week</h2><span class="hint">Money in above the line, bills and other payments below · line = cash balance</span></div>
+      <div id="cf-chart"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Weeks</h2><span class="hint">Click a week to see and change what's in it. Estimates are in grey italics; amounts you type replace them.</span></div>
+      <div class="tbl" id="cf-table"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h"><h2>How payouts are estimated</h2><span class="hint">From each channel's payout history; change a single payout in its week</span></div>
+      <div id="cf-assume"></div>
+    </section>
+  </main>
 </div>
 
 <script>
@@ -102,6 +130,9 @@
 </script>
 <script>
 <!-- @inline payables.js -->
+</script>
+<script>
+<!-- @inline cashflow.js -->
 </script>
 </body>
 </html>

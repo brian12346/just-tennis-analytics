@@ -22,3 +22,15 @@ accounts, but its own access list and its own data schema.
    (a CNAME to `cname.vercel-dns.com`) wherever andersenlifestyle.com's DNS is managed.
 
 Both projects deploy on every push; each only uses its own folder.
+
+## Cash flow page (`#cash`)
+
+17 weeks from this week. In: Amazon payouts (Finances API "Transfer" postings, `fin.v_amazon_payouts`; each payout
+stream = marketplace + weekday, every N weeks, estimate = average of its last 3), Shopify payouts (weekly on the day
+set on the page; average of the last 4 real payouts from `fin.shopify_payouts`, or a share of the last 4 weeks'
+Shopify sales until those sync), other receipts typed in. Out: open QuickBooks bills by due date (overdue → this
+week) and other payments typed in. Typed amounts live in `fin.forecast` (cleared ones are kept with `active = false`);
+the starting balance and Shopify settings in `fin.settings`.
+
+Shopify payouts: sync job `shopify-payouts` (hourly), needs the Shopify app scope `read_shopify_payments_payouts`;
+without it the job skips quietly.

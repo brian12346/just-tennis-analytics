@@ -117,6 +117,7 @@ def test_shopify_requests_parse():
         graphql.parse(q)
     graphql.parse(sh.LEVELS_Q)
     graphql.parse(sh.LOCATION_STOCK_Q)
+    graphql.parse(sh.PAYOUTS_Q)
 
 
 def test_location_is_recorded_and_named(conn):

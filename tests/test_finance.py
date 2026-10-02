@@ -54,3 +54,39 @@ def test_sales_reader_cannot_read_finance(conn):
     as_user(cur, SALES_ONLY)
     with pytest.raises(Exception, match="permission denied"):
         cur.execute("select public.jt_sql('select count(*) from fin.qbo_bills')")
+
+
+class PayoutShop:
+    def __init__(self, denied=False):
+        self.denied = denied
+
+    def graphql(self, q, v=None, version=None):
+        if self.denied:
+            raise RuntimeError("Shopify GraphQL error: Access denied for payouts field. Required access: `read_shopify_payments_payouts` access scope.")
+        return {"shopifyPaymentsAccount": {"payouts": {"nodes": [
+            {"id": "gid://shopify/ShopifyPaymentsPayout/5", "issuedAt": "2026-09-28T07:00:00Z", "status": "PAID", "net": {"amount": "31234.50", "currencyCode": "USD"}},
+            {"id": "gid://shopify/ShopifyPaymentsPayout/4", "issuedAt": "2026-09-21T07:00:00Z", "status": "PAID", "net": {"amount": "29000.00", "currencyCode": "USD"}}],
+            "pageInfo": {"hasNextPage": False, "endCursor": None}}}}
+
+
+def test_shopify_payouts_sync(conn):
+    from sync import shopify as sh
+    assert sh.sync_shopify_payouts(PayoutShop(denied=True), conn) == 0
+    assert sh.sync_shopify_payouts(PayoutShop(), conn) == 2
+    cur = conn.cursor()
+    cur.execute("select id, amount, status from fin.shopify_payouts order by id")
+    assert cur.fetchall() == [("4", 29000, "PAID"), ("5", 31234.5, "PAID")]
+
+
+def test_forecast_set(conn):
+    cur = conn.cursor()
+    q = lambda p: (cur.execute("select fin.forecast_set(%s::jsonb)", (json.dumps(p),)), cur.fetchone()[0])[1]
+    q({"op": "set", "stream": "shopify", "expected_on": "2026-10-05", "amount": 25000})
+    q({"op": "set", "stream": "shopify", "expected_on": "2026-10-05", "amount": 27000})
+    r = q({"op": "add", "kind": "other_out", "expected_on": "2026-10-15", "amount": -5000, "note": "Payroll"})
+    q({"op": "set", "stream": "shopify", "expected_on": "2026-10-05", "amount": None})
+    q({"op": "remove", "id": r["id"]})
+    cur.execute("select kind, amount, active from fin.forecast order by id")
+    assert cur.fetchall() == [("payout", 27000, False), ("other_out", 5000, False)]
+    cur.execute("select fin.settings_set('{\"key\": \"cash\", \"value\": {\"balance\": 120000, \"as_of\": \"2026-10-02\"}}')")
+    assert cur.fetchone()[0] == {"balance": 120000, "as_of": "2026-10-02"}
