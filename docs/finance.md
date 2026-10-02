@@ -34,3 +34,8 @@ the starting balance and Shopify settings in `fin.settings`.
 
 Shopify payouts: sync job `shopify-payouts` (hourly), needs the Shopify app scope `read_shopify_payments_payouts`;
 without it the job skips quietly.
+
+Starting cash: by default the QuickBooks balances of the bank accounts ticked on the page (`fin.qbo_accounts`,
+refreshed by `payables_sync`; until something is ticked, checking/savings accounts over $100). Card balances are
+listed for reference; "Add payment" turns one into an Other out line. Setting `fin.settings.cash`:
+`{source: 'qbo' | 'typed', accounts: [ids], balance, as_of}`.

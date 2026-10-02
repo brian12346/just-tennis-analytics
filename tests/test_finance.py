@@ -90,3 +90,12 @@ def test_forecast_set(conn):
     assert cur.fetchall() == [("payout", 27000, False), ("other_out", 5000, False)]
     cur.execute("select fin.settings_set('{\"key\": \"cash\", \"value\": {\"balance\": 120000, \"as_of\": \"2026-10-02\"}}')")
     assert cur.fetchone()[0] == {"balance": 120000, "as_of": "2026-10-02"}
+
+
+def test_accounts_save_marks_missing_inactive(conn):
+    cur = conn.cursor()
+    acc = lambda *xs: json.dumps({"accounts": [{"id": i, "name": n, "type": "Bank", "subtype": "Checking", "balance": b} for i, n, b in xs]})
+    cur.execute("select public.fin_qbo_accounts_save(%s::jsonb)", (acc(("1", "BofA", 100.5), ("2", "Chase", 20)),))
+    cur.execute("select public.fin_qbo_accounts_save(%s::jsonb)", (acc(("1", "BofA", 150),),))
+    cur.execute("select id, balance, active from fin.qbo_accounts order by id")
+    assert cur.fetchall() == [("1", 150, True), ("2", 20, False)]

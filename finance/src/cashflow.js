@@ -19,19 +19,21 @@
   const WEEKS = 17;
   const parseAmt = (s) => { const v = parseFloat(String(s ?? "").replace(/[$,\s]/g, "")); return isNaN(v) ? null : v; };
 
-  const S = { loaded: false, loading: false, err: null, amz: [], shopPay: [], shopDays: [], bills: [], fc: [], cash: {}, shopCfg: { weekday: 1, pct_of_sales: 97 }, open: new Set(), busy: false };
+  const S = { loaded: false, loading: false, err: null, accts: [], amz: [], shopPay: [], shopDays: [], bills: [], fc: [], cash: {}, shopCfg: { weekday: 1, pct_of_sales: 97 }, open: new Set(), busy: false };
 
   async function load(refresh) {
     S.loading = true; render();
     try {
-      const [amz, sp, sd, bills, fc, st] = await Promise.all([
+      const [amz, sp, sd, bills, fc, st, ac] = await Promise.all([
         FIN.sql("select id, day, marketplace, currency, amount_local, amount from fin.v_amazon_payouts order by day", refresh),
         FIN.sql("select id, (issued_at at time zone 'America/Los_Angeles')::date as day, status, amount from fin.shopify_payouts where issued_at > now() - interval '200 days' order by issued_at", refresh),
         FIN.sql("select day, total from jt.shopify_daily where day >= current_date - 42 order by day", refresh),
         FIN.sql("select id, vendor_name, doc_number, due_date, balance from fin.qbo_bills where balance <> 0", refresh),
         FIN.sql("select id, kind, stream, expected_on, amount, note, updated_by from fin.forecast where active", refresh),
         FIN.sql("select key, value from fin.settings", refresh),
+        FIN.sql("select id, name, type, subtype, balance, qbo_updated, synced_at from fin.qbo_accounts where active order by type, balance desc", refresh).catch(() => []),
       ]);
+      S.accts = ac.map(a => ({ ...a, balance: +a.balance }));
       S.amz = amz.map(x => ({ ...x, amount: +x.amount })); S.shopPay = sp.map(x => ({ ...x, amount: +x.amount }));
       S.shopDays = sd.map(x => ({ day: x.day, total: +x.total })); S.bills = bills.map(b => ({ ...b, balance: +b.balance }));
       S.fc = fc.map(x => ({ ...x, amount: +x.amount }));
@@ -76,10 +78,28 @@
     return { id: "shopify", kind: "shopify", label: "Shopify", weekday: wd, gap: 7, avg, basis, actuals: paid.map(p => ({ day: p.day, amount: p.amount, id: p.id })), last: paid.length ? paid[paid.length - 1].day : null, n: paid.length };
   }
 
+  // ---------- starting cash: QuickBooks bank balances (the accounts ticked) or a typed number ----------
+  const banks = () => S.accts.filter(a => a.type === "Bank");
+  const cards = () => S.accts.filter(a => a.type === "Credit Card");
+  // ticked accounts; until someone ticks, checking and savings accounts with more than $100 in them
+  function includedBanks() {
+    const ids = S.cash.accounts;
+    if (Array.isArray(ids)) return banks().filter(a => ids.includes(a.id));
+    return banks().filter(a => /checking|savings|moneymarket/i.test(a.subtype) && Math.abs(a.balance) > 100);
+  }
+  function cashNow() {
+    const src = S.cash.source || (banks().length ? "qbo" : "typed");
+    if (src === "qbo") {
+      const inc = includedBanks(), synced = S.accts.reduce((m, a) => a.synced_at > m ? a.synced_at : m, "");
+      return { source: "qbo", balance: inc.length ? inc.reduce((a, b) => a + b.balance, 0) : null, as_of: today(), n: inc.length, synced };
+    }
+    return { source: "typed", balance: S.cash.balance == null ? null : Number(S.cash.balance), as_of: S.cash.as_of || today() };
+  }
+
   // every event in the window: payouts (actual / typed / estimate), other lines, bills
   function events() {
     const t = today(), w0 = monday(t), end = addDays(w0, 7 * WEEKS);
-    const asOf = S.cash.as_of || t;
+    const asOf = cashNow().as_of || t;
     const typed = new Map(S.fc.filter(f => f.kind === "payout").map(f => [`${f.stream}|${f.expected_on}`, f]));
     const ev = [];
     const streams = [...amazonStreams(), shopifyStream()];
@@ -115,7 +135,7 @@
       w.items.push(e);
       if (e.type === "in") w[e.src === "other" ? "other_in" : e.src] += e.amount; else w[e.src === "bill" ? "bills" : "other_out"] += e.amount;
     }
-    let bal = S.cash.balance == null ? null : Number(S.cash.balance);
+    const C = cashNow(); let bal = C.balance == null ? null : Number(C.balance);
     for (const w of ws) { w.in = w.amazon + w.shopify + w.other_in; w.out = w.bills + w.other_out; w.net = w.in - w.out; if (bal != null) { bal += w.net; w.bal = bal; } }
     return ws;
   }
@@ -127,25 +147,30 @@
     if (!S.loaded) { $("cf-sub").textContent = "Loading…"; return; }
     const { ev, streams, w0 } = events(), ws = weeksOf(ev, w0);
     $("cf-sub").textContent = `${fmtD(w0)} – ${fmtD(addDays(w0, 7 * WEEKS - 1))} · bills from QuickBooks, payouts from Amazon and Shopify history${S.loading ? " · loading…" : ""}`;
+    const C = cashNow();
+    $("cf-src").value = C.source;
+    $("cf-typed").hidden = C.source !== "typed";
+    $("cf-qbo").hidden = C.source !== "qbo";
+    if (C.source === "qbo") $("cf-qbo").innerHTML = `<span class="big">${C.balance == null ? "—" : money(C.balance)}</span><span class="m">${C.n} bank account${C.n === 1 ? "" : "s"} · QuickBooks${C.synced ? ", " + new Date(C.synced).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : ""}</span>`;
     if (document.activeElement !== $("cf-bal")) $("cf-bal").value = S.cash.balance == null ? "" : money(S.cash.balance);
     if (document.activeElement !== $("cf-asof")) $("cf-asof").value = S.cash.as_of || "";
     const tin = ws.reduce((a, w) => a + w.in, 0), tout = ws.reduce((a, w) => a + w.out, 0);
-    const hasBal = S.cash.balance != null, low = hasBal ? ws.reduce((m, w) => w.bal < m.bal ? w : m, ws[0]) : null;
+    const hasBal = C.balance != null, low = hasBal ? ws.reduce((m, w) => w.bal < m.bal ? w : m, ws[0]) : null;
     const amzIn = ws.reduce((a, w) => a + w.amazon, 0), shIn = ws.reduce((a, w) => a + w.shopify, 0);
     const card = (cls, k, v, s) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`;
     $("cf-cards").innerHTML = [
-      card("", "Cash now", hasBal ? short(S.cash.balance) : "—", hasBal ? `as of ${fmtD(S.cash.as_of || today())}` : "Type it in at the top right"),
+      card("", "Cash now", hasBal ? short(C.balance) : "—", hasBal ? (C.source === "qbo" ? `QuickBooks bank balances · ${C.n} account${C.n === 1 ? "" : "s"}` : `typed, as of ${fmtD(C.as_of)}`) : "Pick bank accounts below, or type a number"),
       card("green", "Coming in, 4 months", short(tin), `Amazon ${short(amzIn)} · Shopify ${short(shIn)}${tin - amzIn - shIn ? ` · other ${short(tin - amzIn - shIn)}` : ""}`),
       card("red", "Going out, 4 months", short(tout), `${short(ws.reduce((a, w) => a + w.bills, 0))} in bills${ws.reduce((a, w) => a + w.other_out, 0) ? ` · ${short(ws.reduce((a, w) => a + w.other_out, 0))} other` : ""}`),
       card(hasBal && ws[ws.length - 1].bal < 0 ? "red" : "", "Cash in 4 months", hasBal ? short(ws[ws.length - 1].bal) : short(tin - tout), hasBal ? `net ${short(tin - tout)}` : "net change (no starting balance yet)"),
       card(low && low.bal < 0 ? "red" : low ? "amber" : "", "Lowest point", low ? short(low.bal) : "—", low ? `week of ${fmtD(low.k)}` : "Needs a starting balance"),
     ].join("");
-    chart(ws); table(ws); assumptions(streams);
+    chart(ws); table(ws); bankPanel(); assumptions(streams);
   }
 
   function chart(ws) {
     const W = 1000, H = 260, pad = { l: 56, r: 12, t: 12, b: 26 }, bw = (W - pad.l - pad.r) / ws.length;
-    const hasBal = S.cash.balance != null;
+    const hasBal = cashNow().balance != null;
     const hi = Math.max(1, ...ws.map(w => w.in), ...(hasBal ? ws.map(w => w.bal) : [])), lo = Math.min(0, ...ws.map(w => -w.out), ...(hasBal ? ws.map(w => w.bal) : []));
     const y = (v) => pad.t + (hi - v) / (hi - lo) * (H - pad.t - pad.b);
     let s = `<svg viewBox="0 0 ${W} ${H}" class="cf-svg" role="img" aria-label="Weekly money in and out">`;
@@ -164,7 +189,7 @@
   }
 
   function table(ws) {
-    const hasBal = S.cash.balance != null;
+    const hasBal = cashNow().balance != null;
     const cell = (v, cls) => `<td class="n ${cls || ""}">${v ? money(v) : '<span class="m">—</span>'}</td>`;
     const rows = ws.map(w => {
       const estAny = w.items.some(e => e.state === "estimate");
@@ -190,6 +215,20 @@
     const tot = (k) => ws.reduce((a, w) => a + w[k], 0);
     $("cf-table").innerHTML = `<table><thead><tr><th>Week of</th><th class="n">Amazon</th><th class="n">Shopify</th><th class="n">Other in</th><th class="n">Bills due</th><th class="n">Other out</th><th class="n">Net</th>${hasBal ? '<th class="n">Cash after</th>' : ""}</tr></thead>
       <tbody>${rows}</tbody><tfoot><tr><td><b>4 months</b></td>${cell(tot("amazon"))}${cell(tot("shopify"))}${cell(tot("other_in"))}${cell(tot("bills"), "out")}${cell(tot("other_out"), "out")}<td class="n"><b>${money(tot("net"))}</b></td>${hasBal ? `<td class="n"><b>${money(ws[ws.length - 1].bal)}</b></td>` : ""}</tr></tfoot></table>`;
+  }
+
+  function bankPanel() {
+    const inc = new Set(includedBanks().map(a => a.id)), C = cashNow();
+    const upd = (a) => a.qbo_updated ? new Date(a.qbo_updated).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Los_Angeles" }) : "—";
+    const bk = banks(), cd = cards().filter(a => Math.abs(a.balance) >= 1);
+    if (!S.accts.length) { $("cf-bank").innerHTML = '<p class="m">No bank accounts from QuickBooks yet — they come in with the next QuickBooks refresh (hourly, or Refresh on Payables).</p>'; return; }
+    $("cf-bank").innerHTML = `<div class="det"><div><h3>Bank accounts${C.source === "qbo" ? " · ticked ones are your starting cash" : ""}</h3><table>
+      ${bk.map(a => `<tr><td><input type="checkbox" data-acct="${esc(a.id)}" ${inc.has(a.id) ? "checked" : ""} ${C.source !== "qbo" ? "disabled" : ""} aria-label="Count ${esc(a.name)}"></td><td>${esc(a.name)}<div class="m">${esc(a.subtype)} · updated in QuickBooks ${esc(upd(a))}</div></td><td class="n"><b>${money(a.balance)}</b></td></tr>`).join("")}
+      <tr><td></td><td><b>Ticked</b></td><td class="n"><b>${money(bk.filter(a => inc.has(a.id)).reduce((x, a) => x + a.balance, 0))}</b></td></tr></table></div>
+      <div><h3>Credit cards · balance as QuickBooks shows it</h3><table>
+      ${cd.map(a => `<tr><td>${esc(a.name)}<div class="m">updated in QuickBooks ${esc(upd(a))}</div></td><td class="n"><b>${money(a.balance)}</b></td><td><form class="cf-card" data-name="${esc(a.name)}"><input name="day" type="date" value="${addDays(today(), 7)}" aria-label="Payment date"><input name="amount" class="amt" value="${money(Math.abs(a.balance))}" aria-label="Payment amount"><button class="btn small" type="submit">Add payment</button></form></td></tr>`).join("") || '<tr><td class="m">No card balances</td></tr>'}
+      </table><p class="m">Card balances aren't counted in the forecast on their own. "Add payment" puts a card payment in the week you pick (it shows under Other out). Positive and negative signs follow how each card is kept in QuickBooks.</p></div></div>
+      <p class="m">These are QuickBooks' balances for each account — what's been entered or matched there — not a live bank feed. They refresh every hour with the rest of QuickBooks.</p>`;
   }
 
   function assumptions(streams) {
@@ -220,12 +259,16 @@
     main.addEventListener("change", (ev) => {
       const t = ev.target;
       if (t.matches("input.amt[data-stream]")) { const v = parseAmt(t.value); if (v == null) { render(); return; } save("fin_forecast_set", { op: "set", stream: t.dataset.stream, expected_on: t.dataset.day, amount: v }); }
+      else if (t.dataset.acct) { const ids = new Set(includedBanks().map(a => a.id)); t.checked ? ids.add(t.dataset.acct) : ids.delete(t.dataset.acct); save("fin_settings_set", { key: "cash", value: { accounts: [...ids] } }); }
+      else if (t.id === "cf-src") save("fin_settings_set", { key: "cash", value: { source: t.value } });
       else if (t.id === "cf-bal") { const v = parseAmt(t.value); save("fin_settings_set", { key: "cash", value: { balance: v, as_of: $("cf-asof").value || today() } }); }
       else if (t.id === "cf-asof") save("fin_settings_set", { key: "cash", value: { as_of: t.value || null } });
       else if (t.id === "cf-shopday") save("fin_settings_set", { key: "shopify", value: { weekday: Number(t.value) } });
       else if (t.id === "cf-shoppct") { const v = parseAmt(t.value); if (v != null && v > 0 && v <= 100) save("fin_settings_set", { key: "shopify", value: { pct_of_sales: v } }); }
     });
     main.addEventListener("submit", (ev) => {
+      const cf = ev.target.closest("form.cf-card");
+      if (cf) { ev.preventDefault(); const v = parseAmt(cf.amount.value); if (!v) return; save("fin_forecast_set", { op: "add", kind: "other_out", expected_on: cf.day.value || today(), amount: v, note: "Card payment: " + cf.dataset.name }, `Added a ${money(v)} card payment on ${fmtD(cf.day.value || today())}.`); return; }
       const f = ev.target.closest("form.cf-add"); if (!f) return;
       ev.preventDefault();
       const v = parseAmt(f.amount.value);

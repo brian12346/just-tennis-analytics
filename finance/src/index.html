@@ -104,8 +104,12 @@
         <div class="sub" id="cf-sub">Loading…</div>
       </div>
       <div class="head-actions cf-start">
-        <label>Cash in the bank<input id="cf-bal" type="text" inputmode="decimal" placeholder="$0"></label>
-        <label>as of<input id="cf-asof" type="date"></label>
+        <label>Starting cash<select id="cf-src"><option value="qbo">QuickBooks bank accounts</option><option value="typed">A number I type</option></select></label>
+        <div id="cf-qbo" class="cf-qbo" hidden></div>
+        <div id="cf-typed" class="cf-typed" hidden>
+          <label>Cash in the bank<input id="cf-bal" type="text" inputmode="decimal" placeholder="$0"></label>
+          <label>as of<input id="cf-asof" type="date"></label>
+        </div>
       </div>
     </header>
     <div id="cf-note" class="note" hidden></div>
@@ -117,6 +121,10 @@
     <section class="panel">
       <div class="panel-h wrap"><h2>Weeks</h2><span class="hint">Click a week to see and change what's in it. Estimates are in grey italics; amounts you type replace them.</span></div>
       <div class="tbl" id="cf-table"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h"><h2>Bank &amp; cards</h2><span class="hint">From QuickBooks · updates hourly</span></div>
+      <div id="cf-bank"></div>
     </section>
     <section class="panel">
       <div class="panel-h"><h2>How payouts are estimated</h2><span class="hint">From each channel's payout history; change a single payout in its week</span></div>

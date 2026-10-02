@@ -6,7 +6,7 @@
 //   (links an existing bill with the same number for the same vendor instead of entering it twice),
 //   with the invoice PDF attached
 // POST {action: "attach", invoice_id}  -> attaches the invoice PDF to its bill (bills entered earlier)
-// POST {action: "payables_sync", full?} -> vendors, bills, bill payments and vendor credits -> schema fin (the finance
+// POST {action: "payables_sync", full?} -> vendors, bills, bill payments, vendor credits and bank/card balances -> schema fin (the finance
 //   dashboard). Only what changed since the last pass, or everything with full (also once a week by itself, which
 //   catches bills deleted in QuickBooks).
 // Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.qbo_call (x-jt-key). Accounts on
@@ -123,6 +123,14 @@ async function payablesSync(c: Creds, full: boolean) {
   const credits = (await queryAll(c, "VendorCredit", upd)).map((x: any) => ({
     id: x.Id, vendor_id: ref(x.VendorRef).id, vendor_name: ref(x.VendorRef).name, doc: x.DocNumber || "", date: x.TxnDate || null,
     total: Number(x.TotalAmt || 0), balance: Number(x.Balance || 0), memo: x.PrivateNote || "", updated: x.MetaData?.LastUpdatedTime }));
+  // bank and card accounts with QuickBooks' current balances (always the full list; small)
+  const accts = (await queryAll(c, "Account", "AccountType in ('Bank', 'Credit Card')")).map((a: any) => ({
+    id: a.Id, name: a.FullyQualifiedName || a.Name || "", type: a.AccountType || "", subtype: a.AccountSubType || "", number: a.AcctNum || "",
+    balance: Number(a.CurrentBalance || 0), active: a.Active !== false, updated: a.MetaData?.LastUpdatedTime }));
+  {
+    const { error } = await admin.rpc("fin_qbo_accounts_save", { p: { accounts: accts } });
+    if (error) throw new Error("saving accounts: " + error.message);
+  }
   let saved = 0;
   const send = async (part: Record<string, unknown>) => {
     const { data, error } = await admin.rpc("fin_qbo_payables_save", { p: part });
@@ -135,7 +143,7 @@ async function payablesSync(c: Creds, full: boolean) {
   await send({ credits });
   await send({ finished: { at: started, started, full: doFull, last_full: doFull ? started : last?.last_full || null,
     counts: { vendors: vendors.length, bills: bills.length, payments: payments.length, credits: credits.length } } });
-  return { ok: true, full: doFull, since: since || null, vendors: vendors.length, bills: bills.length, payments: payments.length, credits: credits.length, saved };
+  return { ok: true, full: doFull, since: since || null, vendors: vendors.length, bills: bills.length, payments: payments.length, credits: credits.length, accounts: accts.length, saved };
 }
 
 // the invoice PDF onto the bill (QuickBooks "upload": a JSON part describing it, then the file); its Attachable id
