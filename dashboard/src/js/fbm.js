@@ -3,7 +3,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const S = { msg: null, lines: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
+  const S = { msg: null, lines: null, lst: null, lstErr: null, lv: "all", lq: "", lsort: ["shopify_qty", -1], lshown: 150, downloads: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
   const COLS = ["order_id", "sku", "asin", "product_name", "quantity", "order_status", "purchased", "shipped", "cancelled", "map_kind",
     "variant_id", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id", "tracked",
     "decision", "status", "error", "decided_by", "decided_at", "applied_at", "shopify_before", "decided_units", "location_id"];
@@ -19,6 +19,9 @@
   const fmtDT = (s) => { if (!s) return ""; const [d, t] = s.split(" "); return new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) + (t ? " " + t : ""); };
   const shopUrl = (pid, vid) => pid ? `https://admin.shopify.com/store/justtennis-822/products/${encodeURIComponent(pid)}${vid ? "/variants/" + encodeURIComponent(vid) : ""}` : "";
   const note = (kind, html) => { const n = $("fbm-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
+
+  const LCOLS = ["sku", "asin", "title", "amazon_status", "amazon_qty", "amazon_price", "report_file", "report_at", "variant_id", "map_units",
+    "product_id", "shopify_title", "shopify_sku", "shopify_qty", "packs"];
 
   // a line's state on this page
   function lineState(l) {
@@ -55,9 +58,12 @@
     if (!window.JT || !window.JT.fbm) return;
     S.loading = true; render();
     try {
+      const lp = window.JT.fbm.listings(refresh).then(r => { S.lst = r.map(x => Object.fromEntries(LCOLS.map((c, i) => [c, x[i]]))); S.lstErr = null; }, e => { S.lstErr = e; });
       const [rows, cfg] = await Promise.all([window.JT.fbm.lines(refresh), window.JT.fbm.settings(refresh)]);
       S.lines = rows.map(r => Object.fromEntries(COLS.map((c, i) => [c, r[i]])));
       S.cfg = cfg || {}; S.err = null;
+      render();
+      await lp;
     } catch (e) { S.err = e; }
     S.loading = false;
     for (const id of [...S.sel]) if (!(S.lines || []).some(l => l.order_id === id)) S.sel.delete(id);
@@ -138,6 +144,49 @@
     bulk.hidden = !selOrders.length;
     if (selOrders.length) bulk.innerHTML = `<span><b>${selOrders.length}</b> order${selOrders.length > 1 ? "s" : ""} selected · ${selOrders.reduce((a, o) => a + o.units, 0).toLocaleString()} Shopify units</span>
       <span class="dbtns"><button class="mini primary" type="button" data-bulk="decrement" ${S.busy ? "disabled" : ""}>Take ${selOrders.length > 1 ? "them" : "it"} out of Shopify</button><button class="mini" type="button" data-bulk="skip" ${S.busy ? "disabled" : ""}>Don't take out</button><button class="mini" type="button" data-bulk="clear">Clear</button></span>`;
+    renderListings();
+  }
+
+  // ---------- FBM listings Shopify has stock for ----------
+  const num = (v) => v == null || v === "" ? "" : Number(v).toLocaleString();
+  const money = (v) => v == null || v === "" ? "" : "$" + Number(v).toFixed(2);
+  function listingsShown() {
+    const q = S.lq, [k, dir] = S.lsort;
+    return (S.lst || []).filter(l => (S.lv === "all" || l.amazon_status === S.lv) &&
+        (!q || [l.asin, l.sku, l.title, l.shopify_title, l.shopify_sku].some(x => String(x || "").toLowerCase().includes(q))))
+      .sort((a, b) => {
+        const x = a[k], y = b[k];
+        const c = typeof x === "number" || typeof y === "number" ? (Number(x) || 0) - (Number(y) || 0) : String(x || "").localeCompare(String(y || ""));
+        return c * dir || String(a.sku).localeCompare(String(b.sku));
+      });
+  }
+  function renderListings() {
+    const sub = $("fbl-sub"), tb = $("fbl-table");
+    if (S.lstErr && !S.lst) { sub.textContent = "Couldn't load FBM listings: " + (window.JT.message ? window.JT.message(S.lstErr) : (S.lstErr.message || S.lstErr)); tb.innerHTML = ""; return; }
+    if (!S.lst) { sub.textContent = "Loading FBM listings…"; tb.innerHTML = ""; return; }
+    const all = S.lst, act = all.filter(l => l.amazon_status === "Active").length, f = all[0];
+    sub.innerHTML = `${all.length.toLocaleString()} merchant-fulfilled listings (${new Set(all.map(l => l.asin)).size.toLocaleString()} ASINs) mapped to a Shopify product with stock · ${act.toLocaleString()} active, ${(all.length - act).toLocaleString()} inactive on Amazon${f ? ` · from ${esc(f.report_file || "the All Listings report")}${f.report_at ? `, uploaded ${esc(fmtDT(f.report_at))}` : ""} (upload a newer one on Amazon mapping)` : ""} · Shopify stock is the total across locations`;
+    const list = listingsShown();
+    const th = (k, label, cls) => `<th class="${cls || ""} sort" data-lsort="${k}" ${S.lsort[0] === k ? `aria-sort="${S.lsort[1] > 0 ? "ascending" : "descending"}"` : ""}>${label}</th>`;
+    const body = list.slice(0, S.lshown).map(l => {
+      const pill = l.amazon_status === "Active" ? '<span class="pill ok">Active</span>' : `<span class="pill pos">${esc(l.amazon_status || "?")}</span>`;
+      const shop = l.product_id ? `<a class="olink" href="${esc(shopUrl(l.product_id, l.variant_id))}" target="_blank" rel="noopener">${esc(l.shopify_title || l.shopify_sku || "Shopify product")}</a>` : esc(l.shopify_title || "");
+      return `<tr><td class="l mono"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.asin)}</a></td>
+        <td class="l t"><div>${esc(l.title || l.sku)}</div><div class="meta mono">${esc(l.sku)}</div></td>
+        <td class="l">${pill}</td><td>${num(l.amazon_qty) || '<span class="dim">—</span>'}</td><td>${money(l.amazon_price)}</td>
+        <td class="l t"><div>${shop}</div>${l.shopify_sku ? `<div class="meta mono">${esc(l.shopify_sku)}</div>` : ""}</td>
+        <td>${num(l.shopify_qty)}</td><td>${l.map_units > 1 ? `${num(l.packs)} <span class="dim small">(${num(l.map_units)}/pack)</span>` : num(l.packs)}</td></tr>`;
+    }).join("");
+    tb.innerHTML = `<thead><tr>${th("asin", "ASIN", "l")}${th("title", "Amazon listing", "l")}${th("amazon_status", "Amazon status", "l")}${th("amazon_qty", "Amazon qty")}${th("amazon_price", "Price")}${th("shopify_title", "Shopify product", "l")}${th("shopify_qty", "Shopify stock")}${th("packs", "Amazon units it covers")}</tr></thead>
+      <tbody>${body || `<tr><td class="l dim" colspan="8">${all.length ? "No listings match." : "No FBM listings with Shopify stock. Upload the All Listings report on Amazon mapping, and map FBM listings to Shopify products."}</td></tr>`}</tbody>`;
+    $("fbl-count").innerHTML = list.length > S.lshown ? `Showing ${S.lshown} of ${list.length.toLocaleString()} listings <button class="mini" type="button" id="fbl-more">Show more</button>` : list.length ? `${list.length.toLocaleString()} listing${list.length > 1 ? "s" : ""}` : "";
+    $("fbl-csv").hidden = !S.downloads || !list.length;
+  }
+  async function downloadListings() {
+    const q = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = [["asin", "seller_sku", "amazon_title", "amazon_status", "amazon_qty", "amazon_price", "shopify_product", "shopify_sku", "shopify_stock", "units_per_listing", "amazon_units_covered"].join(",")];
+    for (const l of listingsShown()) lines.push([l.asin, l.sku, l.title, l.amazon_status, l.amazon_qty, l.amazon_price, l.shopify_title, l.shopify_sku, l.shopify_qty, l.map_units, l.packs].map(q).join(","));
+    try { await S.downloads.save({ filename: `just-tennis-fbm-listings-in-stock_${new Date().toISOString().slice(0, 10)}.csv`, data: lines.join("\n") }); } catch (_) {}
   }
 
   // Amazon listings on this page that aren't mapped to a Shopify product (any order still undecided)
@@ -194,10 +243,25 @@
     else if (b.dataset.map) { const l = (S.lines || []).find(x => x.sku === b.dataset.map); openMapping([l || { sku: b.dataset.map }], "FBM listing to map"); }
     else if (b.hasAttribute("data-mapall")) { const u = unmappedSkus(); openMapping(u, `${u.length} FBM listing${u.length > 1 ? "s" : ""} not mapped to Shopify`); }
     else if (b.id === "fbm-more") { S.shown += 150; render(); }
+    else if (b.id === "fbl-more") { S.lshown += 150; renderListings(); }
+    else if (b.id === "fbl-csv") downloadListings();
     else if (b.dataset.loc === "edit") { S.editLoc = true; render(); const i = $("fbm-locname"); if (i) i.focus(); }
     else if (b.dataset.loc === "cancel") { S.editLoc = false; render(); }
     else if (b.dataset.loc === "save") saveLocName();
   });
+  tab.addEventListener("click", (ev) => {
+    const h = ev.target.closest("th[data-lsort]"); if (!h) return;
+    const k = h.dataset.lsort;
+    S.lsort = S.lsort[0] === k ? [k, -S.lsort[1]] : [k, /qty|price|packs/.test(k) ? -1 : 1];
+    renderListings();
+  });
+  $("fbl-seg").addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-v]"); if (!b) return;
+    S.lv = b.dataset.v; S.lshown = 150;
+    $("fbl-seg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    renderListings();
+  });
+  $("fbl-q").addEventListener("input", (ev) => { S.lq = ev.target.value.trim().toLowerCase(); S.lshown = 150; renderListings(); });
   tab.addEventListener("change", (ev) => {
     const t = ev.target;
     if (t.dataset.sel != null) { t.checked ? S.sel.add(t.dataset.sel) : S.sel.delete(t.dataset.sel); render(); }
@@ -230,6 +294,8 @@
     load(true);
   });
 
+  const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;
+  if (use) use("downloads").then(d => { S.downloads = d; renderListings(); }).catch(() => {});
   window.fbmShow = () => { if (!S.lines && !S.loading) load(false); else { render(); if (!S.loading) load(true); } };
   if (!$("tab-fbm").hidden) window.fbmShow();
 })();

@@ -755,3 +755,10 @@ table.fbm-t .err{color:var(--bad);font-size:12px;white-space:normal;max-width:30
 .fbm-loc .eyebrow{margin-right:2px}
 .fbm-loc input{width:220px;max-width:100%}
 .fbm-loc select{width:auto;min-width:200px}
+.fbl-bar{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
+#fbl-q{width:220px;max-width:100%}
+table.fbl-t td.l.t{white-space:normal;min-width:240px;max-width:420px}
+table.fbl-t .meta{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+table.fbl-t th.sort{cursor:pointer;user-select:none}
+table.fbl-t th.sort[aria-sort]::after{content:" \25BE";font-size:10px}
+table.fbl-t th.sort[aria-sort="ascending"]::after{content:" \25B4"}

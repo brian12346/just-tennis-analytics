@@ -145,3 +145,20 @@ def test_locations_saved_and_chosen(conn):
     import psycopg, pytest
     with pytest.raises(psycopg.errors.RaiseException, match="not one of the store"):
         cur.execute("""select jt.fbm_settings('{"location_id": "gid://shopify/Location/99"}')""")
+
+
+def test_fbm_listings_in_stock(conn):
+    cur = conn.cursor()
+    setup(cur)
+    cur.execute("insert into jt.variants (variant_id, product_id, inventory_item_id, sku, display_name, inventory_qty) "
+                "values (8, 12, 998, 'EMPTY', 'Out of stock', 0)")
+    cur.execute("insert into jt.docs (collection, id, data) values ('amzmap', 's_E', %s)",
+                (json.dumps({"sku": "E-1", "kind": "shopify", "variantId": "gid://shopify/ProductVariant/8", "units": 1}),))
+    rows = [["A-3PK", "B03", "Gut 3-pack", 30, 0, "DEFAULT", "Inactive", "2020-01-01"],
+            ["A-1", "B01", "Gut", 12, None, "AMAZON_NA", "Active", "2020-01-01"],   # FBA: left out
+            ["E-1", "B0E", "Empty", 5, 0, "DEFAULT", "Active", "2020-01-01"],       # no Shopify stock: left out
+            ["NOMAP", "B0N", "Unmapped", 5, 3, "DEFAULT", "Active", "2020-01-01"]]  # not mapped: left out
+    cur.execute("insert into jt.docs (collection, id, data) values ('amzlistings', 'c000', %s)",
+                (json.dumps({"file": "AllListings.txt", "uploadedAt": "2026-09-23T07:00:00Z", "total": 4, "rows": rows}),))
+    cur.execute("select sku, asin, amazon_status, amazon_qty, shopify_qty, map_units, packs from jt.v_fbm_listings")
+    assert cur.fetchall() == [("A-3PK", "B03", "Inactive", 0, 40, 3, 13)]

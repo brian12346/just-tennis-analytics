@@ -272,6 +272,11 @@
         "decision", "status", "error", "decided_by", "to_char(decided_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')",
         "to_char(applied_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shopify_before", "decided_units", "location_id"],
         "from jt.v_fbm_lines order by purchase_at desc, order_id, sku", refresh),
+      // FBM listings (All Listings report) mapped to a Shopify variant that has stock
+      listings: (refresh) => rows(["sku", "asin", "title", "amazon_status", "amazon_qty", "amazon_price", "report_file",
+        "to_char(report_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "variant_id::text", "map_units", "product_id::text",
+        "shopify_title", "shopify_sku", "shopify_qty", "packs"],
+        "from jt.v_fbm_listings order by shopify_qty desc, sku", refresh),
       settings: async (refresh) => { const r = await rows(["value"], "from jt.settings where key = 'fbm_sync'", refresh); return (r[0] && r[0][0]) || {}; },
       // decisions: [{order_id, sku, decision: 'decrement' | 'skip' | 'undo'}] -> {queued, skipped, undone, refused}
       async decide(decisions) {
