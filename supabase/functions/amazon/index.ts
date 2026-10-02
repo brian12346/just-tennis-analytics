@@ -322,7 +322,9 @@ async function inboundShipments(c: Creds, since: Date, until: Date, deadline: nu
     const r: any = { found: 0, saved: 0, items: 0, items_left: 0, done: false, error: "" }; res[kind.toLowerCase()] = r;
     try {
       const ships = await list(); r.found = ships.length;
-      const rows = ships.map(head).sort((a: any, b: any) => (DONE.has(a.status) ? 1 : 0) - (DONE.has(b.status) ? 1 : 0));
+      // shipments without saved SKU quantities first, then open ones (so repeated runs work through the backlog)
+      const has = (id: string) => !!known[id] && known[id].split("|")[1] !== "0";
+      const rows = ships.map(head).sort((a: any, b: any) => (has(a.id) ? 1 : 0) - (has(b.id) ? 1 : 0) || (DONE.has(a.status) ? 1 : 0) - (DONE.has(b.status) ? 1 : 0));
       r.saved = await save(rows);                       // headers first (items: null keeps any saved items)
       let batch: any[] = [];
       for (const row of rows) {
