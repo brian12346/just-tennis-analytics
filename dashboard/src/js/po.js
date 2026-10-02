@@ -447,7 +447,7 @@
     } catch (e) { note("bad", esc(JT.message(e))); return; }
     const iv = merge(ed, inv, f, rows, reuse);
     const c = count(iv), open = [...progress(ed).values()].filter((p, i) => p.open > 0 && !ed.lines[i].backorder).length;
-    msg += iv.fromPo ? `${!rows.length ? "This PDF has no text in it (probably a scan or photo)" : "No item lines could be read from this PDF"}, so <b>the invoice was filled in from the PO</b>: ${iv.rows.filter(r => r.fromPo).length} product${iv.rows.filter(r => r.fromPo).length === 1 ? "" : "s"} still open on it, at the PO's quantities and costs. Check them against the PDF and change anything the vendor shipped short or billed differently.`
+    msg += iv.fromPo ? `${!rows.length ? "This PDF has no text in it (probably a scan or photo)" : inv.lines.length ? "None of the lines read from this PDF matched a product" : "No item lines could be read from this PDF"}, so <b>the invoice was filled in from the PO</b>: ${iv.rows.filter(r => r.fromPo).length} product${iv.rows.filter(r => r.fromPo).length === 1 ? "" : "s"} still open on it, at the PO's quantities and costs. Check them against the PDF and change anything the vendor shipped short or billed differently.`
       : !rows.length ? "This PDF has no text in it (it's probably a scan or photo), so no lines could be read. Add them with <b>Add line</b>."
       : !inv.lines.length ? "No item lines were recognised in this PDF. The PDF is shown alongside; add what's missing by hand."
       : `Read ${inv.lines.length} line${inv.lines.length === 1 ? "" : "s"}: ${c.sure} matched${c.check ? `, <b>${c.check} guess${c.check === 1 ? "" : "es"} to check</b>` : ""}${c.none ? `, <b>${c.none} not matched</b>` : ""}.`
@@ -574,7 +574,8 @@
     }
     for (const c of p.charges || []) iv.rows.push(chargeRow(c.label, c.amount, c.kind));
     // no product lines could be read: start from what's still open on the PO (checked against the PDF by hand)
-    if (!p.lines.length) { const pr = poRows(ed); if (pr.length) { iv.rows.unshift(...pr); iv.fromPo = true; } }
+    const matched = iv.rows.some(r => r.vid && !r.skip);
+    if (!p.lines.length || !matched) { const pr = poRows(ed); if (pr.length) { iv.unread = iv.rows.filter(r => !r.vid && !r.skip).length; iv.rows.unshift(...pr); iv.fromPo = true; } }
     ed.invoices.push(iv); ed.cur = ed.invoices.length - 1;
     syncLines(ed);
     ed.dirty = true; ed.showPdf = window.innerWidth >= 1100; ed.boPrompt = true;
@@ -588,9 +589,9 @@
     for (const iv of ed.invoices) if (iv !== skipIv) for (const r of iv.rows) if (r.vid && !r.skip && isSure(r)) inv.set(r.vid, (inv.get(r.vid) || 0) + (Number(r.qty) || 0));
     const by = new Map();
     for (const l of ed.lines) { if (l.backorder) continue; const a = by.get(l.vid) || { q: 0, cost: "" }; a.q += Number(l.qty) || 0; if (a.cost === "" && l.cost !== "") a.cost = l.cost; by.set(l.vid, a); }
-    const out = [];
+    const out = [], here = new Set(skipIv ? skipIv.rows.filter(r => r.vid && !r.skip).map(r => r.vid) : []);
     for (const [vid, a] of by) {
-      const q = a.q - (inv.get(vid) || 0); if (q <= 0) continue;
+      const q = a.q - (inv.get(vid) || 0); if (q <= 0 || here.has(vid)) continue;
       const v = variant(vid) || {}, cost = a.cost !== "" ? a.cost : fmtCost(v.cost);
       out.push({ id: newId(), src: { item_code: v.sku || "", upc: "", description: v.title || "", qty: q, unit_cost: cost === "" ? null : Number(cost), amount: cost === "" ? null : q * Number(cost) },
         vid, how: "po", conf: "sure", alts: [], confirmed: true, skip: false, account: "inventory", qty: String(q), cost, fromPo: true });
@@ -1028,12 +1029,12 @@
       ${payHtml(ed, iv)}
       ${qbHtml(ed, iv)}
       ${iss.length ? window.JTIssues.issuesHtml(iss) : ""}
-      ${iv.fromPo && !lock && iv.rows.some(r => r.fromPo) ? `<div class="note info frompo">Lines filled in from the PO (the invoice's own lines couldn't be read). Compare them with the PDF${pdfOn ? " alongside" : ""}: fix any quantity or cost that's different, and remove products that aren't on this invoice. <span class="dbtns"><button class="mini" data-pact="clearpo">Clear the PO lines</button></span></div>` : ""}
+      ${iv.fromPo && !lock && iv.rows.some(r => r.fromPo) ? `<div class="note info frompo">Lines filled in from the PO (the invoice's own lines couldn't be read). Compare them with the PDF${pdfOn ? " alongside" : ""}: fix any quantity or cost that's different, and remove products that aren't on this invoice. <span class="dbtns">${iv.rows.some(r => !r.vid && !r.skip) ? `<button class="mini" data-pact="dropunread">Remove the ${iv.rows.filter(r => !r.vid && !r.skip).length} unmatched line${iv.rows.filter(r => !r.vid && !r.skip).length === 1 ? "" : "s"}</button>` : ""}<button class="mini" data-pact="clearpo">Clear the PO lines</button></span></div>` : ""}
       <div class="po-body ${pdfOn ? "with-pdf" : ""}">
         <div class="po-ivlines">
           <div class="panel-head"><h3 class="h3">Invoice lines</h3><div class="seg" role="group" aria-label="Show lines">${FILT.map(([k, t]) => `<button data-ifilter="${k}" aria-pressed="${iv.filter === k}">${t}</button>`).join("")}</div></div>
           ${iv.rows.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || '<tr><td class="l muted" colspan="7">No lines here.</td></tr>'}</tbody></table></div>` : '<div class="muted small">No lines on this invoice.</div>'}
-          ${!lock ? `<div class="row">${!iv.rows.some(r => !r.skip && !r.charge) && poRows(ed, iv).length ? `<button class="btn primary" data-pact="fillpo" title="Add every product still open on the PO, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add line</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
+          ${!lock ? `<div class="row">${poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add line</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
         </div>
         ${pdfOn ? `<aside class="po-pdf"><div class="panel-head"><h3 class="h3">Invoice PDF</h3><button class="mini" data-pact="pdf">Hide</button></div><div id="pe-pdf" class="pdfpages"></div></aside>` : ""}
       </div>
@@ -1342,7 +1343,8 @@
     if (a === "split-go") return doSplit(ed);
     if (a === "rmline" && l) { ed.lines = ed.lines.filter(x => x !== l); ed.dirty = true; render(); return; }
     if (a === "fillpo" && iv) { const pr = poRows(ed, iv); if (!pr.length) { note("info", "Everything on the PO is already on an invoice."); return; }
-      iv.rows.unshift(...pr); iv.fromPo = true; iv.filter = "all"; syncLines(ed); ed.dirty = true; render(); note("info", `Added ${pr.length} product${pr.length === 1 ? "" : "s"} from the PO. Check them against the invoice, then Save.`); return; }
+      iv.rows.unshift(...pr); iv.fromPo = true; iv.filter = "all"; syncLines(ed); ed.dirty = true; render(); note("info", `Added ${pr.length} product${pr.length === 1 ? "" : "s"} from the PO.${iv.rows.some(r => !r.vid && !r.skip) ? " Lines that didn't match a product are still here — remove them if the PO lines cover them." : ""} Check them against the invoice, then Save.`); return; }
+    if (a === "dropunread" && iv) { iv.rows = iv.rows.filter(r => r.vid || r.skip); ed.dirty = true; render(); return; }
     if (a === "clearpo" && iv) { iv.rows = iv.rows.filter(r => !r.fromPo); iv.fromPo = false; syncLines(ed); ed.dirty = true; render(); return; }
     if (a === "addrow" && iv) { const nr = { id: newId(), src: { item_code: "", upc: "", description: "", qty: null, unit_cost: null, amount: null }, vid: null, how: "", conf: "", alts: [], confirmed: false, skip: false, account: "inventory", qty: "", cost: "" };
       iv.rows.push(nr); iv.filter = "all"; ed.search = { id: nr.id, q: "" }; ed.dirty = true; render(); setTimeout(() => { const i = $("pe-sq"); if (i) i.focus(); }, 0); return; }
