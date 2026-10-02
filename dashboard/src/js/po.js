@@ -874,7 +874,7 @@
           <span class="muted small">${ivNow.recvAt ? "Received in full." : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
           <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length ? `<button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Receive all${left ? ` (${n0(left)} units)` : ""}</button>` : ""}</span></div>
         ${c.check ? `<div class="note warn">${c.check} guessed product${c.check === 1 ? "" : "s"} on this invoice ${c.check === 1 ? "needs" : "need"} confirming on the invoice before ${c.check === 1 ? "it" : "they"} can be received. <button class="mini" data-pact="open-inv">Open the invoice</button></div>` : ""}
-        ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>${costBar(ed, pr, ro)}` : '<div class="muted small">No matched products on this invoice yet.</div>'}
+        ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
       </div>`;
     })();
     const destTot = (d) => { const ls = ed.lines.filter(l => l.dest === d); return [ls.reduce((a, l) => a + (Number(l.qty) || 0), 0), ls.reduce((a, l) => a + lineAmt(l), 0)]; };
