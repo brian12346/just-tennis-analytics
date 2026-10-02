@@ -85,3 +85,8 @@ status pending, and starts the `fbm-inventory` sync job) or **Don't take out**. 
 Amazon quantity × the mapping's units, with reason "correction" and the Amazon order as the reference. It needs the
 app's `write_inventory` scope (already used for costs). If the store has more than one active location, set
 `fbm_sync.location_id` to the one FBM orders ship from. Migration 054.
+
+**FBM listings → Amazon quantity.** The FBM stock tab's listings panel shows stock at the FBM location
+(`jt.location_stock`, from sync job `location-stock`, also run hourly/nightly) and sends quantities to Amazon with the
+`amazon` function's `fbm_qty` action (Listings Items API, needs the Product Listing role on the SP-API app). Every send
+is logged in `jt.fbm_pushes`. `{"action":"fbm_qty","preview":true,…}` checks with Amazon without changing anything.

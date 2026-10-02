@@ -14,6 +14,11 @@
 // POST {action: "fin_nightly"}          -> fin_days for the last 7 full days (scheduled nightly)
 // POST {action: "fin_recent"}           -> fin_days for yesterday and today so far (scheduled hourly, and Refresh)
 // POST {action: "listings"}            -> asks now for the All Listings report (US); the next sync saves it
+// POST {action: "fbm_qty", items: [{sku, quantity}], preview?} -> sets FBM listings' available quantity on amazon.com
+//                                          (Listings Items API patch of fulfillment_availability, channel DEFAULT; other
+//                                          fields of it such as handling time are kept). preview = Amazon's
+//                                          VALIDATION_PREVIEW: checked, nothing changed. Each one is logged in jt.fbm_pushes.
+//                                          Stops before the time limit: {ok, results, next: [items not done]}.
 // POST {action: "probe", path}          -> read-only GET of a /finances/, /reports/ or /listings/ endpoint, for troubleshooting
 // Listings: GET_MERCHANT_LISTINGS_ALL_DATA (the All Listings report), asked for once a day by sync and saved to jt.docs
 // 'amzlistings' (jt_amazon_listings_save) in the shape the dashboard's upload used.
@@ -116,6 +121,44 @@ function parseListings(text: string) {
     out.push([g("sku"), g("asin"), g("title").slice(0, 160), isNaN(pr) ? null : pr, g("qty") === "" ? null : Number(g("qty")), g("channel"), g("status") || "Active", g("opened").slice(0, 10)]);
   }
   return out;
+}
+
+// ---- FBM quantities (Listings Items API)
+const SELLER_ID = "AJPAM6HXYXK3Y";   // Just Tennis's seller (merchant) id; not a secret
+async function fbmQty(c: Creds, by: string, items: any[], preview: boolean, deadline: number) {
+  const results: any[] = [];
+  let i = 0;
+  for (; i < items.length && Date.now() < deadline; i++) {
+    const it = items[i] || {};
+    const sku = String(it.sku || ""), qty = Math.floor(Number(it.quantity));
+    const rec: any = { sku, asin: "", quantity: qty, amazon_before: null, preview, status: "failed", issues: [], error: "", by };
+    try {
+      if (!sku) throw new Error("no SKU");
+      if (!Number.isFinite(qty) || qty < 0 || qty > 9999) throw new Error("quantity must be a whole number from 0 to 9999");
+      const path = `/listings/2021-08-01/items/${encodeURIComponent(c.spapi_seller_id || SELLER_ID)}/${encodeURIComponent(sku)}?marketplaceIds=ATVPDKIKX0DER`;
+      const cur = await sp(c, "GET", path + "&includedData=summaries,attributes,fulfillmentAvailability");
+      const sum = (cur.summaries || [])[0] || {};
+      rec.asin = sum.asin || "";
+      if (!sum.productType) throw new Error("Amazon has no product type for this listing");
+      const fa: any[] = cur.fulfillmentAvailability || [];
+      const own = fa.find((x) => x.fulfillmentChannelCode === "DEFAULT");
+      if (!own && fa.length) throw new Error("this listing is fulfilled by Amazon (FBA), not by you");
+      rec.amazon_before = own && own.quantity != null ? Number(own.quantity) : null;
+      const cur_fa: any[] = (cur.attributes && cur.attributes.fulfillment_availability) || [];
+      const keep = cur_fa.find((x) => x.fulfillment_channel_code === "DEFAULT") || { fulfillment_channel_code: "DEFAULT" };
+      const body = { productType: sum.productType, patches: [{ op: "replace", path: "/attributes/fulfillment_availability", value: [{ ...keep, quantity: qty }] }] };
+      const r = await sp(c, "PATCH", path + "&includedData=issues" + (preview ? "&mode=VALIDATION_PREVIEW" : ""), body);
+      rec.status = r.status || "failed";
+      rec.issues = (r.issues || []).map((x: any) => ({ code: x.code, message: x.message, severity: x.severity }));
+      if (rec.status !== "ACCEPTED" && rec.status !== "VALID") rec.error = rec.issues.filter((x: any) => x.severity === "ERROR").map((x: any) => x.message).join("; ") || `Amazon said ${rec.status}`;
+    } catch (e) {
+      rec.status = "failed"; rec.error = String((e as Error).message).slice(0, 500);
+    }
+    await rpc("jt_amazon_fbm_push_save", { p: rec });
+    results.push({ sku, quantity: qty, status: rec.status, before: rec.amazon_before, error: rec.error, issues: rec.issues });
+    await new Promise((f) => setTimeout(f, 250));   // Listings API: 5 requests a second
+  }
+  return { results, next: items.slice(i) };
 }
 
 const num = (s: string | undefined) => { const v = parseFloat(String(s ?? "").replace(/,/g, "")); return isNaN(v) ? 0 : v; };
@@ -311,6 +354,12 @@ Deno.serve(async (req) => {
       const pend = (st.pending || []).find((x: any) => x.kind === "listings");
       if (pend) return json({ ok: true, report_id: pend.report_id, already: true });
       return json({ ok: true, report_id: await requestListings(c, by) });
+    }
+    if (p.action === "fbm_qty") {
+      const items = Array.isArray(p.items) ? p.items.slice(0, 200) : [];
+      if (!items.length) return json({ ok: false, error: "no items" }, 400);
+      const out = await fbmQty(c, by, items, !!p.preview, t0 + 95_000);
+      return json({ ok: true, ...out });
     }
     if (p.action === "probe") {   // read-only look at a Finances, Reports or Listings endpoint (troubleshooting), trimmed
       const path = String(p.path || "");

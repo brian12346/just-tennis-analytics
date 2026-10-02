@@ -450,17 +450,20 @@
     <section class="panel">
       <div class="panel-head">
         <h2>FBM listings Shopify has in stock</h2>
-        <span class="muted small" id="fbl-sub">Merchant-fulfilled listings from the All Listings report, mapped to a Shopify product with stock.</span>
+        <span class="muted small">"Send" sets the listing's quantity on Amazon to the number in the box (prefilled with what the FBM location's stock covers). It shows on Amazon within a few minutes.</span>
+        <span class="muted small" id="fbl-sub">Merchant-fulfilled listings mapped to a Shopify product with stock at the FBM location.</span>
       </div>
       <div class="fbl-bar">
         <div class="seg" id="fbl-seg" role="group" aria-label="Amazon listing status">
           <button type="button" data-v="all" aria-pressed="true">All</button>
           <button type="button" data-v="Active" aria-pressed="false">Active</button>
           <button type="button" data-v="Inactive" aria-pressed="false">Inactive</button>
+          <button type="button" data-v="zero" aria-pressed="false">0 on Amazon</button>
         </div>
         <input class="inp" type="search" id="fbl-q" placeholder="ASIN, SKU or product" aria-label="Search FBM listings">
         <button class="mini" type="button" id="fbl-csv">Download CSV</button>
       </div>
+      <div class="fbm-bulk" id="fbl-bulk" hidden></div>
       <div class="tbl-wrap tall"><table id="fbl-table" class="fbl-t"></table></div>
       <div class="muted small" id="fbl-count"></div>
     </section>

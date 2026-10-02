@@ -135,7 +135,7 @@ table.lines tr.need input{border-color:var(--warn)}
 .tabs button[aria-selected="true"]{color:#002676;background:#FFFFFF;font-weight:600}
 .tabs button:focus-visible{outline:2px solid var(--brand-gold);outline-offset:1px}
 #tab-fbm,#tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices,#tab-amzmatch,#tab-costs,#tab-fba,#tab-prep{display:flex;flex-direction:column;gap:18px}
-#tab-fbm[hidden],#fbm-note[hidden],#fbm-bulk[hidden],#amz-only[hidden],#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#tab-costs[hidden],#tab-fba[hidden],#tab-prep[hidden],#prep-unloaded[hidden],#prep-note[hidden],#prep-modal[hidden],#prep-filters[hidden],#fba-note[hidden],#pc-note[hidden],#pc-confirm[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
+#tab-fbm[hidden],#fbm-note[hidden],#fbm-bulk[hidden],#fbl-bulk[hidden],#amz-only[hidden],#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#tab-costs[hidden],#tab-fba[hidden],#tab-prep[hidden],#prep-unloaded[hidden],#prep-note[hidden],#prep-modal[hidden],#prep-filters[hidden],#fba-note[hidden],#pc-note[hidden],#pc-confirm[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
 /* product sales */
 .tbl-wrap.xl{max-height:720px}
 .tree{display:inline-flex;align-items:center;gap:4px;white-space:normal}
@@ -762,3 +762,8 @@ table.fbl-t .meta{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
 table.fbl-t th.sort{cursor:pointer;user-select:none}
 table.fbl-t th.sort[aria-sort]::after{content:" \25BE";font-size:10px}
 table.fbl-t th.sort[aria-sort="ascending"]::after{content:" \25B4"}
+table.fbl-t td.send{white-space:nowrap;text-align:left}
+table.fbl-t td.send .qty{width:72px;padding:4px 6px;margin-right:6px;text-align:right}
+table.fbl-t td.send .qty.over{border-color:var(--bad);color:var(--bad)}
+table.fbl-t td.send .err{color:var(--bad);font-size:12px;white-space:normal;max-width:240px}
+table.fbl-t tr.sel td{background:var(--sales-soft)}

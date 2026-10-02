@@ -275,8 +275,15 @@
       // FBM listings (All Listings report) mapped to a Shopify variant that has stock
       listings: (refresh) => rows(["sku", "asin", "title", "amazon_status", "amazon_qty", "amazon_price", "report_file",
         "to_char(report_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "variant_id::text", "map_units", "product_id::text",
-        "shopify_title", "shopify_sku", "shopify_qty", "packs"],
+        "shopify_title", "shopify_sku", "shopify_qty", "packs", "shopify_total", "stock_source", "amazon_qty_now", "pushed_qty", "pushed_status",
+        "to_char(pushed_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "pushed_by", "pushed_error",
+        "(select to_char(max(updated_at) at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI') from jt.location_stock)"],
         "from jt.v_fbm_listings order by shopify_qty desc, sku", refresh),
+      // FBM location stock: ask the sync job for fresh numbers (about a minute)
+      refreshStock: async () => {
+        if (WEB) return WEB.write("jt_request_location_stock", {});
+        return run("select jt.dispatch_sync('location-stock')::text as r", true);
+      },
       settings: async (refresh) => { const r = await rows(["value"], "from jt.settings where key = 'fbm_sync'", refresh); return (r[0] && r[0][0]) || {}; },
       // decisions: [{order_id, sku, decision: 'decrement' | 'skip' | 'undo'}] -> {queued, skipped, undone, refused}
       async decide(decisions) {

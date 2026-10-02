@@ -552,9 +552,46 @@ def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
                 cur.execute("""update jt.fbm_decisions set status = 'done', error = '', applied_at = now(), shopify_before = %s,
                                location_id = %s where order_id = %s and sku = %s and status = 'pending'""", (before, loc, oid, sku))
                 cur.execute("update jt.variants set inventory_qty = coalesce(inventory_qty, 0) - %s where inventory_item_id = %s", (units, item))
+                cur.execute("""update jt.location_stock set available = available - %s, updated_at = now()
+                               where location_id = %s and inventory_item_id = %s""", (units, loc, item))
                 done += 1
         conn.commit()
     return done
+
+
+# Stock at the FBM location, for the FBM stock tab's listings panel (jt.location_stock). One page of 250 inventory
+# levels per call; items no longer stocked there are set to 0.
+LOCATION_STOCK_Q = """query($loc: ID!, $after: String) { location(id: $loc) { inventoryLevels(first: 250, after: $after) {
+  nodes { item { id } quantities(names: ["available"]) { name quantity } } pageInfo { hasNextPage endCursor } } } }"""
+
+
+def sync_location_stock(shop: "Shopify", conn) -> int:
+    """Available stock per inventory item at the FBM location (jt.settings fbm_sync.location_id) -> jt.location_stock."""
+    loc = _fbm_location_setting(conn)
+    if not loc:
+        return 0
+    rows, after = [], None
+    while True:
+        lv = (shop.graphql(LOCATION_STOCK_Q, {"loc": loc, "after": after}).get("location") or {}).get("inventoryLevels") or {}
+        for n in lv.get("nodes") or []:
+            item = int(str(n["item"]["id"]).split("/")[-1])
+            qty = next((q["quantity"] for q in n.get("quantities") or [] if q["name"] == "available"), 0) or 0
+            rows.append((loc, item, int(qty)))
+        page = lv.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        after = page["endCursor"]
+    with conn.cursor() as cur:
+        cur.execute("create temp table _ls (location_id text, inventory_item_id bigint, available int) on commit drop")
+        cur.executemany("insert into _ls values (%s, %s, %s)", rows)
+        cur.execute("""insert into jt.location_stock (location_id, inventory_item_id, available, updated_at)
+                       select location_id, inventory_item_id, available, now() from _ls
+                       on conflict (location_id, inventory_item_id) do update set available = excluded.available, updated_at = now()""")
+        cur.execute("""update jt.location_stock s set available = 0, updated_at = now()
+                       where s.location_id = %s and s.available <> 0
+                         and not exists (select 1 from _ls x where x.inventory_item_id = s.inventory_item_id)""", (loc,))
+    conn.commit()
+    return len(rows)
 
 
 # ---------------------------------------------------------------- Shopify purchase order status

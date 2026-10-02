@@ -116,6 +116,7 @@ def test_shopify_requests_parse():
         q = sh.ADJUST_M.replace("{IDEM}", ", $key: String!" if key else "").replace("{IDEMUSE}", " @idempotent(key: $key)" if key else "")
         graphql.parse(q)
     graphql.parse(sh.LEVELS_Q)
+    graphql.parse(sh.LOCATION_STOCK_Q)
 
 
 def test_location_is_recorded_and_named(conn):
@@ -162,3 +163,40 @@ def test_fbm_listings_in_stock(conn):
                 (json.dumps({"file": "AllListings.txt", "uploadedAt": "2026-09-23T07:00:00Z", "total": 4, "rows": rows}),))
     cur.execute("select sku, asin, amazon_status, amazon_qty, shopify_qty, map_units, packs from jt.v_fbm_listings")
     assert cur.fetchall() == [("A-3PK", "B03", "Inactive", 0, 40, 3, 13)]
+
+
+class StockShop:
+    """Fake Shopify location with two pages of inventory levels."""
+    def __init__(self):
+        self.calls = []
+
+    def graphql(self, q, v=None, version=None):
+        self.calls.append(v)
+        if v.get("after") is None:
+            return {"location": {"inventoryLevels": {"nodes": [{"item": {"id": "gid://shopify/InventoryItem/999"}, "quantities": [{"name": "available", "quantity": 7}]}],
+                                                     "pageInfo": {"hasNextPage": True, "endCursor": "c1"}}}}
+        return {"location": {"inventoryLevels": {"nodes": [{"item": {"id": "gid://shopify/InventoryItem/5"}, "quantities": [{"name": "available", "quantity": 2}]}],
+                                                 "pageInfo": {"hasNextPage": False, "endCursor": None}}}}
+
+
+def test_location_stock_and_pushes_in_listings_view(conn):
+    from sync import shopify as sh
+    cur = conn.cursor()
+    setup(cur)
+    cur.execute("insert into jt.docs (collection, id, data) values ('amzlistings', 'c000', %s)",
+                (json.dumps({"file": "f", "uploadedAt": "2026-09-23T07:00:00Z", "total": 1,
+                             "rows": [["A-3PK", "B03", "Gut 3-pack", 30, 0, "DEFAULT", "Inactive", "2020-01-01"]]}),))
+    cur.execute("update jt.settings set value = value || '{\"location_id\": \"gid://shopify/Location/1\"}' where key = 'fbm_sync'")
+    # stale row for an item no longer at the location -> set to 0
+    cur.execute("insert into jt.location_stock values ('gid://shopify/Location/1', 77, 3, now())")
+    conn.commit()
+    assert sh.sync_location_stock(StockShop(), conn) == 2
+    cur.execute("select inventory_item_id, available from jt.location_stock order by 1")
+    assert cur.fetchall() == [(5, 2), (77, 0), (999, 7)]
+    # variant total is 40, but only 7 at the FBM location -> 2 three-packs
+    cur.execute("select shopify_qty, shopify_total, stock_source, packs, amazon_qty_now from jt.v_fbm_listings")
+    assert cur.fetchall() == [(7, 40, "location", 2, 0)]
+    cur.execute("select public.jt_amazon_fbm_push_save(%s::jsonb)", (json.dumps({"sku": "A-3PK", "quantity": 2, "status": "ACCEPTED", "by": "t"}),))
+    cur.execute("select public.jt_amazon_fbm_push_save(%s::jsonb)", (json.dumps({"sku": "A-3PK", "quantity": 9, "status": "ACCEPTED", "preview": True}),))
+    cur.execute("select amazon_qty_now, pushed_qty, pushed_status from jt.v_fbm_listings")
+    assert cur.fetchall() == [(2, 2, "ACCEPTED")]

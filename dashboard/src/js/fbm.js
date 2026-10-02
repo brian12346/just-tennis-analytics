@@ -3,7 +3,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const S = { msg: null, lines: null, lst: null, lstErr: null, lv: "all", lq: "", lsort: ["shopify_qty", -1], lshown: 150, downloads: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
+  const S = { msg: null, lines: null, lst: null, lstErr: null, lsel: new Set(), lqty: new Map(), lres: new Map(), lnote: "", lconfirm: false, sending: false, lv: "all", lq: "", lsort: ["shopify_qty", -1], lshown: 150, downloads: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
   const COLS = ["order_id", "sku", "asin", "product_name", "quantity", "order_status", "purchased", "shipped", "cancelled", "map_kind",
     "variant_id", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id", "tracked",
     "decision", "status", "error", "decided_by", "decided_at", "applied_at", "shopify_before", "decided_units", "location_id"];
@@ -21,7 +21,8 @@
   const note = (kind, html) => { const n = $("fbm-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
 
   const LCOLS = ["sku", "asin", "title", "amazon_status", "amazon_qty", "amazon_price", "report_file", "report_at", "variant_id", "map_units",
-    "product_id", "shopify_title", "shopify_sku", "shopify_qty", "packs"];
+    "product_id", "shopify_title", "shopify_sku", "shopify_qty", "packs", "shopify_total", "stock_source", "amazon_qty_now", "pushed_qty", "pushed_status",
+    "pushed_at", "pushed_by", "pushed_error", "stock_at"];
 
   // a line's state on this page
   function lineState(l) {
@@ -147,12 +148,13 @@
     renderListings();
   }
 
-  // ---------- FBM listings Shopify has stock for ----------
+  // ---------- FBM listings Shopify has stock for (stock at the FBM location), and sending quantities to Amazon ----------
   const num = (v) => v == null || v === "" ? "" : Number(v).toLocaleString();
   const money = (v) => v == null || v === "" ? "" : "$" + Number(v).toFixed(2);
+  const sendQty = (l) => { const v = S.lqty.get(l.sku); return v == null ? (l.packs || 0) : v; };
   function listingsShown() {
     const q = S.lq, [k, dir] = S.lsort;
-    return (S.lst || []).filter(l => (S.lv === "all" || l.amazon_status === S.lv) &&
+    return (S.lst || []).filter(l => (S.lv === "all" || (S.lv === "zero" ? !Number(l.amazon_qty_now) : l.amazon_status === S.lv)) &&
         (!q || [l.asin, l.sku, l.title, l.shopify_title, l.shopify_sku].some(x => String(x || "").toLowerCase().includes(q))))
       .sort((a, b) => {
         const x = a[k], y = b[k];
@@ -164,28 +166,91 @@
     const sub = $("fbl-sub"), tb = $("fbl-table");
     if (S.lstErr && !S.lst) { sub.textContent = "Couldn't load FBM listings: " + (window.JT.message ? window.JT.message(S.lstErr) : (S.lstErr.message || S.lstErr)); tb.innerHTML = ""; return; }
     if (!S.lst) { sub.textContent = "Loading FBM listings…"; tb.innerHTML = ""; return; }
-    const all = S.lst, act = all.filter(l => l.amazon_status === "Active").length, f = all[0];
-    sub.innerHTML = `${all.length.toLocaleString()} merchant-fulfilled listings (${new Set(all.map(l => l.asin)).size.toLocaleString()} ASINs) mapped to a Shopify product with stock · ${act.toLocaleString()} active, ${(all.length - act).toLocaleString()} inactive on Amazon${f ? ` · from ${esc(f.report_file || "the All Listings report")}${f.report_at ? `, ${/Amazon API/.test(f.report_file || "") ? "fetched" : "uploaded"} ${esc(fmtDT(f.report_at))}` : ""} (refreshed from Amazon daily)` : ""} · Shopify stock is the total across locations`;
+    const all = S.lst, f = all[0];
+    const loc = locName(S.cfg.location_id) || "the FBM location";
+    const zero = all.filter(l => !Number(l.amazon_qty_now)).length;
+    const fromLoc = f && f.stock_source === "location";
+    sub.innerHTML = `${all.length.toLocaleString()} merchant-fulfilled listings (${new Set(all.map(l => l.asin)).size.toLocaleString()} ASINs) with Shopify stock at <b>${esc(loc)}</b> · ${zero.toLocaleString()} have 0 on Amazon` +
+      (fromLoc ? ` · stock as of ${esc(fmtDT(f.stock_at))} <button class="mini" type="button" id="fbl-stock">Refresh stock</button>` : ` · <span class="warnt">stock shown is the total across locations until the first ${esc(loc)} stock sync</span> <button class="mini" type="button" id="fbl-stock">Get ${esc(loc)} stock</button>`) +
+      `${f ? ` · listings ${/Amazon API/.test(f.report_file || "") ? "fetched" : "uploaded"} ${esc(fmtDT(f.report_at))}` : ""}`;
     const list = listingsShown();
+    for (const k of [...S.lsel]) if (!list.some(l => l.sku === k)) S.lsel.delete(k);
     const th = (k, label, cls) => `<th class="${cls || ""} sort" data-lsort="${k}" ${S.lsort[0] === k ? `aria-sort="${S.lsort[1] > 0 ? "ascending" : "descending"}"` : ""}>${label}</th>`;
-    const body = list.slice(0, S.lshown).map(l => {
+    const shownRows = list.slice(0, S.lshown);
+    const body = shownRows.map(l => {
       const pill = l.amazon_status === "Active" ? '<span class="pill ok">Active</span>' : `<span class="pill pos">${esc(l.amazon_status || "?")}</span>`;
       const shop = l.product_id ? `<a class="olink" href="${esc(shopUrl(l.product_id, l.variant_id))}" target="_blank" rel="noopener">${esc(l.shopify_title || l.shopify_sku || "Shopify product")}</a>` : esc(l.shopify_title || "");
-      return `<tr><td class="l mono"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.asin)}</a></td>
+      const res = S.lres.get(l.sku);
+      const sent = res ? (res.status === "ACCEPTED" ? `<span class="pill ok">Sent ${num(res.quantity)}</span>` : `<span class="pill cx" title="${esc(res.error)}">Not sent</span><div class="err">${esc(res.error)}</div>`)
+        : l.pushed_status === "ACCEPTED" ? `<span class="pill ok" title="${esc(l.pushed_by ? "by " + l.pushed_by : "")}">Sent ${num(l.pushed_qty)} · ${esc(fmtDT(l.pushed_at))}</span>`
+        : l.pushed_status ? `<span class="pill cx">Last send failed</span><div class="err">${esc(l.pushed_error || "")}</div>` : "";
+      const q = sendQty(l), over = q > (l.packs || 0);
+      const amz = Number(l.amazon_qty_now) || 0;
+      return `<tr class="${S.lsel.has(l.sku) ? "sel" : ""}"><td><input type="checkbox" data-lsel="${esc(l.sku)}" ${S.lsel.has(l.sku) ? "checked" : ""} aria-label="Select ${esc(l.sku)}"></td>
+        <td class="l mono"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.asin)}</a></td>
         <td class="l t"><div>${esc(l.title || l.sku)}</div><div class="meta mono">${esc(l.sku)}</div></td>
-        <td class="l">${pill}</td><td>${num(l.amazon_qty) || '<span class="dim">—</span>'}</td><td>${money(l.amazon_price)}</td>
+        <td class="l">${pill}</td><td>${amz ? num(amz) : '<span class="dim">0</span>'}</td>
         <td class="l t"><div>${shop}</div>${l.shopify_sku ? `<div class="meta mono">${esc(l.shopify_sku)}</div>` : ""}</td>
-        <td>${num(l.shopify_qty)}</td><td>${l.map_units > 1 ? `${num(l.packs)} <span class="dim small">(${num(l.map_units)}/pack)</span>` : num(l.packs)}</td></tr>`;
+        <td><b>${num(l.shopify_qty)}</b>${l.stock_source === "location" && Number(l.shopify_total) !== Number(l.shopify_qty) ? `<div class="meta">${num(l.shopify_total)} all locations</div>` : ""}</td>
+        <td>${l.map_units > 1 ? `${num(l.packs)} <span class="dim small">(${num(l.map_units)}/pack)</span>` : num(l.packs)}</td>
+        <td class="send"><input class="inp qty${over ? " over" : ""}" type="number" min="0" max="9999" step="1" inputmode="numeric" data-lqty="${esc(l.sku)}" value="${esc(q)}" aria-label="Quantity to put on Amazon for ${esc(l.sku)}" title="${over ? "More than Shopify stock at " + esc(loc) + " covers" : ""}"><button class="mini primary" type="button" data-lsend="${esc(l.sku)}" ${S.sending ? "disabled" : ""}>Send</button>${sent ? `<div>${sent}</div>` : ""}</td></tr>`;
     }).join("");
-    tb.innerHTML = `<thead><tr>${th("asin", "ASIN", "l")}${th("title", "Amazon listing", "l")}${th("amazon_status", "Amazon status", "l")}${th("amazon_qty", "Amazon qty")}${th("amazon_price", "Price")}${th("shopify_title", "Shopify product", "l")}${th("shopify_qty", "Shopify stock")}${th("packs", "Amazon units it covers")}</tr></thead>
-      <tbody>${body || `<tr><td class="l dim" colspan="8">${all.length ? "No listings match." : "No FBM listings with Shopify stock. Upload the All Listings report on Amazon mapping, and map FBM listings to Shopify products."}</td></tr>`}</tbody>`;
+    const allSel = shownRows.length && shownRows.every(l => S.lsel.has(l.sku));
+    tb.innerHTML = `<thead><tr><th><input type="checkbox" data-lselall ${allSel ? "checked" : ""} aria-label="Select all shown"></th>${th("asin", "ASIN", "l")}${th("title", "Amazon listing", "l")}${th("amazon_status", "Amazon status", "l")}${th("amazon_qty_now", "On Amazon")}${th("shopify_title", "Shopify product", "l")}${th("shopify_qty", esc(loc.split(/\s+/).filter(w => /^[a-z]+$/i.test(w)).sort((a, b) => b.length - a.length)[0] || "Location") + " stock")}${th("packs", "Covers")}<th class="l">Put on Amazon</th></tr></thead>
+      <tbody>${body || `<tr><td class="l dim" colspan="9">${all.length ? "No listings match." : "No FBM listings with Shopify stock. Map FBM listings to Shopify products on Amazon mapping."}</td></tr>`}</tbody>`;
     $("fbl-count").innerHTML = list.length > S.lshown ? `Showing ${S.lshown} of ${list.length.toLocaleString()} listings <button class="mini" type="button" id="fbl-more">Show more</button>` : list.length ? `${list.length.toLocaleString()} listing${list.length > 1 ? "s" : ""}` : "";
     $("fbl-csv").hidden = !S.downloads || !list.length;
+    // bulk bar
+    const sel = list.filter(l => S.lsel.has(l.sku)), bar = $("fbl-bulk");
+    bar.hidden = !sel.length && !S.lnote;
+    const units = sel.reduce((a, l) => a + sendQty(l), 0), overN = sel.filter(l => sendQty(l) > (l.packs || 0)).length;
+    bar.innerHTML = (S.lnote ? `<span>${S.lnote}</span>` : "") + (sel.length ? `<span><b>${sel.length}</b> listing${sel.length > 1 ? "s" : ""} selected · ${units.toLocaleString()} units to put on Amazon${overN ? ` · <span class="warnt">${overN} above what ${esc(loc)} stock covers</span>` : ""}</span>
+      <span class="dbtns">${S.lconfirm ? `<button class="mini primary" type="button" data-lbulk="go" ${S.sending ? "disabled" : ""}>Yes, send ${sel.length} to Amazon</button><button class="mini" type="button" data-lbulk="no">Cancel</button>`
+        : `<button class="mini primary" type="button" data-lbulk="ask" ${S.sending ? "disabled" : ""}>Send to Amazon</button><button class="mini" type="button" data-lbulk="fill">Set to Shopify stock</button><button class="mini" type="button" data-lbulk="clear">Clear</button>`}</span>` : "");
+  }
+  // send quantities to Amazon (the amazon function works through them, about 3 a second, picking up where it stopped)
+  async function sendListings(skus) {
+    if (S.sending) return;
+    const items = skus.map(k => (S.lst || []).find(l => l.sku === k)).filter(Boolean).map(l => ({ sku: l.sku, quantity: sendQty(l) }));
+    if (!items.length) return;
+    S.sending = true; S.lconfirm = false; S.lnote = `Sending ${items.length} to Amazon…`; renderListings();
+    let todo = items, ok = 0, bad = 0;
+    try {
+      while (todo.length) {
+        const r = await window.JT.amazon({ action: "fbm_qty", items: todo });
+        if (!r || r.ok === false) throw new Error((r && r.error) || "Amazon didn't answer");
+        for (const x of r.results || []) { S.lres.set(x.sku, x); if (x.status === "ACCEPTED") { ok++; S.lsel.delete(x.sku); } else bad++; }
+        if (!r.next || !r.next.length || r.next.length === todo.length) break;
+        todo = r.next; S.lnote = `Sent ${ok + bad} of ${items.length}…`; renderListings();
+      }
+      S.lnote = `${ok ? `<b>${ok}</b> quantit${ok > 1 ? "ies" : "y"} sent to Amazon (live in a few minutes).` : ""}${bad ? ` <span class="warnt">${bad} not sent — see the rows.</span>` : ""}`;
+    } catch (e) {
+      S.lnote = `<span class="warnt">Couldn't send: ${esc(window.JT.message ? window.JT.message(e) : (e.message || e))}</span>`;
+    }
+    S.sending = false;
+    if (window.JTWeb) window.JTWeb.clearCache();
+    try { const r = await window.JT.fbm.listings(true); S.lst = r.map(x => Object.fromEntries(LCOLS.map((c, i) => [c, x[i]]))); for (const x of S.lst) if (x.pushed_status) S.lres.delete(x.sku); } catch (_) {}
+    renderListings();
+  }
+  async function refreshStock() {
+    try { await window.JT.fbm.refreshStock(); S.lnote = "Getting stock from Shopify — this takes a minute or two; the list reloads when it's in."; }
+    catch (e) { S.lnote = `<span class="warnt">Couldn't start the stock sync: ${esc(window.JT.message ? window.JT.message(e) : (e.message || e))}</span>`; renderListings(); return; }
+    renderListings();
+    const before = (S.lst && S.lst[0] && S.lst[0].stock_at) || "";
+    for (let i = 0; i < 16; i++) {
+      await new Promise(f => setTimeout(f, 15000));
+      if (window.JTWeb) window.JTWeb.clearCache();
+      try {
+        const r = await window.JT.fbm.listings(true), rows = r.map(x => Object.fromEntries(LCOLS.map((c, j) => [c, x[j]])));
+        if (rows.length && (rows[0].stock_at || "") !== before) { S.lst = rows; S.lnote = "Stock updated from Shopify."; renderListings(); return; }
+      } catch (_) {}
+    }
+    S.lnote = "Shopify stock is taking longer than usual — press Refresh in a few minutes."; renderListings();
   }
   async function downloadListings() {
     const q = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const lines = [["asin", "seller_sku", "amazon_title", "amazon_status", "amazon_qty", "amazon_price", "shopify_product", "shopify_sku", "shopify_stock", "units_per_listing", "amazon_units_covered"].join(",")];
-    for (const l of listingsShown()) lines.push([l.asin, l.sku, l.title, l.amazon_status, l.amazon_qty, l.amazon_price, l.shopify_title, l.shopify_sku, l.shopify_qty, l.map_units, l.packs].map(q).join(","));
+    const lines = [["asin", "seller_sku", "amazon_title", "amazon_status", "amazon_qty", "amazon_price", "shopify_product", "shopify_sku", "shopify_stock_fbm_location", "shopify_stock_all_locations", "units_per_listing", "amazon_units_covered", "on_amazon_now"].join(",")];
+    for (const l of listingsShown()) lines.push([l.asin, l.sku, l.title, l.amazon_status, l.amazon_qty, l.amazon_price, l.shopify_title, l.shopify_sku, l.shopify_qty, l.shopify_total, l.map_units, l.packs, l.amazon_qty_now].map(q).join(","));
     try { await S.downloads.save({ filename: `just-tennis-fbm-listings-in-stock_${new Date().toISOString().slice(0, 10)}.csv`, data: lines.join("\n") }); } catch (_) {}
   }
 
@@ -245,6 +310,13 @@
     else if (b.id === "fbm-more") { S.shown += 150; render(); }
     else if (b.id === "fbl-more") { S.lshown += 150; renderListings(); }
     else if (b.id === "fbl-csv") downloadListings();
+    else if (b.id === "fbl-stock") refreshStock();
+    else if (b.dataset.lsend) { S.lconfirm = false; sendListings([b.dataset.lsend]); }
+    else if (b.dataset.lbulk === "ask") { S.lconfirm = true; renderListings(); }
+    else if (b.dataset.lbulk === "no") { S.lconfirm = false; renderListings(); }
+    else if (b.dataset.lbulk === "go") sendListings([...S.lsel]);
+    else if (b.dataset.lbulk === "clear") { S.lsel.clear(); S.lconfirm = false; S.lnote = ""; renderListings(); }
+    else if (b.dataset.lbulk === "fill") { for (const k of S.lsel) S.lqty.delete(k); renderListings(); }
     else if (b.dataset.loc === "edit") { S.editLoc = true; render(); const i = $("fbm-locname"); if (i) i.focus(); }
     else if (b.dataset.loc === "cancel") { S.editLoc = false; render(); }
     else if (b.dataset.loc === "save") saveLocName();
@@ -264,6 +336,12 @@
   $("fbl-q").addEventListener("input", (ev) => { S.lq = ev.target.value.trim().toLowerCase(); S.lshown = 150; renderListings(); });
   tab.addEventListener("change", (ev) => {
     const t = ev.target;
+    if (t.dataset.lsel != null) { t.checked ? S.lsel.add(t.dataset.lsel) : S.lsel.delete(t.dataset.lsel); S.lconfirm = false; renderListings(); return; }
+    if (t.hasAttribute("data-lselall")) { listingsShown().slice(0, S.lshown).forEach(l => t.checked ? S.lsel.add(l.sku) : S.lsel.delete(l.sku)); S.lconfirm = false; renderListings(); return; }
+    if (t.dataset.lqty != null) {
+      const v = Math.max(0, Math.min(9999, Math.floor(Number(t.value) || 0)));
+      S.lqty.set(t.dataset.lqty, v); S.lconfirm = false; renderListings(); return;
+    }
     if (t.dataset.sel != null) { t.checked ? S.sel.add(t.dataset.sel) : S.sel.delete(t.dataset.sel); render(); }
     else if (t.hasAttribute("data-selall")) {
       const ids = orders().filter(inView).filter(matches).filter(o => o.ready.length).map(o => o.id);
