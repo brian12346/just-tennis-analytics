@@ -6,7 +6,11 @@
 //   (links an existing bill with the same number for the same vendor instead of entering it twice),
 //   with the invoice PDF attached
 // POST {action: "attach", invoice_id}  -> attaches the invoice PDF to its bill (bills entered earlier)
-// Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.qbo_call (x-jt-key).
+// POST {action: "payables_sync", full?} -> vendors, bills, bill payments and vendor credits -> schema fin (the finance
+//   dashboard). Only what changed since the last pass, or everything with full (also once a week by itself, which
+//   catches bills deleted in QuickBooks).
+// Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.qbo_call (x-jt-key). Accounts on
+// the finance list only (fin.users) may run status and payables_sync, nothing else.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-jt-key", "Access-Control-Allow-Methods": "POST, OPTIONS" };
@@ -77,7 +81,61 @@ async function caller(req: Request, c: Creds): Promise<string | null> {
   const { data } = await admin.auth.getUser(jwt);
   if (!data?.user) return null;
   const { data: ok } = await admin.rpc("jt_qbo_allowed", { uid: data.user.id });
-  return ok ? data.user.email || "app user" : null;
+  if (ok) return data.user.email || "app user";
+  const { data: fin } = await admin.rpc("fin_allowed", { uid: data.user.id });
+  return fin ? "finance:" + (data.user.email || "user") : null;
+}
+
+// ---- payables for the finance dashboard
+async function queryAll(c: Creds, entity: string, where: string): Promise<any[]> {
+  const out: any[] = [];
+  for (let start = 1; start < 100000; start += 1000) {
+    const r = (await query(c, `select * from ${entity}${where ? " where " + where : ""} startposition ${start} maxresults 1000`)).QueryResponse || {};
+    const rows = r[entity] || [];
+    out.push(...rows);
+    if (rows.length < 1000) break;
+  }
+  return out;
+}
+const ref = (r: any) => ({ id: r?.value || "", name: r?.name || "" });
+async function payablesSync(c: Creds, full: boolean) {
+  const { data: last } = await admin.rpc("fin_qbo_last_sync");
+  const lastFull = last?.last_full ? new Date(last.last_full).getTime() : 0;
+  const doFull = full || !last?.at || Date.now() - lastFull > 7 * 86400000;
+  const started = new Date().toISOString();
+  // a few minutes of overlap so nothing changed during the last pass is missed
+  const since = doFull ? "" : new Date(new Date(last.at).getTime() - 10 * 60000).toISOString();
+  const upd = since ? `MetaData.LastUpdatedTime >= '${since}'` : "";
+  const vendors = (await queryAll(c, "Vendor", upd ? `${upd} and Active in (true, false)` : "Active in (true, false)")).map((v: any) => ({
+    id: v.Id, name: v.DisplayName || v.CompanyName || "", active: v.Active !== false, balance: Number(v.Balance || 0),
+    terms: v.TermRef?.name || "", email: v.PrimaryEmailAddr?.Address || "", updated: v.MetaData?.LastUpdatedTime }));
+  const bills = (await queryAll(c, "Bill", upd)).map((b: any) => ({
+    id: b.Id, vendor_id: ref(b.VendorRef).id, vendor_name: ref(b.VendorRef).name, doc: b.DocNumber || "", date: b.TxnDate || null, due: b.DueDate || null,
+    total: Number(b.TotalAmt || 0), balance: Number(b.Balance || 0), currency: b.CurrencyRef?.value || "USD", memo: b.PrivateNote || "",
+    lines: (b.Line || []).filter((l: any) => l.DetailType !== "SubTotalLineDetail").map((l: any) => ({
+      account: l.AccountBasedExpenseLineDetail?.AccountRef?.name || l.ItemBasedExpenseLineDetail?.ItemRef?.name || "", amount: Number(l.Amount || 0), description: l.Description || "" })),
+    created: b.MetaData?.CreateTime, updated: b.MetaData?.LastUpdatedTime }));
+  const payments = (await queryAll(c, "BillPayment", upd)).map((x: any) => ({
+    id: x.Id, vendor_id: ref(x.VendorRef).id, vendor_name: ref(x.VendorRef).name, doc: x.DocNumber || "", date: x.TxnDate || null, total: Number(x.TotalAmt || 0),
+    pay_type: x.PayType || "", account: x.CheckPayment?.BankAccountRef?.name || x.CreditCardPayment?.CCAccountRef?.name || "",
+    bills: (x.Line || []).flatMap((l: any) => (l.LinkedTxn || []).filter((t: any) => t.TxnType === "Bill").map((t: any) => ({ bill_id: t.TxnId, amount: Number(l.Amount || 0) }))),
+    updated: x.MetaData?.LastUpdatedTime }));
+  const credits = (await queryAll(c, "VendorCredit", upd)).map((x: any) => ({
+    id: x.Id, vendor_id: ref(x.VendorRef).id, vendor_name: ref(x.VendorRef).name, doc: x.DocNumber || "", date: x.TxnDate || null,
+    total: Number(x.TotalAmt || 0), balance: Number(x.Balance || 0), memo: x.PrivateNote || "", updated: x.MetaData?.LastUpdatedTime }));
+  let saved = 0;
+  const send = async (part: Record<string, unknown>) => {
+    const { data, error } = await admin.rpc("fin_qbo_payables_save", { p: part });
+    if (error) throw new Error("saving payables: " + error.message);
+    saved += Number(data || 0);
+  };
+  await send({ vendors });
+  for (let i = 0; i < bills.length; i += 400) await send({ bills: bills.slice(i, i + 400) });
+  for (let i = 0; i < payments.length; i += 400) await send({ payments: payments.slice(i, i + 400) });
+  await send({ credits });
+  await send({ finished: { at: started, started, full: doFull, last_full: doFull ? started : last?.last_full || null,
+    counts: { vendors: vendors.length, bills: bills.length, payments: payments.length, credits: credits.length } } });
+  return { ok: true, full: doFull, since: since || null, vendors: vendors.length, bills: bills.length, payments: payments.length, credits: credits.length, saved };
 }
 
 // the invoice PDF onto the bill (QuickBooks "upload": a JSON part describing it, then the file); its Attachable id
@@ -183,6 +241,8 @@ Deno.serve(async (req) => {
     if (!by) return json({ ok: false, error: "not allowed" }, 403);
     for (const k of ["qbo_client_id", "qbo_client_secret", "qbo_refresh_token", "qbo_realm_id"]) if (!c[k]) return json({ ok: false, error: `${k} is missing from Vault` }, 400);
     const p = await req.json().catch(() => ({}));
+    if (by.startsWith("finance:") && !["status", "payables_sync"].includes(p.action)) return json({ ok: false, error: "not allowed" }, 403);
+    if (p.action === "payables_sync") return json(await payablesSync(c, !!p.full));
     if (p.action === "status") {
       const ci = (await api(c, `companyinfo/${c.qbo_realm_id}`)).CompanyInfo || {};
       const acc = ((await query(c, "select Id, Name, FullyQualifiedName, AccountType, AccountSubType, Active from Account maxresults 1000")).QueryResponse?.Account || [])

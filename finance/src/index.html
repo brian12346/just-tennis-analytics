@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Just Tennis Finance</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231F5F4A'/%3E%3Cpath d='M9 22V10h10M9 16h8' stroke='%23F4EFE4' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet">
+<style>
+<!-- @inline app.css -->
+</style>
+</head>
+<body class="signed-out">
+
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="brand big"><span class="mark" aria-hidden="true">F</span><span><b>Finance</b><small>Just Tennis</small></span></div>
+    <label>Email<input id="login-email" type="email" autocomplete="username" required></label>
+    <label>Password<input id="login-pass" type="password" autocomplete="current-password" required></label>
+    <button id="login-go" class="btn primary" type="submit">Sign in</button>
+    <p id="login-msg" class="login-msg" aria-live="polite"></p>
+    <p class="fine">Same account as the sales dashboard. Finance access is granted separately.</p>
+  </form>
+</div>
+
+<div id="noaccess" class="login" hidden>
+  <div class="login-card">
+    <div class="brand big"><span class="mark" aria-hidden="true">F</span><span><b>Finance</b><small>Just Tennis</small></span></div>
+    <p><b id="noaccess-who"></b> doesn't have access to Finance.</p>
+    <p class="fine">Finance has its own access list. Ask the owner to add this account.</p>
+    <button class="btn" type="button" data-signout>Sign out</button>
+  </div>
+</div>
+
+<div class="app" id="app" hidden>
+  <aside class="side">
+    <div class="brand"><span class="mark" aria-hidden="true">F</span><span><b>Finance</b><small>Just Tennis</small></span></div>
+    <nav class="nav" aria-label="Finance sections">
+      <a href="#payables" class="on" aria-current="page"><span class="ico">⇄</span>Payables</a>
+      <span class="soon" title="Coming next"><span class="ico">≡</span>P&amp;L <i>soon</i></span>
+      <span class="soon" title="Coming next"><span class="ico">◎</span>Cash <i>soon</i></span>
+    </nav>
+    <div class="side-foot">
+      <a class="xlink" href="https://dashboard.andersenlifestyle.com" target="_blank" rel="noopener">Sales dashboard ↗</a>
+      <div class="who"><span id="whoami"></span><button class="link" type="button" data-signout>Sign out</button></div>
+      <div class="ver">v__VERSION__ · __BUILD__</div>
+    </div>
+  </aside>
+
+  <main class="main" id="payables">
+    <header class="head">
+      <div>
+        <div class="eyebrow">Accounts payable · from QuickBooks</div>
+        <h1>Payables</h1>
+        <div class="sub" id="ap-sync">Loading…</div>
+      </div>
+      <div class="head-actions">
+        <button class="btn" type="button" id="ap-refresh">Refresh from QuickBooks</button>
+      </div>
+    </header>
+    <div id="ap-note" class="note" hidden></div>
+
+    <section class="cards" id="ap-cards" aria-label="Payables summary"></section>
+
+    <section class="grid2">
+      <div class="panel">
+        <div class="panel-h"><h2>Aging</h2><span class="hint">Open balance by days past due</span></div>
+        <div id="ap-aging"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-h"><h2>Coming due</h2><span class="hint">Open balance by due week · click a bar to filter</span></div>
+        <div id="ap-weeks"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-h wrap">
+        <div class="tabs" id="ap-tabs" role="tablist">
+          <button role="tab" data-v="open" aria-selected="true">Open bills</button>
+          <button role="tab" data-v="vendors" aria-selected="false">Vendors</button>
+          <button role="tab" data-v="payments" aria-selected="false">Payments</button>
+          <button role="tab" data-v="all" aria-selected="false">All bills</button>
+        </div>
+        <div class="filters">
+          <select id="ap-vendor" aria-label="Vendor"><option value="">All vendors</option></select>
+          <input id="ap-q" type="search" placeholder="Search bill #, vendor, memo" aria-label="Search">
+          <button class="btn small" type="button" id="ap-csv">Export CSV</button>
+        </div>
+      </div>
+      <div id="ap-filterchip"></div>
+      <div class="tbl" id="ap-table"></div>
+      <div class="foot" id="ap-foot"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+<!-- @inline auth.js -->
+</script>
+<script>
+<!-- @inline payables.js -->
+</script>
+</body>
+</html>
