@@ -58,10 +58,9 @@ class FbmShop:
         self.locations, self.adjusts = locations, []
 
     def graphql(self, q, v=None, version=None):
-        if "locations(" in q:
-            return {"locations": {"nodes": [{"id": f"gid://shopify/Location/{i}", "name": f"L{i}", "isActive": True} for i in range(self.locations)]}}
-        if "inventoryLevel(" in q:
-            return {"inventoryItem": {"tracked": True, "inventoryLevel": {"quantities": [{"name": "available", "quantity": 40}]}}}
+        if "inventoryLevels(" in q:
+            return {"inventoryItem": {"tracked": True, "inventoryLevels": {"nodes": [
+                {"location": {"id": f"gid://shopify/Location/{i}"}, "quantities": [{"name": "available", "quantity": 40 - i}]} for i in range(self.locations)]}}}
         if "@idempotent" in q:
             raise RuntimeError("Shopify GraphQL error: Directive 'idempotent' is not defined")
         self.adjusts.append(v)
@@ -84,8 +83,6 @@ def test_job_takes_units_out_of_shopify(conn):
     assert cur.fetchone() == ("done", 40)
     cur.execute("select inventory_qty from jt.variants where variant_id = 7")
     assert cur.fetchone()[0] == 34
-    cur.execute("select value->>'location_id' from jt.settings where key = 'fbm_sync'")
-    assert cur.fetchone()[0] == "gid://shopify/Location/0"
     assert sh.apply_fbm_adjustments(shop, conn) == 0                     # nothing pending: nothing sent again
 
 
@@ -95,8 +92,14 @@ def test_job_needs_a_location_when_there_are_several(conn):
     setup(cur)
     decide(cur, ("111-1", "A-3PK", "decrement"))
     conn.commit()
-    import pytest
-    with pytest.raises(RuntimeError, match="more than one location"):
-        sh.apply_fbm_adjustments(FbmShop(locations=2), conn)
-    cur.execute("select status, error like 'Shopify has more than one location%' from jt.fbm_decisions")
+    assert sh.apply_fbm_adjustments(FbmShop(locations=2), conn) == 0
+    cur.execute("select status, error like '%stocked at 2 Shopify locations%' from jt.fbm_decisions")
     assert cur.fetchone() == ("failed", True)
+    # once the location is set, the units come from that one
+    cur.execute("""update jt.settings set value = value || '{"location_id": "gid://shopify/Location/1"}' where key = 'fbm_sync'""")
+    decide(cur, ("111-1", "A-3PK", "decrement"))
+    conn.commit()
+    shop = FbmShop(locations=2)
+    assert sh.apply_fbm_adjustments(shop, conn) == 1
+    ch = shop.adjusts[0]["input"]["changes"][0]
+    assert (ch["locationId"], ch["changeFromQuantity"]) == ("gid://shopify/Location/1", 39)
