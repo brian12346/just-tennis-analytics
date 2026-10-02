@@ -24,6 +24,7 @@
     <span class="bar-right"><span id="acct" class="acct" hidden><span id="whoami"></span><button class="mini" id="signout" type="button">Sign out</button></span><span class="ver" title="Version __VERSION__ · build __BUILD__">v__VERSION__<span class="sha"> · __BUILD__</span></span></span>
   </div>
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button role="tab" data-tab="alerts" aria-selected="false">Alerts</button>
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
     <button role="tab" data-tab="costs" aria-selected="false">Inventory value</button>
@@ -415,6 +416,32 @@
       <div class="row"><button class="btn" id="cm-prev" hidden>Previous</button><button class="btn" id="cm-next" hidden>Next page</button><span class="muted small" id="cm-count"></span></div>
     </section>
   </div>
+  <div id="tab-alerts" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Operations · what needs doing</span>
+        <h1>Alerts</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="al-seg" role="group" aria-label="Which alerts">
+          <button type="button" data-v="open" aria-pressed="true">Open</button>
+          <button type="button" data-v="mine" aria-pressed="false">Mine</button>
+          <button type="button" data-v="snoozed" aria-pressed="false">Snoozed</button>
+          <button type="button" data-v="resolved" aria-pressed="false">Resolved</button>
+          <button type="button" data-v="patterns" aria-pressed="false">Patterns</button>
+          <button type="button" data-v="rules" aria-pressed="false">Rules</button>
+        </div>
+        <select class="inp" id="al-cat" aria-label="Kind of alert"><option value="all">Everything</option><option value="shipping">Shipping</option><option value="inventory">Inventory</option><option value="price">Price</option></select>
+        <input class="inp" type="search" id="al-q" placeholder="Search alerts" aria-label="Search alerts">
+        <button class="btn" type="button" id="al-check">Check now</button>
+      </div>
+    </header>
+    <div class="status" id="al-status" aria-live="polite">Loading alerts…</div>
+    <div id="al-note" hidden></div>
+    <section class="kpis" id="al-kpis" aria-label="Alert counts"></section>
+    <div id="al-body"></div>
+  </div>
+
   <div id="tab-fbm" hidden>
     <header class="top">
       <div class="title">
@@ -725,6 +752,9 @@
 </script>
 <script>
 <!-- @inline js/fbm.js -->
+</script>
+<script>
+<!-- @inline js/alerts.js -->
 </script>
 <script>
 <!-- @inline js/amz-match.js -->

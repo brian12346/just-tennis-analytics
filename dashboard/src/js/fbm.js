@@ -374,6 +374,13 @@
 
   const use = window.claude && window.claude.use ? window.claude.use.bind(window.claude) : null;
   if (use) use("downloads").then(d => { S.downloads = d; renderListings(); }).catch(() => {});
+  // from the Alerts tab: open the listings panel with a filter (e.g. "0 on Amazon") or a search
+  window.fbmFocus = ({ filter, q } = {}) => {
+    if (filter) { S.lv = filter; $("fbl-seg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.v === filter))); }
+    if (q != null) { S.lq = String(q).toLowerCase(); $("fbl-q").value = q; }
+    S.lshown = 150; renderListings();
+    setTimeout(() => { const t = $("fbl-table"); if (t) t.closest(".panel").scrollIntoView({ behavior: "smooth", block: "start" }); }, 300);
+  };
   window.fbmShow = () => { if (!S.lines && !S.loading) load(false); else { render(); if (!S.loading) load(true); } };
   if (!$("tab-fbm").hidden) window.fbmShow();
 })();

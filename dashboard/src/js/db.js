@@ -264,6 +264,47 @@
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB, catalogChanged, checkCatalog,
     qbo: qboCall,
     amazon: amazonCall,
+    // Operational alerts (Alerts tab; migration 060)
+    alerts: {
+      list: (refresh) => rowsSplit(["id", "rule", "key", "title", "detail", "severity", "link", "data", "status", "owner",
+        "to_char(first_seen at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "to_char(last_seen at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')",
+        "extract(epoch from now() - first_seen)::int", "acked_by", "to_char(snoozed_until at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')",
+        "to_char(resolved_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "resolved_by", "resolution", "cause",
+        "extract(epoch from coalesce(resolved_at, now()) - first_seen)::int"],
+        "from jt.alerts where (status in ('open', 'acked', 'snoozed') or resolved_at > now() - interval '30 days')", "id", 2, refresh),
+      rules: (refresh) => rows(["code", "category", "title", "description", "action", "owner", "enabled", "params", "sort"], "from jt.alert_rules order by sort, code", refresh),
+      // per rule, last 90 days: how often, how fast it gets fixed, why, and what keeps coming back
+      patterns: (refresh) => rows(["r.code", "r.title", "r.category",
+        "(select count(*) from jt.alerts a where a.rule = r.code and a.first_seen > now() - interval '30 days')",
+        "(select count(*) from jt.alerts a where a.rule = r.code and a.first_seen > now() - interval '90 days')",
+        "(select count(*) from jt.alerts a where a.rule = r.code and a.status in ('open', 'acked', 'snoozed'))",
+        "(select count(*) from jt.alerts a where a.rule = r.code and a.status = 'resolved' and a.resolved_at > now() - interval '90 days')",
+        "(select count(*) from jt.alerts a where a.rule = r.code and a.status = 'cleared' and a.resolved_at > now() - interval '90 days')",
+        "(select round((percentile_cont(0.5) within group (order by extract(epoch from a.resolved_at - a.first_seen)) / 3600)::numeric, 1) from jt.alerts a where a.rule = r.code and a.status = 'resolved' and a.resolved_at > now() - interval '90 days')",
+        "(select coalesce(json_agg(json_build_array(c.cause, c.n) order by c.n desc), '[]') from (select a.cause, count(*) n from jt.alerts a where a.rule = r.code and a.status = 'resolved' and a.cause <> '' and a.resolved_at > now() - interval '90 days' group by 1 order by 2 desc limit 4) c)",
+        "(select coalesce(json_agg(json_build_array(k.key, k.n, k.title) order by k.n desc), '[]') from (select a.key, count(*) n, max(a.title) title from jt.alerts a where a.rule = r.code and a.key <> 'all' and a.first_seen > now() - interval '90 days' group by 1 having count(*) > 1 order by 2 desc limit 5) k)",
+        "(select coalesce(json_agg(json_build_array(d.d, d.n) order by d.d), '[]') from (select (a.first_seen at time zone 'America/Los_Angeles')::date d, count(*) n from jt.alerts a where a.rule = r.code and a.first_seen > now() - interval '30 days' group by 1) d)"],
+        "from jt.alert_rules r order by r.sort", refresh),
+      people: async (refresh) => { try { return (await rows(["email"], "from jt.app_users order by email", refresh)).map(r => r[0]); } catch (_) { return []; } },
+      act: async (p) => {
+        if (WEB) return WEB.write("jt_alert_act", { p });
+        const out = await run(`select jt.alert_act(${q(JSON.stringify({ ...p, by: p.by || "dashboard" }))}::jsonb)::text as r`, true);
+        return out[0] && Number(out[0].r);
+      },
+      ruleSet: async (p) => {
+        if (WEB) return WEB.write("jt_alert_rule_set", { p });
+        return run(`select jt.alert_rule_set(${q(JSON.stringify(p))}::jsonb)::text as r`, true);
+      },
+      check: async () => {
+        if (WEB) return WEB.write("jt_alerts_refresh", {});
+        const out = await run("select jt.refresh_alerts()::text as r", true);
+        return out[0] && JSON.parse(out[0].r);
+      },
+      counts: async (refresh) => {
+        const r = await rows(["severity", "count(*)"], "from jt.alerts where status = 'open' group by 1", refresh);
+        return Object.fromEntries(r.map(x => [x[0], Number(x[1])]));
+      },
+    },
     // Amazon FBM orders -> Shopify stock (FBM tab)
     fbm: {
       lines: (refresh) => rows(["order_id", "sku", "coalesce(asin, '')", "coalesce(product_name, '')", "quantity", "order_status",

@@ -90,3 +90,13 @@ app's `write_inventory` scope (already used for costs). If the store has more th
 (`jt.location_stock`, from sync job `location-stock`, also run hourly/nightly) and sends quantities to Amazon with the
 `amazon` function's `fbm_qty` action (Listings Items API, needs the Product Listing role on the SP-API app). Every send
 is logged in `jt.fbm_pushes`. `{"action":"fbm_qty","preview":true,…}` checks with Amazon without changing anything.
+
+## 10. Alerts
+
+The Alerts tab lists operational problems to act on: Amazon FBM orders not shipped, Shopify orders not fulfilled,
+overdue POs, Amazon showing more FBM stock than we have, out-of-stock products that sell, low cover, negative stock.
+Rules live in `jt.alert_rules` (owner, on/off, thresholds; editable on the tab's Rules view) and run in
+`jt.alert_candidates()`; `jt.refresh_alerts()` (pg_cron `jt-alerts` every 15 minutes, see
+`db/supabase/alerts_scheduler.sql`, and "Check now") keeps `jt.alerts` current. Resolving asks what was done and
+why; the Patterns view summarises causes, fix times and repeat offenders. To add a rule: insert a row in
+`jt.alert_rules` and a `return query` block in `jt.alert_candidates()` (in a new migration).
