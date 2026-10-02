@@ -19,7 +19,9 @@
 //                                          fields of it such as handling time are kept). preview = Amazon's
 //                                          VALIDATION_PREVIEW: checked, nothing changed. Each one is logged in jt.fbm_pushes.
 //                                          Stops before the time limit: {ok, results, next: [items not done]}.
-// POST {action: "probe", path}          -> read-only GET of a /finances/, /reports/ or /listings/ endpoint, for troubleshooting
+// POST {action: "probe", path}          -> read-only GET of a /finances/, /reports/, /listings/ or /fba/ endpoint, for troubleshooting
+// POST {action: "fba_inventory"}        -> FBA inventory now (FBA Inventory API getInventorySummaries, amazon.com pool, all
+//                                          pages, with details) into jt.fba_inventory (jt_fba_inventory_save). Scheduled hourly.
 // Listings: GET_MERCHANT_LISTINGS_ALL_DATA (the All Listings report), asked for once a day by sync and saved to jt.docs
 // 'amzlistings' (jt_amazon_listings_save) in the shape the dashboard's upload used.
 // Orders come from Amazon's flat-file order reports (one row per order item), saved to jt.amazon_order_lines.
@@ -361,9 +363,32 @@ Deno.serve(async (req) => {
       const out = await fbmQty(c, by, items, !!p.preview, t0 + 95_000);
       return json({ ok: true, ...out });
     }
+    if (p.action === "fba_inventory") {
+      const rows: any[] = []; let next = "", pages = 0;
+      do {
+        const q = new URLSearchParams({ details: "true", granularityType: "Marketplace", granularityId: "ATVPDKIKX0DER", marketplaceIds: "ATVPDKIKX0DER" });
+        if (next) q.set("nextToken", next);
+        const r = await sp(c, "GET", "/fba/inventory/v1/summaries?" + q.toString());
+        for (const x of r.payload?.inventorySummaries || []) {
+          const d = x.inventoryDetails || {}, rv = d.reservedQuantity || {};
+          rows.push({ sku: x.sellerSku, asin: x.asin || "", fnsku: x.fnSku || "", name: x.productName || "", condition: x.condition || "",
+            fulfillable: d.fulfillableQuantity || 0, inbound_working: d.inboundWorkingQuantity || 0, inbound_shipped: d.inboundShippedQuantity || 0,
+            inbound_receiving: d.inboundReceivingQuantity || 0, reserved_total: rv.totalReservedQuantity || 0, reserved_customer: rv.pendingCustomerOrderQuantity || 0,
+            reserved_transfer: rv.pendingTransshipmentQuantity || 0, reserved_processing: rv.fcProcessingQuantity || 0,
+            researching: d.researchingQuantity?.totalResearchingQuantity || 0, unfulfillable: d.unfulfillableQuantity?.totalUnfulfillableQuantity || 0,
+            total: x.totalQuantity || 0, updated: x.lastUpdatedTime || null });
+        }
+        next = r.pagination?.nextToken || ""; pages++;
+        if (next) await new Promise((f) => setTimeout(f, 550));   // Amazon allows about 2 calls a second
+      } while (next && Date.now() - t0 < 100_000);
+      let saved = 0;
+      for (let i = 0; i < rows.length; i += 1000) saved += await rpc("jt_fba_inventory_save", { p: { rows: rows.slice(i, i + 1000), complete: false } });
+      if (!next) await rpc("jt_fba_inventory_save", { p: { rows: [], complete: true, skus: rows.map((r) => r.sku) } });
+      return json({ ok: true, pages, rows: rows.length, saved, complete: !next });
+    }
     if (p.action === "probe") {   // read-only look at a Finances, Reports or Listings endpoint (troubleshooting), trimmed
       const path = String(p.path || "");
-      if (!/^\/(finances|reports|listings)\//.test(path)) return json({ ok: false, error: "only /finances/, /reports/ and /listings/ paths" }, 400);
+      if (!/^\/(finances|reports|listings|fba)\//.test(path)) return json({ ok: false, error: "only /finances/, /reports/, /listings/ and /fba/ paths" }, 400);
       const r = await sp(c, "GET", path);
       return json({ ok: true, result: JSON.stringify(r).slice(0, Number(p.limit) || 4000) });
     }

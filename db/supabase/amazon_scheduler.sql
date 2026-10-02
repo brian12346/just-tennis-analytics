@@ -12,3 +12,13 @@ select cron.schedule('jt-amazon-orders', '*/10 * * * *', $$select jt.amazon_call
 select cron.unschedule(jobname) from cron.job where jobname in ('jt-amazon-fin-recent', 'jt-amazon-fin-nightly');
 select cron.schedule('jt-amazon-fin-recent', '20 * * * *', $$select jt.amazon_call('{"action":"fin_recent"}'::jsonb)$$);
 select cron.schedule('jt-amazon-fin-nightly', '50 11 * * *', $$select jt.amazon_call('{"action":"fin_nightly"}'::jsonb)$$);
+
+-- FBA inventory (FBA Inventory API, migration 066): every hour at :05 into jt.fba_inventory.
+select cron.unschedule(jobname) from cron.job where jobname = 'jt-amazon-fba';
+select cron.schedule('jt-amazon-fba', '5 * * * *', $$select jt.amazon_call('{"action":"fba_inventory"}'::jsonb)$$);
+
+-- Units per ASIN per day for the FBA forecast (migration 067): the last 4 days every hour at :12 (after the order
+-- syncs), the last 5 weeks nightly at 12:10 UTC.
+select cron.unschedule(jobname) from cron.job where jobname in ('jt-asin-daily', 'jt-asin-daily-nightly');
+select cron.schedule('jt-asin-daily', '12 * * * *', $$select jt.refresh_asin_daily((now() at time zone 'America/Los_Angeles')::date - 4)$$);
+select cron.schedule('jt-asin-daily-nightly', '10 12 * * *', $$select jt.refresh_asin_daily((now() at time zone 'America/Los_Angeles')::date - 35)$$);

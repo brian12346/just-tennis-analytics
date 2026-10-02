@@ -41,6 +41,7 @@
     <nav class="nav" aria-label="Finance sections">
       <a href="#payables" data-page="payables" class="on" aria-current="page"><span class="ico">⇄</span>Payables</a>
       <a href="#cash" data-page="cash"><span class="ico">◎</span>Cash flow</a>
+      <a href="#fba" data-page="fba"><span class="ico">▤</span>FBA forecast</a>
       <span class="soon" title="Coming next"><span class="ico">≡</span>P&amp;L <i>soon</i></span>
     </nav>
     <div class="side-foot">
@@ -131,6 +132,35 @@
       <div id="cf-assume"></div>
     </section>
   </main>
+
+  <main class="main" id="fba" hidden>
+    <header class="head">
+      <div>
+        <div class="eyebrow">Amazon FBA · next 26 weeks by ASIN</div>
+        <h1>FBA forecast</h1>
+        <div class="sub" id="fb-sub">Loading…</div>
+      </div>
+      <div class="head-actions cf-start">
+        <label>Stock for<span class="fb-num"><input id="fb-cover" type="number" min="1" max="26" step="1"> weeks</span></label>
+        <label>Lead time<span class="fb-num"><input id="fb-lead" type="number" min="0" max="20" step="1"> weeks</span></label>
+        <button class="btn" type="button" id="fb-refresh">Refresh</button>
+      </div>
+    </header>
+    <div id="fb-note" class="note" hidden></div>
+    <section class="cards" id="fb-cards" aria-label="FBA forecast summary"></section>
+    <section class="panel">
+      <div class="panel-h wrap">
+        <div class="tabs" id="fb-views" role="tablist"></div>
+        <div class="filters">
+          <input id="fb-q" type="search" placeholder="Search product, ASIN, brand" aria-label="Search">
+          <button class="btn small" type="button" id="fb-csv">Export CSV</button>
+        </div>
+      </div>
+      <div class="hint">Forecast = the last 8 weeks' pace × last year's seasonality for the same weeks (the ASIN's own, or its brand's when its history is thin or it was out of stock). Click a row for the week-by-week numbers.</div>
+      <div class="tbl" id="fb-table"></div>
+      <div class="foot" id="fb-foot"></div>
+    </section>
+  </main>
 </div>
 
 <script>
@@ -141,6 +171,9 @@
 </script>
 <script>
 <!-- @inline cashflow.js -->
+</script>
+<script>
+<!-- @inline fba.js -->
 </script>
 </body>
 </html>

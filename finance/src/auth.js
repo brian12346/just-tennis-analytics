@@ -80,10 +80,11 @@
   }
   async function write(fn, args) { const v = await rpc(fn, args); cache.clear(); return v; }
   window.FIN = { ready, sql, fn, write, download, clear: () => cache.clear() };
-  // pages: #payables (default) and #cash
+  // pages: #payables (default), #cash, #fba
+  const PAGES = ["payables", "cash", "fba"];
   function route() {
-    const page = (location.hash || "#payables").slice(1) === "cash" ? "cash" : "payables";
-    for (const id of ["payables", "cash"]) document.getElementById(id).hidden = id !== page;
+    const h = (location.hash || "#payables").slice(1), page = PAGES.includes(h) ? h : "payables";
+    for (const id of PAGES) document.getElementById(id).hidden = id !== page;
     document.querySelectorAll(".nav a[data-page]").forEach(a => { const on = a.dataset.page === page; a.classList.toggle("on", on); if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     window.dispatchEvent(new CustomEvent("fin:page", { detail: page }));
   }
