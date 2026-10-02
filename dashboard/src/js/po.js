@@ -795,7 +795,7 @@
       const q = (x) => Number(x.qty) || 0, sum = parts.reduce((a, x) => a + q(x), 0), tot = ed.splitTot && ed.splitTot[l.vid] != null ? ed.splitTot[l.vid] : sum;
       const rec = parts.reduce((a, x) => a + (x.received || 0), 0), sh = parts.filter(x => x.dest === "shopify").reduce((a, x) => a + q(x), 0), pp = sum - sh;
       return `<div class="splittot"><span class="pill manual">Split</span> <b class="num">${n0(tot)}</b> total · ${n0(sh)} Shopify + ${n0(pp)} prep${rec ? ` · ${n0(rec)} received` : ""}${sum !== tot ? ` <span class="neg">· parts add to ${n0(sum)}</span>` : ""}</div>`; };
-    const canSplit = (l) => !ro && !ed.recv && (Number(l.qty) || 0) > 1;
+    const canSplit = (l) => !ro && !ed.recv && ed.lines.filter(x => x.vid === l.vid).reduce((a, x) => a + (Number(x.qty) || 0), 0) > 1;
     const canUnrecv = (l) => l.received > 0 && ed.id && !ed.recv && !["qb_ready", "complete"].includes(ed.status);
     const destSel = (l) => {
       const canPick = !ro && !(l.received > 0) && (!ed.recv || PRE.includes(ed.status) || true);
@@ -808,7 +808,7 @@
     };
     const costInp = (l, v, chg, mode) => `${!ro && !ed.recv ? `<input class="inp num sm ${l.cost !== "" && !(Number(l.cost) >= 0) ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">` : m(l.cost === "" ? v && v.cost : Number(l.cost))}`;
     const prodCell = (l, v) => `<td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>${splitTot(l)}` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}</td>`;
-    const forCell = (l) => `<td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Send part to the Shopify store and part to the prep center">Split</button>` : ""}</div></td>`;
+    const forCell = (l) => `<td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Split between the Shopify store and one or more prep-center ASINs">Split</button>` : ""}</div></td>`;
     const unitOf = (l, v) => l.cost === "" ? (v && v.cost) || 0 : Number(l.cost) || 0;
     // the purchase order: what hasn't been invoiced yet
     const lineRow = (l) => {
@@ -849,12 +849,21 @@
         <span class="dbtns"><button class="mini primary" data-pact="unrecv1-go" ${bad || S.busy ? "disabled" : ""}>Un-receive</button><button class="mini" data-pact="unrecv1-no">Cancel</button></span></div></td></tr>`;
     };
     const splitRow = (l, NC) => {
-      const sp = ed.split, v = variant(l.vid) || {}, ls = (S.listings.get(l.vid) || []).slice().sort((a, b) => a.units - b.units);
-      return `<tr class="splitrow"><td colspan="${NC}" class="l"><div class="splitbox"><b>Split ${esc(v.title || "this product")}</b>
-        <label class="inline"><input class="inp num sm" data-f="spS" value="${esc(sp.s)}" inputmode="numeric" style="width:64px"> to the Shopify store</label>
-        <label class="inline"><input class="inp num sm" data-f="spP" value="${esc(sp.p)}" inputmode="numeric" style="width:64px"> to the prep center</label>
-        <select class="inp sm" data-f="spA" style="width:auto;max-width:170px" aria-label="ASIN for the prep center part"><option value="">any ASIN (assign later)</option>${ls.map(x => `<option value="${esc(x.sku)}" ${sp.asku === x.sku ? "selected" : ""}>${esc(lbl(x))}</option>`).join("")}</select>
-        <span class="dbtns"><button class="mini primary" data-pact="split-go">Split</button><button class="mini" data-pact="split-no">Cancel</button></span></div></td></tr>`;
+      const sp = ed.split, v = variant(l.vid) || {}, ls = (S.listings.get(l.vid) || []).slice().sort((a, b) => a.units - b.units || String(a.asin).localeCompare(String(b.asin)));
+      const sum = sp.parts.reduce((a, x) => a + (Number(x.q) || 0), 0);
+      const opt = (x, cur) => `<option value="${esc(x.sku)}" ${cur === x.sku ? "selected" : ""} title="${esc(x.title || "")}">${esc(lbl(x))}</option>`;
+      const part = (x, i) => {
+        const locked = x.received > 0 ? ` <span class="meta" title="Already received here — it can't go below that">${n0(x.received)} received</span>` : "";
+        const where = x.dest === "shopify" ? '<span class="sp-where">Shopify store</span>'
+          : `<span class="sp-where">Prep center</span><select class="inp sm" data-f="spa" data-k="${i}" style="width:auto;max-width:240px" aria-label="ASIN" ${x.received > 0 ? "disabled" : ""}><option value="" ${!x.asku ? "selected" : ""}>any ASIN (assign later)</option>${ls.map(y => opt(y, x.asku)).join("")}${x.asku && !ls.some(y => y.sku === x.asku) ? `<option selected value="${esc(x.asku)}">${esc(x.asku)}</option>` : ""}</select>`;
+        return `<div class="sp-part"><input class="inp num sm" data-f="spq" data-k="${i}" value="${esc(x.q)}" inputmode="numeric" placeholder="0" style="width:64px" aria-label="Quantity"> ${where}${locked}
+          ${x.dest === "prep" && !(x.received > 0) && sp.parts.filter(y => y.dest === "prep").length > 1 ? `<button class="linkbtn small" data-pact="sp-rm" data-k="${i}" aria-label="Remove this part">✕</button>` : ""}</div>`;
+      };
+      return `<tr class="splitrow"><td colspan="${NC}" class="l"><div class="splitbox sp-multi"><b>Split ${esc(v.title || "this product")}</b>
+        <div class="sp-parts">${sp.parts.map(part).join("")}</div>
+        <div class="sp-foot"><button class="mini" data-pact="sp-add">+ Another ASIN</button>
+          <span class="small ${sum !== sp.total ? "warnt" : "muted"}">${n0(sum)} of ${n0(sp.total)}${sum !== sp.total ? ` — the PO quantity becomes ${n0(sum)}` : ""}</span>
+          <span class="dbtns"><button class="mini primary" data-pact="split-go">Split</button><button class="mini" data-pact="split-no">Cancel</button></span></div></div></td></tr>`;
     };
     const bucket = (d) => {
       const ls = topLines.filter(l => l.dest === d), u = ls.reduce((a, l) => a + (anyInv ? pr.get(l.id).open : Number(l.qty) || 0), 0), c = ls.reduce((a, l) => a + (anyInv ? pr.get(l.id).open * unitOf(l, variant(l.vid)) : lineAmt(l)), 0);
@@ -1320,9 +1329,17 @@
     if (a === "skip" && r) { r.vid = null; r.how = ""; r.conf = ""; r.confirmed = false; r.skip = true; if (FREIGHT.test(r.src.description)) r.account = "inbound_shipping"; ed.search = null; syncLines(ed); ed.dirty = true; render(); return; }
     if (a === "unskip" && r) { r.skip = false; r.account = "inventory"; ed.dirty = true; render(); return; }
     if (a === "rmrow" && r) { iv.rows = iv.rows.filter(x => x !== r); syncLines(ed); ed.dirty = true; render(); return; }
-    if (a === "split" && l) { const q = Number(l.qty) || 0, half = Math.floor(q / 2);
-      ed.split = { id: l.id, total: q, s: String(l.dest === "shopify" ? q - half : half), p: String(l.dest === "shopify" ? half : q - half), asku: l.dest === "prep" ? l.asku : "" };
-      render(); setTimeout(() => { const i = box().querySelector('[data-f="spP"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
+    if (a === "split" && l) {
+      const mine = ed.lines.filter(x => x.vid === l.vid), total = mine.reduce((s2, x) => s2 + (Number(x.qty) || 0), 0);
+      const parts = mine.map(x => ({ dest: x.dest, asku: x.dest === "prep" ? x.asku || "" : "", q: String(Number(x.qty) || 0), received: x.received || 0 }));
+      parts.sort((x, y) => (x.dest === "shopify" ? 0 : 1) - (y.dest === "shopify" ? 0 : 1));
+      if (!parts.some(x => x.dest === "shopify")) parts.unshift({ dest: "shopify", asku: "", q: "0", received: 0 });
+      if (parts.filter(x => x.dest === "prep").length < (mine.length > 1 ? 1 : 2)) parts.push({ dest: "prep", asku: "", q: "0", received: 0 });
+      ed.split = { id: l.id, vid: l.vid, total, parts };
+      render(); setTimeout(() => { const i = box().querySelector('[data-f="spq"][data-k="' + (parts.length - 1) + '"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
+    if (a === "sp-add" && ed.split) { ed.split.parts.push({ dest: "prep", asku: "", q: "0", received: 0 }); render();
+      setTimeout(() => { const i = box().querySelector('[data-f="spq"][data-k="' + (ed.split.parts.length - 1) + '"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
+    if (a === "sp-rm" && ed.split) { const i = Number(k); if (ed.split.parts[i] && !(ed.split.parts[i].received > 0)) ed.split.parts.splice(i, 1); render(); return; }
     if (a === "shop-open") { ed.shopOpen = !ed.shopOpen; render(); if (ed.shopOpen) setTimeout(() => { const el = $("pe-shopcheck"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
     if (a === "shop-rm") { ed.shopCheck = null; ed.dirty = true; render(); note("info", "Shopify PO check removed. Save to keep that."); return; }
@@ -1622,27 +1639,38 @@
       note("info", `Un-received ${n0(n)} of ${esc((variant(l.vid) || {}).title || "the product")}${l.dest === "prep" ? " — they came back out of the prep center" : ""}.`);
     } catch (err) { S.busy = ""; render(); note("bad", "Couldn't un-receive: " + esc(JT.message(err))); }
   }
-  // one product, part to the Shopify store and part to the prep center
+  // one product split any way: the Shopify store and/or any number of prep-center ASINs. The product's lines become
+  // exactly the parts (same place + ASIN parts are added together); a part can't go below what it already received.
   function doSplit(ed) {
     const sp = ed.split, src = sp && ed.lines.find(x => x.id === sp.id); if (!src) { ed.split = null; render(); return; }
-    const sQ = Number(sp.s), pQ = Number(sp.p);
-    if (![sQ, pQ].every(n => Number.isInteger(n) && n >= 0) || sQ + pQ === 0) { note("bad", "Enter whole numbers for each side."); return; }
-    // a received line can't be split below what it received: un-receive the units that belong on the other side first
-    const keeps = src.dest === "shopify" ? sQ : src.asku === (sp.asku || "") ? pQ : 0;
-    if (src.received > keeps) { note("warn", `${n0(src.received)} of these were already received into the ${src.dest === "shopify" ? "Shopify store" : "prep center"}. Un-receive ${n0(src.received - keeps)} first (the un-receive link under Received), then split, then receive them on the other side.`); return; }
-    const mk = (dest, asku) => ({ id: newId(), vid: src.vid, asku, dest, qty: "0", cost: src.cost, received: 0, backorder: src.backorder, eta: src.eta, auto: false });
-    const shop = src.dest === "shopify" ? src : ed.lines.find(x => x.vid === src.vid && x.dest === "shopify") || null;
-    const prep = src.dest === "prep" && src.asku === sp.asku ? src : ed.lines.find(x => x.vid === src.vid && x.dest === "prep" && x.asku === sp.asku) || null;
-    const S2 = shop || (sQ ? (ed.lines.push(mk("shopify", "")), ed.lines[ed.lines.length - 1]) : null);
-    const P2 = prep || (pQ ? (ed.lines.push(mk("prep", sp.asku || "")), ed.lines[ed.lines.length - 1]) : null);
-    // the split replaces the source line's quantity; a line it merges into keeps what it had
-    const addTo = (L, q) => { if (!L) return; L.qty = String(L === src ? q : (L === shop || L === prep ? (Number(L.qty) || 0) + q : q)); };
-    if (src !== S2 && src !== P2) src.qty = "0";
-    addTo(S2, sQ); addTo(P2, pQ);
-    ed.lines = ed.lines.filter(x => (Number(x.qty) || 0) > 0 || x.received > 0 || (x !== src && x !== S2 && x !== P2));
-    ed.splitTot = ed.splitTot || {}; ed.splitTot[src.vid] = ed.lines.filter(x => x.vid === src.vid).reduce((a, x) => a + qn(x), 0);
-    ed.dest = "both"; ed.split = null; ed.dirty = true; render();
-    note("info", `Split: ${n0(sQ)} to the Shopify store, ${n0(pQ)} to the prep center. Save to keep it.`);
+    const want = new Map();
+    for (const x of sp.parts) {
+      const q = x.q === "" ? 0 : Number(x.q);
+      if (!Number.isInteger(q) || q < 0) { note("bad", "Enter whole numbers for each part."); return; }
+      const key = x.dest === "shopify" ? "shopify|" : "prep|" + (x.asku || "");
+      want.set(key, (want.get(key) || 0) + q);
+    }
+    const total = [...want.values()].reduce((a, q) => a + q, 0);
+    if (!total) { note("bad", "Enter how many go to each place."); return; }
+    const mine = ed.lines.filter(x => x.vid === src.vid), lk = (x) => x.dest === "shopify" ? "shopify|" : "prep|" + (x.asku || "");
+    for (const x of mine) { const q = want.get(lk(x)) || 0;
+      if ((x.received || 0) > q) { note("warn", `${n0(x.received)} were already received into ${x.dest === "shopify" ? "the Shopify store" : "the prep center" + (x.asku ? " for " + esc(x.asku) : "")}. Un-receive ${n0(x.received - q)} first (the un-receive link under Received), then split.`); return; } }
+    const tmpl = mine[0];
+    const next = [];
+    for (const [key, q] of want) {
+      const [dest, asku] = key.split("|");
+      const have = mine.find(x => lk(x) === key);
+      if (have) { have.qty = String(q); if (q > 0 || have.received > 0) next.push(have); }
+      else if (q > 0) next.push({ id: newId(), vid: src.vid, asku: asku || "", dest, qty: String(q), cost: tmpl.cost, received: 0, backorder: tmpl.backorder, eta: tmpl.eta, auto: false });
+    }
+    const at = ed.lines.indexOf(mine[0]);
+    ed.lines = ed.lines.filter(x => x.vid !== src.vid); ed.lines.splice(Math.max(0, at), 0, ...next);
+    ed.splitTot = ed.splitTot || {}; ed.splitTot[src.vid] = total;
+    if (next.length < 2) delete ed.splitTot[src.vid];
+    const ds = new Set(ed.lines.map(x => x.dest)); ed.dest = ds.size > 1 ? "both" : [...ds][0] || ed.dest;
+    ed.split = null; ed.dirty = true; render();
+    const sh = want.get("shopify|") || 0, prepParts = [...want].filter(([k2, q]) => k2.startsWith("prep|") && q > 0);
+    note("info", `Split ${n0(total)}: ${[sh ? `${n0(sh)} to the Shopify store` : "", ...prepParts.map(([k2, q]) => `${n0(q)} to the prep center${k2.slice(5) ? " for " + esc(k2.slice(5)) : " (any ASIN)"}`)].filter(Boolean).join(", ")}. Save to keep it.`);
   }
   function addLine(x) {
     const ed = S.ed, dest = x.asku ? "prep" : newDest(ed);
@@ -1715,7 +1743,7 @@
         if (stuck.length) note("warn", `${stuck.length} product${stuck.length === 1 ? " was" : "s were"} already received into the ${DESTN[stuck[0].dest].toLowerCase()}, so this PO stays on Both.`);
         render(); return; }
       if (t.id === "pe-boeta") return;
-      if (t.dataset.f === "spA" && ed.split) { ed.split.asku = t.value; return; }
+      if (t.dataset.f === "spa" && ed.split) { const x = ed.split.parts[Number(t.dataset.k)]; if (x) x.asku = t.value; return; }
       const k = t.dataset.k, l = k && ed.lines.find(x => x.id === k), r = k && iv && iv.rows.find(x => x.id === k);
       if (t.dataset.f === "dest" && l) { const oldK = keyOf(l); if (t.value === "@shopify") { l.dest = "shopify"; l.asku = ""; } else { l.dest = "prep"; l.asku = t.value; }
         if (ed.recv && oldK !== keyOf(l) && oldK in ed.recv) { ed.recv[keyOf(l)] = ed.recv[oldK]; delete ed.recv[oldK]; }
@@ -1747,11 +1775,9 @@
       if (t.dataset.f === "recv" && l) { ed.recv[keyOf(l)] = t.value.trim(); }
       if (t.dataset.f === "rq" && l && cur(ed)) { ed.rq = ed.rq || {}; ed.rq[rqKey(cur(ed), l)] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 500); }
       if (t.dataset.f === "unrq" && ed.unrecv) { ed.unrecv.n = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 400); }
-      if ((t.dataset.f === "spS" || t.dataset.f === "spP") && ed.split) {
-        const tot = ed.split.total, v2 = t.value.trim(), n = Number(v2);
-        if (t.dataset.f === "spS") { ed.split.s = v2; if (Number.isInteger(n) && n >= 0 && n <= tot) { ed.split.p = String(tot - n); const o = box.querySelector('[data-f="spP"]'); if (o) o.value = ed.split.p; } }
-        else { ed.split.p = v2; if (Number.isInteger(n) && n >= 0 && n <= tot) { ed.split.s = String(tot - n); const o = box.querySelector('[data-f="spS"]'); if (o) o.value = ed.split.s; } }
-      }
+      if (t.dataset.f === "spq" && ed.split) { const x = ed.split.parts[Number(t.dataset.k)]; if (x) x.q = t.value.trim();
+        clearTimeout(box._t); box._t = setTimeout(() => { const f = document.activeElement, fk = f && f.dataset && f.dataset.f === "spq" ? f.dataset.k : null, pos = f && f.selectionStart;
+          render(); if (fk != null) { const n = box.querySelector('[data-f="spq"][data-k="' + fk + '"]'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (_) {} } } }, 500); }
       if (t.dataset.f === "iqty" && r) { r.qty = t.value.trim(); syncLines(ed); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "icost" && r) { r.cost = t.value.trim().replace(/^\$/, ""); syncLines(ed); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
     });
@@ -1821,7 +1847,7 @@
     if (!S.invShown) { S.invShown = true; catalog().catch(() => {}); if (!S.orders) loadOrders(false).catch(() => {}); }
     render(); loadInvList(false).then(render).catch(e => note("bad", esc(JT.message(e))));
   };
-  window.JTPO = { _state: S, open: (id) => { const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(id); }, openInvoice, guessLine, merge, progress };
+  window.JTPO = { _state: S, render: () => render(), open: (id) => { const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(id); }, openInvoice, guessLine, merge, progress };
   // the Prep center (and tests) open invoices this way
   window.JTInvoices = { open: (id) => { const b = document.querySelector('.tabs button[data-tab="invoices"]'); if (b && $("tab-invoices").hidden) b.click(); openInvoice(id); } };
   if ((location.hash || "") === "#invoices") setTimeout(() => window.invShow(), 0);
