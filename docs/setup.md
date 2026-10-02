@@ -57,6 +57,15 @@ Orders come straight from Amazon (US, Mexico, Canada) through the `amazon` edge 
    saves the reports Amazon has finished, and about once an hour asks for orders changed in the last 3 days.
 4. History: `select jt.amazon_call('{"action":"backfill","since":"2025-01-01T08:00:00Z"}')` asks for one report per
    30 days; what Amazon's quota turns away is queued and asked for by the next syncs. Progress: `jt.amazon_reports`.
-5. The dashboard's Amazon tab shows these orders (ordered sales by purchase day, Pacific time) next to the Transaction
+5. Money (fees, refunds, other charges, payouts) comes from the Finances API (2024-06-19 listTransactions) instead of
+   uploading the Transaction report (Amazon refuses GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA for this account).
+   `{"action":"fin_days","first":"YYYY-MM-DD","last":"YYYY-MM-DD"}` saves every transaction item to
+   `jt.amazon_fin_lines` and rebuilds those Pacific days as the Amazon tab's days (`jt.docs` amzdays/amzmonths), the
+   same shape the upload writes. pg_cron runs `fin_recent` (yesterday + today) hourly at :20 and `fin_nightly` (last
+   7 days) at 11:50 UTC. Release copies of deferred orders and bank payouts are left out (migrations 045–052).
+   Checked against the uploaded September 2026 report: sales, units, orders, fees, refunds and other charges match to
+   the cent (one $5.99 line sits under a different fee column). Add `"check": true` to write to amzdays_api /
+   amzmonths_api instead, to compare. Uploading a Transaction report still works and replaces the days in it.
+6. The dashboard's Amazon tab shows these orders (ordered sales by purchase day, Pacific time) next to the Transaction
    report numbers, and fills days no Transaction report covers yet. **Refresh orders** asks Amazon for a new report now.
    Mexico and Canada sales are converted with the rates in `jt.settings` key `amazon_fx`.

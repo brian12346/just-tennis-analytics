@@ -479,9 +479,9 @@
   const MK = { us: "Amazon.com", mx: "Amazon.com.mx", ca: "Amazon.ca" };
   async function loadApiStatus(refresh) {
     try {
-      const r = await window.JT.rows(["as_of::text", "last_saved::text", "waiting", "failed_today", "first_day::text", "last_day::text"], "from jt.v_amazon_api_status", refresh);
+      const r = await window.JT.rows(["as_of::text", "last_saved::text", "waiting", "failed_today", "first_day::text", "last_day::text", "fin_as_of::text"], "from jt.v_amazon_api_status", refresh);
       const x = r[0] || [];
-      A.api.status = { as_of: x[0], last_saved: x[1], waiting: +x[2] || 0, failed: +x[3] || 0, first_day: x[4], last_day: x[5] };
+      A.api.status = { as_of: x[0], last_saved: x[1], waiting: +x[2] || 0, failed: +x[3] || 0, first_day: x[4], last_day: x[5], fin_as_of: x[6] };
       A.api.err = null;
     } catch (e) { A.api.err = e; }
   }
@@ -504,11 +504,11 @@
   function renderLive() {
     const st = A.api.status, el = $("az-live-status"), host = $("az-live-kpis");
     $("az-refresh").disabled = A.api.busy;
-    $("az-refresh").textContent = A.api.busy ? "Refreshing…" : "Refresh orders";
+    $("az-refresh").textContent = A.api.busy ? "Refreshing…" : "Refresh from Amazon";
     if (A.api.busy) { el.textContent = A.api.msg; }
     else if (A.api.err && !st) { el.textContent = "Couldn't load orders from Amazon. Reload the page."; }
     else if (!st || !st.first_day) { el.textContent = st && st.waiting ? "Amazon is preparing the first order reports…" : "No orders from Amazon yet."; }
-    else el.textContent = `Synced ${ago(st.as_of)}${st.waiting ? ` · ${st.waiting} report${st.waiting > 1 ? "s" : ""} on the way from Amazon` : ""}${A.api.msg ? " · " + A.api.msg : ""}`;
+    else el.textContent = `Orders synced ${ago(st.as_of)}${st.fin_as_of ? ` · fees & profit ${ago(st.fin_as_of)}` : ""}${st.waiting ? ` · ${st.waiting} report${st.waiting > 1 ? "s" : ""} on the way from Amazon` : ""}${A.api.msg ? " · " + A.api.msg : ""}`;
     if (!st || !st.first_day || !A.start) { host.innerHTML = ""; return; }
     const T = { all: [0, 0, 0, 0] }, todayPT = window.JTDate.today();
     for (const [day, d] of A.api.days) {
@@ -524,11 +524,17 @@
     if (A.end >= todayPT && today) k.splice(1, 0, { l: "Today so far", v: m0(today[2]), s: `${today[0].toLocaleString()} orders · ${today[1].toLocaleString()} units` });
     host.innerHTML = k.map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
   }
-  // Refresh: ask Amazon for a new report of recent orders, then wait for it (usually 1-3 minutes).
+  // Refresh: today's and yesterday's money (fees, refunds, profit) from Amazon's Finances API, then a new report of
+  // recent orders, waiting for it (usually 1-3 minutes).
   async function refreshOrders() {
     if (A.api.busy) return;
-    A.api.busy = true; A.api.msg = "Asking Amazon for the latest orders…"; renderLive();
+    A.api.busy = true; A.api.msg = "Getting today's fees and payments from Amazon…"; renderLive();
     try {
+      const f = await window.JT.amazon({ action: "fin_recent" });
+      if (!f || !f.ok) throw new Error((f && f.error) || "Amazon didn't answer.");
+      if (window.JTWeb) window.JTWeb.clearCache();
+      if (A.start) loadDays();
+      A.api.msg = "Asking Amazon for the latest orders…"; renderLive();
       const r = await window.JT.amazon({ action: "sync", force: true });
       if (!r || !r.ok) throw new Error((r && r.error) || "Amazon didn't answer.");
       if (r.throttled) throw new Error("Amazon only allows a few report requests at a time. Try again in a minute.");
@@ -591,7 +597,7 @@
     if (!S.db) { st.textContent = "Amazon data needs the database. Reload the page, or sign in again."; return; }
     if (!b) { st.textContent = A.monthsReady ? "No Amazon data yet. Upload a Transaction report (Payments → Reports Repository → Transaction)." : "Loading Amazon data…"; ["az-kpis","az-chart","az-daily","az-skus","az-orders"].forEach(id => $(id).innerHTML = ""); return; }
     if (A.err) { st.textContent = ""; azNote("bad", "Couldn't load Amazon days. Reload the page."); return; }
-    st.textContent = A.loading ? "Loading…" : `${b.txLast ? `Transaction reports through ${shortDay(b.txLast)}, ${b.txLast.slice(0, 4)}` : "No Transaction report uploaded yet"} · showing ${shortDay(A.start)} – ${shortDay(A.end)}${A.days && A.days.length > 100 ? " · large range, may be slow" : ""}`;
+    st.textContent = A.loading ? "Loading…" : `${b.txLast ? `Fees & profit through ${shortDay(b.txLast)}, ${b.txLast.slice(0, 4)}` : "No fees & profit data yet"} · showing ${shortDay(A.start)} – ${shortDay(A.end)}${A.days && A.days.length > 100 ? " · large range, may be slow" : ""}`;
     if (!A.days) return;
     const ag = aggregate();
     // days in the range with orders from Amazon but no Transaction report yet: ordered sales only
@@ -604,7 +610,7 @@
       ag.byDay.push({ day, apiOnly: true, ordered: a[2], orderedOrders: a[0], orders: 0, units: 0, sales: 0, ship: 0, promo: 0, sellfees: 0, fbafees: 0, ordersNet: 0, refunds: 0, cogs: 0, gp: 0, other: 0, profit: 0, mappedSales: 0, otherBreak: {} });
     }
     ag.byDay.sort((x, y) => x.day.localeCompare(y.day));
-    const gapNote = gap.length ? `${gap.length === 1 ? shortDay(gap[0]) + " isn't" : `${shortDay(gap[0])} – ${shortDay(gap[gap.length - 1])} aren't`} in an uploaded Transaction report yet, so ${gap.length === 1 ? "it shows" : "they show"} ordered sales from Amazon only (no fees or profit). Upload a newer Transaction report to fill ${gap.length === 1 ? "it" : "them"} in.` : "";
+    const gapNote = gap.length ? `${gap.length === 1 ? shortDay(gap[0]) + " isn't" : `${shortDay(gap[0])} – ${shortDay(gap[gap.length - 1])} aren't`} in Amazon's payments data yet, so ${gap.length === 1 ? "it shows" : "they show"} ordered sales only (no fees or profit). Fees and profit come in every hour.` : "";
     const sum = (k) => ag.byDay.reduce((a, r) => a + r[k], 0);
     const sales = sum("sales"), fees = -(sum("sellfees") + sum("fbafees")), cogs = sum("cogs"), profit = sum("profit"), gp = sum("gp"), other = sum("other"), refunds = sum("refunds");
     const k = [
@@ -617,7 +623,7 @@
       { c: "sales", l: "Profit", v: `<span class="${profit < 0 ? "neg" : ""}">${m0(profit)}</span>`, s: `${pct(profit / sales)} of sales` },
     ];
     $("az-kpis").innerHTML = k.map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
-    if (!txDays.size && gap.length) $("az-kpis").innerHTML = `<div class="kpi"><span class="eyebrow">Fees &amp; profit</span><span class="v dimv">—</span><span class="s">No Transaction report covers these days yet.</span></div>`;
+    if (!txDays.size && gap.length) $("az-kpis").innerHTML = `<div class="kpi"><span class="eyebrow">Fees &amp; profit</span><span class="v dimv">—</span><span class="s">Amazon's payments data doesn't cover these days yet.</span></div>`;
     const notes = [];
     if (txDays.size && ag.coverage < 0.95) notes.push(["warn", `Only ${pct(ag.coverage)} of these sales are mapped to a product cost, so profit is overstated. <button class="mini" data-go="amzmap">Map listings</button>`]);
     if (gapNote) notes.push(["info", gapNote]);
@@ -650,7 +656,7 @@
     svg.addEventListener("pointermove", (ev) => {
       const t = ev.target.closest("rect[data-i]"); if (!t) { tip.hidden = true; return; }
       const r = rows[+t.dataset.i], sb = svg.getBoundingClientRect(), box = host.getBoundingClientRect();
-      tip.innerHTML = r.apiOnly ? `<b>${wkDay(r.day)} ${shortDay(r.day)}</b><br>Ordered ${m(r.ordered)} · ${r.orderedOrders} orders<br><span class="dim">No Transaction report yet</span>`
+      tip.innerHTML = r.apiOnly ? `<b>${wkDay(r.day)} ${shortDay(r.day)}</b><br>Ordered ${m(r.ordered)} · ${r.orderedOrders} orders<br><span class="dim">No fees &amp; profit yet</span>`
         : `<b>${wkDay(r.day)} ${shortDay(r.day)}</b><br>Sales ${m(r.sales)} · ${r.orders} orders${r.ordered != null ? `<br>Ordered ${m(r.ordered)}` : ""}<br>Profit ${m(r.profit)}`;
       tip.hidden = false; tip.style.left = Math.min(Math.max((pad.l + (+t.dataset.i) * bw + bw / 2) * sb.width / W, 110), box.width - 110) + "px"; tip.style.top = (y(Math.max(bar(r), r.profit)) * sb.height / H - 8) + "px";
     });

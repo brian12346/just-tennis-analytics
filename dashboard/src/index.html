@@ -417,7 +417,7 @@
   <div id="tab-amazon" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Amazon · by posted date, Pacific time</span>
+        <span class="eyebrow">Amazon · fees &amp; profit by posted date, Pacific time</span>
         <h1>Amazon sales &amp; profit</h1>
       </div>
       <div class="controls">
@@ -427,8 +427,8 @@
           <span>–</span>
           <input type="date" id="az-end" aria-label="Amazon end date">
         </div>
-        <button class="btn" type="button" id="az-refresh" title="Ask Amazon for the latest orders">Refresh orders</button>
-        <label class="btn" for="az-tfile">Upload Transaction report<input type="file" id="az-tfile" accept=".csv,text/csv" hidden></label>
+        <button class="btn" type="button" id="az-refresh" title="Get the latest orders, fees and payments from Amazon">Refresh from Amazon</button>
+        <label class="btn" for="az-tfile" title="Not needed any more: fees and payments come from Amazon every hour. Uploading still works and replaces the days in the file.">Upload Transaction report<input type="file" id="az-tfile" accept=".csv,text/csv" hidden></label>
       </div>
     </header>
     <div class="status" id="az-status" aria-live="polite">Loading Amazon data…</div>
@@ -440,7 +440,7 @@
         <span class="muted small" id="az-live-status" aria-live="polite">Loading…</span>
       </div>
       <div class="kpis" id="az-live-kpis"></div>
-      <p class="muted small az-live-foot">By purchase date, Pacific time, straight from Amazon (US, Mexico, Canada), synced every hour. Mexico and Canada are converted to dollars. Cancelled orders and multi-channel orders aren't counted. Fees and profit come from the Transaction report below.</p>
+      <p class="muted small az-live-foot">By purchase date, Pacific time, straight from Amazon (US, Mexico, Canada), synced every hour. Mexico and Canada are converted to dollars. Cancelled orders and multi-channel orders aren't counted. Fees and profit below come from Amazon's payments (the same numbers as the Transaction report), every hour.</p>
     </section>
 
     <section class="kpis" id="az-kpis" aria-label="Amazon range totals"></section>

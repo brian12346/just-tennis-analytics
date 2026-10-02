@@ -5,6 +5,15 @@
 // POST {action: "backfill", since, until?} -> asks for order reports by purchase date from `since` to `until` (or now),
 //                                          30 days each. Amazon allows about 15 report requests at once, then 1 a minute:
 //                                          chunks it turns away are queued and asked for by later syncs.
+// POST {action: "fin_days", first, last, check?} -> money from the Finances API (2024-06-19 transactions) for whole Pacific days
+//                                          first..last: every transaction item is saved to jt.amazon_fin_lines, then
+//                                          jt_amazon_fin_build turns the days into the Amazon tab's days (amzdays, or
+//                                          amzdays_api with check). Stops before the time limit and says which day is
+//                                          next ({ok, done: [days], next}). This replaces uploading the Transaction report
+//                                          (Amazon doesn't let this account request that report through the API).
+// POST {action: "fin_nightly"}          -> fin_days for the last 7 full days (scheduled nightly)
+// POST {action: "fin_recent"}           -> fin_days for yesterday and today so far (scheduled hourly, and Refresh)
+// POST {action: "probe", path}          -> read-only GET of a /finances/ or /reports/ endpoint, for troubleshooting
 // Orders come from Amazon's flat-file order reports (one row per order item), saved to jt.amazon_order_lines.
 // Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.amazon_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -112,6 +121,52 @@ function parseOrders(text: string) {
   return out;
 }
 
+// ---- Finances API: transactions -> compact lines (one per item; amounts flattened to "Path/To/Leaf": amount)
+function flat(bs: any[] | null | undefined, prefix: string, out: Record<string, number>) {
+  for (const b of bs || []) {
+    const k = prefix ? prefix + "/" + b.breakdownType : b.breakdownType;
+    if (b.breakdowns && b.breakdowns.length) flat(b.breakdowns, k, out);
+    else out[k] = r2((out[k] || 0) + Number(b.breakdownAmount?.currencyAmount || 0));
+  }
+  return out;
+}
+function finLines(t: any) {
+  const rel = (n: string) => (t.relatedIdentifiers || []).find((x: any) => x.relatedIdentifierName === n)?.relatedIdentifierValue || "";
+  const base = {
+    transaction_id: t.transactionId, posted_at: t.postedDate, type: t.transactionType || "", description: t.description || "",
+    status: t.transactionStatus || "", order_id: rel("ORDER_ID"), marketplace: t.marketplaceDetails?.marketplaceId || t.sellingPartnerMetadata?.marketplaceId || "",
+    currency: t.totalAmount?.currencyCode || "",
+    release_of: rel("DEFERRED_TRANSACTION_ID"),   // the release of a deferred transaction already counted when it posted
+  };
+  const items = t.items || [];
+  if (!items.length) return [{ ...base, item: 0, sku: "", qty: 0, fulfillment: "", total: Number(t.totalAmount?.currencyAmount || 0), amounts: flat(t.breakdowns, "", {}) }];
+  return items.map((it: any, i: number) => {
+    const ctx = (it.contexts || []).find((x: any) => x.sku || x.quantityShipped != null) || {};
+    return { ...base, item: i, sku: ctx.sku || "", qty: Number(ctx.quantityShipped || 0), fulfillment: ctx.fulfillmentNetwork || "",
+      total: Number(it.totalAmount?.currencyAmount || 0), amounts: flat(it.breakdowns, "", {}) };
+  });
+}
+async function finDay(c: Creds, day: string) {
+  // Pacific midnight to midnight (07:00 or 08:00 UTC)
+  const midnight = (d: string) => {
+    for (const h of [7, 8]) { const x = new Date(`${d}T0${h}:00:00Z`); if (Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hourCycle: "h23" }).format(x)) % 24 === 0) return x; }
+    return new Date(`${d}T08:00:00Z`);
+  };
+  const nd = new Date(day + "T12:00:00Z"); nd.setUTCDate(nd.getUTCDate() + 1);
+  const start = midnight(day), end = midnight(nd.toISOString().slice(0, 10));
+  let token = "", n = 0, pages = 0;
+  const all: any[] = [];
+  do {
+    const q = `postedAfter=${start.toISOString()}&postedBefore=${(end > new Date() ? new Date(Date.now() - 3 * 60_000) : end).toISOString()}${token ? `&nextToken=${encodeURIComponent(token)}` : ""}`;
+    const r = await sp(c, "GET", `/finances/2024-06-19/transactions?${q}`);
+    for (const t of r.payload?.transactions || []) all.push(...finLines(t));
+    token = r.payload?.nextToken || ""; pages++;
+    if (token) await new Promise((f) => setTimeout(f, 1500));   // 0.5 requests a second
+  } while (token && pages < 40);
+  for (let i = 0; i < all.length; i += 1000) n += await rpc("jt_amazon_fin_lines_save", { p: { day, lines: all.slice(i, i + 1000) } });
+  return { day, lines: all.length, saved: n, pages };
+}
+
 async function fetchDocument(c: Creds, docId: string): Promise<string> {
   const d = await sp(c, "GET", `/reports/2021-06-30/documents/${encodeURIComponent(docId)}`);
   const r = await fetch(d.url);
@@ -201,6 +256,26 @@ Deno.serve(async (req) => {
         catch (e) { if ((e as any).status === 429) break; throw e; }
       }
       return json({ ok: true, collected: done, requested, throttled, dequeued, queued: (st.queued || []).length - dequeued });
+    }
+    if (p.action === "probe") {   // read-only look at a Finances or Reports endpoint (troubleshooting), trimmed
+      const path = String(p.path || "");
+      if (!/^\/(finances|reports)\//.test(path)) return json({ ok: false, error: "only /finances/ and /reports/ paths" }, 400);
+      const r = await sp(c, "GET", path);
+      return json({ ok: true, result: JSON.stringify(r).slice(0, Number(p.limit) || 4000) });
+    }
+    if (p.action === "fin_days" || p.action === "fin_nightly" || p.action === "fin_recent") {
+      let first = String(p.first || ""), last = String(p.last || "");
+      const pt = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(d);
+      if (p.action === "fin_nightly") { last = pt(new Date(Date.now() - 86400_000)); first = pt(new Date(Date.now() - 7 * 86400_000)); }
+      if (p.action === "fin_recent") { last = pt(new Date()); first = pt(new Date(Date.now() - 86400_000)); }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(first) || !/^\d{4}-\d{2}-\d{2}$/.test(last) || first > last) return json({ ok: false, error: "first and last must be YYYY-MM-DD" }, 400);
+      const done: any[] = []; let day = first;
+      while (day <= last && Date.now() - t0 < 100_000) {
+        done.push(await finDay(c, day));
+        const d = new Date(day + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + 1); day = d.toISOString().slice(0, 10);
+      }
+      const built = done.length ? await rpc("jt_amazon_fin_build", { p: { first, last: done[done.length - 1].day, target: p.check ? "amzdays_api" : "amzdays", file: "SP-API Finances" } }) : 0;
+      return json({ ok: true, done, built, next: day <= last ? day : null, last });
     }
     if (p.action === "backfill") {
       const since = new Date(String(p.since || ""));
