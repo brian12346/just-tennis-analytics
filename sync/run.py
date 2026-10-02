@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "labels", "amazon-transactions", "amazon-listings"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -66,6 +66,9 @@ def main(argv: list[str] | None = None) -> None:
             run("catalog", lambda: sh.sync_catalog(shop, conn, today))
             # linked Shopify POs' status (Shopify's PO API is preview-only: this records "not available" until it opens)
             run("shopify_po_status", lambda: sh.sync_po_status(shop, conn))
+        if a.job in ("nightly", "shopify-po-probe"):
+            # what Shopify's purchase-order API offers this store (read-only so far? any create mutation yet?)
+            run("shopify_po_probe", lambda: sh.probe_po_api(shop, conn))
 
     if a.job in ("hourly", "nightly", "cost-updates"):
         # costs typed in the dashboard -> Shopify (a save starts job cost-updates right away; hourly catches any missed)

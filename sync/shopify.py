@@ -682,3 +682,55 @@ def sync_po_status(shop: Shopify, conn) -> int:
             n += 1
     conn.commit()
     return n
+
+
+# ---------------------------------------------------------------- Shopify purchase order API probe
+# Read-only schema introspection (no purchase order is created or changed): which purchase-order queries,
+# mutations and fields Shopify's API exposes to this store, per API version. Saved to jt.settings 'shopify_po_probe'
+# so we know when creating POs through the API becomes possible.
+PO_PROBE_TYPE = """query($n: String!) { __type(name: $n) { name kind
+  fields { name args { name type { name kind ofType { name kind ofType { name } } } }
+           type { name kind ofType { name kind ofType { name kind ofType { name } } } } }
+  inputFields { name type { name kind ofType { name kind ofType { name } } } } } }"""
+
+
+def _tname(t: dict | None) -> str:
+    out = ""
+    while t:
+        if t.get("kind") == "NON_NULL":
+            out += "!"
+        elif t.get("kind") == "LIST":
+            out += "[]"
+        elif t.get("name"):
+            return t["name"] + out
+        t = t.get("ofType")
+    return out
+
+
+def probe_po_api(shop: Shopify, conn) -> int:
+    import json
+    import re
+    res = {"checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "versions": {}}
+    hit = re.compile(r"purchase.?order", re.I)
+    for version in ("2026-10", "unstable"):
+        v: dict = {}
+        try:
+            names = [t["name"] for t in shop.graphql("{ __schema { types { name } } }", version=version)["__schema"]["types"]]
+            v["types"] = sorted(n for n in names if hit.search(n))
+            for root in ("QueryRoot", "Mutation"):
+                t = shop.graphql(PO_PROBE_TYPE, {"n": root}, version=version)["__type"] or {}
+                v["queries" if root == "QueryRoot" else "mutations"] = [
+                    {"name": f["name"], "args": [f"{a['name']}: {_tname(a['type'])}" for a in f.get("args") or []], "returns": _tname(f["type"])}
+                    for f in t.get("fields") or [] if hit.search(f["name"])]
+            v["fields"] = {}
+            for n in v["types"][:25]:
+                t = shop.graphql(PO_PROBE_TYPE, {"n": n}, version=version)["__type"] or {}
+                v["fields"][n] = [f"{f['name']}: {_tname(f['type'])}" for f in (t.get("fields") or t.get("inputFields") or [])]
+        except Exception as e:  # noqa: BLE001 - record and move on
+            v["error"] = str(e)[:500]
+        res["versions"][version] = v
+    with conn.cursor() as cur:
+        cur.execute("""insert into jt.settings (key, value, updated_at) values ('shopify_po_probe', %s::jsonb, now())
+                       on conflict (key) do update set value = excluded.value, updated_at = now()""", (json.dumps(res),))
+    conn.commit()
+    return sum(len(v.get("mutations") or []) for v in res["versions"].values())
