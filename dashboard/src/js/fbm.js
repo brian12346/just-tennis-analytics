@@ -11,7 +11,11 @@
   // because the Shopify app can't read location names
   const locNum = (gid) => String(gid || "").split("/").pop();
   const locUrl = (gid) => `https://admin.shopify.com/store/justtennis-822/settings/locations/${encodeURIComponent(locNum(gid))}`;
-  const locName = (gid) => gid && gid === S.cfg.location_id && S.cfg.location_name ? S.cfg.location_name : gid ? `location #${locNum(gid)}` : "";
+  const locName = (gid) => {
+    const known = (S.cfg.locations || []).find(x => x.id === gid);
+    if (known && known.name) return known.name;
+    return gid && gid === S.cfg.location_id && S.cfg.location_name ? S.cfg.location_name : gid ? `location #${locNum(gid)}` : "";
+  };
   const fmtDT = (s) => { if (!s) return ""; const [d, t] = s.split(" "); return new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) + (t ? " " + t : ""); };
   const shopUrl = (pid, vid) => pid ? `https://admin.shopify.com/store/justtennis-822/products/${encodeURIComponent(pid)}${vid ? "/variants/" + encodeURIComponent(vid) : ""}` : "";
   const note = (kind, html) => { const n = $("fbm-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
@@ -74,6 +78,9 @@
     st.textContent = `${all.length.toLocaleString()} FBM orders since ${fmtDT(S.cfg.start || "")}${pend ? ` · ${pend} change${pend > 1 ? "s" : ""} on the way to Shopify…` : ""}${S.loading ? " · refreshing…" : ""}`;
     const lb = $("fbm-loc");
     if (S.editLoc) lb.innerHTML = `<span class="eyebrow">Shopify location</span><input class="inp" id="fbm-locname" maxlength="80" placeholder="Name, e.g. Warehouse" value="${esc(S.cfg.location_name || "")}"> <button class="mini primary" type="button" data-loc="save">Save</button> <button class="mini" type="button" data-loc="cancel">Cancel</button>`;
+    else if ((S.cfg.locations || []).length) lb.innerHTML = `<span class="eyebrow">Stock comes out of</span>
+      <select class="inp" id="fbm-locsel" aria-label="Shopify location FBM orders ship from">${S.cfg.location_id ? "" : '<option value="">The product\'s only location</option>'}${S.cfg.locations.map(x => `<option value="${esc(x.id)}" ${x.id === S.cfg.location_id ? "selected" : ""}>${esc(x.name || "location #" + locNum(x.id))}</option>`).join("")}</select>
+      ${S.cfg.location_id ? `<a class="olink small" href="${esc(locUrl(S.cfg.location_id))}" target="_blank" rel="noopener">open in Shopify</a>` : ""}`;
     else lb.innerHTML = S.cfg.location_id
       ? `<span class="eyebrow">Stock comes out of</span> <b>${esc(locName(S.cfg.location_id))}</b> <a class="olink small" href="${esc(locUrl(S.cfg.location_id))}" target="_blank" rel="noopener">open in Shopify</a> <button class="mini" type="button" data-loc="edit">${S.cfg.location_name ? "Rename" : "Name it"}</button>`
       : `<span class="eyebrow">Stock comes out of</span> <span class="muted">the product's only Shopify location (if a product is stocked at more than one, it'll ask which)</span>`;
@@ -205,6 +212,13 @@
     S.view = b.dataset.v; S.msg = null; S.shown = 150; S.sel.clear();
     $("fbm-seg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
     render();
+  });
+  $("fbm-loc").addEventListener("change", async (ev) => {
+    if (ev.target.id !== "fbm-locsel" || !ev.target.value) return;
+    try { await window.JT.fbm.setLocation(ev.target.value); S.msg = ["info", `FBM orders now come out of ${esc(locName(ev.target.value))}.`]; }
+    catch (e) { S.msg = ["bad", "Couldn't change the location: " + esc(window.JT.message ? window.JT.message(e) : (e.message || e))]; }
+    if (window.JTWeb) window.JTWeb.clearCache();
+    load(true);
   });
   $("fbm-loc").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.target.id === "fbm-locname") { ev.preventDefault(); saveLocName(); } });
   $("fbm-q").addEventListener("input", (ev) => { S.q = ev.target.value.trim().toLowerCase(); S.shown = 150; render(); });

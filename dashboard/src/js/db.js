@@ -283,6 +283,10 @@
         if (WEB) return WEB.write("jt_fbm_settings", { p: { start } });
         return run(`select jt.fbm_settings(${q(JSON.stringify({ start }))}::jsonb)::text as r`, true);
       },
+      async setLocation(location_id) {
+        if (WEB) return WEB.write("jt_fbm_settings", { p: { location_id } });
+        return run(`select jt.fbm_settings(${q(JSON.stringify({ location_id }))}::jsonb)::text as r`, true);
+      },
       async setLocationName(location_name) {
         if (WEB) return WEB.write("jt_fbm_settings", { p: { location_name } });
         return run(`select jt.fbm_settings(${q(JSON.stringify({ location_name }))}::jsonb)::text as r`, true);

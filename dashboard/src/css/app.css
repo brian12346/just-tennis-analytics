@@ -754,3 +754,4 @@ table.fbm-t .err{color:var(--bad);font-size:12px;white-space:normal;max-width:30
 .fbm-loc{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;font-size:13px;margin-top:-10px}
 .fbm-loc .eyebrow{margin-right:2px}
 .fbm-loc input{width:220px;max-width:100%}
+.fbm-loc select{width:auto;min-width:200px}

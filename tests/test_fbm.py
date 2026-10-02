@@ -58,6 +58,8 @@ class FbmShop:
         self.locations, self.adjusts = locations, []
 
     def graphql(self, q, v=None, version=None):
+        if "locations(" in q:
+            return {"locations": {"nodes": [{"id": f"gid://shopify/Location/{i}", "name": f"Store {i}", "isActive": True} for i in range(self.locations)]}}
         if "inventoryLevels(" in q:
             return {"inventoryItem": {"tracked": True, "inventoryLevels": {"nodes": [
                 {"location": {"id": f"gid://shopify/Location/{i}"}, "quantities": [{"name": "available", "quantity": 40 - i}]} for i in range(self.locations)]}}}
@@ -93,7 +95,7 @@ def test_job_needs_a_location_when_there_are_several(conn):
     decide(cur, ("111-1", "A-3PK", "decrement"))
     conn.commit()
     assert sh.apply_fbm_adjustments(FbmShop(locations=2), conn) == 0
-    cur.execute("select status, error like '%stocked at 2 Shopify locations%' from jt.fbm_decisions")
+    cur.execute("select status, error like '%stocked at 2 Shopify locations (Store 0, Store 1)%' from jt.fbm_decisions")
     assert cur.fetchone() == ("failed", True)
     # once the location is set, the units come from that one
     cur.execute("""update jt.settings set value = value || '{"location_id": "gid://shopify/Location/1"}' where key = 'fbm_sync'""")
@@ -130,3 +132,16 @@ def test_location_is_recorded_and_named(conn):
     assert cur.fetchone()[0] == "Warehouse"
     cur.execute("select value->>'location_id', value->>'start' from jt.settings where key = 'fbm_sync'")
     assert cur.fetchone() == ("gid://shopify/Location/1", "2026-09-25")
+
+
+def test_locations_saved_and_chosen(conn):
+    from sync import shopify as sh
+    cur = conn.cursor()
+    sh.apply_fbm_adjustments(FbmShop(locations=2), conn)      # nothing to do, but the store's locations are saved
+    cur.execute("select value->'locations' from jt.settings where key = 'fbm_sync'")
+    assert [x["name"] for x in cur.fetchone()[0]] == ["Store 0", "Store 1"]
+    cur.execute("""select jt.fbm_settings('{"location_id": "gid://shopify/Location/1"}')->>'location_id'""")
+    assert cur.fetchone()[0] == "gid://shopify/Location/1"
+    import psycopg, pytest
+    with pytest.raises(psycopg.errors.RaiseException, match="not one of the store"):
+        cur.execute("""select jt.fbm_settings('{"location_id": "gid://shopify/Location/99"}')""")

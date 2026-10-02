@@ -450,6 +450,26 @@ ADJUST_M = """mutation($input: InventoryAdjustQuantitiesInput!{IDEM}) {
 }"""
 
 
+LOCATIONS_Q = """{ locations(first: 50) { nodes { id name isActive } } }"""
+
+
+def _fbm_save_locations(shop: "Shopify", conn) -> dict:
+    """The store's active locations (needs read_locations) -> jt.settings fbm_sync.locations, for names on the page.
+    Returns {id: name}; {} when Shopify won't say (the job still works with ids)."""
+    import json
+    try:
+        nodes = [n for n in shop.graphql(LOCATIONS_Q)["locations"]["nodes"] if n.get("isActive")]
+    except Exception:  # noqa: BLE001 - no read_locations scope: carry on without names
+        return {}
+    locs = [{"id": n["id"], "name": n.get("name") or ""} for n in nodes]
+    with conn.cursor() as cur:
+        cur.execute("""insert into jt.settings (key, value) values ('fbm_sync', %s::jsonb)
+                       on conflict (key) do update set value = jt.settings.value || excluded.value, updated_at = now()""",
+                    (json.dumps({"locations": locs}),))
+    conn.commit()
+    return {x["id"]: x["name"] for x in locs}
+
+
 def _fbm_location_setting(conn) -> str | None:
     with conn.cursor() as cur:
         cur.execute("select value->>'location_id' from jt.settings where key = 'fbm_sync'")
@@ -463,6 +483,7 @@ def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
         cur.execute("""select order_id, sku, inventory_item_id, units, extract(epoch from decided_at)::bigint
                        from jt.fbm_decisions where decision = 'decrement' and status = 'pending' order by decided_at""")
         todo = cur.fetchall()
+    names = _fbm_save_locations(shop, conn)
     if not todo:
         return 0
     loc_setting = _fbm_location_setting(conn)
@@ -485,8 +506,9 @@ def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
             elif not levels:
                 raise RuntimeError("this product isn't stocked at any Shopify location")
             else:
-                raise RuntimeError(f"this product is stocked at {len(levels)} Shopify locations; set jt.settings fbm_sync.location_id "
-                                   "to the one FBM orders ship from")
+                where = ", ".join(names.get(x["location"]["id"], x["location"]["id"].split("/")[-1]) for x in levels)
+                raise RuntimeError(f"this product is stocked at {len(levels)} Shopify locations ({where}); choose the one FBM "
+                                   "orders ship from at the top of this page")
             loc = level["location"]["id"]
             before = next((q["quantity"] for q in level["quantities"] if q["name"] == "available"), None)
             change = {"inventoryItemId": f"gid://shopify/InventoryItem/{item}", "locationId": loc, "delta": -int(units)}
