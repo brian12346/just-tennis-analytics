@@ -67,15 +67,21 @@
   function shopifyStream() {
     const wd = Number(S.shopCfg.weekday ?? 1), pct = Number(S.shopCfg.pct_of_sales ?? 97) / 100;
     const paid = S.shopPay.filter(p => /paid|in_transit|scheduled/i.test(p.status) || !p.status);
+    // Shopify issues its payouts on Sundays (often a big one plus a small one), and the money reaches the bank a day or
+    // so later: each payout is placed on the next landing weekday (on or after it was issued) and same-day ones are added up
+    const land = (d) => { let x = d; while (wday(x) !== wd) x = addDays(x, 1); return x; };
+    const byDay = new Map();
+    for (const p of paid) { const d = land(p.day), g = byDay.get(d); if (g) g.amount += p.amount; else byDay.set(d, { day: d, amount: p.amount, id: p.id }); }
+    const weeks = [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
     let avg, basis;
-    if (paid.length >= 2) { const r = paid.slice(-4); avg = r.reduce((a, p) => a + p.amount, 0) / r.length; basis = `average of the last ${r.length} Shopify payouts`; }
+    if (weeks.length >= 2) { const r = weeks.slice(-4); avg = r.reduce((a, p) => a + p.amount, 0) / r.length; basis = `average of the last ${r.length} weeks of Shopify payouts`; }
     else {
       // last 4 complete weeks of Shopify sales (Mon–Sun) × the payout share
       const end = monday(today()), start = addDays(end, -28);
       const tot = S.shopDays.filter(d => d.day >= start && d.day < end).reduce((a, d) => a + d.total, 0);
       avg = tot / 4 * pct; basis = `${Math.round(pct * 100)}% of the last 4 weeks' Shopify sales (until real payouts sync)`;
     }
-    return { id: "shopify", kind: "shopify", label: "Shopify", weekday: wd, gap: 7, avg, basis, actuals: paid.map(p => ({ day: p.day, amount: p.amount, id: p.id })), last: paid.length ? paid[paid.length - 1].day : null, n: paid.length };
+    return { id: "shopify", kind: "shopify", label: "Shopify", weekday: wd, gap: 7, avg, basis, actuals: weeks, last: weeks.length ? weeks[weeks.length - 1].day : null, n: weeks.length };
   }
 
   // ---------- starting cash: QuickBooks bank balances (the accounts ticked) or a typed number ----------
@@ -238,7 +244,7 @@
         <td>${s.last ? fmtD(s.last) + (s.n ? "" : "") : '<span class="m">none yet</span>'}</td><td class="n">${money(s.avg)}</td>
         <td class="m">${esc(s.basis)}${s.kind === "shopify" && !shop.n ? ` · <label>share <input id="cf-shoppct" class="pct" value="${esc(S.shopCfg.pct_of_sales)}" inputmode="decimal">%</label>` : ""}</td></tr>`).join("")}
       </tbody></table>
-      <p class="m">Amazon history starts Sep 1, 2026 (when Amazon's payments data was connected), so early estimates rest on a few payouts. Shopify switches to real payouts once the Shopify app has the <code>read_shopify_payments_payouts</code> permission.</p>`;
+      <p class="m">Amazon history starts Sep 1, 2026 (when Amazon's payments data was connected), so early estimates rest on a few payouts. ${shop && shop.n ? "Shopify issues payouts on Sundays; each week's payouts are added together and shown on the landing day you pick." : "Shopify switches to real payouts once they sync from Shopify."}</p>`;
   }
 
   // ---------- saving ----------
