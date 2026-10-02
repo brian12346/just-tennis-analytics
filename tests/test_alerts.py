@@ -94,3 +94,26 @@ def test_oversell(conn):
     assert cur.fetchall() == [("P-FBM", "Amazon shows 5, stock covers 2", "warning")]
     cur.execute("select link->'skus' from jt.alerts where rule = 'fbm_unmapped_listed'")
     assert cur.fetchone()[0] == ["U-FBM"]
+
+
+def test_fbm_listed_while_fba_has_stock(conn):
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, inventory_item_id, sku, display_name, inventory_qty) values (9, 13, 997, 'P', 'Paddle', 20)")
+    cur.execute("insert into jt.docs (collection, id, data) values ('amzmap', 's_P', %s), ('amzmap', 's_Q', %s)",
+                (json.dumps({"sku": "P-FBM", "kind": "shopify", "variantId": "gid://shopify/ProductVariant/9", "units": 1}),
+                 json.dumps({"sku": "Q-FBM", "kind": "shopify", "variantId": "gid://shopify/ProductVariant/9", "units": 1})))
+    cur.execute("insert into jt.docs (collection, id, data) values ('amzlistings', 'c000', %s)",
+                (json.dumps({"file": "f", "total": 2, "rows": [["P-FBM", "B0P", "Paddle", 99, 5, "DEFAULT", "Active", "2020-01-01"],
+                                                             ["Q-FBM", "B0Q", "Other", 99, 0, "DEFAULT", "Active", "2020-01-01"]]}),))
+    # FBA holds B0P (45 available); B0Q only has inbound AWD stock
+    cur.execute("insert into jt.docs (collection, id, data) values ('fbainv', 'c000', %s), ('awdinv', 'c000', %s)",
+                (json.dumps({"rows": [["P-FBA", "X1", "B0P", "Paddle", 45, 0, 2, 0, 0, 99, 99, 12, 30, 40, "Healthy", "Other", 1, 0]]}),
+                 json.dumps({"rows": [["Q-FBA", "X2", "B0Q", "Other", 10, 0, 0, 0, 0]]})))
+    cur.execute("select asin, fba_available, fba_inbound, awd, stocked from jt.v_asin_fba order by asin")
+    assert cur.fetchall() == [("B0P", 45, 2, 0, True), ("B0Q", 0, 0, 10, True)]
+    refresh(cur)
+    cur.execute("select key, title from jt.alerts where rule = 'fbm_listed_with_fba'")
+    assert cur.fetchall() == [("P-FBM", "FBM shows 5 while FBA has 47")]
+    # Q-FBM has stock and 0 on Amazon, but FBA (AWD) holds the ASIN: not "stock not listed"
+    cur.execute("select count(*) from jt.alerts where rule = 'fbm_idle_stock'")
+    assert cur.fetchone()[0] == 0

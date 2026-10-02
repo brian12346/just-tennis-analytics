@@ -816,3 +816,11 @@ table.al-t .meta{font-size:12px;color:var(--muted)}
   .al-rule{grid-template-columns:auto minmax(0,1fr)}
   .al-rule .al-owner,.al-rule .al-params{grid-column:1 / -1}
 }
+#fbl-fba{width:auto}
+table.fbl-t tr.asin-head td{background:var(--line-soft);border-top:2px solid var(--line);padding-top:8px;padding-bottom:8px}
+table.fbl-t tr.asin-head .aname{font-weight:600}
+table.fbl-t tr.asin-head .meta{font-size:12px;margin-top:2px}
+table.fbl-t tr.fba-row td{color:var(--muted)}
+.chan{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;padding:1px 6px;border-radius:4px;border:1px solid var(--line)}
+.chan.fbm{color:var(--primary);border-color:var(--primary)}
+.chan.fba,.chan.awd{color:var(--good);border-color:var(--good)}

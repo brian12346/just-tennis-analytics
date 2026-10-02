@@ -320,6 +320,17 @@
         "to_char(pushed_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "pushed_by", "pushed_error",
         "(select to_char(max(updated_at) at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI') from jt.location_stock)"],
         "from jt.v_fbm_listings order by shopify_qty desc, sku", refresh),
+      // FBA / AWD units by SKU for the ASINs on the FBM listings panel (latest reports from the Amazon inventory tab):
+      // [sku, asin, title, available, inbound + transfer + reserved, shipped last 30 days, kind 'fba' | 'awd', snapshot]
+      fba: async (refresh) => {
+        const [f, a] = await Promise.all([
+          rows(["r->>0", "r->>2", "r->>3", "(r->>4)::numeric::int", "((r->>5)::numeric + (r->>6)::numeric + (r->>7)::numeric)::int", "(r->>11)::numeric::int", "'fba'", "d.data->>'snapshot'"],
+            "from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'fbainv' and r->>2 in (select asin from jt.v_fbm_listings)", refresh),
+          rows(["r->>0", "r->>2", "r->>3", "((r->>5)::numeric + (r->>6)::numeric)::int", "((r->>4)::numeric + (r->>8)::numeric)::int", "0", "'awd'", "d.data->>'snapshot'"],
+            "from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'awdinv' and r->>2 in (select asin from jt.v_fbm_listings)", refresh),
+        ]);
+        return f.concat(a);
+      },
       // FBM location stock: ask the sync job for fresh numbers (about a minute)
       refreshStock: async () => {
         if (WEB) return WEB.write("jt_request_location_stock", {});

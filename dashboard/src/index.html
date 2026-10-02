@@ -476,8 +476,8 @@
     </section>
     <section class="panel">
       <div class="panel-head">
-        <h2>FBM listings Shopify has in stock</h2>
-        <span class="muted small">"Send" sets the listing's quantity on Amazon to the number in the box (prefilled with what the FBM location's stock covers). It shows on Amazon within a few minutes.</span>
+        <h2>FBM listings Shopify has in stock, by ASIN</h2>
+        <span class="muted small">"Send" sets the listing's quantity on Amazon to the number in the box (prefilled with what the FBM location's stock covers, or 0 when Amazon holds the ASIN at FBA or AWD). It shows on Amazon within a few minutes.</span>
         <span class="muted small" id="fbl-sub">Merchant-fulfilled listings mapped to a Shopify product with stock at the FBM location.</span>
       </div>
       <div class="fbl-bar">
@@ -487,6 +487,7 @@
           <button type="button" data-v="Inactive" aria-pressed="false">Inactive</button>
           <button type="button" data-v="zero" aria-pressed="false">0 on Amazon</button>
         </div>
+        <select class="inp" id="fbl-fba" aria-label="FBA stock"><option value="all">All ASINs</option><option value="nofba">Not stocked at FBA</option><option value="fba">Stocked at FBA</option></select>
         <input class="inp" type="search" id="fbl-q" placeholder="ASIN, SKU or product" aria-label="Search FBM listings">
         <button class="mini" type="button" id="fbl-csv">Download CSV</button>
       </div>

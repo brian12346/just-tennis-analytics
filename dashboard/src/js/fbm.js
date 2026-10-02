@@ -3,7 +3,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const S = { msg: null, lines: null, lst: null, lstErr: null, lsel: new Set(), lqty: new Map(), lres: new Map(), lnote: "", lconfirm: false, sending: false, lv: "all", lq: "", lsort: ["shopify_qty", -1], lshown: 150, downloads: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
+  const S = { msg: null, lines: null, lst: null, lstErr: null, lsel: new Set(), lqty: new Map(), fba: new Map(), lfba: "all", lres: new Map(), lnote: "", lconfirm: false, sending: false, lv: "all", lq: "", lsort: ["shopify_qty", -1], lshown: 150, downloads: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
   const COLS = ["order_id", "sku", "asin", "product_name", "quantity", "order_status", "purchased", "shipped", "cancelled", "map_kind",
     "variant_id", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id", "tracked",
     "decision", "status", "error", "decided_by", "decided_at", "applied_at", "shopify_before", "decided_units", "location_id"];
@@ -59,7 +59,7 @@
     if (!window.JT || !window.JT.fbm) return;
     S.loading = true; render();
     try {
-      const lp = window.JT.fbm.listings(refresh).then(r => { S.lst = r.map(x => Object.fromEntries(LCOLS.map((c, i) => [c, x[i]]))); S.lstErr = null; }, e => { S.lstErr = e; });
+      const lp = Promise.all([window.JT.fbm.listings(refresh), window.JT.fbm.fba(refresh).catch(() => [])]).then(([r, fr]) => { setFba(fr); S.lst = r.map(x => Object.fromEntries(LCOLS.map((c, i) => [c, x[i]]))); S.lstErr = null; }, e => { S.lstErr = e; });
       const [rows, cfg] = await Promise.all([window.JT.fbm.lines(refresh), window.JT.fbm.settings(refresh)]);
       S.lines = rows.map(r => Object.fromEntries(COLS.map((c, i) => [c, r[i]])));
       S.cfg = cfg || {}; S.err = null;
@@ -151,16 +151,38 @@
   // ---------- FBM listings Shopify has stock for (stock at the FBM location), and sending quantities to Amazon ----------
   const num = (v) => v == null || v === "" ? "" : Number(v).toLocaleString();
   const money = (v) => v == null || v === "" ? "" : "$" + Number(v).toFixed(2);
-  const sendQty = (l) => { const v = S.lqty.get(l.sku); return v == null ? (l.packs || 0) : v; };
+  // FBA / AWD stock for the ASIN (Amazon inventory tab's latest reports). If Amazon holds the ASIN at FBA, FBA should
+  // carry it and the FBM listing stays at 0.
+  const fbaOf = (asin) => S.fba.get(asin) || null;
+  const sendQty = (l) => { const v = S.lqty.get(l.sku); if (v != null) return v; const f = fbaOf(l.asin); return f && f.stocked ? 0 : (l.packs || 0); };
+  function setFba(rows) {
+    const m = new Map();
+    for (const [sku, asin, title, avail, inbound, t30, kind, snap] of rows) {
+      const g = m.get(asin) || { rows: [], avail: 0, inbound: 0, awd: 0, t30: 0, snapshot: "" };
+      g.rows.push({ sku, title, avail: +avail || 0, inbound: +inbound || 0, t30: +t30 || 0, kind });
+      if (kind === "awd") g.awd += (+avail || 0) + (+inbound || 0); else { g.avail += +avail || 0; g.inbound += +inbound || 0; g.t30 += +t30 || 0; }
+      if (snap && kind === "fba") g.snapshot = snap;
+      m.set(asin, g);
+    }
+    for (const g of m.values()) g.stocked = g.avail + g.inbound + g.awd > 0;
+    S.fba = m;
+  }
   function listingsShown() {
     const q = S.lq, [k, dir] = S.lsort;
     return (S.lst || []).filter(l => (S.lv === "all" || (S.lv === "zero" ? !Number(l.amazon_qty_now) : l.amazon_status === S.lv)) &&
-        (!q || [l.asin, l.sku, l.title, l.shopify_title, l.shopify_sku].some(x => String(x || "").toLowerCase().includes(q))))
+        (S.lfba === "all" || (S.lfba === "fba") === !!(fbaOf(l.asin) || {}).stocked) &&
+        (!q || [l.asin, l.sku, l.title, l.shopify_title, l.shopify_sku, ...((fbaOf(l.asin) || {}).rows || []).map(r => r.sku)].some(x => String(x || "").toLowerCase().includes(q))))
       .sort((a, b) => {
         const x = a[k], y = b[k];
         const c = typeof x === "number" || typeof y === "number" ? (Number(x) || 0) - (Number(y) || 0) : String(x || "").localeCompare(String(y || ""));
-        return c * dir || String(a.sku).localeCompare(String(b.sku));
+        return c * dir || String(a.asin).localeCompare(String(b.asin)) || String(a.sku).localeCompare(String(b.sku));
       });
+  }
+  // the shown listings as ASIN groups, in sort order of their first listing
+  function groupsShown(list) {
+    const m = new Map();
+    for (const l of list) { if (!m.has(l.asin)) m.set(l.asin, []); m.get(l.asin).push(l); }
+    return [...m.entries()].map(([asin, fbm]) => ({ asin, fbm, fba: fbaOf(asin) }));
   }
   function renderListings() {
     const sub = $("fbl-sub"), tb = $("fbl-table");
@@ -168,45 +190,64 @@
     if (!S.lst) { sub.textContent = "Loading FBM listings…"; tb.innerHTML = ""; return; }
     const all = S.lst, f = all[0];
     const loc = locName(S.cfg.location_id) || "the FBM location";
-    const zero = all.filter(l => !Number(l.amazon_qty_now)).length;
+    const asins = new Set(all.map(l => l.asin)), atFba = [...asins].filter(a => (fbaOf(a) || {}).stocked).length;
+    const snap = [...S.fba.values()].map(g => g.snapshot).find(Boolean);
     const fromLoc = f && f.stock_source === "location";
-    sub.innerHTML = `${all.length.toLocaleString()} merchant-fulfilled listings (${new Set(all.map(l => l.asin)).size.toLocaleString()} ASINs) with Shopify stock at <b>${esc(loc)}</b> · ${zero.toLocaleString()} have 0 on Amazon` +
+    sub.innerHTML = `${asins.size.toLocaleString()} ASINs (${all.length.toLocaleString()} FBM listings) with Shopify stock at <b>${esc(loc)}</b> · <b>${atFba.toLocaleString()}</b> also stocked at FBA${snap ? ` (FBA report ${esc(fmtDT(snap))})` : ""} — those stay at 0 on FBM` +
       (fromLoc ? ` · stock as of ${esc(fmtDT(f.stock_at))} <button class="mini" type="button" id="fbl-stock">Refresh stock</button>` : ` · <span class="warnt">stock shown is the total across locations until the first ${esc(loc)} stock sync</span> <button class="mini" type="button" id="fbl-stock">Get ${esc(loc)} stock</button>`) +
       `${f ? ` · listings ${/Amazon API/.test(f.report_file || "") ? "fetched" : "uploaded"} ${esc(fmtDT(f.report_at))}` : ""}`;
-    const list = listingsShown();
+    const list = listingsShown(), groups = groupsShown(list);
     for (const k of [...S.lsel]) if (!list.some(l => l.sku === k)) S.lsel.delete(k);
     const th = (k, label, cls) => `<th class="${cls || ""} sort" data-lsort="${k}" ${S.lsort[0] === k ? `aria-sort="${S.lsort[1] > 0 ? "ascending" : "descending"}"` : ""}>${label}</th>`;
-    const shownRows = list.slice(0, S.lshown);
-    const body = shownRows.map(l => {
-      const pill = l.amazon_status === "Active" ? '<span class="pill ok">Active</span>' : `<span class="pill pos">${esc(l.amazon_status || "?")}</span>`;
-      const shop = l.product_id ? `<a class="olink" href="${esc(shopUrl(l.product_id, l.variant_id))}" target="_blank" rel="noopener">${esc(l.shopify_title || l.shopify_sku || "Shopify product")}</a>` : esc(l.shopify_title || "");
-      const res = S.lres.get(l.sku);
-      const sent = res ? (res.status === "ACCEPTED" ? `<span class="pill ok">Sent ${num(res.quantity)}</span>` : `<span class="pill cx" title="${esc(res.error)}">Not sent</span><div class="err">${esc(res.error)}</div>`)
-        : l.pushed_status === "ACCEPTED" ? `<span class="pill ok" title="${esc(l.pushed_by ? "by " + l.pushed_by : "")}">Sent ${num(l.pushed_qty)} · ${esc(fmtDT(l.pushed_at))}</span>`
-        : l.pushed_status ? `<span class="pill cx">Last send failed</span><div class="err">${esc(l.pushed_error || "")}</div>` : "";
-      const q = sendQty(l), over = q > (l.packs || 0);
-      const amz = Number(l.amazon_qty_now) || 0;
-      return `<tr class="${S.lsel.has(l.sku) ? "sel" : ""}"><td><input type="checkbox" data-lsel="${esc(l.sku)}" ${S.lsel.has(l.sku) ? "checked" : ""} aria-label="Select ${esc(l.sku)}"></td>
-        <td class="l mono"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.asin)}</a></td>
-        <td class="l t"><div>${esc(l.title || l.sku)}</div><div class="meta mono">${esc(l.sku)}</div></td>
-        <td class="l">${pill}</td><td>${amz ? num(amz) : '<span class="dim">0</span>'}</td>
-        <td class="l t"><div>${shop}</div>${l.shopify_sku ? `<div class="meta mono">${esc(l.shopify_sku)}</div>` : ""}</td>
-        <td><b>${num(l.shopify_qty)}</b>${l.stock_source === "location" && Number(l.shopify_total) !== Number(l.shopify_qty) ? `<div class="meta">${num(l.shopify_total)} all locations</div>` : ""}</td>
-        <td>${l.map_units > 1 ? `${num(l.packs)} <span class="dim small">(${num(l.map_units)}/pack)</span>` : num(l.packs)}</td>
-        <td class="send"><input class="inp qty${over ? " over" : ""}" type="number" min="0" max="9999" step="1" inputmode="numeric" data-lqty="${esc(l.sku)}" value="${esc(q)}" aria-label="Quantity to put on Amazon for ${esc(l.sku)}" title="${over ? "More than Shopify stock at " + esc(loc) + " covers" : ""}"><button class="mini primary" type="button" data-lsend="${esc(l.sku)}" ${S.sending ? "disabled" : ""}>Send</button>${sent ? `<div>${sent}</div>` : ""}</td></tr>`;
+    const shownGroups = groups.slice(0, S.lshown), shownRows = shownGroups.flatMap(g => g.fbm);
+    const body = shownGroups.map(g => {
+      const fb = g.fba, gsel = g.fbm.every(l => S.lsel.has(l.sku));
+      const fbaTxt = fb && fb.stocked
+        ? `<span class="pill ok">${fb.avail || fb.inbound ? "At FBA" : "At AWD"}</span> <b>${num(fb.avail)}</b> available${fb.inbound ? ` · ${num(fb.inbound)} inbound` : ""}${fb.awd ? ` · ${num(fb.awd)} at AWD` : ""}${fb.t30 ? ` · ${num(fb.t30)} sold in 30 days` : ""} <span class="muted">— FBA carries this ASIN, keep FBM at 0</span>`
+        : fb ? `<span class="pill pos">FBA empty</span> <span class="muted">FBA SKU${fb.rows.length > 1 ? "s" : ""} on this ASIN have no stock — FBM can carry it</span>`
+        : `<span class="pill pos">Not at FBA</span>`;
+      const head = `<tr class="asin-head${fb && fb.stocked ? " atfba" : ""}"><td><input type="checkbox" data-lgsel="${esc(g.asin)}" ${gsel ? "checked" : ""} aria-label="Select the FBM listings of ${esc(g.asin)}"></td>
+        <td class="l mono"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(g.asin)}" target="_blank" rel="noopener">${esc(g.asin)}</a></td>
+        <td class="l t" colspan="7"><div class="aname">${esc(g.fbm[0].title || g.fbm[0].sku)}</div><div class="meta">${fbaTxt}</div></td></tr>`;
+      const fbmRows = g.fbm.map(l => {
+        const pill = l.amazon_status === "Active" ? '<span class="pill ok">Active</span>' : `<span class="pill pos">${esc(l.amazon_status || "?")}</span>`;
+        const shop = l.product_id ? `<a class="olink" href="${esc(shopUrl(l.product_id, l.variant_id))}" target="_blank" rel="noopener">${esc(l.shopify_title || l.shopify_sku || "Shopify product")}</a>` : esc(l.shopify_title || "");
+        const res = S.lres.get(l.sku);
+        const sent = res ? (res.status === "ACCEPTED" ? `<span class="pill ok">Sent ${num(res.quantity)}</span>` : `<span class="pill cx" title="${esc(res.error)}">Not sent</span><div class="err">${esc(res.error)}</div>`)
+          : l.pushed_status === "ACCEPTED" ? `<span class="pill ok" title="${esc(l.pushed_by ? "by " + l.pushed_by : "")}">Sent ${num(l.pushed_qty)} · ${esc(fmtDT(l.pushed_at))}</span>`
+          : l.pushed_status ? `<span class="pill cx">Last send failed</span><div class="err">${esc(l.pushed_error || "")}</div>` : "";
+        const q = sendQty(l), over = q > (l.packs || 0), fbaWarn = q > 0 && fb && fb.stocked;
+        const amz = Number(l.amazon_qty_now) || 0;
+        return `<tr class="sku-row${S.lsel.has(l.sku) ? " sel" : ""}"><td><input type="checkbox" data-lsel="${esc(l.sku)}" ${S.lsel.has(l.sku) ? "checked" : ""} aria-label="Select ${esc(l.sku)}"></td>
+          <td class="l"><span class="chan fbm">FBM</span></td>
+          <td class="l t"><div class="meta mono">${esc(l.sku)}</div>${g.fbm.length > 1 || l.title !== g.fbm[0].title ? `<div class="meta">${esc(l.title)}</div>` : ""}</td>
+          <td class="l">${pill}</td><td>${amz ? `<b class="${fb && fb.stocked ? "warnt" : ""}">${num(amz)}</b>` : '<span class="dim">0</span>'}</td>
+          <td class="l t"><div>${shop}</div>${l.shopify_sku ? `<div class="meta mono">${esc(l.shopify_sku)}</div>` : ""}</td>
+          <td><b>${num(l.shopify_qty)}</b>${l.stock_source === "location" && Number(l.shopify_total) !== Number(l.shopify_qty) ? `<div class="meta">${num(l.shopify_total)} all locations</div>` : ""}</td>
+          <td>${l.map_units > 1 ? `${num(l.packs)} <span class="dim small">(${num(l.map_units)}/pack)</span>` : num(l.packs)}</td>
+          <td class="send"><input class="inp qty${over || fbaWarn ? " over" : ""}" type="number" min="0" max="9999" step="1" inputmode="numeric" data-lqty="${esc(l.sku)}" value="${esc(q)}" aria-label="Quantity to put on Amazon for ${esc(l.sku)}" title="${fbaWarn ? "FBA has stock for this ASIN" : over ? "More than Shopify stock at " + esc(loc) + " covers" : ""}"><button class="mini primary" type="button" data-lsend="${esc(l.sku)}" ${S.sending ? "disabled" : ""}>Send</button>${fbaWarn ? '<div class="err">FBA has stock — usually 0</div>' : ""}${sent ? `<div>${sent}</div>` : ""}</td></tr>`;
+      }).join("");
+      const fbaRows = (fb ? fb.rows : []).filter(r => r.avail || r.inbound || S.lq).map(r => `<tr class="sku-row fba-row"><td></td>
+          <td class="l"><span class="chan ${r.kind}">${r.kind === "awd" ? "AWD" : "FBA"}</span></td>
+          <td class="l t"><div class="meta mono">${esc(r.sku)}</div></td>
+          <td class="l"><span class="dim">Amazon fulfils</span></td>
+          <td><b>${num(r.avail)}</b>${r.inbound ? `<div class="meta">+${num(r.inbound)} ${r.kind === "awd" ? "inbound / to FBA" : "inbound"}</div>` : ""}</td>
+          <td class="l" colspan="4">${r.t30 ? `<span class="meta">${num(r.t30)} shipped in 30 days</span>` : ""}</td></tr>`).join("");
+      return head + fbmRows + fbaRows;
     }).join("");
     const allSel = shownRows.length && shownRows.every(l => S.lsel.has(l.sku));
-    tb.innerHTML = `<thead><tr><th><input type="checkbox" data-lselall ${allSel ? "checked" : ""} aria-label="Select all shown"></th>${th("asin", "ASIN", "l")}${th("title", "Amazon listing", "l")}${th("amazon_status", "Amazon status", "l")}${th("amazon_qty_now", "On Amazon")}${th("shopify_title", "Shopify product", "l")}${th("shopify_qty", esc(loc.split(/\s+/).filter(w => /^[a-z]+$/i.test(w)).sort((a, b) => b.length - a.length)[0] || "Location") + " stock")}${th("packs", "Covers")}<th class="l">Put on Amazon</th></tr></thead>
+    tb.innerHTML = `<thead><tr><th><input type="checkbox" data-lselall ${allSel ? "checked" : ""} aria-label="Select all shown"></th>${th("asin", "ASIN", "l")}${th("title", "Listing", "l")}${th("amazon_status", "Amazon status", "l")}${th("amazon_qty_now", "On Amazon")}${th("shopify_title", "Shopify product", "l")}${th("shopify_qty", esc(loc.split(/\s+/).filter(w => /^[a-z]+$/i.test(w)).sort((a, b) => b.length - a.length)[0] || "Location") + " stock")}${th("packs", "Covers")}<th class="l">Put on Amazon (FBM)</th></tr></thead>
       <tbody>${body || `<tr><td class="l dim" colspan="9">${all.length ? "No listings match." : "No FBM listings with Shopify stock. Map FBM listings to Shopify products on Amazon mapping."}</td></tr>`}</tbody>`;
-    $("fbl-count").innerHTML = list.length > S.lshown ? `Showing ${S.lshown} of ${list.length.toLocaleString()} listings <button class="mini" type="button" id="fbl-more">Show more</button>` : list.length ? `${list.length.toLocaleString()} listing${list.length > 1 ? "s" : ""}` : "";
+    $("fbl-count").innerHTML = groups.length > S.lshown ? `Showing ${S.lshown} of ${groups.length.toLocaleString()} ASINs <button class="mini" type="button" id="fbl-more">Show more</button>` : groups.length ? `${groups.length.toLocaleString()} ASIN${groups.length > 1 ? "s" : ""} · ${list.length.toLocaleString()} FBM listing${list.length > 1 ? "s" : ""}` : "";
     $("fbl-csv").hidden = !S.downloads || !list.length;
     // bulk bar
     const sel = list.filter(l => S.lsel.has(l.sku)), bar = $("fbl-bulk");
     bar.hidden = !sel.length && !S.lnote;
     const units = sel.reduce((a, l) => a + sendQty(l), 0), overN = sel.filter(l => sendQty(l) > (l.packs || 0)).length;
-    bar.innerHTML = (S.lnote ? `<span>${S.lnote}</span>` : "") + (sel.length ? `<span><b>${sel.length}</b> listing${sel.length > 1 ? "s" : ""} selected · ${units.toLocaleString()} units to put on Amazon${overN ? ` · <span class="warnt">${overN} above what ${esc(loc)} stock covers</span>` : ""}</span>
+    const fbaN = sel.filter(l => sendQty(l) > 0 && (fbaOf(l.asin) || {}).stocked).length;
+    bar.innerHTML = (S.lnote ? `<span>${S.lnote}</span>` : "") + (sel.length ? `<span><b>${sel.length}</b> listing${sel.length > 1 ? "s" : ""} selected · ${units.toLocaleString()} units to put on Amazon${overN ? ` · <span class="warnt">${overN} above what ${esc(loc)} stock covers</span>` : ""}${fbaN ? ` · <span class="warnt">${fbaN} on ASINs stocked at FBA</span>` : ""}</span>
       <span class="dbtns">${S.lconfirm ? `<button class="mini primary" type="button" data-lbulk="go" ${S.sending ? "disabled" : ""}>Yes, send ${sel.length} to Amazon</button><button class="mini" type="button" data-lbulk="no">Cancel</button>`
-        : `<button class="mini primary" type="button" data-lbulk="ask" ${S.sending ? "disabled" : ""}>Send to Amazon</button><button class="mini" type="button" data-lbulk="fill">Set to Shopify stock</button><button class="mini" type="button" data-lbulk="clear">Clear</button>`}</span>` : "");
+        : `<button class="mini primary" type="button" data-lbulk="ask" ${S.sending ? "disabled" : ""}>Send to Amazon</button><button class="mini" type="button" data-lbulk="fill">Suggested (0 if at FBA)</button><button class="mini" type="button" data-lbulk="zero">Set to 0</button><button class="mini" type="button" data-lbulk="clear">Clear</button>`}</span>` : "");
   }
   // send quantities to Amazon (the amazon function works through them, about 3 a second, picking up where it stopped)
   async function sendListings(skus) {
@@ -249,8 +290,8 @@
   }
   async function downloadListings() {
     const q = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const lines = [["asin", "seller_sku", "amazon_title", "amazon_status", "amazon_qty", "amazon_price", "shopify_product", "shopify_sku", "shopify_stock_fbm_location", "shopify_stock_all_locations", "units_per_listing", "amazon_units_covered", "on_amazon_now"].join(",")];
-    for (const l of listingsShown()) lines.push([l.asin, l.sku, l.title, l.amazon_status, l.amazon_qty, l.amazon_price, l.shopify_title, l.shopify_sku, l.shopify_qty, l.shopify_total, l.map_units, l.packs, l.amazon_qty_now].map(q).join(","));
+    const lines = [["asin", "seller_sku", "amazon_title", "amazon_status", "amazon_qty", "amazon_price", "shopify_product", "shopify_sku", "shopify_stock_fbm_location", "shopify_stock_all_locations", "units_per_listing", "amazon_units_covered", "on_amazon_now", "fba_available", "fba_inbound", "awd", "fba_shipped_30d"].join(",")];
+    for (const l of listingsShown()) { const f = fbaOf(l.asin) || {}; lines.push([l.asin, l.sku, l.title, l.amazon_status, l.amazon_qty, l.amazon_price, l.shopify_title, l.shopify_sku, l.shopify_qty, l.shopify_total, l.map_units, l.packs, l.amazon_qty_now, f.avail || 0, f.inbound || 0, f.awd || 0, f.t30 || 0].map(q).join(",")); }
     try { await S.downloads.save({ filename: `just-tennis-fbm-listings-in-stock_${new Date().toISOString().slice(0, 10)}.csv`, data: lines.join("\n") }); } catch (_) {}
   }
 
@@ -317,6 +358,7 @@
     else if (b.dataset.lbulk === "go") sendListings([...S.lsel]);
     else if (b.dataset.lbulk === "clear") { S.lsel.clear(); S.lconfirm = false; S.lnote = ""; renderListings(); }
     else if (b.dataset.lbulk === "fill") { for (const k of S.lsel) S.lqty.delete(k); renderListings(); }
+    else if (b.dataset.lbulk === "zero") { for (const k of S.lsel) S.lqty.set(k, 0); renderListings(); }
     else if (b.dataset.loc === "edit") { S.editLoc = true; render(); const i = $("fbm-locname"); if (i) i.focus(); }
     else if (b.dataset.loc === "cancel") { S.editLoc = false; render(); }
     else if (b.dataset.loc === "save") saveLocName();
@@ -333,11 +375,13 @@
     $("fbl-seg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
     renderListings();
   });
+  $("fbl-fba").addEventListener("change", (ev) => { S.lfba = ev.target.value; S.lshown = 150; renderListings(); });
   $("fbl-q").addEventListener("input", (ev) => { S.lq = ev.target.value.trim().toLowerCase(); S.lshown = 150; renderListings(); });
   tab.addEventListener("change", (ev) => {
     const t = ev.target;
     if (t.dataset.lsel != null) { t.checked ? S.lsel.add(t.dataset.lsel) : S.lsel.delete(t.dataset.lsel); S.lconfirm = false; renderListings(); return; }
-    if (t.hasAttribute("data-lselall")) { listingsShown().slice(0, S.lshown).forEach(l => t.checked ? S.lsel.add(l.sku) : S.lsel.delete(l.sku)); S.lconfirm = false; renderListings(); return; }
+    if (t.hasAttribute("data-lselall")) { groupsShown(listingsShown()).slice(0, S.lshown).flatMap(g => g.fbm).forEach(l => t.checked ? S.lsel.add(l.sku) : S.lsel.delete(l.sku)); S.lconfirm = false; renderListings(); return; }
+    if (t.dataset.lgsel != null) { listingsShown().filter(l => l.asin === t.dataset.lgsel).forEach(l => t.checked ? S.lsel.add(l.sku) : S.lsel.delete(l.sku)); S.lconfirm = false; renderListings(); return; }
     if (t.dataset.lqty != null) {
       const v = Math.max(0, Math.min(9999, Math.floor(Number(t.value) || 0)));
       S.lqty.set(t.dataset.lqty, v); S.lconfirm = false; renderListings(); return;
