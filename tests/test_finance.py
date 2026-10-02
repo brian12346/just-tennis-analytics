@@ -71,7 +71,7 @@ class PayoutShop:
 
 def test_shopify_payouts_sync(conn):
     from sync import shopify as sh
-    assert sh.sync_shopify_payouts(PayoutShop(denied=True), conn) == 0
+    assert sh.sync_shopify_payouts(PayoutShop(denied=True), conn)["variants"] == 0
     assert sh.sync_shopify_payouts(PayoutShop(), conn) == 2
     cur = conn.cursor()
     cur.execute("select id, amount, status from fin.shopify_payouts order by id")

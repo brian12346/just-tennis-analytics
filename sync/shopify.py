@@ -600,7 +600,7 @@ PAYOUTS_Q = """query($after: String) { shopifyPaymentsAccount { payouts(first: 1
   nodes { id issuedAt status net { amount currencyCode } } pageInfo { hasNextPage endCursor } } } }"""
 
 
-def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int:
+def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int | dict:
     """Shopify Payments payouts from the last `months` months -> fin.shopify_payouts."""
     cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=31 * months)).isoformat()
     rows, after = [], None
@@ -610,7 +610,7 @@ def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int:
         except RuntimeError as e:   # scope not granted yet: not a failure of the sync, just nothing to read
             if any(w in str(e).lower() for w in ("access denied", "scope", "not approved", "unauthorized")):
                 print("shopify payouts: skipped —", str(e)[:200])
-                return 0
+                return {"variants": 0, "skipped": str(e)[:300]}   # recorded in jt.sync_runs.detail
             raise
         po = acct.get("payouts") or {}
         nodes = po.get("nodes") or []
@@ -628,6 +628,8 @@ def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int:
                                on conflict (id) do update set issued_at = excluded.issued_at, status = excluded.status,
                                  amount = excluded.amount, currency = excluded.currency, synced_at = now()""", rows)
         conn.commit()
+    if not rows:
+        return {"variants": 0, "note": "Shopify returned no payouts"}
     return len(rows)
 
 
