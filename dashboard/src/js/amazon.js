@@ -121,6 +121,34 @@
     $("amz-lfile").value = "";
   }
   $("amz-lfile").addEventListener("change", (e) => uploadListings(e.target.files[0]));
+  // the All Listings report from the SP-API (the amazon function also fetches it once a day): ask for it, then keep
+  // collecting until Amazon has it ready (usually a few minutes) and reload the listings
+  async function getListings() {
+    const b = $("amz-lget"); if (!window.JT || !window.JT.amazon || b.disabled) return;
+    b.disabled = true; const label = b.textContent;
+    const say = (t) => { b.textContent = t; };
+    try {
+      say("Asking Amazon…");
+      const r = await window.JT.amazon({ action: "listings" });
+      if (!r || r.ok === false) throw new Error((r && r.error) || "Amazon didn't take the request");
+      for (let i = 0; i < 30; i++) {
+        say(`Waiting for Amazon… ${Math.floor(i / 2)} min`);
+        await new Promise(f => setTimeout(f, 30000));
+        const x = await window.JT.amazon({ action: "sync" });
+        const got = ((x && x.collected) || []).find(d => d.report_id === r.report_id && d.status !== "waiting");
+        if (got) {
+          if (got.status !== "done") throw new Error(got.detail || "Amazon couldn't make the report");
+          const snap = await S.db.collection("amzlistings").get(); applyListings(snap);
+          note("info", `Got ${Number(got.listings || 0).toLocaleString()} listings from Amazon. Your mappings are kept.`);
+          return;
+        }
+      }
+      note("warn", "Amazon is still making the listings report. It'll be saved automatically in the next few minutes — reload the page later.");
+    } catch (e) {
+      note("bad", "Couldn't get listings from Amazon: " + esc(window.JT.message ? window.JT.message(e) : (e.message || e)));
+    } finally { b.disabled = false; b.textContent = label; }
+  }
+  $("amz-lget").addEventListener("click", getListings);
 
   // ---------- data: mappings + current Shopify costs ----------
   function applyMaps(snap) {
@@ -370,7 +398,7 @@
     if (!S.db) st.textContent = "Mappings need the database. Reload the page, or sign in again.";
     else if (!S.listReady) st.textContent = "Loading listings…";
     else if (!allListings().length) st.textContent = "No listings yet. Upload your All Listings report (Inventory → Inventory Reports → All Listings Report).";
-    else st.textContent = `${S.listings.length.toLocaleString()} listings from ${S.listMeta ? S.listMeta.file : "report"}${S.listMeta && S.listMeta.uploadedAt ? " · uploaded " + new Date(S.listMeta.uploadedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : ""}`;
+    else st.textContent = `${S.listings.length.toLocaleString()} listings from ${S.listMeta ? S.listMeta.file : "report"}${S.listMeta && S.listMeta.uploadedAt ? (/Amazon API/.test(S.listMeta.file || "") ? " · fetched " : " · uploaded ") + new Date(S.listMeta.uploadedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : ""} · refreshed from Amazon daily`;
     renderKpis();
     const t = $("amz-table");
     const ae = document.activeElement, activeId = ae && ae.id && ae.id.startsWith("amz-") && t.contains(ae) ? ae.id : null;

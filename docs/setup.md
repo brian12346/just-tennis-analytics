@@ -70,6 +70,11 @@ Orders come straight from Amazon (US, Mexico, Canada) through the `amazon` edge 
    report numbers, and fills days no Transaction report covers yet. **Refresh orders** asks Amazon for a new report now.
    Mexico and Canada sales are converted with the rates in `jt.settings` key `amazon_fx`.
 
+**Listings.** The same `sync` also asks once a day for the All Listings report (`GET_MERCHANT_LISTINGS_ALL_DATA`,
+amazon.com) and saves it where the manual upload did (`jt.docs` collection `amzlistings`, via
+`jt_amazon_listings_save`, which refuses a report with less than half the current listings). "Get listings from Amazon"
+on the Amazon mapping tab asks right away (`{action: "listings"}`) and waits for it. Uploading the report by hand still works.
+
 ## 9. Amazon FBM orders → Shopify stock
 
 FBM orders ship from the Shopify store's stock. The dashboard's **FBM stock** tab lists every FBM order since a start

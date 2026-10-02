@@ -98,3 +98,25 @@ def test_finances_build_a_day_like_the_transaction_report(conn):
     cur.execute("select data->'skus', data->'totals'->>'sales' from jt.docs where collection = 'amzmonths_api' and id = '2026-09'")
     skus, sales = cur.fetchone()
     assert skus["B"][0] == 1 and D(sales) == D("319.99")
+
+
+def test_listings_save_chunks_and_guard(conn):
+    import json as _j
+    import pytest
+    cur = conn.cursor()
+    rows = [[f"S{i}", f"B{i}", "t", 1.5, None, "DEFAULT", "Active", "2020-01-01"] for i in range(1000)]
+    cur.execute("select public.jt_amazon_listings_save(%s::jsonb)", (_j.dumps({"file": "SP-API", "at": "2026-10-02T00:00:00Z", "rows": rows}),))
+    assert cur.fetchone()[0] == 1000
+    cur.execute("select id, jsonb_array_length(data->'rows'), data->>'file' from jt.docs where collection = 'amzlistings' order by id")
+    assert cur.fetchall() == [("c000", 450, "SP-API"), ("c001", 450, "SP-API"), ("c002", 100, "SP-API")]
+    # a smaller (but not suspiciously small) report empties the docs it no longer needs
+    cur.execute("select public.jt_amazon_listings_save(%s::jsonb)", (_j.dumps({"rows": rows[:600]}),))
+    cur.execute("select id, jsonb_array_length(data->'rows'), (data->>'total')::int from jt.docs where collection = 'amzlistings' order by id")
+    assert cur.fetchall() == [("c000", 450, 600), ("c001", 150, 600), ("c002", 0, 600)]
+    cur.execute("select r->>0 from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'amzlistings' order by d.id desc limit 1")
+    cur.execute("select count(distinct r->>0) from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'amzlistings'")
+    assert cur.fetchone()[0] == 600
+    cur.execute("savepoint s")
+    with pytest.raises(Exception):
+        cur.execute("select public.jt_amazon_listings_save(%s::jsonb)", (_j.dumps({"rows": rows[:10]}),))
+    cur.execute("rollback to savepoint s")

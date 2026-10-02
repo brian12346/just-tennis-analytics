@@ -165,7 +165,7 @@
     if (S.lstErr && !S.lst) { sub.textContent = "Couldn't load FBM listings: " + (window.JT.message ? window.JT.message(S.lstErr) : (S.lstErr.message || S.lstErr)); tb.innerHTML = ""; return; }
     if (!S.lst) { sub.textContent = "Loading FBM listings…"; tb.innerHTML = ""; return; }
     const all = S.lst, act = all.filter(l => l.amazon_status === "Active").length, f = all[0];
-    sub.innerHTML = `${all.length.toLocaleString()} merchant-fulfilled listings (${new Set(all.map(l => l.asin)).size.toLocaleString()} ASINs) mapped to a Shopify product with stock · ${act.toLocaleString()} active, ${(all.length - act).toLocaleString()} inactive on Amazon${f ? ` · from ${esc(f.report_file || "the All Listings report")}${f.report_at ? `, uploaded ${esc(fmtDT(f.report_at))}` : ""} (upload a newer one on Amazon mapping)` : ""} · Shopify stock is the total across locations`;
+    sub.innerHTML = `${all.length.toLocaleString()} merchant-fulfilled listings (${new Set(all.map(l => l.asin)).size.toLocaleString()} ASINs) mapped to a Shopify product with stock · ${act.toLocaleString()} active, ${(all.length - act).toLocaleString()} inactive on Amazon${f ? ` · from ${esc(f.report_file || "the All Listings report")}${f.report_at ? `, ${/Amazon API/.test(f.report_file || "") ? "fetched" : "uploaded"} ${esc(fmtDT(f.report_at))}` : ""} (refreshed from Amazon daily)` : ""} · Shopify stock is the total across locations`;
     const list = listingsShown();
     const th = (k, label, cls) => `<th class="${cls || ""} sort" data-lsort="${k}" ${S.lsort[0] === k ? `aria-sort="${S.lsort[1] > 0 ? "ascending" : "descending"}"` : ""}>${label}</th>`;
     const body = list.slice(0, S.lshown).map(l => {

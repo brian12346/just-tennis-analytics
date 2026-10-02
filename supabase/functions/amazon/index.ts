@@ -13,7 +13,10 @@
 //                                          (Amazon doesn't let this account request that report through the API).
 // POST {action: "fin_nightly"}          -> fin_days for the last 7 full days (scheduled nightly)
 // POST {action: "fin_recent"}           -> fin_days for yesterday and today so far (scheduled hourly, and Refresh)
+// POST {action: "listings"}            -> asks now for the All Listings report (US); the next sync saves it
 // POST {action: "probe", path}          -> read-only GET of a /finances/ or /reports/ endpoint, for troubleshooting
+// Listings: GET_MERCHANT_LISTINGS_ALL_DATA (the All Listings report), asked for once a day by sync and saved to jt.docs
+// 'amzlistings' (jt_amazon_listings_save) in the shape the dashboard's upload used.
 // Orders come from Amazon's flat-file order reports (one row per order item), saved to jt.amazon_order_lines.
 // Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.amazon_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -26,6 +29,7 @@ const HOST = "https://sellingpartnerapi-na.amazon.com";
 const MARKETS: Record<string, string> = { ATVPDKIKX0DER: "us", A2EUQ1WTGCTBG2: "ca", A1AM78C64UM0Y8: "mx" };
 const BY_UPDATE = "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL";
 const BY_ORDER = "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_ORDER_DATE_GENERAL";
+const LISTINGS = "GET_MERCHANT_LISTINGS_ALL_DATA";
 const CHANNEL: Record<string, string> = { "amazon.com": "us", "amazon.ca": "ca", "amazon.com.mx": "mx" };
 
 type Creds = Record<string, string>;
@@ -89,10 +93,35 @@ async function requestReport(c: Creds, type: string, start: Date, end: Date | nu
   }
 }
 
+// the All Listings report for amazon.com (the FBM tab and the mapping tab work from the US listings)
+async function requestListings(c: Creds, by: string) {
+  const r = await sp(c, "POST", "/reports/2021-06-30/reports", { reportType: LISTINGS, marketplaceIds: ["ATVPDKIKX0DER"] });
+  await rpc("jt_amazon_save", { p: { op: "request", report_id: r.reportId, report_type: LISTINGS, kind: "listings", marketplaces: ["us"], data_start: null, data_end: null, by } });
+  return r.reportId as string;
+}
+// rows as the dashboard's upload saves them: [sku, asin, title, price, qty, channel, status, open date]
+function parseListings(text: string) {
+  const rows = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (rows.length < 2) return [];
+  const H = rows[0].split("\t").map((h) => h.trim().toLowerCase());
+  const ix = (n: string) => H.indexOf(n);
+  if (ix("seller-sku") < 0) throw new Error("the listings report has no seller-sku column");
+  const col: Record<string, number> = { sku: ix("seller-sku"), asin: ix("asin1") >= 0 ? ix("asin1") : ix("product-id"), title: ix("item-name"), price: ix("price"),
+    qty: ix("quantity"), channel: ix("fulfillment-channel"), status: ix("status"), opened: ix("open-date") };
+  const out: unknown[] = [];
+  for (const l of rows.slice(1)) {
+    const f = l.split("\t"); const g = (k: string) => col[k] >= 0 ? (f[col[k]] || "").trim() : "";
+    if (!g("sku")) continue;
+    const pr = parseFloat(g("price").replace(/[^0-9.\-]/g, ""));
+    out.push([g("sku"), g("asin"), g("title").slice(0, 160), isNaN(pr) ? null : pr, g("qty") === "" ? null : Number(g("qty")), g("channel"), g("status") || "Active", g("opened").slice(0, 10)]);
+  }
+  return out;
+}
+
 const num = (s: string | undefined) => { const v = parseFloat(String(s ?? "").replace(/,/g, "")); return isNaN(v) ? 0 : v; };
 const r2 = (x: number) => Math.round(x * 100) / 100;
 function parseOrders(text: string) {
-  const rows = text.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  const rows = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
   if (!rows.length) return [];
   const H = rows[0].split("\t").map((h) => h.trim().toLowerCase());
   const at = (r: string[], n: string) => { const i = H.indexOf(n); return i < 0 ? "" : (r[i] ?? "").trim(); };
@@ -200,6 +229,19 @@ async function collect(c: Creds, deadline: number) {
       await rpc("jt_amazon_save", { p: { op: "report", report_id: p.report_id, status: "failed", detail: `Amazon status ${s}` } });
       done.push({ report_id: p.report_id, status: "failed", detail: s }); continue;
     }
+    if (p.report_type === LISTINGS) {
+      try {
+        const rows = parseListings(await fetchDocument(c, rep.reportDocumentId));
+        const at = rep.createdTime || new Date().toISOString();
+        const saved = await rpc("jt_amazon_listings_save", { p: { file: `Amazon API · All Listings ${String(at).slice(0, 10)}`, at, rows } });
+        await rpc("jt_amazon_save", { p: { op: "report", report_id: p.report_id, status: "done", rows: rows.length, detail: `${saved} listings saved` } });
+        done.push({ report_id: p.report_id, status: "done", listings: saved });
+      } catch (e) {
+        await rpc("jt_amazon_save", { p: { op: "report", report_id: p.report_id, status: "failed", detail: String((e as Error).message).slice(0, 500) } });
+        done.push({ report_id: p.report_id, status: "failed", detail: (e as Error).message });
+      }
+      continue;
+    }
     try {
       const lines = parseOrders(await fetchDocument(c, rep.reportDocumentId));
       let saved = 0;
@@ -255,7 +297,20 @@ Deno.serve(async (req) => {
         try { await requestReport(c, q.report_type, new Date(q.data_start), q.data_end ? new Date(q.data_end) : null, q.kind, by, q.report_id); dequeued++; }
         catch (e) { if ((e as any).status === 429) break; throw e; }
       }
-      return json({ ok: true, collected: done, requested, throttled, dequeued, queued: (st.queued || []).length - dequeued });
+      // the All Listings report: once a day, or when asked (p.listings), unless one is already on its way
+      let listings: string | null = null;
+      const lastL = st.last_listings ? new Date(st.last_listings).getTime() : 0;
+      const pendingL = (st.pending || []).some((x: any) => x.kind === "listings" && !done.some((d) => d.report_id === x.report_id && d.status !== "waiting"));
+      if (!throttled && !pendingL && (p.listings || (Date.now() - lastL > 23 * 3600 * 1000 && Date.now() - (st.last_listings_any ? new Date(st.last_listings_any).getTime() : 0) > 3600 * 1000))) {
+        try { listings = await requestListings(c, by); } catch (e) { if ((e as any).status !== 429) throw e; }
+      }
+      return json({ ok: true, collected: done, requested, throttled, dequeued, queued: (st.queued || []).length - dequeued, listings, listings_pending: pendingL });
+    }
+    if (p.action === "listings") {
+      const st = await rpc("jt_amazon_state");
+      const pend = (st.pending || []).find((x: any) => x.kind === "listings");
+      if (pend) return json({ ok: true, report_id: pend.report_id, already: true });
+      return json({ ok: true, report_id: await requestListings(c, by) });
     }
     if (p.action === "probe") {   // read-only look at a Finances or Reports endpoint (troubleshooting), trimmed
       const path = String(p.path || "");
