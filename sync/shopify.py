@@ -432,6 +432,117 @@ def apply_cost_updates(shop: Shopify, conn, today: dt.date) -> int:
     return done
 
 
+# ---------------------------------------------------------------- Amazon FBM orders -> Shopify stock
+# Amazon FBM orders ship from the store's stock. When an order is confirmed on the dashboard's FBM tab
+# (jt.fbm_decide -> jt.fbm_decisions, status pending), the units come off Shopify's "available" quantity at the
+# store's location. Newer API versions want the quantity we expect to change from and an idempotency key (so a
+# retried request can't take the units twice); older ones refuse those, so each is dropped if Shopify rejects it.
+LOCATIONS_Q = """{ locations(first: 25) { nodes { id name isActive } } }"""
+LEVEL_Q = """query($item: ID!, $loc: ID!) { inventoryItem(id: $item) { tracked inventoryLevel(locationId: $loc) {
+  quantities(names: ["available"]) { name quantity } } } }"""
+ADJUST_M = """mutation($input: InventoryAdjustQuantitiesInput!){IDEM} {
+  inventoryAdjustQuantities(input: $input){IDEMUSE} {
+    inventoryAdjustmentGroup { id changes { name delta quantityAfterChange } }
+    userErrors { field message code }
+  }
+}"""
+
+
+def _fbm_location(shop: "Shopify", conn) -> str:
+    import json
+    with conn.cursor() as cur:
+        cur.execute("select value from jt.settings where key = 'fbm_sync'")
+        row = cur.fetchone()
+    cfg = (row[0] if row else None) or {}
+    if cfg.get("location_id"):
+        return str(cfg["location_id"])
+    locs = [n for n in shop.graphql(LOCATIONS_Q)["locations"]["nodes"] if n.get("isActive")]
+    if len(locs) != 1:
+        raise RuntimeError("Shopify has more than one location (" + ", ".join(n["name"] for n in locs)
+                           + "); set jt.settings fbm_sync.location_id to the one FBM orders ship from")
+    with conn.cursor() as cur:
+        cur.execute("""insert into jt.settings (key, value) values ('fbm_sync', %s::jsonb)
+                       on conflict (key) do update set value = jt.settings.value || excluded.value, updated_at = now()""",
+                    (json.dumps({"location_id": locs[0]["id"], "location_name": locs[0]["name"]}),))
+    conn.commit()
+    return locs[0]["id"]
+
+
+def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
+    """Take confirmed Amazon FBM orders out of Shopify's available stock (jt.fbm_decisions, status pending)."""
+    with conn.cursor() as cur:
+        cur.execute("""select order_id, sku, inventory_item_id, units, extract(epoch from decided_at)::bigint
+                       from jt.fbm_decisions where decision = 'decrement' and status = 'pending' order by decided_at""")
+        todo = cur.fetchall()
+    if not todo:
+        return 0
+    try:
+        loc = _fbm_location(shop, conn)
+    except Exception as e:  # noqa: BLE001 - show it on each waiting order instead of failing silently
+        with conn.cursor() as cur:
+            cur.execute("update jt.fbm_decisions set status = 'failed', error = %s, applied_at = now() "
+                        "where decision = 'decrement' and status = 'pending'", (str(e)[:500],))
+        conn.commit()
+        raise
+    done = 0
+    for oid, sku, item, units, stamp in todo:
+        before, err = None, ""
+        try:
+            lv = shop.graphql(LEVEL_Q, {"item": f"gid://shopify/InventoryItem/{item}", "loc": loc})["inventoryItem"]
+            if not lv:
+                raise RuntimeError("Shopify doesn't have this inventory item any more")
+            if not lv.get("tracked"):
+                raise RuntimeError("Shopify doesn't track inventory for this product, so there's nothing to take out")
+            level = lv.get("inventoryLevel")
+            if not level:
+                raise RuntimeError("this product isn't stocked at the Shopify location")
+            before = next((q["quantity"] for q in level["quantities"] if q["name"] == "available"), None)
+            change = {"inventoryItemId": f"gid://shopify/InventoryItem/{item}", "locationId": loc, "delta": -int(units)}
+            key = f"jt-fbm-{oid}-{sku}-{stamp}"[:255]
+            attempts = [(True, True), (False, True), (True, False), (False, False)]   # (changeFromQuantity, idempotency key)
+            last = None
+            for with_from, with_key in attempts:
+                ch = dict(change, **({"changeFromQuantity": before} if with_from and before is not None else {}))
+                q = ADJUST_M.replace("{IDEM}", ", $key: String!" if with_key else "").replace("{IDEMUSE}", " @idempotent(key: $key)" if with_key else "")
+                vars_ = {"input": {"reason": "correction", "name": "available",
+                                   "referenceDocumentUri": f"gid://just-tennis/AmazonOrder/{oid}", "changes": [ch]}}
+                if with_key:
+                    vars_["key"] = key
+                try:
+                    out = shop.graphql(q, vars_)["inventoryAdjustQuantities"]
+                except RuntimeError as e:
+                    m = str(e).lower()
+                    # the API version doesn't know the field/directive: try the next form; anything else is real
+                    if ("changefromquantity" in m or "idempotent" in m or "directive" in m) and (with_from or with_key):
+                        last = e
+                        continue
+                    raise
+                ue = out.get("userErrors") or []
+                if ue:
+                    msg = "; ".join(x["message"] for x in ue)
+                    if ("changeFromQuantity" in msg or "idempot" in msg.lower()) and (with_from or with_key):
+                        last = RuntimeError(msg)
+                        continue
+                    raise RuntimeError(msg)
+                last = None
+                break
+            if last is not None:
+                raise last
+        except Exception as e:  # noqa: BLE001 - record it on the order and carry on
+            err = str(e)[:500]
+        with conn.cursor() as cur:
+            if err:
+                cur.execute("""update jt.fbm_decisions set status = 'failed', error = %s, applied_at = now(), shopify_before = %s
+                               where order_id = %s and sku = %s and status = 'pending'""", (err, before, oid, sku))
+            else:
+                cur.execute("""update jt.fbm_decisions set status = 'done', error = '', applied_at = now(), shopify_before = %s
+                               where order_id = %s and sku = %s and status = 'pending'""", (before, oid, sku))
+                cur.execute("update jt.variants set inventory_qty = coalesce(inventory_qty, 0) - %s where inventory_item_id = %s", (units, item))
+                done += 1
+        conn.commit()
+    return done
+
+
 # ---------------------------------------------------------------- Shopify purchase order status
 # Shopify's purchase orders API (inventoryPurchaseOrders, scope read_inventory_purchase_orders) is a preview that
 # live stores can't use yet. Try it: when the store is refused, record why and carry on; when it works, each linked

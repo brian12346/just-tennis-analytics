@@ -262,6 +262,26 @@
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB, catalogChanged, checkCatalog,
     qbo: qboCall,
     amazon: amazonCall,
+    // Amazon FBM orders -> Shopify stock (FBM tab)
+    fbm: {
+      lines: (refresh) => rows(["order_id", "sku", "coalesce(asin, '')", "coalesce(product_name, '')", "quantity", "order_status",
+        "to_char(purchase_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shipped", "cancelled", "map_kind",
+        "variant_id::text", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id::text", "tracked",
+        "decision", "status", "error", "decided_by", "to_char(decided_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')",
+        "to_char(applied_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shopify_before", "decided_units"],
+        "from jt.v_fbm_lines order by purchase_at desc, order_id, sku", refresh),
+      settings: async (refresh) => { const r = await rows(["value"], "from jt.settings where key = 'fbm_sync'", refresh); return (r[0] && r[0][0]) || {}; },
+      // decisions: [{order_id, sku, decision: 'decrement' | 'skip' | 'undo'}] -> {queued, skipped, undone, refused}
+      async decide(decisions) {
+        if (WEB) return WEB.write("jt_fbm_decide", { p: { decisions } });
+        const out = await run(`select jt.fbm_decide(${q(JSON.stringify({ decisions, by: "Claude dashboard" }))}::jsonb)::text as r`, true);
+        return JSON.parse(out[0].r);
+      },
+      async setStart(start) {
+        if (WEB) return WEB.write("jt_fbm_settings", { p: { start } });
+        return run(`select jt.fbm_settings(${q(JSON.stringify({ start }))}::jsonb)::text as r`, true);
+      },
+    },
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),
     // shipping cost entered by hand for an order with no ShipStation label
     saveShipCost: (body) => WEB ? WEB.write("jt_save_ship_cost", { p: body }) : call("save_ship_cost", q(JSON.stringify({ ...body, by: "Claude dashboard" })) + "::jsonb"),

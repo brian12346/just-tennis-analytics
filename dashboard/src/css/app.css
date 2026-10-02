@@ -134,8 +134,8 @@ table.lines tr.need input{border-color:var(--warn)}
 .tabs button:hover{color:var(--header-ink);background:var(--header-raised)}
 .tabs button[aria-selected="true"]{color:#002676;background:#FFFFFF;font-weight:600}
 .tabs button:focus-visible{outline:2px solid var(--brand-gold);outline-offset:1px}
-#tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices,#tab-amzmatch,#tab-costs,#tab-fba,#tab-prep{display:flex;flex-direction:column;gap:18px}
-#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#tab-costs[hidden],#tab-fba[hidden],#tab-prep[hidden],#prep-unloaded[hidden],#prep-note[hidden],#prep-modal[hidden],#prep-filters[hidden],#fba-note[hidden],#pc-note[hidden],#pc-confirm[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
+#tab-fbm,#tab-psales,#tab-shopify,#tab-costmap,#tab-amazon,#tab-amzmap,#tab-invoices,#tab-amzmatch,#tab-costs,#tab-fba,#tab-prep{display:flex;flex-direction:column;gap:18px}
+#tab-fbm[hidden],#fbm-note[hidden],#fbm-bulk[hidden],#tab-psales[hidden],#tab-shopify[hidden],#tab-costmap[hidden],#tab-amazon[hidden],#tab-amzmap[hidden],#tab-invoices[hidden],#tab-amzmatch[hidden],#tab-costs[hidden],#tab-fba[hidden],#tab-prep[hidden],#prep-unloaded[hidden],#prep-note[hidden],#prep-modal[hidden],#prep-filters[hidden],#fba-note[hidden],#pc-note[hidden],#pc-confirm[hidden],#am-note[hidden],#am-conf[hidden],#am-vfilters[hidden],#am-vbar[hidden],#am-pbar[hidden],#inv-modal[hidden],#inv-mnote[hidden],#move-bar[hidden]{display:none!important}
 /* product sales */
 .tbl-wrap.xl{max-height:720px}
 .tree{display:inline-flex;align-items:center;gap:4px;white-space:normal}
@@ -722,3 +722,30 @@ dialog.dlg::backdrop{background:rgba(0,20,60,.35)}
 #az-live .kpis{margin-top:10px}
 #az-live .az-live-foot{margin:10px 0 0}
 #az-live .kpi .v.dimv{color:var(--muted)}
+
+/* FBM orders -> Shopify stock */
+#fbm-q{width:220px;max-width:100%}
+#fbm-start{width:auto}
+.fbm-bulk{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between;border:1px solid var(--sales);background:var(--sales-soft);border-radius:10px;padding:10px 12px;font-size:13px}
+.fbm-bulk .dbtns{display:flex;gap:8px;flex-wrap:wrap}
+table.fbm-t td{vertical-align:top}
+table.fbm-t td.items{white-space:normal;min-width:340px}
+table.fbm-t .fl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:4px 0}
+table.fbm-t .fl + .fl{border-top:1px dashed var(--line-soft)}
+table.fbm-t .fl .meta{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+table.fbm-t .fl .u{font-weight:600;text-align:right;white-space:nowrap}
+table.fbm-t td.act{white-space:nowrap}
+table.fbm-t td.act .dbtns{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+table.fbm-t tr.sel td{background:var(--sales-soft)}
+table.fbm-t .err{color:var(--bad);font-size:12px;white-space:normal;max-width:300px}
+@media (max-width:640px){
+  table.fbm-t, table.fbm-t tbody{display:block}
+  table.fbm-t thead{display:none}
+  table.fbm-t tbody{display:flex;flex-direction:column;gap:8px}
+  table.fbm-t tr{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:var(--panel)}
+  table.fbm-t td{border:0;padding:2px 0;white-space:normal;text-align:left}
+  table.fbm-t td.items{grid-column:1 / -1;min-width:0}
+  table.fbm-t td.act{grid-column:1 / -1}
+  table.fbm-t td.act .dbtns{justify-content:flex-start}
+  table.fbm-t td.act .mini{padding:8px 12px;font-size:13px}
+}

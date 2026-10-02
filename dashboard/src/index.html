@@ -31,6 +31,7 @@
     <button role="tab" data-tab="fba" aria-selected="false">Amazon inventory</button>
     <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
     <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
+    <button role="tab" data-tab="fbm" aria-selected="false">FBM stock</button>
     <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
     <button role="tab" data-tab="amzmatch" aria-selected="false">Amazon matching</button>
     <button role="tab" data-tab="po" aria-selected="false">Purchase orders</button>
@@ -414,6 +415,39 @@
       <div class="row"><button class="btn" id="cm-prev" hidden>Previous</button><button class="btn" id="cm-next" hidden>Next page</button><span class="muted small" id="cm-count"></span></div>
     </section>
   </div>
+  <div id="tab-fbm" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Amazon FBM · ships from Shopify stock</span>
+        <h1>FBM orders → Shopify stock</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="fbm-seg" role="group" aria-label="Which orders">
+          <button type="button" data-v="confirm" aria-pressed="true">To confirm</button>
+          <button type="button" data-v="waiting" aria-pressed="false">Waiting to ship</button>
+          <button type="button" data-v="sent" aria-pressed="false">Taken out</button>
+          <button type="button" data-v="skipped" aria-pressed="false">Skipped</button>
+          <button type="button" data-v="all" aria-pressed="false">All</button>
+        </div>
+        <input class="inp" type="search" id="fbm-q" placeholder="Order, SKU or product" aria-label="Search FBM orders">
+        <label class="inline small">Since <input class="inp" type="date" id="fbm-start" aria-label="Show orders since"></label>
+        <button class="btn" type="button" id="fbm-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="fbm-status" aria-live="polite">Loading FBM orders…</div>
+    <div id="fbm-note" hidden></div>
+    <section class="kpis" id="fbm-kpis" aria-label="FBM orders"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2 id="fbm-title">Shipped — confirm each order</h2>
+        <span class="muted small">"Take out of Shopify" lowers Shopify's available stock by the units shown, about a minute later. "Don't take out" just records the decision.</span>
+      </div>
+      <div class="fbm-bulk" id="fbm-bulk" hidden></div>
+      <div class="tbl-wrap tall"><table id="fbm-table" class="fbm-t"></table></div>
+      <div class="muted small" id="fbm-count"></div>
+    </section>
+  </div>
+
   <div id="tab-amazon" hidden>
     <header class="top">
       <div class="title">
@@ -665,6 +699,9 @@
 
 <script>
 <!-- @inline js/amazon.js -->
+</script>
+<script>
+<!-- @inline js/fbm.js -->
 </script>
 <script>
 <!-- @inline js/amz-match.js -->

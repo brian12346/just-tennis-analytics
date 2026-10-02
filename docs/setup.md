@@ -69,3 +69,14 @@ Orders come straight from Amazon (US, Mexico, Canada) through the `amazon` edge 
 6. The dashboard's Amazon tab shows these orders (ordered sales by purchase day, Pacific time) next to the Transaction
    report numbers, and fills days no Transaction report covers yet. **Refresh orders** asks Amazon for a new report now.
    Mexico and Canada sales are converted with the rates in `jt.settings` key `amazon_fx`.
+
+## 9. Amazon FBM orders → Shopify stock
+
+FBM orders ship from the Shopify store's stock. The dashboard's **FBM stock** tab lists every FBM order since a start
+day (`jt.settings` key `fbm_sync`, editable on the page) with the Shopify product each Amazon listing is mapped to.
+Once Amazon shows an order shipped, someone confirms it: **Take out of Shopify** (`jt.fbm_decide` → `jt.fbm_decisions`,
+status pending, and starts the `fbm-inventory` sync job) or **Don't take out**. The job (`sync/shopify.py`
+`apply_fbm_adjustments`, also run hourly) lowers Shopify's *available* quantity at the store's location by
+Amazon quantity × the mapping's units, with reason "correction" and the Amazon order as the reference. It needs the
+app's `write_inventory` scope (already used for costs). If the store has more than one active location, set
+`fbm_sync.location_id` to the one FBM orders ship from. Migration 054.
