@@ -442,7 +442,7 @@ def apply_cost_updates(shop: Shopify, conn, today: dt.date) -> int:
 # jt.settings fbm_sync.location_id says which one FBM orders ship from.
 LEVELS_Q = """query($item: ID!) { inventoryItem(id: $item) { tracked inventoryLevels(first: 10) { nodes {
   location { id } quantities(names: ["available"]) { name quantity } } } } }"""
-ADJUST_M = """mutation($input: InventoryAdjustQuantitiesInput!){IDEM} {
+ADJUST_M = """mutation($input: InventoryAdjustQuantitiesInput!{IDEM}) {
   inventoryAdjustQuantities(input: $input){IDEMUSE} {
     inventoryAdjustmentGroup { id changes { name delta quantityAfterChange } }
     userErrors { field message code }
@@ -468,7 +468,7 @@ def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
     loc_setting = _fbm_location_setting(conn)
     done = 0
     for oid, sku, item, units, stamp in todo:
-        before, err = None, ""
+        before, err, loc = None, "", None
         try:
             lv = shop.graphql(LEVELS_Q, {"item": f"gid://shopify/InventoryItem/{item}"})["inventoryItem"]
             if not lv:
@@ -527,8 +527,8 @@ def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
                 cur.execute("""update jt.fbm_decisions set status = 'failed', error = %s, applied_at = now(), shopify_before = %s
                                where order_id = %s and sku = %s and status = 'pending'""", (err, before, oid, sku))
             else:
-                cur.execute("""update jt.fbm_decisions set status = 'done', error = '', applied_at = now(), shopify_before = %s
-                               where order_id = %s and sku = %s and status = 'pending'""", (before, oid, sku))
+                cur.execute("""update jt.fbm_decisions set status = 'done', error = '', applied_at = now(), shopify_before = %s,
+                               location_id = %s where order_id = %s and sku = %s and status = 'pending'""", (before, loc, oid, sku))
                 cur.execute("update jt.variants set inventory_qty = coalesce(inventory_qty, 0) - %s where inventory_item_id = %s", (units, item))
                 done += 1
         conn.commit()

@@ -103,3 +103,30 @@ def test_job_needs_a_location_when_there_are_several(conn):
     assert sh.apply_fbm_adjustments(shop, conn) == 1
     ch = shop.adjusts[0]["input"]["changes"][0]
     assert (ch["locationId"], ch["changeFromQuantity"]) == ("gid://shopify/Location/1", 39)
+
+
+def test_shopify_requests_parse():
+    """Every form of the stock-change request (with/without the idempotency key) is valid GraphQL."""
+    import pytest
+    graphql = pytest.importorskip("graphql")
+    from sync import shopify as sh
+    for key in (True, False):
+        q = sh.ADJUST_M.replace("{IDEM}", ", $key: String!" if key else "").replace("{IDEMUSE}", " @idempotent(key: $key)" if key else "")
+        graphql.parse(q)
+    graphql.parse(sh.LEVELS_Q)
+
+
+def test_location_is_recorded_and_named(conn):
+    from sync import shopify as sh
+    cur = conn.cursor()
+    setup(cur)
+    cur.execute("""update jt.settings set value = value || '{"location_id": "gid://shopify/Location/1"}' where key = 'fbm_sync'""")
+    decide(cur, ("111-1", "A-3PK", "decrement"))
+    conn.commit()
+    sh.apply_fbm_adjustments(FbmShop(locations=2), conn)
+    cur.execute("select location_id from jt.v_fbm_lines where order_id = '111-1'")
+    assert cur.fetchone()[0] == "gid://shopify/Location/1"
+    cur.execute("""select jt.fbm_settings('{"location_name": " Warehouse "}')->>'location_name'""")
+    assert cur.fetchone()[0] == "Warehouse"
+    cur.execute("select value->>'location_id', value->>'start' from jt.settings where key = 'fbm_sync'")
+    assert cur.fetchone() == ("gid://shopify/Location/1", "2026-09-25")

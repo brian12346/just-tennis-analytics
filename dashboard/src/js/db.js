@@ -270,7 +270,7 @@
         "to_char(purchase_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shipped", "cancelled", "map_kind",
         "variant_id::text", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id::text", "tracked",
         "decision", "status", "error", "decided_by", "to_char(decided_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')",
-        "to_char(applied_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shopify_before", "decided_units"],
+        "to_char(applied_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shopify_before", "decided_units", "location_id"],
         "from jt.v_fbm_lines order by purchase_at desc, order_id, sku", refresh),
       settings: async (refresh) => { const r = await rows(["value"], "from jt.settings where key = 'fbm_sync'", refresh); return (r[0] && r[0][0]) || {}; },
       // decisions: [{order_id, sku, decision: 'decrement' | 'skip' | 'undo'}] -> {queued, skipped, undone, refused}
@@ -282,6 +282,10 @@
       async setStart(start) {
         if (WEB) return WEB.write("jt_fbm_settings", { p: { start } });
         return run(`select jt.fbm_settings(${q(JSON.stringify({ start }))}::jsonb)::text as r`, true);
+      },
+      async setLocationName(location_name) {
+        if (WEB) return WEB.write("jt_fbm_settings", { p: { location_name } });
+        return run(`select jt.fbm_settings(${q(JSON.stringify({ location_name }))}::jsonb)::text as r`, true);
       },
     },
     saveCostOverride: (body) => WEB ? WEB.write("jt_save_cost_overrides", { p: [body] }) : call("save_cost_override", q(JSON.stringify(body)) + "::jsonb"),

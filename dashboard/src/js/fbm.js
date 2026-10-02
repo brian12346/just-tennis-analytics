@@ -6,7 +6,12 @@
   const S = { msg: null, lines: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
   const COLS = ["order_id", "sku", "asin", "product_name", "quantity", "order_status", "purchased", "shipped", "cancelled", "map_kind",
     "variant_id", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id", "tracked",
-    "decision", "status", "error", "decided_by", "decided_at", "applied_at", "shopify_before", "decided_units"];
+    "decision", "status", "error", "decided_by", "decided_at", "applied_at", "shopify_before", "decided_units", "location_id"];
+  // the Shopify location stock comes out of (jt.settings fbm_sync.location_id); its name is typed in on this page,
+  // because the Shopify app can't read location names
+  const locNum = (gid) => String(gid || "").split("/").pop();
+  const locUrl = (gid) => `https://admin.shopify.com/store/justtennis-822/settings/locations/${encodeURIComponent(locNum(gid))}`;
+  const locName = (gid) => gid && gid === S.cfg.location_id && S.cfg.location_name ? S.cfg.location_name : gid ? `location #${locNum(gid)}` : "";
   const fmtDT = (s) => { if (!s) return ""; const [d, t] = s.split(" "); return new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) + (t ? " " + t : ""); };
   const shopUrl = (pid, vid) => pid ? `https://admin.shopify.com/store/justtennis-822/products/${encodeURIComponent(pid)}${vid ? "/variants/" + encodeURIComponent(vid) : ""}` : "";
   const note = (kind, html) => { const n = $("fbm-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
@@ -66,7 +71,12 @@
     if (!S.lines) { st.textContent = "Loading FBM orders…"; return; }
     const all = orders();
     const pend = (S.lines || []).filter(l => l.status === "pending").length;
-    st.textContent = `${all.length.toLocaleString()} FBM orders since ${fmtDT(S.cfg.start || "")}${S.cfg.location_name ? ` · Shopify location: ${S.cfg.location_name}` : ""}${pend ? ` · ${pend} change${pend > 1 ? "s" : ""} on the way to Shopify…` : ""}${S.loading ? " · refreshing…" : ""}`;
+    st.textContent = `${all.length.toLocaleString()} FBM orders since ${fmtDT(S.cfg.start || "")}${pend ? ` · ${pend} change${pend > 1 ? "s" : ""} on the way to Shopify…` : ""}${S.loading ? " · refreshing…" : ""}`;
+    const lb = $("fbm-loc");
+    if (S.editLoc) lb.innerHTML = `<span class="eyebrow">Shopify location</span><input class="inp" id="fbm-locname" maxlength="80" placeholder="Name, e.g. Warehouse" value="${esc(S.cfg.location_name || "")}"> <button class="mini primary" type="button" data-loc="save">Save</button> <button class="mini" type="button" data-loc="cancel">Cancel</button>`;
+    else lb.innerHTML = S.cfg.location_id
+      ? `<span class="eyebrow">Stock comes out of</span> <b>${esc(locName(S.cfg.location_id))}</b> <a class="olink small" href="${esc(locUrl(S.cfg.location_id))}" target="_blank" rel="noopener">open in Shopify</a> <button class="mini" type="button" data-loc="edit">${S.cfg.location_name ? "Rename" : "Name it"}</button>`
+      : `<span class="eyebrow">Stock comes out of</span> <span class="muted">the product's only Shopify location (if a product is stocked at more than one, it'll ask which)</span>`;
     const failed = (S.lines || []).filter(l => l.status === "failed");
     const notes = [];
     if (S.msg) notes.push(S.msg);
@@ -99,7 +109,7 @@
           ? `→ ${l.product_id ? `<a class="olink" href="${esc(shopUrl(l.product_id, l.variant_id))}" target="_blank" rel="noopener">${esc(l.shopify_title || l.shopify_sku || "Shopify product")}</a>` : esc(l.shopify_title || "")}${l.shopify_sku ? ` <span class="mono">${esc(l.shopify_sku)}</span>` : ""}${l.map_units > 1 ? ` · ${l.quantity} × ${l.map_units}` : ""} · Shopify has ${l.shopify_qty == null ? "?" : Number(l.shopify_qty).toLocaleString()}${l.tracked === false ? " (not tracked)" : ""}`
           : l.map_kind && l.map_kind !== "shopify" ? `<span class="warnt">Mapped to a manual cost, not a Shopify product</span> <button class="mini" type="button" data-map="${esc(l.sku)}">Map</button>`
           : `<span class="warnt">Not mapped to a Shopify product</span> <button class="mini" type="button" data-map="${esc(l.sku)}">Map</button>`;
-        const state = { done: `<span class="pill ok">Taken out ${esc(fmtDT(l.applied_at))}</span>`, pending: `<span class="pill web">Sending to Shopify…</span>`,
+        const state = { done: `<span class="pill ok" title="${esc(l.location_id ? "From " + locName(l.location_id) : "")}">Taken out ${esc(fmtDT(l.applied_at))}${l.location_id ? " · " + esc(locName(l.location_id)) : ""}</span>`, pending: `<span class="pill web">Sending to Shopify…</span>`,
           failed: `<span class="pill cx">Shopify refused</span>`, skipped: `<span class="pill pos">Not taken out</span>`, cancelled: `<span class="pill pos">Cancelled</span>` }[l.state] || "";
         return `<div class="fl"><div><div class="iname">${esc(l.product_name || l.sku)}</div><div class="meta"><span class="mono">${esc(l.sku)}</span> ${shop}</div>${l.state === "failed" ? `<div class="err">${esc(l.error)}</div>` : ""}${l.decided_by && (l.state === "done" || l.state === "skipped") ? `<div class="meta">by ${esc(l.decided_by)}</div>` : ""}</div><div class="u">${l.units != null ? `−${l.units}` : ""} ${state}</div></div>`;
       }).join("");
@@ -135,6 +145,13 @@
       asins: Object.fromEntries(lines.map(l => [l.sku, l.asin || ""])), label, back: "fbm", backLabel: "FBM stock" });
   }
 
+  async function saveLocName() {
+    const v = ($("fbm-locname") || {}).value || "";
+    try { await window.JT.fbm.setLocationName(v.trim()); S.editLoc = false; S.msg = null; }
+    catch (e) { S.msg = ["bad", "Couldn't save the name: " + esc(e.message || e)]; }
+    if (window.JTWeb) window.JTWeb.clearCache();
+    load(true);
+  }
   async function decide(orderIds, decision) {
     if (S.busy) return;
     const all = orders().filter(o => orderIds.includes(o.id));
@@ -170,6 +187,9 @@
     else if (b.dataset.map) { const l = (S.lines || []).find(x => x.sku === b.dataset.map); openMapping([l || { sku: b.dataset.map }], "FBM listing to map"); }
     else if (b.hasAttribute("data-mapall")) { const u = unmappedSkus(); openMapping(u, `${u.length} FBM listing${u.length > 1 ? "s" : ""} not mapped to Shopify`); }
     else if (b.id === "fbm-more") { S.shown += 150; render(); }
+    else if (b.dataset.loc === "edit") { S.editLoc = true; render(); const i = $("fbm-locname"); if (i) i.focus(); }
+    else if (b.dataset.loc === "cancel") { S.editLoc = false; render(); }
+    else if (b.dataset.loc === "save") saveLocName();
   });
   tab.addEventListener("change", (ev) => {
     const t = ev.target;
@@ -186,6 +206,7 @@
     $("fbm-seg").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
     render();
   });
+  $("fbm-loc").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && ev.target.id === "fbm-locname") { ev.preventDefault(); saveLocName(); } });
   $("fbm-q").addEventListener("input", (ev) => { S.q = ev.target.value.trim().toLowerCase(); S.shown = 150; render(); });
   $("fbm-refresh").addEventListener("click", () => { if (window.JTWeb) window.JTWeb.clearCache(); load(true); });
   $("fbm-start").addEventListener("change", async (ev) => {
