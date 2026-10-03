@@ -83,10 +83,45 @@
         s.hay = [s.id, s.name, s.order, s.dest, s.carrier, s.tracking, ...s.items.flatMap(i => [i.sku, i.fnsku, i.asin, i.title, i.shop, i.vsku, i.vendor])].join(" ").toLowerCase();
       }
       list.sort((a, b) => (b.created || 0) - (a.created || 0) || b.id.localeCompare(a.id));
-      cache = { list, synced };
+      cache = { list, groups: groupAll(list), synced };
       return cache;
     })();
     try { return await loading; } finally { loading = null; }
+  }
+
+  // ---------- shipments grouped by workflow ----------
+  // One Send to Amazon workflow is split by Amazon into several shipment IDs, one per fulfillment center (the "boxes"):
+  // "FBA STA (10/02/2026 21:42)-MCC1", "…-MCI4", … share the name before the center code. AWD: one workflow (wf…) per shipment.
+  const ORDER = ["prep", "transit", "arrived", "receiving", "done", "cancelled"];
+  const wfKey = (s) => { const base = s.kind === "FBA" ? s.name.replace(/-[A-Z0-9]{3,5}$/, "") : s.name; return s.kind + "|" + (base || s.id); };
+  function groupAll(list) {
+    const m = new Map();
+    for (const s of list) {
+      const k = wfKey(s); s.gkey = k;
+      const g = m.get(k) || { key: k, kind: s.kind, name: s.kind === "FBA" ? k.slice(4) : s.name, order: s.order, boxes: [] };
+      g.boxes.push(s); m.set(k, g);
+    }
+    const out = [...m.values()];
+    for (const g of out) {
+      const B = g.boxes.sort((a, b) => a.dest.localeCompare(b.dest) || a.id.localeCompare(b.id));
+      g.created = B.reduce((a, b) => !a || (b.created && b.created < a) ? b.created : a, null);
+      g.ue = B.reduce((a, b) => a + b.ue, 0); g.ur = B.reduce((a, b) => a + b.ur, 0);
+      g.open = B.some(b => b.open);
+      g.dests = [...new Set(B.map(b => b.dest).filter(Boolean))];
+      const live = B.filter(b => b.stage !== "cancelled");
+      const pool = (live.length ? live : B).filter(b => !g.open || b.open);
+      g.stage = pool.map(b => b.stage).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b))[0];
+      g.counts = ORDER.map(st => [st, B.filter(b => b.stage === st).length]).filter(x => x[1]);
+      g.days = Math.min(...pool.filter(b => b.stage === g.stage && b.since).map(b => b.days), Infinity);
+      const fl = B.filter(b => b.flag); g.flags = fl;
+      g.flag = fl.length === 1 ? (B.length > 1 ? `${fl[0].dest || fl[0].id}: ` : "") + fl[0].flag : fl.length ? `${fl.length} boxes need attention` : "";
+      const it = new Map();
+      for (const b of B) for (const i of b.items) { const x = it.get(i.sku) || { ...i, exp: 0, rec: 0, boxes: 0 }; x.exp += i.exp; x.rec += i.rec; x.boxes++; it.set(i.sku, x); }
+      g.items = [...it.values()].sort((a, b) => b.exp - a.exp || a.sku.localeCompare(b.sku));
+      g.skus = g.items.length;
+      g.hay = B.map(b => b.hay).join(" ");
+    }
+    return out.sort((a, b) => (b.created || 0) - (a.created || 0) || b.key.localeCompare(a.key));
   }
 
   // ---------- the tab ----------
@@ -106,7 +141,7 @@
   function filtered() {
     if (!cache) return [];
     const q = F.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    return cache.list.filter(s => (F.kind === "all" || s.kind === F.kind) && SHOWS[F.show](s) && q.every(w => s.hay.includes(w)));
+    return cache.groups.filter(g => (F.kind === "all" || g.kind === F.kind) && (F.show === "attention" ? !!g.flag : g.boxes.some(SHOWS[F.show])) && q.every(w => g.hay.includes(w)));
   }
 
   function kpis() {
@@ -115,12 +150,14 @@
     const open = L.filter(s => s.open), moving = L.filter(s => s.stage === "prep" || s.stage === "transit");
     const arr = L.filter(s => s.stage === "arrived"), rcv = L.filter(s => s.stage === "receiving"), att = L.filter(s => s.flag);
     const by = (a, k) => a.filter(s => s.kind === k).length;
+    const G = cache.groups.filter(g => F.kind === "all" || g.kind === F.kind), gOpen = G.filter(g => g.open), gAtt = G.filter(g => g.flag);
+    const bx = (n) => `${n0(n)} box${n === 1 ? "" : "es"}`;
     $("sh-kpis").innerHTML = [
-      { l: "Open shipments", v: n0(open.length), s: `${n0(sum(open, s => s.ue - s.ur))} units not checked in yet${F.kind === "all" ? ` · ${by(open, "FBA")} FBA · ${by(open, "AWD")} AWD` : ""}` },
-      { c: "sales", l: "On the way", v: n0(sum(moving, s => s.ue)), s: `units in ${n0(moving.length)} shipment${moving.length === 1 ? "" : "s"} preparing or in transit` },
-      { l: "Delivered, not checked in", v: n0(sum(arr, s => s.ue)), s: `units in ${n0(arr.length)} shipment${arr.length === 1 ? "" : "s"}` },
-      { l: "Being received", v: n0(sum(rcv, s => s.ue - s.ur)), s: `units still to check in · ${n0(rcv.length)} shipment${rcv.length === 1 ? "" : "s"}` },
-      { c: att.length ? "warnk" : "", l: "Needs attention", v: n0(att.length), s: att.length ? `delivered ${LATE_ARRIVED}+ days (or created ${LATE_OLD}+ days ago) with nothing checked in, receiving ${LATE_RECEIVING}+ days, or closed short` : "nothing stuck" },
+      { l: "Open shipments", v: n0(gOpen.length), s: `${bx(open.length)} · ${n0(sum(open, s => s.ue - s.ur))} units not checked in yet${F.kind === "all" ? ` · ${by(gOpen, "FBA")} FBA · ${by(gOpen, "AWD")} AWD` : ""}` },
+      { c: "sales", l: "On the way", v: n0(sum(moving, s => s.ue)), s: `units in ${bx(moving.length)} preparing or in transit` },
+      { l: "Delivered, not checked in", v: n0(sum(arr, s => s.ue)), s: `units in ${bx(arr.length)}` },
+      { l: "Being received", v: n0(sum(rcv, s => s.ue - s.ur)), s: `units still to check in · ${bx(rcv.length)}` },
+      { c: gAtt.length ? "warnk" : "", l: "Needs attention", v: n0(gAtt.length), s: att.length ? `${bx(att.length)}: ` +  `delivered ${LATE_ARRIVED}+ days (or created ${LATE_OLD}+ days ago) with nothing checked in, receiving ${LATE_RECEIVING}+ days, or closed short` : "nothing stuck" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
 
@@ -135,40 +172,57 @@
     return `<td class="l sh-prod">${top}${s.items.length > 2 ? `<div class="meta">+ ${s.items.length - 2} more SKU${s.items.length > 3 ? "s" : ""}</div>` : ""}</td>`;
   }
 
+  // SKUs of a whole shipment (all its boxes added up) — or of one box
   function itemsTable(s) {
     if (!s.items.length) return `<div class="muted small">${s.stage === "cancelled" ? "Cancelled before anything shipped." : "Amazon hasn't sent this shipment's SKUs yet. The hourly sync fetches them on its next runs."}</div>`;
-    return `<table class="sh-items"><thead><tr><th class="l">SKU</th><th class="l">Amazon listing</th><th class="l">Shopify product</th><th>${s.kind === "AWD" ? "Expected" : "Shipped"}</th><th>Received</th><th>${s.stage === "done" ? "Short / over" : "Still to check in"}</th>${s.kind === "AWD" ? "<th>Per case</th>" : ""}</tr></thead><tbody>${
+    const multi = s.boxes && s.boxes.length > 1, awd = s.kind === "AWD";
+    return `<table class="sh-items"><thead><tr><th class="l w-sku">SKU</th><th class="l">Amazon listing</th><th class="l">Shopify product</th>${multi ? '<th class="w-n">Boxes</th>' : ""}<th class="w-n">${awd ? "Expected" : "Shipped"}</th><th class="w-n">Received</th><th class="w-n">${s.stage === "done" ? "Short / over" : "To check in"}</th>${awd ? '<th class="w-n">Cases</th>' : ""}</tr></thead><tbody>${
       s.items.map(i => {
         const d = i.rec - i.exp;
         return `<tr><td class="l mono">${esc(i.sku)}${i.fnsku ? `<div class="meta">${esc(i.fnsku)}</div>` : ""}</td>
-          ${amzCell(i)}${shopCell(i)}
+          ${amzCell(i)}${shopCell(i)}${multi ? `<td>${n0(i.boxes)}</td>` : ""}
           <td>${n0(i.exp)}</td><td>${n0(i.rec)}</td>${s.stage === "done" ? `<td class="${d < 0 ? "neg" : d > 0 ? "pos" : "dim"}">${d === 0 ? "—" : (d > 0 ? "+" : "") + n0(d)}</td>` : `<td>${d < 0 ? n0(-d) : "—"}</td>`}
-          ${s.kind === "AWD" ? `<td>${i.perCase ? n0(i.perCase) : "—"}</td>` : ""}</tr>`;
+          ${awd ? `<td>${i.perCase ? `${n0(Math.round(i.exp / i.perCase))}<div class="meta">${n0(i.perCase)} per case</div>` : "—"}</td>` : ""}</tr>`;
       }).join("")}</tbody></table>`;
+  }
+  const stageCell = (s, extra) => { const st = STAGES[s.stage]; return `<span class="pill ${st.cls}">${st.l}</span>${extra ? `<div class="meta">${extra}</div>` : ""}`; };
+  const recvCell = (s) => { const p = s.ue ? Math.min(100, Math.round(s.ur / s.ue * 100)) : 0; return s.ue ? `${n0(s.ur)}<div class="sh-bar" aria-hidden="true"><span style="width:${p}%"></span></div>` : "—"; };
+  const boxMeta = (s) => { const st = STAGES[s.stage], sm = s.stage === "done" && s.status === "RECEIVING" ? "all units checked in" : s.status && nice(s.status) !== st.l ? nice(s.status) : "";
+    return s.open && s.since ? `${ago(s.days)}${sm ? " · " + esc(sm) : ""}` : esc(sm); };
+  // the boxes (Amazon shipment IDs) of one shipment, each with its SKUs
+  function boxesTable(g) {
+    return `<table class="sh-items sh-boxes"><thead><tr><th class="l w-box">Box (shipment ID)</th><th class="l w-to">To</th><th class="l w-st">Status</th><th class="l">Contents</th><th class="w-n">Units</th><th class="w-n">Received</th><th class="l w-fl"></th></tr></thead><tbody>${
+      g.boxes.map(b => `<tr><td class="l mono">${esc(b.id)}${b.carrier ? `<div class="meta">${esc(b.carrier)}${b.tracking ? " " + esc(b.tracking) : ""}</div>` : ""}</td>
+        <td class="l">${esc(b.dest || "—")}</td><td class="l">${stageCell(b, boxMeta(b))}</td>
+        <td class="l sh-prod">${b.items.length ? b.items.map(i => `<div><span class="mono">${esc(i.sku)}</span> × ${n0(i.exp)}${i.rec ? ` <span class="dim">(${n0(i.rec)} in)</span>` : ""}${i.title ? `<div class="meta sh-t">${esc(i.title)}</div>` : ""}</div>`).join("") : '<span class="dim">SKUs not loaded yet</span>'}</td>
+        <td><b>${b.ue ? n0(b.ue) : "—"}</b></td><td>${recvCell(b)}</td>
+        <td class="l sh-flag">${b.flag ? `<span class="pill miss">${esc(b.flag)}</span>` : ""}</td></tr>`).join("")}</tbody></table>`;
   }
 
   function shipTable(rows) {
     const pages = Math.max(1, Math.ceil(rows.length / PER)); F.page = Math.min(F.page, pages - 1);
     const page = rows.slice(F.page * PER, F.page * PER + PER);
-    $("sh-table").innerHTML = `<thead><tr><th class="l">Shipment</th><th class="l">Products</th><th class="l">Type</th><th class="l">Status</th><th class="l">To</th><th class="l">Created</th><th>SKUs</th><th>Units</th><th>Received</th><th class="l"></th></tr></thead><tbody>${
-      page.map(s => {
-        const st = STAGES[s.stage], open = F.openId === s.id;
-        const pctR = s.ue ? Math.min(100, Math.round(s.ur / s.ue * 100)) : 0;
-        const label = s.kind === "AWD" ? (s.order || "") : s.name;
-        const statusMeta = s.stage === "done" && s.status === "RECEIVING" ? "all units checked in" : s.status && nice(s.status) !== st.l ? nice(s.status) : "";
-        return `<tr class="sh-row ${open ? "openrow" : ""}" data-id="${esc(s.id)}" tabindex="0" aria-expanded="${open}">
-          <td class="l"><span class="mono">${esc(s.id)}</span>${label ? `<div class="meta">${esc(label)}</div>` : ""}</td>
-          ${prodSummary(s)}
-          <td class="l"><span class="pill ${s.kind === "FBA" ? "web" : "pos"}">${s.kind}</span></td>
-          <td class="l"><span class="pill ${st.cls}">${st.l}</span>${s.open && s.since ? `<div class="meta">${ago(s.days)}${statusMeta ? " · " + esc(statusMeta) : ""}</div>` : statusMeta ? `<div class="meta">${esc(statusMeta)}</div>` : ""}</td>
-          <td class="l">${esc(s.dest || "—")}${s.carrier ? `<div class="meta">${esc(s.carrier)}${s.tracking ? " " + esc(s.tracking) : ""}</div>` : ""}</td>
-          <td class="l">${fmtDay(s.created)}</td>
-          <td>${s.skus ? n0(s.skus) : "—"}</td>
-          <td><b>${s.ue ? n0(s.ue) : "—"}</b></td>
-          <td>${s.ue ? `${n0(s.ur)}<div class="sh-bar" aria-hidden="true"><span style="width:${pctR}%"></span></div>` : "—"}</td>
-          <td class="l sh-flag">${s.flag ? `<span class="pill miss">${esc(s.flag)}</span>` : ""}</td></tr>${
-          open ? `<tr class="sh-det"><td colspan="10">${itemsTable(s)}</td></tr>` : ""}`;
-      }).join("") || `<tr><td class="l dim" colspan="10">${cache.list.length ? "No shipments match." : "No shipments yet. The hourly Amazon sync loads them."}</td></tr>`}</tbody>`;
+    $("sh-table").innerHTML = `<thead><tr><th class="l">Shipment</th><th class="l">Products</th><th class="l">Type</th><th class="l">Status</th><th class="l">To</th><th class="l">Created</th><th>Boxes</th><th>SKUs</th><th>Units</th><th>Received</th><th class="l"></th></tr></thead><tbody>${
+      page.map(g => {
+        const open = F.openId === g.key, n = g.boxes.length, one = n === 1 ? g.boxes[0] : null;
+        const id = g.kind === "AWD" ? (one ? one.id : g.order) : g.name;
+        const sub = g.kind === "AWD" ? [g.order && one && g.order !== one.id ? g.order : "", g.name].filter(Boolean).join(" · ") : one ? one.id : "";
+        const meta = one ? boxMeta(one) : g.counts.length > 1 ? g.counts.map(([st, c]) => `${c} ${STAGES[st].l.toLowerCase()}`).join(" · ") : (isFinite(g.days) && g.open ? ago(g.days) : "");
+        const to = g.dests.length ? (g.dests.length > 3 ? `${g.dests.slice(0, 3).map(esc).join(", ")} +${g.dests.length - 3}` : g.dests.map(esc).join(", ")) : "—";
+        return `<tr class="sh-row ${open ? "openrow" : ""}" data-id="${esc(g.key)}" tabindex="0" aria-expanded="${open}">
+          <td class="l"><span class="${g.kind === "AWD" ? "mono" : ""}">${esc(id || g.key.slice(4))}</span>${sub ? `<div class="meta mono">${esc(sub)}</div>` : ""}</td>
+          ${prodSummary(g)}
+          <td class="l"><span class="pill ${g.kind === "FBA" ? "web" : "pos"}">${g.kind}</span></td>
+          <td class="l">${stageCell(g, meta)}</td>
+          <td class="l">${to}${one && one.carrier ? `<div class="meta">${esc(one.carrier)}${one.tracking ? " " + esc(one.tracking) : ""}</div>` : ""}</td>
+          <td class="l">${fmtDay(g.created)}</td>
+          <td>${n0(n)}</td>
+          <td>${g.skus ? n0(g.skus) : "—"}</td>
+          <td><b>${g.ue ? n0(g.ue) : "—"}</b></td>
+          <td>${recvCell(g)}</td>
+          <td class="l sh-flag">${g.flag ? `<span class="pill miss">${esc(g.flag)}</span>` : ""}</td></tr>${
+          open ? `<tr class="sh-det"><td colspan="11">${n > 1 ? `<h3 class="sh-h">Total for the shipment · ${n0(n)} boxes</h3>` : ""}${itemsTable(g)}${n > 1 ? `<h3 class="sh-h">By box</h3>${boxesTable(g)}` : ""}</td></tr>` : ""}`;
+      }).join("") || `<tr><td class="l dim" colspan="11">${cache.list.length ? "No shipments match." : "No shipments yet. The hourly Amazon sync loads them."}</td></tr>`}</tbody>`;
     $("sh-prev").hidden = F.page === 0; $("sh-next").hidden = F.page >= pages - 1;
     $("sh-count").textContent = rows.length ? `${F.page * PER + 1}–${F.page * PER + page.length} of ${rows.length.toLocaleString()} shipments` : "";
   }
@@ -180,7 +234,7 @@
       const left = Math.max(0, i.exp - i.rec); if (!left) continue;
       const k = m.get(i.sku) || { ...i, moving: 0, arrived: 0, fba: 0, awd: 0, ships: new Set() };
       if (s.stage === "prep" || s.stage === "transit") k.moving += left; else k.arrived += left;
-      k[s.kind === "FBA" ? "fba" : "awd"] += left; k.ships.add(s.id); m.set(i.sku, k);
+      k[s.kind === "FBA" ? "fba" : "awd"] += left; k.ships.add(s.gkey); m.set(i.sku, k);
     }
     const q = F.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const list = [...m.values()].filter(k => q.every(w => `${k.sku} ${k.title} ${k.asin} ${k.shop} ${k.vsku} ${k.vendor}`.toLowerCase().includes(w)))
@@ -213,10 +267,10 @@
     $("sh-sync").disabled = F.syncing;
     const st = $("sh-status");
     if (!cache) { st.textContent = F.loading ? "Loading shipments…" : ""; $("sh-table").innerHTML = ""; $("sh-kpis").innerHTML = ""; return; }
-    st.textContent = `${cache.list.length.toLocaleString()} shipments from Amazon (FBA and AWD) · synced hourly${cache.synced ? `, last ${cache.synced.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}${F.loading ? " · refreshing…" : ""}${F.syncing ? " · syncing from Amazon…" : ""}`;
+    st.textContent = `${cache.groups.length.toLocaleString()} shipments (${cache.list.length.toLocaleString()} boxes) from Amazon (FBA and AWD) · synced hourly${cache.synced ? `, last ${cache.synced.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}${F.loading ? " · refreshing…" : ""}${F.syncing ? " · syncing from Amazon…" : ""}`;
     kpis();
     $("sh-head").textContent = F.view === "ship" ? "Shipments" : "Inbound by SKU";
-    $("sh-hint").textContent = F.view === "ship" ? "Click a shipment to see its SKUs." : "Units not yet checked in on open shipments. Click a SKU to see its shipments.";
+    $("sh-hint").textContent = F.view === "ship" ? "Boxes from the same Send to Amazon workflow are one shipment. Click a shipment for its total by SKU and each box's contents." : "Units not yet checked in on open shipments. Click a SKU to see its shipments.";
     if (F.view === "ship") shipTable(filtered());
     else skuTable(cache.list.filter(s => F.kind === "all" || s.kind === F.kind));
     label($("sh-table"));

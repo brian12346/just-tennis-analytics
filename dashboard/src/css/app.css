@@ -861,3 +861,16 @@ td.sh-prod a{color:inherit;text-decoration:none} td.sh-prod a:hover{text-decorat
   #sh-table table.sh-items td:first-child{font-weight:600}
 }
 #po-pickshop [data-ps="q"]{min-width:200px}
+h3.sh-h{font-size:13px;font-weight:600;color:var(--muted);margin:4px 0 6px;text-transform:uppercase;letter-spacing:.04em}
+table.sh-items + h3.sh-h{margin-top:14px}
+tr.sh-det > td{text-align:left}
+table.sh-items{table-layout:fixed}
+table.sh-items td.sh-prod{min-width:0;max-width:none}
+table.sh-items .w-sku{width:150px} table.sh-items .w-n{width:96px} table.sh-items .w-box{width:160px}
+table.sh-items .w-to{width:70px} table.sh-items .w-st{width:130px} table.sh-items .w-fl{width:190px}
+@media (max-width:640px){ table.sh-items{table-layout:auto} }
+table.sht > tbody > tr > td.sh-flag{max-width:200px;white-space:normal}
+table.sht > tbody > tr > td.sh-flag .pill{white-space:normal;line-height:1.35}
+table.sht > tbody > tr > td.sh-prod{max-width:260px}
+table.sht > tbody > tr > td .meta{white-space:normal}
+table.sht td.sh-flag .pill{border-radius:8px}
