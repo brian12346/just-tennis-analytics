@@ -860,3 +860,4 @@ td.sh-prod a{color:inherit;text-decoration:none} td.sh-prod a:hover{text-decorat
   #sh-table table.sh-items td{text-align:left;border-bottom:0;font-weight:400}
   #sh-table table.sh-items td:first-child{font-weight:600}
 }
+#po-pickshop [data-ps="q"]{min-width:200px}

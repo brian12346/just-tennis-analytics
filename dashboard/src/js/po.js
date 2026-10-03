@@ -36,8 +36,8 @@
   const payTxt = (iv) => iv.paidOn ? [PAYN.get(iv.payMethod) || "Paid", shortDate(iv.paidOn), iv.payRef, iv.paidFrom ? "from " + iv.paidFrom : ""].filter(Boolean).join(" · ") : "";
   const overdue = (iv) => !iv.paidOn && iv.due && iv.due < today();
   const poLabel = (po) => /^po(\b|\d)/i.test(po) ? po : "PO " + po;
-  const SURE = new Set(["remembered", "sku", "upc", "manual", "confirmed", "po"]);
-  const HOW = { remembered: "Remembered", sku: "SKU match", upc: "UPC match", manual: "Picked", confirmed: "Confirmed", skupart: "Part of SKU", guess: "Guess", po: "From the PO" };
+  const SURE = new Set(["remembered", "sku", "upc", "manual", "confirmed", "po", "shopify"]);
+  const HOW = { remembered: "Remembered", sku: "SKU match", upc: "UPC match", manual: "Picked", confirmed: "Confirmed", skupart: "Part of SKU", guess: "Guess", po: "From the PO", shopify: "From Shopify" };
   const CONF = { high: "Likely", medium: "Maybe", low: "Unsure" };
   const ACCOUNTS = [["inventory", "Inventory"], ["inbound_shipping", "Inbound Shipping"]];   // QuickBooks accounts (bill lines)
   const ACCT = new Map(ACCOUNTS);
@@ -725,6 +725,9 @@
     if (S.mode !== "po" || $("tab-po").hidden) return;
     $("po-list-view").hidden = !!S.ed; $("po-edit-view").hidden = !S.ed;
     if (S.ed) return;
+    const ph = $("po-pickshop-host"), hadFocus = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ps === "q";
+    ph.innerHTML = pickShopHtml();
+    if (hadFocus) { const i = ph.querySelector('[data-ps="q"]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
     const all = S.orders || [];
     const isOpen = (o) => o.status !== "complete";
     const cnt = (st) => all.filter(o => st === "open" ? isOpen(o) : st === "all" ? true : o.status === st).length;
@@ -1340,6 +1343,7 @@
     if (a === "sp-add" && ed.split) { ed.split.parts.push({ dest: "prep", asku: "", q: "0", received: 0 }); render();
       setTimeout(() => { const i = box().querySelector('[data-f="spq"][data-k="' + (ed.split.parts.length - 1) + '"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
     if (a === "sp-rm" && ed.split) { const i = Number(k); if (ed.split.parts[i] && !(ed.split.parts[i].received > 0)) ed.split.parts.splice(i, 1); render(); return; }
+    if (a === "shop-api") { checkFromApi(); return; }
     if (a === "shop-open") { ed.shopOpen = !ed.shopOpen; render(); if (ed.shopOpen) setTimeout(() => { const el = $("pe-shopcheck"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
     if (a === "shop-rm") { ed.shopCheck = null; ed.dirty = true; render(); note("info", "Shopify PO check removed. Save to keep that."); return; }
@@ -1466,7 +1470,8 @@
   const poKey = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^po/, "");
   // match each Shopify PO line to a Shopify variant (its SKU first, then the supplier SKU, then the name)
   function matchShopLines(sp, vendor) {
-    for (const l of sp.lines) { let g = guessLine({ item_code: l.sku, upc: "", description: l.title }, vendor);
+    for (const l of sp.lines) { if (l.how === "shopify" && l.variant_id) continue;   // Shopify said which variant
+      let g = guessLine({ item_code: l.sku, upc: "", description: l.title }, vendor);
       if (!l.sku && l.supplier_sku) { const g2 = guessLine({ item_code: l.supplier_sku, upc: "", description: l.title }, vendor); if (g2.how === "remembered" || g2.how === "sku") g = g2; } l.variant_id = g.vid; l.how = g.how; l.alts = g.alts; }
   }
   // New PO from the Shopify PO's PDF: vendor, PO number, expected date and every product, quantity and cost come from
@@ -1482,31 +1487,51 @@
       const sp = parseShopPo(rows);
       S.busy = "";
       if (!sp.lines.length) { render(); note("bad", "Couldn't find any product lines in that PDF. Is it the purchase order PDF from Shopify?"); return; }
-      const have = sp.name && (S.orders || []).find(o => poKey(o.po) && poKey(o.po) === poKey(sp.name));
-      if (have) {
-        await openPO(have.id);
-        if (S.ed && S.ed.id === have.id) { await readShopPdf(file); note("info", `${esc(poLabel(have.po))} is already here, so it was checked against this PDF instead of making a second one. Save to keep the check.`); }
-        return;
-      }
-      const nv = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      const sup = sp.supplier || "", vendor = S.vendors.find(v => nv(v) === nv(sup)) || S.vendors.find(v => nv(v) && nv(sup) && (nv(sup).includes(nv(v)) || nv(v).includes(nv(sup)))) || sup;
-      matchShopLines(sp, vendor);
-      const ed = blankEd();
-      Object.assign(ed, { vendor, po: (sp.name || "").replace(/^#\s*/, ""), expected: sp.arrival || "", note: sp.terms ? "Payment terms: " + sp.terms : "", dest: "shopify", addTo: "shopify", fromShop: true, dirty: true });
-      ed.shopCheck = { checked_at: new Date().toISOString(), source: "pdf", file_name: file.name, name: sp.name, supplier: sp.supplier, total: sp.total, subtotal: sp.subtotal, shipping: sp.shipping, scope: "all", lines: sp.lines, created_from: true };
-      const byVid = new Map();
-      for (const l of sp.lines) { if (!l.variant_id) continue; const x = byVid.get(l.variant_id); if (x) x.qty += l.qty || 0; else byVid.set(l.variant_id, { qty: l.qty || 0, cost: l.cost }); }
-      for (const [vid, x] of byVid) ed.lines.push({ id: newId(), vid, asku: "", dest: "shopify", qty: String(x.qty), cost: fmtCost(x.cost), received: 0, backorder: false, eta: "", auto: false, fromShop: true });
-      const unmatched = sp.lines.filter(l => !l.variant_id).length, guessed = sp.lines.filter(l => l.variant_id && l.how === "guess").length;
-      ed.shopOpen = unmatched > 0 || guessed > 0;
-      S.ed = ed; render();
-      const units = sp.lines.reduce((a, l) => a + (l.qty || 0), 0), cost = sp.lines.reduce((a, l) => a + (l.qty || 0) * (l.cost || 0), 0);
-      note(unmatched || guessed ? "warn" : "info", `Made from Shopify PO <b>${esc(sp.name || file.name)}</b>: ${sp.lines.length} line${sp.lines.length === 1 ? "" : "s"}, ${n0(units)} units, ${m(cost)}${sp.shipping ? ` + ${m(sp.shipping)} shipping` : ""}.` +
-        (unmatched ? ` <b>${unmatched} product${unmatched === 1 ? "" : "s"} couldn't be found in Shopify's catalog</b> — pick ${unmatched === 1 ? "it" : "them"} in the Shopify PO check below.` : "") +
-        (guessed ? ` ${guessed} matched by name — check ${guessed === 1 ? "it" : "them"} below.` : "") +
-        (sup && !S.vendors.includes(vendor) ? ` The supplier "${esc(sup)}" isn't a vendor in Shopify's catalog — check the vendor name.` : "") + " Check it over and Save.");
-      if (ed.shopOpen) focusArg("pe-shopcheck");
+      await newFromShop(sp, { source: "pdf", file_name: file.name });
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't read that PDF: " + esc(JT.message(e))); }
+  }
+  // New PO from a Shopify PO (its PDF, or the PO itself from Shopify's API): vendor, PO number, expected date and every
+  // product, quantity and cost come from Shopify, and the Shopify check is filled in from the same data (so it matches).
+  // A PO with that number already here is opened and checked instead.
+  async function newFromShop(sp, meta) {
+    const from = meta.source === "pdf" ? "this PDF" : "Shopify";
+    const have = sp.name && (S.orders || []).find(o => poKey(o.po) && poKey(o.po) === poKey(sp.name));
+    if (have) {
+      await openPO(have.id);
+      if (S.ed && S.ed.id === have.id) { checkShop(sp, meta); note("info", `${esc(poLabel(have.po))} is already here, so it was checked against ${from} instead of making a second one. Save to keep the check.`); }
+      return;
+    }
+    const nv = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const sup = sp.supplier || "", vendor = S.vendors.find(v => nv(v) === nv(sup)) || S.vendors.find(v => nv(v) && nv(sup) && (nv(sup).includes(nv(v)) || nv(v).includes(nv(sup)))) || sup;
+    matchShopLines(sp, vendor);
+    const ed = blankEd();
+    Object.assign(ed, { vendor, po: (sp.name || "").replace(/^#\s*/, ""), expected: sp.arrival || "", note: sp.terms ? "Payment terms: " + sp.terms : "", dest: "shopify", addTo: "shopify", fromShop: true, dirty: true });
+    if (meta.shopId) ed.shopifyUrl = shopUrl(meta.shopId);
+    ed.shopCheck = { checked_at: new Date().toISOString(), source: meta.source, file_name: meta.file_name || sp.name, name: sp.name, supplier: sp.supplier, total: sp.total, subtotal: sp.subtotal, shipping: sp.shipping, scope: "all", lines: sp.lines, created_from: true };
+    const byVid = new Map();
+    for (const l of sp.lines) { if (!l.variant_id) continue; const x = byVid.get(l.variant_id); if (x) x.qty += l.qty || 0; else byVid.set(l.variant_id, { qty: l.qty || 0, cost: l.cost }); }
+    for (const [vid, x] of byVid) ed.lines.push({ id: newId(), vid, asku: "", dest: "shopify", qty: String(x.qty), cost: fmtCost(x.cost), received: 0, backorder: false, eta: "", auto: false, fromShop: true });
+    const unmatched = sp.lines.filter(l => !l.variant_id).length, guessed = sp.lines.filter(l => l.variant_id && l.how === "guess").length;
+    ed.shopOpen = unmatched > 0 || guessed > 0;
+    S.ed = ed; render();
+    const units = sp.lines.reduce((a, l) => a + (l.qty || 0), 0), cost = sp.lines.reduce((a, l) => a + (l.qty || 0) * (l.cost || 0), 0);
+    note(unmatched || guessed ? "warn" : "info", `Made from Shopify PO <b>${esc(sp.name || meta.file_name || "")}</b>: ${sp.lines.length} line${sp.lines.length === 1 ? "" : "s"}, ${n0(units)} units, ${m(cost)}${sp.shipping ? ` + ${m(sp.shipping)} shipping` : ""}.` +
+      (unmatched ? ` <b>${unmatched} product${unmatched === 1 ? "" : "s"} couldn't be found in Shopify's catalog</b> — pick ${unmatched === 1 ? "it" : "them"} in the Shopify PO check below.` : "") +
+      (guessed ? ` ${guessed} matched by name — check ${guessed === 1 ? "it" : "them"} below.` : "") +
+      (sup && !S.vendors.includes(vendor) ? ` The supplier "${esc(sup)}" isn't a vendor in Shopify's catalog — check the vendor name.` : "") + " Check it over and Save.");
+    if (ed.shopOpen) focusArg("pe-shopcheck");
+  }
+  // this PO checked against a Shopify PO (from its PDF or from Shopify)
+  function checkShop(sp, meta) {
+    const ed = S.ed; if (!ed) return;
+    matchShopLines(sp, ed.vendor);
+    ed.shopCheck = { checked_at: new Date().toISOString(), source: meta.source, file_name: meta.file_name || sp.name, name: sp.name, supplier: sp.supplier, total: sp.total, subtotal: sp.subtotal, shipping: sp.shipping,
+      scope: (ed.shopCheck && ed.shopCheck.scope) || "all", lines: sp.lines };
+    if (meta.shopId && !ed.shopifyUrl) ed.shopifyUrl = shopUrl(meta.shopId);
+    ed.dirty = true; ed.shopAll = false;
+    const d = shopDiffs(ed); ed.shopOpen = d.n > 0; render();
+    note(d.n ? "warn" : "info", `${meta.source === "pdf" ? "Read" : "Checked against"} Shopify PO ${esc(sp.name || meta.file_name || "")}: ${sp.lines.length} product line${sp.lines.length === 1 ? "" : "s"}. ${d.n ? `<b>${d.n} difference${d.n === 1 ? "" : "s"}</b> from this PO — see below.` : "It matches this PO ✓."} Save to keep the check.`);
+    if (d.n) focusArg("pe-shopcheck");
   }
   async function readShopPdf(file) {
     const ed = S.ed; if (!file || !ed) return;
@@ -1518,15 +1543,73 @@
       const sp = parseShopPo(rows);
       S.busy = "";
       if (!sp.lines.length) { render(); note("bad", "Couldn't find any product lines in that PDF. Is it the purchase order PDF from Shopify?"); return; }
-      matchShopLines(sp, ed.vendor);
-      ed.shopCheck = { checked_at: new Date().toISOString(), source: "pdf", file_name: file.name, name: sp.name, supplier: sp.supplier, total: sp.total, subtotal: sp.subtotal, shipping: sp.shipping,
-        scope: (ed.shopCheck && ed.shopCheck.scope) || "all", lines: sp.lines };
-      ed.dirty = true; ed.shopAll = false;
-      const d = shopDiffs(ed); ed.shopOpen = d.n > 0; render();
-      note(d.n ? "warn" : "info", `Read Shopify PO ${esc(sp.name || file.name)}: ${sp.lines.length} product line${sp.lines.length === 1 ? "" : "s"}. ${d.n ? `<b>${d.n} difference${d.n === 1 ? "" : "s"}</b> from this PO — see below.` : "It matches this PO ✓."} Save to keep the check.`);
-      if (d.n) focusArg("pe-shopcheck");
+      checkShop(sp, { source: "pdf", file_name: file.name });
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't read that PDF: " + esc(JT.message(e))); }
   }
+
+  // ---------- Shopify POs straight from Shopify (jt.shopify_pos, synced hourly by the sync's shopify-pos job; migration 070) ----------
+  async function loadShopPos(refresh) {
+    const r = await JT.rows(["id::text", "name", "status", "supplier", "destination", "total", "lines", "units", "created_at::text", "expected_at::text", "lines_synced is not null", "synced_at::text"],
+      "from jt.shopify_pos order by id desc limit 300", refresh);
+    S.spos = r.map(x => ({ id: x[0], name: x[1] || "", status: x[2] || "", supplier: x[3] || "", dest: x[4] || "", total: x[5] == null ? null : +x[5], lines: +x[6] || 0, units: +x[7] || 0,
+      created: x[8] || "", expected: x[9] || "", ready: !!x[10], synced: x[11] || "" }));
+    return S.spos;
+  }
+  // the Shopify PO by its number or link (for a PO here)
+  const shopPoFor = (ed) => {
+    if (!S.spos) return null;
+    const m1 = /purchase_orders\/(\d+)/.exec(shopUrl(ed.shopifyUrl) || "");
+    return (m1 && S.spos.find(p => p.id === m1[1])) || (ed.po && S.spos.find(p => poKey(p.name) && poKey(p.name) === poKey(ed.po))) || null;
+  };
+  async function spFromApi(po) {
+    const r = await JT.rows(["variant_id::text", "sku", "title", "qty", "cost"], `from jt.shopify_po_lines where po_id = ${JT.int(po.id)} order by line_id`, true);
+    const lines = r.map(x => { const vid = x[0] && S.byVid.has(x[0]) ? x[0] : null;
+      return { variant_id: vid, sku: x[1] || "", title: x[2] || "", qty: +x[3] || 0, cost: x[4] == null ? null : +x[4], how: vid ? "shopify" : "", alts: [] }; });
+    return { name: po.name, supplier: po.supplier, total: po.total, subtotal: po.total, shipping: null, arrival: (po.expected || "").slice(0, 10), terms: "", lines };
+  }
+  async function newFromApi(id) {
+    const po = (S.spos || []).find(p => p.id === String(id)); if (!po) return;
+    S.busy = `Bringing in Shopify PO ${po.name}…`; S.pickShop = null; render();
+    try {
+      await catalog(); if (!S.orders) await loadOrders(false);
+      const sp = await spFromApi(po); S.busy = "";
+      if (!sp.lines.length) { render(); note("bad", `Shopify PO ${esc(po.name)} has no product lines yet${po.ready ? "" : " (its lines haven't been read yet — the hourly sync reads them)"}.`); return; }
+      await newFromShop(sp, { source: "shopify", shopId: po.id, file_name: po.name });
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't bring in that PO: " + esc(JT.message(e))); }
+  }
+  async function checkFromApi() {
+    const ed = S.ed; if (!ed) return;
+    S.busy = "Checking against Shopify…"; render();
+    try {
+      await catalog(); await loadShopPos(true);
+      const po = shopPoFor(ed); S.busy = "";
+      if (!po) { render(); note("warn", `Couldn't find ${ed.po ? esc(poLabel(ed.po)) : "this PO"} among the Shopify POs read from Shopify. Check the PO number or the Shopify link, or upload the PDF instead.`); return; }
+      checkShop(await spFromApi(po), { source: "shopify", shopId: po.id, file_name: po.name });
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't check against Shopify: " + esc(JT.message(e))); }
+  }
+  // the picker: Shopify POs not in Seller Sage yet, newest first
+  function pickShopHtml() {
+    const P = S.pickShop; if (!P) return "";
+    if (!S.spos) return `<section class="panel" id="po-pickshop"><div class="panel-head"><h2>New PO from Shopify</h2><span class="muted small">Loading Shopify POs…</span></div></section>`;
+    const here = new Set((S.orders || []).map(o => poKey(o.po)).filter(Boolean));
+    const q = (P.q || "").toLowerCase().trim();
+    const done = (p) => /RECEIVED|CLOSED|CANCEL|COMPLETE/i.test(p.status) && !/PARTIAL/i.test(p.status);
+    const list = S.spos.filter(p => (P.all || (!here.has(poKey(p.name)) && !done(p))) && (!q || `${p.name} ${p.supplier} ${p.status}`.toLowerCase().includes(q)));
+    const last = S.spos.reduce((a, p) => p.synced > a ? p.synced : a, "");
+    const nice = (st) => st ? st.charAt(0) + st.slice(1).toLowerCase().replace(/_/g, " ") : "";
+    return `<section class="panel" id="po-pickshop"><div class="panel-head"><h2>New PO from Shopify</h2>
+      <span class="muted small">Shopify POs read from Shopify (hourly${last ? ", last " + esc(when(last)) : ""}). Pick one to bring it in with every product, quantity and cost — already checked.</span>
+      <span class="dbtns right"><label class="small"><input type="checkbox" data-ps="all" ${P.all ? "checked" : ""}> Show received and already here</label>
+      <input class="inp sm" type="search" data-ps="q" value="${esc(P.q || "")}" placeholder="PO number or supplier"><button class="btn" data-ps="close">Close</button></span></div>
+      <div class="tbl-wrap tall"><table class="po-t"><thead><tr><th class="l">Shopify PO</th><th class="l">Supplier</th><th class="l">Status</th><th class="l">Created</th><th class="l">Expected</th><th>Lines</th><th>Units</th><th>Total</th><th></th></tr></thead><tbody>${
+      list.slice(0, 100).map(p => { const isHere = here.has(poKey(p.name));
+        return `<tr><td class="l"><b class="mono">${esc(p.name || "#" + p.id)}</b> <a class="small" href="${esc(shopUrl(p.id))}" target="_blank" rel="noopener">↗</a></td><td class="l">${esc(p.supplier || "—")}</td>
+        <td class="l">${p.status ? `<span class="pill pos">${esc(nice(p.status))}</span>` : ""}</td><td class="l">${esc((p.created || "").slice(0, 10))}</td><td class="l">${esc((p.expected || "").slice(0, 10)) || "—"}</td>
+        <td>${p.ready ? n0(p.lines) : '<span class="dim" title="The hourly sync hasn\'t read its lines yet">…</span>'}</td><td>${p.ready ? n0(p.units) : ""}</td><td>${p.total == null ? "—" : m(p.total)}</td>
+        <td>${isHere ? '<span class="pill ok">Already here</span>' : `<button class="btn primary sm" data-ps-take="${esc(p.id)}" ${p.ready ? "" : "disabled"}>Bring in</button>`}</td></tr>`; }).join("")
+      || `<tr><td class="l dim" colspan="9">${S.spos.length ? "No open Shopify POs that aren't here yet. Tick “Show received and already here” to see the rest." : "No Shopify POs yet — the sync reads them from Shopify hourly."}</td></tr>`}</tbody></table></div></section>`;
+  }
+
   // this PO against the Shopify PO, product by product (split products are added up)
   function shopDiffs(ed) {
     const sc = ed.shopCheck, out = { rows: [], n: 0, supplier: false, ours: { u: 0, c: 0 }, theirs: { u: 0, c: 0 } }; if (!sc) return out;
@@ -1553,7 +1636,7 @@
   function shopBadge(ed, ro) {
     if (!(ed.id || ed.shopCheck) || !(ed.shopifyUrl.trim() || ed.shopCheck)) return "";
     const sc = ed.shopCheck, inp = '<input type="file" id="pe-shopfile" accept=".pdf,application/pdf" hidden>';
-    const btn = ro ? "" : `<label class="mini shopbtn" for="pe-shopfile" title="Download the PO from Shopify as a PDF and upload it; every product, quantity and cost is compared">${sc ? "Re-check Shopify" : "Check vs Shopify PO"}</label>`;
+    const btn = ro ? "" : `<button class="mini shopbtn" data-pact="shop-api" title="Compare every product, quantity and cost with the Shopify PO, read from Shopify (matched by PO number or the Shopify link)">${sc ? "Re-check Shopify" : "Check vs Shopify PO"}</button><label class="mini shopbtn" for="pe-shopfile" title="Or download the PO from Shopify as a PDF and upload it">PDF</label>`;
     if (!sc) return ` <span class="shopbadge">${btn}${inp}</span>`;
     const d = shopDiffs(ed), tip = `Checked against ${sc.name || "the Shopify PO"} ${when(sc.checked_at)}`;
     const mark = d.n ? `<button class="pill miss shopdif" data-pact="shop-open" title="${esc(tip)} — click to see">${d.n} Shopify difference${d.n === 1 ? "" : "s"}</button>`
@@ -1682,6 +1765,18 @@
 
   function bind() {
     const tab = $("tab-po"), box = $("po-edit-view");
+    $("po-shopapi").addEventListener("click", () => {
+      if (S.ed && S.ed.dirty) return leave();
+      if (S.ed) { S.ed = null; }
+      S.pickShop = S.pickShop ? null : { q: "", all: false }; render();
+      if (S.pickShop) { loadShopPos(true).then(() => { render(); const el = $("po-pickshop"); if (el) el.scrollIntoView({ block: "start", behavior: "smooth" }); }, (e) => { S.pickShop = null; render(); note("bad", "Couldn't load the Shopify POs: " + esc(JT.message(e))); }); if (!S.orders) loadOrders(false).then(render).catch(() => {}); }
+    });
+    $("po-pickshop-host").addEventListener("click", (e) => {
+      const t = e.target.closest("[data-ps-take]"); if (t) { newFromApi(t.dataset.psTake); return; }
+      const c = e.target.closest('[data-ps="close"]'); if (c) { S.pickShop = null; render(); }
+    });
+    $("po-pickshop-host").addEventListener("change", (e) => { if (e.target.dataset.ps === "all" && S.pickShop) { S.pickShop.all = e.target.checked; render(); } });
+    $("po-pickshop-host").addEventListener("input", (e) => { if (e.target.dataset.ps === "q" && S.pickShop) { S.pickShop.q = e.target.value; render(); } });
     $("po-new").addEventListener("click", () => { if (S.ed && S.ed.dirty) return leave(); note("", ""); openPO(null); });
     $("po-shopnew").addEventListener("change", (ev) => { const f = ev.target.files[0]; ev.target.value = "";
       if (S.ed && S.ed.dirty) { note("warn", "Save or leave the PO you're working on first, then upload the Shopify PO."); return; }

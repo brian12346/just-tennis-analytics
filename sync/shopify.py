@@ -9,6 +9,7 @@ the dashboard back to Shopify (apply_cost_updates).
 from __future__ import annotations
 
 import datetime as dt
+import re
 import time
 
 import requests
@@ -734,3 +735,220 @@ def probe_po_api(shop: Shopify, conn) -> int:
                        on conflict (key) do update set value = excluded.value, updated_at = now()""", (json.dumps(res),))
     conn.commit()
     return sum(len(v.get("mutations") or []) for v in res["versions"].values())
+
+
+# ---------------------------------------------------------------- Shopify purchase orders -> jt.shopify_pos
+# Read-only (inventoryPurchaseOrders, API 2026-10). Shopify hasn't documented these objects yet, so the query is
+# built from the API's own schema (introspection): every plain field of the PO, of its line items and of the objects
+# one level down (supplier, location, variant, money). Each PO and line keeps the full JSON; the columns we use are
+# picked out of it. The list (plain fields only) is read every run; a PO's line items are read again only when its
+# plain fields changed (or never were), newest first, at most PO_DETAIL_CAP per run (the first runs backfill).
+PO_VERSION = "2026-10"
+PO_DETAIL_CAP = 200
+_SCALAR = ("SCALAR", "ENUM")
+
+
+class _PoSchema:
+    """Introspection, cached per run."""
+    Q = """query($n: String!) { __type(name: $n) { name kind possibleTypes { name }
+      fields { name args { name defaultValue type { kind } }
+               type { name kind ofType { name kind ofType { name kind ofType { name kind } } } } } } }"""
+
+    def __init__(self, shop: Shopify, version: str):
+        self.shop, self.version, self.cache = shop, version, {}
+
+    def fields(self, name: str) -> list[dict]:
+        if name not in self.cache:
+            t = self.shop.graphql(self.Q, {"n": name}, version=self.version)["__type"] or {}
+            self.cache[name] = t.get("fields") or []
+        return self.cache[name]
+
+    @staticmethod
+    def base(t: dict) -> tuple[str, str, bool]:
+        lst = False
+        while t and t.get("kind") in ("NON_NULL", "LIST"):
+            lst = lst or t["kind"] == "LIST"
+            t = t.get("ofType")
+        return (t or {}).get("kind", ""), (t or {}).get("name", ""), lst
+
+    def root_field(self, root: str, field: str) -> dict | None:
+        return next((f for f in self.fields(root) if f["name"] == field), None)
+
+    def select(self, name: str, depth: int, conns: bool = False, lines: int = 100) -> str:
+        parts = []
+        for f in self.fields(name):
+            if any(a["type"]["kind"] == "NON_NULL" and a.get("defaultValue") is None and a["name"] not in ("first",) for a in f.get("args") or []):
+                continue                                   # needs an argument we can't guess
+            kind, tname, _ = self.base(f["type"])
+            if kind in _SCALAR:
+                parts.append(f["name"])
+            elif kind in ("OBJECT", "INTERFACE") and tname.endswith("Connection"):
+                if not conns or not re.search(r"line", f["name"], re.I):
+                    continue                               # only the PO's line items
+                node = next((x for x in self.fields(tname) if x["name"] == "nodes"), None)
+                if not node:
+                    continue
+                sub = self.select(self.base(node["type"])[1], 1)
+                if sub:
+                    parts.append(f"{f['name']}(first: {lines}) {{ nodes {{ {sub} }} pageInfo {{ hasNextPage }} }}")
+            elif kind in ("OBJECT", "INTERFACE") and depth > 0 and tname not in ("PageInfo",):
+                sub = self.select(tname, depth - 1)
+                if sub:
+                    parts.append(f"{f['name']} {{ {sub} }}")
+        return " ".join(parts)
+
+
+def _money(v):
+    if isinstance(v, dict):
+        v = v.get("amount", v.get("value"))
+    try:
+        return float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _first(d: dict, pat: str, want=None):
+    """First value in d whose key matches pat (and passes want)."""
+    for k, v in d.items():
+        if re.search(pat, k, re.I) and v not in (None, "", [], {}) and (want is None or want(v)):
+            return v
+    return None
+
+
+def _label(v) -> str:
+    if isinstance(v, dict):
+        for k in ("name", "displayName", "title", "companyName", "legalName", "handle"):
+            if v.get(k):
+                return str(v[k])
+        return ""
+    return str(v or "")
+
+
+def _find_variant(x) -> dict | None:
+    if isinstance(x, dict):
+        if str(x.get("id", "")).startswith("gid://shopify/ProductVariant/"):
+            return x
+        for v in x.values():
+            r = _find_variant(v)
+            if r:
+                return r
+    elif isinstance(x, list):
+        for v in x:
+            r = _find_variant(v)
+            if r:
+                return r
+    return None
+
+
+def _int(v) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _po_lines(d: dict) -> list[dict]:
+    for k, v in d.items():
+        if re.search(r"line", k, re.I):
+            if isinstance(v, dict) and isinstance(v.get("nodes"), list):
+                return v["nodes"]
+            if isinstance(v, list):
+                return v
+    return []
+
+
+def _line_row(i: int, n: dict) -> dict:
+    var = _find_variant(n) or {}
+    plain = lambda v: not isinstance(v, (dict, list))  # noqa: E731
+    qty = n.get("quantity")
+    if qty is None:   # ordered quantity: a "quantity" field that isn't received / rejected / cancelled
+        qty = next((v for k, v in n.items() if re.search(r"quant", k, re.I) and not re.search(r"receiv|accept|reject|cancel|remain|open", k, re.I) and plain(v)), None)
+    rec = _first(n, r"receiv|accepted", plain)
+    cost = _first(n, r"cost", lambda v: _money(v) is not None)
+    return {"line_id": str(n.get("id") or i), "variant_id": gid_num(var.get("id")), "sku": str(n.get("sku") or var.get("sku") or ""),
+            "title": _label(n) or str(var.get("displayName") or var.get("title") or ""), "qty": _int(qty), "qty_received": _int(rec),
+            "cost": _money(cost), "raw": n}
+
+
+def _iso(v):
+    return v if isinstance(v, str) and re.match(r"\d{4}-\d\d-\d\d", v) else None
+
+
+def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
+    import json
+    sc = _PoSchema(shop, PO_VERSION)
+    lf = sc.root_field("QueryRoot", "inventoryPurchaseOrders")
+    one = sc.root_field("QueryRoot", "inventoryPurchaseOrder")
+    if not lf:
+        raise RuntimeError(f"Shopify's {PO_VERSION} API has no inventoryPurchaseOrders for this store")
+    conn_t = sc.base(lf["type"])[1]
+    po_t = sc.base(next(f for f in sc.fields(conn_t) if f["name"] == "nodes")["type"])[1]
+    head = sc.select(po_t, 0)                                       # plain fields only
+    args = {a["name"] for a in lf.get("args") or []}
+    order = (", sortKey: ID" if "sortKey" in args else "") + (", reverse: true" if "reverse" in args else "")
+    # 1) the list
+    heads, after = [], None
+    while True:
+        data = shop.graphql(f"""query($after: String) {{ inventoryPurchaseOrders(first: 100, after: $after{order}) {{
+            nodes {{ {head} }} pageInfo {{ hasNextPage endCursor }} }} }}""", {"after": after}, version=PO_VERSION)
+        c = data["inventoryPurchaseOrders"]
+        heads += c["nodes"]
+        if not c["pageInfo"]["hasNextPage"]:
+            break
+        after = c["pageInfo"]["endCursor"]
+    with conn.cursor() as cur:
+        cur.execute("select id, raw, lines_synced is not null from jt.shopify_pos")
+        have = {r[0]: (r[1] or {}, r[2]) for r in cur.fetchall()}
+    # 2) details (with line items) for new or changed POs, newest first
+    todo = [h for h in heads if gid_num(h.get("id")) not in have or not have[gid_num(h["id"])][1]
+            or {k: v for k, v in (have[gid_num(h["id"])][0] or {}).items() if k in h} != h]
+    todo.sort(key=lambda h: gid_num(h.get("id")) or 0, reverse=True)
+    detail_t = sc.select(po_t, 1, conns=True)
+    saved, lines_n, errs = 0, 0, []
+    for h in todo[:cap]:
+        d = None
+        for size in (100, 50, 25):
+            try:
+                q = sc.select(po_t, 1, conns=True, lines=size) if size != 100 else detail_t
+                d = shop.graphql(f"""query($id: ID!) {{ inventoryPurchaseOrder(id: $id) {{ {q} }} }}""", {"id": h["id"]}, version=PO_VERSION)["inventoryPurchaseOrder"] if one else None
+                break
+            except RuntimeError as e:
+                if "cost" not in str(e).lower() or size == 25:
+                    errs.append(str(e)[:200])
+                    break
+        if not d:
+            continue
+        rows = [_line_row(i, n) for i, n in enumerate(_po_lines(d))]
+        total = _first(d, r"total", lambda v: _money(v) is not None)
+        cur_code = (total or {}).get("currencyCode", "") if isinstance(total, dict) else ""
+        supplier = _label(_first(d, r"supplier|vendor"))
+        dest = _label(_first(d, r"destination|location"))
+        expected = _iso(_first(d, r"expected|arrival|estimated|eta"))
+        with conn.cursor() as cur:
+            cur.execute("""insert into jt.shopify_pos (id, name, status, supplier, destination, currency, total, lines, units, created_at, updated_at,
+                             expected_at, raw, lines_synced, synced_at)
+                           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb, now(), now())
+                           on conflict (id) do update set name = excluded.name, status = excluded.status, supplier = excluded.supplier,
+                             destination = excluded.destination, currency = excluded.currency, total = excluded.total, lines = excluded.lines,
+                             units = excluded.units, created_at = excluded.created_at, updated_at = excluded.updated_at,
+                             expected_at = excluded.expected_at, raw = excluded.raw, lines_synced = now(), synced_at = now()""",
+                        (gid_num(d.get("id")) or gid_num(h["id"]), str(d.get("name") or ""), str(d.get("status") or ""), supplier, dest, cur_code,
+                         _money(total), len(rows), sum(r["qty"] for r in rows), _iso(d.get("createdAt")), _iso(d.get("updatedAt")), expected,
+                         json.dumps(d)))
+            pid = gid_num(d.get("id")) or gid_num(h["id"])
+            cur.execute("delete from jt.shopify_po_lines where po_id = %s", (pid,))
+            cur.executemany("""insert into jt.shopify_po_lines (po_id, line_id, variant_id, sku, title, qty, qty_received, cost, raw)
+                               values (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) on conflict (po_id, line_id) do nothing""",
+                            [(pid, r["line_id"], r["variant_id"], r["sku"], r["title"], r["qty"], r["qty_received"], r["cost"], json.dumps(r["raw"])) for r in rows])
+        conn.commit()
+        saved += 1
+        lines_n += len(rows)
+    # plain-field changes for the rest (status) without their lines
+    with conn.cursor() as cur:
+        for h in heads:
+            pid = gid_num(h.get("id"))
+            if pid in have:
+                cur.execute("update jt.shopify_pos set status = %s, synced_at = now() where id = %s and status is distinct from %s",
+                            (str(h.get("status") or ""), pid, str(h.get("status") or "")))
+    conn.commit()
+    return {"variants": saved, "pos": len(heads), "details": saved, "lines": lines_n, "left": max(0, len(todo) - cap), "errors": errs[:3]}

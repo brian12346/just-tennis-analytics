@@ -658,7 +658,8 @@
       </div>
       <div class="controls">
         <button class="btn" id="po-refresh">Refresh</button>
-        <label class="btn" for="po-shopnew" title="Download the PO from Shopify as a PDF and upload it: the PO is filled in from it and checked against it">New PO from Shopify PDF</label>
+        <button class="btn" id="po-shopapi" title="Pick a PO made in Shopify: it's brought in with every product, quantity and cost, already checked">New PO from Shopify</button>
+        <label class="btn" for="po-shopnew" title="Download the PO from Shopify as a PDF and upload it: the PO is filled in from it and checked against it">From PDF</label>
         <input type="file" id="po-shopnew" accept=".pdf,application/pdf" hidden>
         <button class="btn primary" id="po-new">New PO</button>
       </div>
@@ -667,6 +668,7 @@
     <div id="po-notes-host"><div class="note info" id="po-busy" hidden aria-live="polite"></div>
     <div id="po-note" hidden></div></div>
     <div id="po-list-view">
+      <div id="po-pickshop-host"></div>
       <section class="kpis" id="po-kpis" aria-label="Purchase order totals"></section>
       <section class="panel">
         <div class="panel-head">
