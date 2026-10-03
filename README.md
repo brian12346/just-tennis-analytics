@@ -50,3 +50,9 @@ and your local `.env`, never in the repo.
 
 The header bar shows `v<version> · <commit>`. The version is `dashboard/VERSION`; bump it with every release
 (patch number while in active development: 0.9.0 → 0.9.1 …). The commit hash comes from Vercel or `git rev-parse`.
+
+## License
+
+Copyright 2026 Andersen Lifestyle. Licensed under the [Apache License, Version 2.0](LICENSE); see [NOTICE](NOTICE).
+You may use, modify and distribute this software under the terms of that license. It is provided "as is", without
+warranties or conditions of any kind.
