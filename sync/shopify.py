@@ -817,7 +817,7 @@ def _first(d: dict, pat: str, want=None):
 
 def _label(v) -> str:
     if isinstance(v, dict):
-        for k in ("name", "displayName", "title", "companyName", "legalName", "handle"):
+        for k in ("name", "supplierName", "displayName", "title", "companyName", "legalName", "handle"):
             if v.get(k):
                 return str(v[k])
         return ""
@@ -857,16 +857,23 @@ def _po_lines(d: dict) -> list[dict]:
     return []
 
 
-def _line_row(i: int, n: dict) -> dict:
+def _line_row(i: int, n: dict, by_item: dict | None = None) -> dict:
     var = _find_variant(n) or {}
+    inv = n.get("inventoryItem") or {}
+    if not var and by_item:   # 2026-10 lines carry the inventory item, not the variant: one item per variant
+        vid = by_item.get(gid_num(inv.get("id")))
+        if vid:
+            var = {"id": f"gid://shopify/ProductVariant/{vid}", "sku": inv.get("sku")}
     plain = lambda v: not isinstance(v, (dict, list))  # noqa: E731
     qty = n.get("quantity")
     if qty is None:   # ordered quantity: a "quantity" field that isn't received / rejected / cancelled
         qty = next((v for k, v in n.items() if re.search(r"quant", k, re.I) and not re.search(r"receiv|accept|reject|cancel|remain|open", k, re.I) and plain(v)), None)
     rec = _first(n, r"receiv|accepted", plain)
-    cost = _first(n, r"cost", lambda v: _money(v) is not None)
-    return {"line_id": str(n.get("id") or i), "variant_id": gid_num(var.get("id")), "sku": str(n.get("sku") or var.get("sku") or ""),
-            "title": _label(n) or str(var.get("displayName") or var.get("title") or ""), "qty": _int(qty), "qty_received": _int(rec),
+    cost = _first(n, r"unit.?cost", lambda v: _money(v) is not None)
+    if cost is None:
+        cost = _first(n, r"cost", lambda v: _money(v) is not None)
+    return {"line_id": str(n.get("id") or i), "variant_id": gid_num(var.get("id")), "sku": str(n.get("sku") or var.get("sku") or inv.get("sku") or n.get("supplierSku") or ""),
+            "title": " - ".join(x for x in [_label(n) or str(var.get("displayName") or var.get("title") or ""), str(n.get("variantTitle") or "")] if x), "qty": _int(qty), "qty_received": _int(rec),
             "cost": _money(cost), "raw": n}
 
 
@@ -897,6 +904,8 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
             break
         after = c["pageInfo"]["endCursor"]
     with conn.cursor() as cur:
+        cur.execute("select inventory_item_id, variant_id from jt.variants where inventory_item_id is not null")
+        by_item = {int(a): int(b) for a, b in cur.fetchall()}
         cur.execute("select id, raw, lines_synced is not null from jt.shopify_pos")
         have = {r[0]: (r[1] or {}, r[2]) for r in cur.fetchall()}
     # 2) details (with line items) for new or changed POs, newest first
@@ -918,10 +927,13 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
                     break
         if not d:
             continue
-        rows = [_line_row(i, n) for i, n in enumerate(_po_lines(d))]
+        rows = [_line_row(i, n, by_item) for i, n in enumerate(_po_lines(d))]
         total = _first(d, r"total", lambda v: _money(v) is not None)
-        cur_code = (total or {}).get("currencyCode", "") if isinstance(total, dict) else ""
-        supplier = _label(_first(d, r"supplier|vendor"))
+        if total is None and rows:   # no PO total in 2026-10: add up the lines
+            lt = [_money(_first(r["raw"], r"total.?cost|subtotal", lambda v: _money(v) is not None)) for r in rows]
+            total = round(sum(x or 0 for x in lt), 2) if any(x is not None for x in lt) else None
+        cur_code = (total or {}).get("currencyCode", "") if isinstance(total, dict) else str(d.get("currency") or "")
+        supplier = _label(_first(d, r"supplier|vendor|origin"))
         dest = _label(_first(d, r"destination|location"))
         expected = _iso(_first(d, r"expected|arrival|estimated|eta"))
         with conn.cursor() as cur:
@@ -933,7 +945,7 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
                              units = excluded.units, created_at = excluded.created_at, updated_at = excluded.updated_at,
                              expected_at = excluded.expected_at, raw = excluded.raw, lines_synced = now(), synced_at = now()""",
                         (gid_num(d.get("id")) or gid_num(h["id"]), str(d.get("name") or ""), str(d.get("status") or ""), supplier, dest, cur_code,
-                         _money(total), len(rows), sum(r["qty"] for r in rows), _iso(d.get("createdAt")), _iso(d.get("updatedAt")), expected,
+                         _money(total), len(rows), sum(r["qty"] for r in rows), _iso(d.get("createdAt") or d.get("dateCreated")), _iso(d.get("updatedAt") or d.get("orderedAt")), expected,
                          json.dumps(d)))
             pid = gid_num(d.get("id")) or gid_num(h["id"])
             cur.execute("delete from jt.shopify_po_lines where po_id = %s", (pid,))
