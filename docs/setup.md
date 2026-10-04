@@ -15,6 +15,14 @@ About 30 minutes. Steps 1–4 are clicks in web pages; Claude can do steps 5–7
 3. Release the version and install the app on **justtennis-822**.
 4. App → Settings: copy **Client ID** and **Client secret** (`SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`).
 
+## 2b. Ace n Rally (second store, sales only)
+1. In the Ace n Rally Shopify admin: Settings → Apps → Develop apps → **Build apps in Dev Dashboard**.
+2. Create app `Seller Sage` with Admin API scopes `read_orders`, `read_all_orders`, `read_products`, `read_reports`;
+   request **protected customer data** access (Shopify Analytics needs it). Release the version and install it on the store.
+3. GitHub → Settings → Secrets and variables → Actions: `ACENRALLY_SHOP` (the store's `xxxx.myshopify.com` handle),
+   `ACENRALLY_CLIENT_ID`, `ACENRALLY_CLIENT_SECRET`.
+4. Actions → Sync data → job `acenrally`, since `2025-01-01` (history + catalog). Hourly and nightly syncs keep it current.
+
 ## 3. GitHub repository
 1. github.com → New repository → `just-tennis-analytics`, **Private**.
 2. Push this code (the bundle Claude gave you):

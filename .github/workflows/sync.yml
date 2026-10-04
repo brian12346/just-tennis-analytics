@@ -39,6 +39,9 @@ jobs:
           SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
           SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
           SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          ACENRALLY_SHOP: ${{ secrets.ACENRALLY_SHOP }}
+          ACENRALLY_CLIENT_ID: ${{ secrets.ACENRALLY_CLIENT_ID }}
+          ACENRALLY_CLIENT_SECRET: ${{ secrets.ACENRALLY_CLIENT_SECRET }}
           SHIPSTATION_API_KEY: ${{ secrets.SHIPSTATION_API_KEY }}
           JOB: ${{ github.event.inputs.job || 'hourly' }}
           SINCE: ${{ github.event.inputs.since }}

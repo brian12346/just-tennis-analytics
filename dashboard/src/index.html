@@ -27,6 +27,7 @@
     <button role="tab" data-tab="alerts" aria-selected="false">Alerts</button>
     <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
+    <button role="tab" data-tab="anr" aria-selected="false">Ace n Rally</button>
     <button role="tab" data-tab="costs" aria-selected="false">Inventory value</button>
     <button role="tab" data-tab="prep" aria-selected="false">Prep center</button>
     <button role="tab" data-tab="fba" aria-selected="false">Amazon inventory</button>
@@ -255,6 +256,40 @@
     <div class="modal" id="prep-modal" hidden>
       <div class="modal-card prep-card" id="prep-mcard" role="dialog" aria-modal="true" aria-label="Prep center"></div>
     </div>
+  </div>
+  <div id="tab-anr" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">acenrally.com · sales from Shopify, costed at Just Tennis cost</span>
+        <h1>Ace n Rally</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="anr-rangeseg" role="group" aria-label="Ace n Rally range"></div>
+        <div class="dates">
+          <input type="date" id="anr-start" aria-label="Start date">
+          <span>–</span>
+          <input type="date" id="anr-end" aria-label="End date">
+        </div>
+        <button class="btn primary" id="anr-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="anr-status" aria-live="polite">Loading Ace n Rally sales…</div>
+    <div id="anr-note" hidden></div>
+    <section class="kpis" id="anr-kpis" aria-label="Ace n Rally totals"></section>
+    <section class="panel" id="anr-unm" hidden>
+      <div class="panel-head"><h2>Products with no Just Tennis match</h2><span class="muted small">Their sales have no cost. Give them the same SKU (or barcode) as the Just Tennis product in Shopify; the next sync matches them.</span></div>
+      <ul class="anr-unm" id="anr-unm-list"></ul>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>By product</h2>
+        <div class="filters"><label for="anr-sort">Sort <select id="anr-sort" class="inp sm"><option value="net">Net sales</option><option value="units">Units</option><option value="profit">Gross profit</option><option value="margin">Margin</option></select></label></div>
+      </div>
+      <div class="tbl-wrap tall"><table id="anr-prods"></table></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>By day</h2></div>
+      <div class="tbl-wrap tall"><table id="anr-days"></table></div>
+    </section>
   </div>
   <div id="tab-shipments" hidden>
     <header class="top">
@@ -781,6 +816,9 @@
 </script>
 <script>
 <!-- @inline js/shipments.js -->
+</script>
+<script>
+<!-- @inline js/acenrally.js -->
 </script>
 <script>
 <!-- @inline js/product-costs.js -->

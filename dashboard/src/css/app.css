@@ -601,7 +601,7 @@ html{scroll-padding-top:130px}
   .tabs > *{flex:none}
   .tabs::-webkit-scrollbar{display:none}
   .tabs button{padding:8px 11px;font-size:15px;order:7}
-  .tabs button[data-tab="shopify"]{order:1}.tabs button[data-tab="amazon"]{order:2}.tabs button[data-tab="psales"]{order:3}.tabs button[data-tab="prep"]{order:4}.tabs button[data-tab="fba"]{order:5}.tabs button[data-tab="shipments"]{order:6}
+  .tabs button[data-tab="shopify"]{order:1}.tabs button[data-tab="amazon"]{order:2}.tabs button[data-tab="psales"]{order:3}.tabs button[data-tab="prep"]{order:4}.tabs button[data-tab="fba"]{order:5}.tabs button[data-tab="shipments"]{order:6}.tabs button[data-tab="anr"]{order:2}
   .tabs .acct{order:9;padding-left:10px}
   h1{font-size:24px}
   .top{flex-direction:column;align-items:stretch;gap:10px}
@@ -874,3 +874,5 @@ table.sht > tbody > tr > td.sh-flag .pill{white-space:normal;line-height:1.35}
 table.sht > tbody > tr > td.sh-prod{max-width:260px}
 table.sht > tbody > tr > td .meta{white-space:normal}
 table.sht td.sh-flag .pill{border-radius:8px}
+ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} ul.anr-unm li{margin:3px 0;break-inside:avoid}
+@media (max-width:640px){ul.anr-unm{columns:1}}

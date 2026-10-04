@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -72,6 +72,20 @@ def main(argv: list[str] | None = None) -> None:
         if a.job in ("nightly", "shopify-po-probe"):
             # what Shopify's purchase-order API offers this store (read-only so far? any create mutation yet?)
             run("shopify_po_probe", lambda: sh.probe_po_api(shop, conn))
+
+    # Ace n Rally (second Shopify store, sales only): runs once its app's secrets (ACENRALLY_SHOP, _CLIENT_ID,
+    # _CLIENT_SECRET) are set. Job "acenrally" with --since loads history.
+    import os
+    if os.environ.get("ACENRALLY_SHOP") and a.job in ("hourly", "nightly", "acenrally", "acenrally-catalog"):
+        from . import shopify as sh4
+        anr = sh4.Shopify("ACENRALLY")
+        adays = {"hourly": 3, "nightly": 35}.get(a.job, 7)
+        asince = a.since or (today - dt.timedelta(days=adays - 1))
+        if a.job in ("hourly", "nightly", "acenrally"):
+            run("acenrally_daily", lambda: sh4.sync_daily(anr, conn, asince, until, table="jt.anr_daily"))
+            run("acenrally_sales", lambda: sh4.sync_sales(anr, conn, asince, until, table="jt.anr_sales"))
+        if a.job in ("nightly", "acenrally", "acenrally-catalog"):
+            run("acenrally_catalog", lambda: sh4.sync_anr_catalog(anr, conn))
 
     if a.job in ("hourly", "nightly", "cost-updates"):
         # costs typed in the dashboard -> Shopify (a save starts job cost-updates right away; hourly catches any missed)

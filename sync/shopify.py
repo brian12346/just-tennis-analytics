@@ -20,11 +20,13 @@ API_VERSION = "2026-07"
 
 
 class Shopify:
-    def __init__(self) -> None:
-        self.shop = env("SHOPIFY_SHOP").replace(".myshopify.com", "")
+    """One store. prefix "SHOPIFY" = Just Tennis; "ACENRALLY" = Ace n Rally (<prefix>_SHOP, _CLIENT_ID, _CLIENT_SECRET)."""
+    def __init__(self, prefix: str = "SHOPIFY") -> None:
+        self.prefix = prefix
+        self.shop = env(f"{prefix}_SHOP").replace(".myshopify.com", "").replace("https://", "").strip("/")
         self.base = f"https://{self.shop}.myshopify.com"
         self.session = requests.Session()
-        self._token = env("SHOPIFY_ACCESS_TOKEN", required=False)
+        self._token = env(f"{prefix}_ACCESS_TOKEN", required=False)
         self._token_exp = float("inf") if self._token else 0.0
 
     # -------------------------------------------------------------- auth
@@ -33,8 +35,8 @@ class Shopify:
             return self._token
         r = self.session.post(f"{self.base}/admin/oauth/access_token", timeout=30, data={
             "grant_type": "client_credentials",
-            "client_id": env("SHOPIFY_CLIENT_ID"),
-            "client_secret": env("SHOPIFY_CLIENT_SECRET"),
+            "client_id": env(f"{self.prefix}_CLIENT_ID"),
+            "client_secret": env(f"{self.prefix}_CLIENT_SECRET"),
         })
         if r.status_code != 200:
             raise RuntimeError(f"Shopify token request failed ({r.status_code}): {r.text[:300]}")
@@ -105,7 +107,7 @@ def _int(x) -> int:
 
 
 # ================================================================ jobs
-def sync_daily(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
+def sync_daily(shop: Shopify, conn, start: dt.date, end: dt.date, table: str = "jt.shopify_daily") -> int:
     rows = shop.shopifyql(
         "FROM sales SHOW orders, gross_sales, discounts, sales_reversals, net_sales, shipping_charges, taxes, "
         "total_sales, cost_of_goods_sold, gross_profit, net_sales_without_cost_recorded "
@@ -115,7 +117,7 @@ def sync_daily(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
             money(r.get("taxes")), money(r.get("total_sales")), money(r.get("cost_of_goods_sold")),
             money(r.get("gross_profit")), money(r.get("net_sales_without_cost_recorded"))) for r in rows]
     from .common import replace_where
-    return replace_where(conn, "jt.shopify_daily", "day between %s and %s", (start, end),
+    return replace_where(conn, table, "day between %s and %s", (start, end),
                          ["day", "orders", "gross", "discounts", "returns", "net", "shipping", "taxes", "total",
                           "cogs", "gross_profit", "net_no_cost"], out)
 
@@ -137,7 +139,7 @@ def _sales_rows(shop: Shopify, s: dt.date, e: dt.date) -> list[dict]:
     return rows
 
 
-def sync_sales(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
+def sync_sales(shop: Shopify, conn, start: dt.date, end: dt.date, table: str = "jt.shopify_sales") -> int:
     from .common import replace_where
     cols = ["day", "order_id", "order_name", "variant_id", "product_id", "product_title", "variant_title", "sku",
             "product_type", "vendor", "sales_channel", "units", "gross", "discounts", "returns", "net", "cogs",
@@ -156,7 +158,7 @@ def sync_sales(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
             agg[key] = [key[0], key[1], r.get("order_name") or "", key[2], _int(r.get("product_id")), key[3],
                         r.get("product_variant_title") or "", r.get("product_variant_sku") or "",
                         r.get("product_type") or "", r.get("product_vendor") or "", key[4], *vals]
-        total += replace_where(conn, "jt.shopify_sales", "day between %s and %s", (s, e), cols,
+        total += replace_where(conn, table, "day between %s and %s", (s, e), cols,
                                [tuple(v) for v in agg.values()])
         conn.commit()
     return total
@@ -964,3 +966,34 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
                             (str(h.get("status") or ""), pid, str(h.get("status") or "")))
     conn.commit()
     return {"variants": saved, "pos": len(heads), "details": saved, "lines": lines_n, "left": max(0, len(todo) - cap), "errors": errs[:3]}
+
+
+# ---------------------------------------------------------------- Ace n Rally (second store, sales only)
+# Its sales go to jt.anr_daily / jt.anr_sales with the same queries as Just Tennis (sync_daily / sync_sales with
+# table=...), its catalog to jt.anr_variants (for matching to Just Tennis products by SKU or barcode; migration 071).
+ANR_VARIANTS_Q = """query($first: Int!, $after: String) {
+  productVariants(first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id sku barcode title displayName price product { id title vendor productType status } }
+  }
+}"""
+
+
+def sync_anr_catalog(shop: Shopify, conn) -> int:
+    from .common import upsert
+    rows, after = [], None
+    while True:
+        page = shop.graphql(ANR_VARIANTS_Q, {"first": 250, "after": after})["productVariants"]
+        for v in page["nodes"]:
+            p = v.get("product") or {}
+            rows.append((gid_num(v["id"]), gid_num(p.get("id")) or 0, v.get("sku") or "", v.get("barcode") or "", p.get("title") or "",
+                         "" if v.get("title") in (None, "Default Title") else v["title"], v.get("displayName") or "", p.get("vendor") or "",
+                         p.get("productType") or "", (p.get("status") or "").lower(), money(v.get("price")) if v.get("price") not in (None, "") else None,
+                         dt.datetime.now(dt.timezone.utc)))
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        after = page["pageInfo"]["endCursor"]
+    n = upsert(conn, "jt.anr_variants", ["variant_id", "product_id", "sku", "barcode", "product_title", "variant_title", "display_name", "vendor",
+                                         "product_type", "status", "price", "seen_at"], rows, ["variant_id"])
+    conn.commit()
+    return n
