@@ -40,13 +40,13 @@
         JT.rows(["anr_variant_id::text", "sku", "barcode", "title"], "from jt.v_anr_variant_map where jt_variant_id is null and anr_variant_id in (select variant_id from jt.anr_sales) order by title", refresh),
         JT.rows(["job", "finished_at", "ok"], "from jt.v_sync_status where job like 'acenrally%'", refresh).catch(() => []),
         // ShipStation labels (shared account) on Ace n Rally orders, by order day (migration 074)
-        JT.rows(["order_day::text", "sum(label_cost)", "count(*) filter (where labels > 0)", "count(*) filter (where labels = 0 and net > 0)"],
+        JT.rows(["order_day::text", "sum(label_cost)", "count(*) filter (where labels > 0)", "count(*) filter (where labels = 0 and net > 0 and combined_with = '')", "count(*) filter (where labels = 0 and combined_with <> '')"],
           `from jt.v_anr_order_shipping where order_day between ${s} and ${e} group by 1`, refresh).catch(() => []),
       ]);
       if (id !== A.reqId) return;
-      const sh = new Map(ship.map(x => [x[0], { labels: num(x[1]), withLabel: num(x[2]), noLabel: num(x[3]) }]));
+      const sh = new Map(ship.map(x => [x[0], { labels: num(x[1]), withLabel: num(x[2]), noLabel: num(x[3]), combined: num(x[4]) }]));
       A.days = days.map(x => ({ day: x[0], orders: num(x[1]), gross: num(x[2]), disc: num(x[3]), ret: num(x[4]), net: num(x[5]), ship: num(x[6]), tax: num(x[7]), total: num(x[8]),
-        cogs: num(x[9]), gp: num(x[10]), nocost: num(x[11]), ...(sh.get(x[0]) || { labels: 0, withLabel: 0, noLabel: 0 }) }));
+        cogs: num(x[9]), gp: num(x[10]), nocost: num(x[11]), ...(sh.get(x[0]) || { labels: 0, withLabel: 0, noLabel: 0, combined: 0 }) }));
       A.prods = prods.map(x => ({ title: x[0] || "(Custom items)", vendor: x[1] || "", type: x[2] || "", units: num(x[3]), gross: num(x[4]), disc: num(x[5]), net: num(x[6]),
         cogs: num(x[7]), nocost: num(x[8]), orders: num(x[9]), all: !!x[10], any: !!x[11], pid: x[12] || "", jt: x[13] || "" }));
       A.unmatched = un.map(x => ({ vid: x[0], sku: x[1] || "", barcode: x[2] || "", title: x[3] || "" }));
@@ -71,13 +71,13 @@
     const D = A.days, sum = (f) => D.reduce((a, d) => a + f(d), 0);
     const net = sum(d => d.net), cogs = sum(d => d.cogs), gp = sum(d => d.gp), nc = sum(d => d.nocost), orders = sum(d => d.orders);
     const units = A.prods.reduce((a, p) => a + p.units, 0), costed = net - nc;
-    const lab = sum(d => d.labels), chg = sum(d => d.ship), noLab = sum(d => d.noLabel), after = gp + chg - lab;
+    const lab = sum(d => d.labels), chg = sum(d => d.ship), noLab = sum(d => d.noLabel), comb = sum(d => d.combined), after = gp + chg - lab;
     $("anr-kpis").innerHTML = [
       { c: "sales", l: "Net sales", v: m0(net), s: `gross ${m0(sum(d => d.gross))} · discounts ${m0(-sum(d => d.disc))} · returns ${m0(-sum(d => d.ret))}` },
       { l: "Orders", v: n0(orders), s: `${n0(units)} units · ${orders ? m(net / orders) : "—"} per order` },
       { c: "cost", l: "Product cost", v: m0(cogs), s: "at Just Tennis cost" },
       { c: "sales", l: "Gross profit", v: `<span class="${gp < 0 ? "neg" : ""}">${m0(gp)}</span>`, s: `${costed > 0 ? pct(gp / costed) : "—"} margin on sales with a cost` },
-      { c: "cost", l: "Shipping labels", v: m0(lab), s: `ShipStation · ${orders ? m(lab / orders) : "—"} per order · customers paid ${m0(chg)}${noLab ? ` · ${n0(noLab)} order${noLab === 1 ? "" : "s"} with no label` : ""}` },
+      { c: "cost", l: "Shipping labels", v: m0(lab), s: `ShipStation · ${orders ? m(lab / orders) : "—"} per order · customers paid ${m0(chg)}${comb ? ` · ${n0(comb)} shipped with another order` : ""}${noLab ? ` · ${n0(noLab)} order${noLab === 1 ? "" : "s"} with no label` : ""}` },
       { c: "sales", l: "Profit after shipping", v: `<span class="${after < 0 ? "neg" : ""}">${m0(after)}</span>`, s: `gross profit + shipping charged − labels${costed > 0 ? ` · ${pct(after / costed)} of costed sales` : ""}` },
       { c: nc > 0.5 ? "warnk" : "", l: "Not costed", v: m0(nc), s: nc > 0.5 ? `net sales with no Just Tennis match · ${A.unmatched.length} product${A.unmatched.length === 1 ? "" : "s"} to match` : "every product matched" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");

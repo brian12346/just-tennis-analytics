@@ -202,8 +202,8 @@ def _line_row(order_id: int, li: dict) -> tuple:
             _amt(li, "discountedUnitPriceAfterAllDiscountsSet"))
 
 
-def sync_orders(shop: Shopify, conn, updated_since: dt.datetime) -> int:
-    """Orders (and their line items) created or changed since `updated_since`."""
+def sync_orders(shop: Shopify, conn, updated_since: dt.datetime, prefix: str = "jt.shopify") -> int:
+    """Orders (and their line items) created or changed since `updated_since`. prefix "jt.anr" = Ace n Rally's tables."""
     from .common import upsert
     q = f"updated_at:>='{updated_since.strftime('%Y-%m-%dT%H:%M:%SZ')}'"
     after, n = None, 0
@@ -239,13 +239,13 @@ def sync_orders(shop: Shopify, conn, updated_since: dt.datetime) -> int:
                 extra = shop.graphql(MORE_LINES_Q, {"id": o["id"], "after": cursor})["order"]["lineItems"]
                 lines += [_line_row(oid, li) for li in extra["nodes"]]
                 cursor, more = extra["pageInfo"]["endCursor"], extra["pageInfo"]["hasNextPage"]
-        upsert(conn, "jt.shopify_orders", ocols, orders, ["order_id"])
+        upsert(conn, f"{prefix}_orders", ocols, orders, ["order_id"])
         if orders:
             with conn.cursor() as cur:  # replace these orders' lines (items can be removed by order edits)
-                cur.execute("delete from jt.shopify_order_lines where order_id = any(%s)", ([r[0] for r in orders],))
-                cur.execute("delete from jt.shopify_order_tracking where order_id = any(%s)", ([r[0] for r in orders],))
-        upsert(conn, "jt.shopify_order_lines", lcols, lines, ["line_id"])
-        upsert(conn, "jt.shopify_order_tracking", ["order_id", "tracking", "company"], tracks, ["order_id", "tracking"])
+                cur.execute(f"delete from {prefix}_order_lines where order_id = any(%s)", ([r[0] for r in orders],))
+                cur.execute(f"delete from {prefix}_order_tracking where order_id = any(%s)", ([r[0] for r in orders],))
+        upsert(conn, f"{prefix}_order_lines", lcols, lines, ["line_id"])
+        upsert(conn, f"{prefix}_order_tracking", ["order_id", "tracking", "company"], tracks, ["order_id", "tracking"])
         conn.commit()
         n += len(orders)
         if not page["pageInfo"]["hasNextPage"]:
@@ -842,7 +842,7 @@ def _find_variant(x) -> dict | None:
     return None
 
 
-def _int(v) -> int:
+def _po_int(v) -> int:
     try:
         return int(float(v))
     except (TypeError, ValueError):
@@ -859,7 +859,7 @@ def _po_lines(d: dict) -> list[dict]:
     return []
 
 
-def _line_row(i: int, n: dict, by_item: dict | None = None) -> dict:
+def _po_line_row(i: int, n: dict, by_item: dict | None = None) -> dict:
     var = _find_variant(n) or {}
     inv = n.get("inventoryItem") or {}
     if not var and by_item:   # 2026-10 lines carry the inventory item, not the variant: one item per variant
@@ -875,7 +875,7 @@ def _line_row(i: int, n: dict, by_item: dict | None = None) -> dict:
     if cost is None:
         cost = _first(n, r"cost", lambda v: _money(v) is not None)
     return {"line_id": str(n.get("id") or i), "variant_id": gid_num(var.get("id")), "sku": str(n.get("sku") or var.get("sku") or inv.get("sku") or n.get("supplierSku") or ""),
-            "title": " - ".join(x for x in [_label(n) or str(var.get("displayName") or var.get("title") or ""), str(n.get("variantTitle") or "")] if x), "qty": _int(qty), "qty_received": _int(rec),
+            "title": " - ".join(x for x in [_label(n) or str(var.get("displayName") or var.get("title") or ""), str(n.get("variantTitle") or "")] if x), "qty": _po_int(qty), "qty_received": _po_int(rec),
             "cost": _money(cost), "raw": n}
 
 
@@ -929,7 +929,7 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
                     break
         if not d:
             continue
-        rows = [_line_row(i, n, by_item) for i, n in enumerate(_po_lines(d))]
+        rows = [_po_line_row(i, n, by_item) for i, n in enumerate(_po_lines(d))]
         total = _first(d, r"total", lambda v: _money(v) is not None)
         if total is None and rows:   # no PO total in 2026-10: add up the lines
             lt = [_money(_first(r["raw"], r"total.?cost|subtotal", lambda v: _money(v) is not None)) for r in rows]

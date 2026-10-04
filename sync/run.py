@@ -84,6 +84,8 @@ def main(argv: list[str] | None = None) -> None:
         if a.job in ("hourly", "nightly", "acenrally"):
             run("acenrally_daily", lambda: sh4.sync_daily(anr, conn, asince, until, table="jt.anr_daily"))
             run("acenrally_sales", lambda: sh4.sync_sales(anr, conn, asince, until, table="jt.anr_sales"))
+            # orders changed since the start of the window (tracking numbers match combined ShipStation shipments)
+            run("acenrally_orders", lambda: sh4.sync_orders(anr, conn, _utc(asince - dt.timedelta(days=1)), prefix="jt.anr"))
         if a.job in ("nightly", "acenrally", "acenrally-catalog"):
             run("acenrally_catalog", lambda: sh4.sync_anr_catalog(anr, conn))
 
