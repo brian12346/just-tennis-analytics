@@ -876,3 +876,13 @@ table.sht > tbody > tr > td .meta{white-space:normal}
 table.sht td.sh-flag .pill{border-radius:8px}
 ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} ul.anr-unm li{margin:3px 0;break-inside:avoid}
 @media (max-width:640px){ul.anr-unm{columns:1}}
+/* PO header: details as clickable chips (saved POs) */
+.po-head h2 .hlink{border:0;background:none;padding:0;font:inherit;color:inherit;cursor:pointer;border-bottom:1px dashed transparent}
+.po-head h2 .hlink:hover,.po-head h2 .hlink:focus-visible{border-bottom-color:var(--muted)}
+.po-meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin:6px 0 2px;align-items:center}
+.po-meta .hfield{display:inline-flex;gap:6px;align-items:baseline;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:3px 10px;font-size:13px;cursor:pointer;color:inherit;max-width:420px}
+.po-meta .hfield span{color:var(--muted);font-size:12px}
+.po-meta .hfield b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.po-meta .hfield b.dim{font-weight:400}
+.po-meta .hfield:hover{border-color:var(--muted)}
+.po-meta .hopen{margin-left:-4px;text-decoration:none}

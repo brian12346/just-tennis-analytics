@@ -276,6 +276,20 @@
   const keyOf = (l) => l.vid + "|" + (l.dest === "prep" ? l.asku || "" : "") + "|" + (l.dest || "prep");
   const variant = (vid) => vid && S.byVid ? S.byVid.get(String(vid)) : null;
   const cur = (ed) => ed.cur >= 0 ? ed.invoices[ed.cur] || null : null;
+  // Saved POs: the details as a line of chips under the title; click one to edit (opens the details form at that field)
+  function headStrip(ed, ro, both) {
+    if (!ed.id || ed.editHead) return "";
+    const f = (id, label, val, empty) => `<button class="hfield" data-hedit="${id}" title="Edit ${label.toLowerCase()}"><span>${label}</span><b class="${val ? "" : "dim"}">${val ? esc(val) : empty}</b></button>`;
+    const su = shopUrl(ed.shopifyUrl);
+    return `<div class="po-meta">${[
+      f("pe-kind", "Type", ed.kind === "booking" ? "Booking" : "Order", ""),
+      ed.kind === "booking" ? f("pe-placeby", "Place by", ed.placeBy ? shortDate(ed.placeBy) : "", "not set") : "",
+      f("pe-exp", "Expected", ed.expected ? shortDate(ed.expected) : "", "not set"),
+      shopOff(ed) ? "" : f("pe-shopify", "Shopify PO", su ? (/purchase_orders\/(\d+)/.exec(su) || [])[1] ? "#" + /purchase_orders\/(\d+)/.exec(su)[1] : "linked" : "", "add link") + (su && /^https:/.test(su) ? `<a class="small hopen" href="${esc(su)}" target="_blank" rel="noopener" title="Open in Shopify">↗</a>` : ""),
+      f("pe-dest", "Receive into", both ? "Both" : ed.dest === "prep" ? "Prep center" : "Shopify store", ""),
+      f("pe-note", "Note", ed.note, "add a note"),
+    ].join("")}</div>`;
+  }
   // Seller Sage only: no Shopify PO for this order (marked by hand, or nothing on it goes to the Shopify store)
   const prepOnly = (ed) => ed.lines.length > 0 && !ed.lines.some(l => l.dest === "shopify");
   const shopOff = (ed) => ed.noShop || prepOnly(ed);
@@ -899,10 +913,11 @@
       <div class="po-top">
         <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
-        <div class="po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
+        <div class="po-head"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor order")}</button> · <button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}</button>` : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
+        ${headStrip(ed, ro, both)}
         ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
       </div>
-      <section class="panel">
+      ${!ed.id || ed.editHead ? `<section class="panel po-headedit">${ed.id ? `<div class="panel-head"><h2>PO details</h2><span class="dbtns right"><button class="btn" data-pact="head-done">Done</button></span></div>` : ""}
         <div class="pmgrid">
           <label class="stack" for="pe-vendor">Vendor<input id="pe-vendor" class="inp" list="pe-vendors" value="${esc(ed.vendor)}" ${got ? "disabled" : ""} autocomplete="off" placeholder="Shopify vendor"><datalist id="pe-vendors">${vendorOpts}</datalist></label>
           <label class="stack" for="pe-po">PO #<input id="pe-po" class="inp mono" value="${esc(ed.po)}" ${ro ? "disabled" : ""}></label>
@@ -913,7 +928,7 @@
           <label class="stack" for="pe-dest">Receive into<select id="pe-dest" class="inp" ${ro ? "disabled" : ""}><option value="shopify" ${ed.dest === "shopify" ? "selected" : ""}>Shopify store</option><option value="prep" ${ed.dest === "prep" ? "selected" : ""}>Prep center (Amazon)</option><option value="both" ${both ? "selected" : ""}>Both — choose per product</option></select></label>
           <label class="stack" for="pe-note" style="grid-column:1 / -1">Note<input id="pe-note" class="inp" value="${esc(ed.note)}" ${ro ? "disabled" : ""} placeholder="e.g. ships in two drops"></label>
         </div>
-      </section>
+      </section>` : ""}
       ${shopCheckHtml(ed, ro)}
       ${iss.length ? `<section class="po-issues">${window.JTIssues.issuesHtml(iss)}</section>` : ""}
       <section class="panel po-lines">
@@ -1278,7 +1293,15 @@
   }
 
   // ---------- events ----------
-  function focusArg(a) { if (a === "pe-shopcheck" && S.ed && !S.ed.shopOpen) { S.ed.shopOpen = true; render(); } const id = { "po-add": "po-add", "po-exp": "pe-exp", "po-inv": "pe-file", "po-placeby": "pe-placeby", "po-po": "pe-po" }[a] || a;
+  // open the PO details form (saved POs keep it folded into the header) and put the cursor in one field
+  const HEAD_IDS = new Set(["pe-vendor", "pe-po", "pe-kind", "pe-placeby", "pe-exp", "pe-shopify", "pe-dest", "pe-note"]);
+  function openHead(id) {
+    const ed = S.ed; if (!ed) return;
+    ed.editHead = true; render();
+    setTimeout(() => { const el = id === "pe-kind" ? document.querySelector('[data-pkind][aria-pressed="true"]') : $(id); if (el) { el.scrollIntoView({ block: "center", behavior: "smooth" }); if (!el.disabled) { el.focus(); if (el.select && el.type !== "date") el.select(); } } }, 0);
+  }
+  function focusArg(a) {
+    { const id0 = { "po-exp": "pe-exp", "po-placeby": "pe-placeby", "po-po": "pe-po" }[a] || a; if (HEAD_IDS.has(id0) && S.ed && S.ed.id && !S.ed.editHead) { openHead(id0); return; } } if (a === "pe-shopcheck" && S.ed && !S.ed.shopOpen) { S.ed.shopOpen = true; render(); } const id = { "po-add": "po-add", "po-exp": "pe-exp", "po-inv": "pe-file", "po-placeby": "pe-placeby", "po-po": "pe-po" }[a] || a;
     setTimeout(() => { const el = $(id); if (!el) return; if (id === "pe-file" || id === "pe-shopfile") el.click(); else if (el.tagName === "SECTION" || el.id === "pe-costbar") el.scrollIntoView({ behavior: "smooth", block: "start" }); else { el.focus(); if (el.select) el.select(); } }, 0); }
   function markBackordered(ed, eta) {
     const pr = progress(ed); let n = 0;
@@ -1336,6 +1359,7 @@
       setTimeout(() => { const i = box().querySelector('[data-f="spq"][data-k="' + (ed.split.parts.length - 1) + '"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
     if (a === "sp-rm" && ed.split) { const i = Number(k); if (ed.split.parts[i] && !(ed.split.parts[i].received > 0)) ed.split.parts.splice(i, 1); render(); return; }
     if (a === "shop-api") { checkFromApi(); return; }
+    if (a === "head-done") { ed.editHead = false; render(); return; }
     if (a === "noshop" || a === "yesshop") { ed.noShop = a === "noshop"; ed.dirty = true; render(); note("info", ed.noShop ? "Marked Seller Sage only: no Shopify PO. Save to keep it." : "This PO can be linked to a Shopify PO again. Save to keep it."); return; }
     if (a === "shop-open") { ed.shopOpen = !ed.shopOpen; render(); if (ed.shopOpen) setTimeout(() => { const el = $("pe-shopcheck"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
@@ -1886,6 +1910,7 @@
       const ed = S.ed, b = e.target.closest("button"); if (!ed || !b) return;
       const iv = cur(ed);
       if (b.dataset.fix) { fix(b.dataset); return; }
+      if (b.dataset.hedit) { openHead(b.dataset.hedit); return; }
       if (b.dataset.pact) { act(b.dataset.pact, b.dataset.k); return; }
       if (b.dataset.pgo) { return goStage(b.dataset.pgo); }
       if (b.dataset.pkind) { ed.kind = b.dataset.pkind; ed.dirty = true; render(); return; }
