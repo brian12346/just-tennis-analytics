@@ -886,3 +886,4 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .po-meta .hfield b.dim{font-weight:400}
 .po-meta .hfield:hover{border-color:var(--muted)}
 .po-meta .hopen{margin-left:-4px;text-decoration:none}
+#po-listview{margin-bottom:10px;align-self:flex-start;width:max-content}

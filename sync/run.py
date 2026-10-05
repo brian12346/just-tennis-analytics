@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> None:
         if a.job in ("hourly", "nightly", "shopify-pos"):
             # Shopify purchase orders (read-only API) -> jt.shopify_pos / jt.shopify_po_lines, for importing into Seller Sage
             run("shopify_pos", lambda: sh.sync_pos(shop, conn))
+            # what's been received on them in Shopify (their inventory transfers)
+            run("shopify_po_receipts", lambda: sh.sync_po_receipts(shop, conn))
         if a.job in ("nightly", "shopify-po-probe"):
             # what Shopify's purchase-order API offers this store (read-only so far? any create mutation yet?)
             run("shopify_po_probe", lambda: sh.probe_po_api(shop, conn))

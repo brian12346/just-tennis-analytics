@@ -694,7 +694,7 @@
       </div>
       <div class="controls">
         <button class="btn" id="po-refresh">Refresh</button>
-        <button class="btn" id="po-shopapi" title="Pick a PO made in Shopify: it's brought in with every product, quantity and cost, already checked">New PO from Shopify</button>
+        <button class="btn" id="po-shopapi" title="Your Shopify POs: create a Seller Sage PO from one, with every product, quantity and cost, already checked">From Shopify PO</button>
         <label class="btn" for="po-shopnew" title="Download the PO from Shopify as a PDF and upload it: the PO is filled in from it and checked against it">From PDF</label>
         <input type="file" id="po-shopnew" accept=".pdf,application/pdf" hidden>
         <button class="btn primary" id="po-new">New PO</button>
@@ -704,9 +704,10 @@
     <div id="po-notes-host"><div class="note info" id="po-busy" hidden aria-live="polite"></div>
     <div id="po-note" hidden></div></div>
     <div id="po-list-view">
+      <div class="seg" id="po-listview" role="group" aria-label="Which purchase orders"><button data-lv="ss" aria-pressed="true">Seller Sage POs</button><button data-lv="shop" aria-pressed="false">Shopify POs</button></div>
       <div id="po-pickshop-host"></div>
       <section class="kpis" id="po-kpis" aria-label="Purchase order totals"></section>
-      <section class="panel">
+      <section class="panel" id="po-sslist">
         <div class="panel-head">
           <div class="seg" id="po-stage" role="group" aria-label="Stage"></div>
           <div class="filters">

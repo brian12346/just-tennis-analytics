@@ -714,7 +714,7 @@ def probe_po_api(shop: Shopify, conn) -> int:
     import json
     import re
     res = {"checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "versions": {}}
-    hit = re.compile(r"purchase.?order", re.I)
+    hit = re.compile(r"purchase.?order|^Inventory(Transfer|Shipment)", re.I)
     for version in ("2026-10", "unstable"):
         v: dict = {}
         try:
@@ -997,3 +997,136 @@ def sync_anr_catalog(shop: Shopify, conn) -> int:
                                          "product_type", "status", "price", "seen_at"], rows, ["variant_id"])
     conn.commit()
     return n
+
+
+# ---------------------------------------------------------------- Shopify PO receiving (transfers)
+# Shopify records what was received against a PO on the PO's inventory transfers (and their shipments), not on the PO's
+# lines. For open POs (newest first, RECEIPT_CAP per run) this reads each PO's transfers — every plain field, their line
+# items and shipments (and the shipments' line items), found through the schema like the POs themselves — and works out
+# units received per inventory item. Saved to jt.shopify_pos (recv_status, recv_units, receipt = Shopify's JSON) and
+# jt.shopify_po_lines.qty_received (migration 080). If the app can't read transfers, that's recorded in jt.settings
+# 'shopify_po_receipts' and the rest of the sync carries on.
+RECEIPT_CAP = 250
+_DONE_TRANSFER = re.compile(r"TRANSFERRED|COMPLETE|RECEIVED|CLOSED", re.I)
+
+
+def _sel_nested(sc: "_PoSchema", name: str, levels: int, pat: str = r"line|shipment", first: int = 50) -> str:
+    """Plain fields of `name`, its objects' plain fields, and connections whose name matches pat (levels deep)."""
+    parts = []
+    for f in sc.fields(name):
+        if any(a["type"]["kind"] == "NON_NULL" and a.get("defaultValue") is None and a["name"] != "first" for a in f.get("args") or []):
+            continue
+        kind, tname, _ = sc.base(f["type"])
+        if kind in _SCALAR:
+            parts.append(f["name"])
+        elif kind in ("OBJECT", "INTERFACE") and tname.endswith("Connection"):
+            if levels <= 0 or not re.search(pat, f["name"], re.I):
+                continue
+            node = next((x for x in sc.fields(tname) if x["name"] == "nodes"), None)
+            sub = _sel_nested(sc, sc.base(node["type"])[1], levels - 1, pat, first) if node else ""
+            if sub:   # few shipments, up to `first` lines (keeps the query under Shopify's cost limit)
+                n = 3 if re.search(r"shipment", f["name"], re.I) else first
+                parts.append(f"{f['name']}(first: {n}) {{ nodes {{ {sub} }} }}")
+        elif kind in ("OBJECT", "INTERFACE") and tname not in ("PageInfo",) and not tname.endswith("PurchaseOrder"):
+            sub = sc.select(tname, 0)
+            if sub:
+                parts.append(f"{f['name']} {{ {sub} }}")
+    return " ".join(parts)
+
+
+def _nodes(v) -> list:
+    if isinstance(v, dict) and isinstance(v.get("nodes"), list):
+        return v["nodes"]
+    return v if isinstance(v, list) else []
+
+
+def _inv_item(n: dict) -> int | None:
+    for v in n.values():
+        if isinstance(v, dict) and str(v.get("id", "")).startswith("gid://shopify/InventoryItem/"):
+            return gid_num(v["id"])
+    return None
+
+
+def _received_by_item(transfers: list) -> dict:
+    """Units received per inventory item over a PO's transfers."""
+    got: dict = {}
+    for t in transfers:
+        ships = [s for k, v in t.items() if re.search(r"shipment", k, re.I) for s in _nodes(v)]
+        ship_lines = [ln for s in ships for k, v in s.items() if re.search(r"line", k, re.I) for ln in _nodes(v)]
+        if ship_lines:                        # received on the transfer's shipments
+            for ln in ship_lines:
+                item = _inv_item(ln)
+                q = sum(_po_int(v) for k, v in ln.items() if re.search(r"accepted|received", k, re.I) and not re.search(r"unreceived", k, re.I) and not isinstance(v, (dict, list)))
+                if item and q:
+                    got[item] = got.get(item, 0) + q
+            continue
+        done = _DONE_TRANSFER.search(str(t.get("status") or ""))
+        for k, v in t.items():
+            if not re.search(r"line", k, re.I):
+                continue
+            for ln in _nodes(v):
+                item = _inv_item(ln)
+                rk = [x for x in ln if re.search(r"received|accepted", x, re.I) and not re.search(r"unreceived", x, re.I) and not isinstance(ln[x], (dict, list))]
+                q = sum(_po_int(ln[x]) for x in rk) if rk else (_po_int(ln.get("totalQuantity") or ln.get("quantity")) if done else 0)
+                if item and q:
+                    got[item] = got.get(item, 0) + q
+    return got
+
+
+def sync_po_receipts(shop: Shopify, conn, cap: int = RECEIPT_CAP) -> dict:
+    import json
+    sc = _PoSchema(shop, PO_VERSION)
+    po_t = "InventoryPurchaseOrder"
+    tf = next((f for f in sc.fields(po_t) if f["name"] == "transfers"), None)
+    state = {"checked_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if not tf:
+        state.update(ok=False, why="Shopify's purchase orders have no transfers field")
+        sel = ""
+    else:
+        node = next((x for x in sc.fields(sc.base(tf["type"])[1]) if x["name"] == "nodes"), None)
+        sel = _sel_nested(sc, sc.base(node["type"])[1], 2) if node else ""
+        sel_flat = _sel_nested(sc, sc.base(node["type"])[1], 1, r"^line") if node else ""   # if the full one costs too much
+    done, errs, received = 0, [], 0
+    if sel:
+        with conn.cursor() as cur:
+            cur.execute("""select p.id, p.units from jt.shopify_pos p where p.status not in ('DRAFT', 'CLOSED', 'CANCELLED', 'CANCELED')
+                           and coalesce(p.recv_status, '') <> 'received'
+                           order by p.recv_synced nulls first, p.id desc limit %s""", (cap,))
+            todo = cur.fetchall()
+        for pid, units in todo:
+            try:
+                d = None
+                for q in (sel, sel_flat):
+                    try:
+                        d = shop.graphql(f"""query($id: ID!) {{ inventoryPurchaseOrder(id: $id) {{ id transfers(first: 3) {{ nodes {{ {q} }} }} }} }}""",
+                                         {"id": f"gid://shopify/InventoryPurchaseOrder/{pid}"}, version=PO_VERSION)["inventoryPurchaseOrder"] or {}
+                        break
+                    except RuntimeError as e1:
+                        if q is sel_flat or not re.search(r"cost", str(e1), re.I):
+                            raise
+            except RuntimeError as e:
+                errs.append(str(e)[:300])
+                if re.search(r"access|scope|permission|denied|unauthori", str(e), re.I):
+                    state.update(ok=False, why=str(e)[:300])
+                    break
+                continue
+            transfers = _nodes(d.get("transfers"))
+            got = _received_by_item(transfers)
+            tot = sum(got.values())
+            status = "received" if units and tot >= units else "partial" if tot > 0 else "none"
+            with conn.cursor() as cur:
+                cur.execute("""update jt.shopify_pos set recv_units = %s, recv_status = %s, receipt = %s::jsonb, recv_synced = now() where id = %s""",
+                            (tot, status, json.dumps(transfers), pid))
+                cur.execute("""update jt.shopify_po_lines l set qty_received = coalesce((%s::jsonb ->> (l.raw -> 'inventoryItem' ->> 'legacyResourceId'))::int, 0)
+                               where l.po_id = %s""", (json.dumps({str(k): v for k, v in got.items()}), pid))
+            conn.commit()
+            done += 1
+            received += 1 if status == "received" else 0
+        if done and "ok" not in state:
+            state["ok"] = True
+    state.update(pos=done, received=received, errors=errs[:3])
+    with conn.cursor() as cur:
+        cur.execute("""insert into jt.settings (key, value, updated_at) values ('shopify_po_receipts', %s::jsonb, now())
+                       on conflict (key) do update set value = excluded.value, updated_at = now()""", (json.dumps(state),))
+    conn.commit()
+    return {"variants": done, **state}
