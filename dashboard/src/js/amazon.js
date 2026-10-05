@@ -530,7 +530,7 @@
     const id = ++A.reqId; A.loading = true; A.err = null; renderSales();
     try {
       const [days] = await Promise.all([
-        A.basis === "order" ? loadOrderDays(A.start, A.end) : S.db.collection("amzdays").where("date", ">=", A.start).where("date", "<=", A.end).limit(400).get().then(snap => snap.docs.map(d => d.data())),
+        A.basis === "order" ? loadOrderBasis(A.start, A.end) : shipDays(A.start, A.end),
         loadApiDays(A.start, A.end).catch(e => { A.api.err = e; }),
       ]);
       if (id !== A.reqId) return;
@@ -545,6 +545,20 @@
     const parts = await Promise.all(chunks.map(([a, b]) => window.JT.rows([`jt.amazon_orderday_docs(${window.JT.day(a)}, ${window.JT.day(b)})`], "", false)
       .then(r => { const v = r[0] && r[0][0]; return Array.isArray(v) ? v : typeof v === "string" ? JSON.parse(v) : []; })));
     return [].concat(...parts);
+  }
+  const shipDays = (a, b) => S.db.collection("amzdays").where("date", ">=", a).where("date", "<=", b).limit(400).get().then(snap => snap.docs.map(d => d.data()));
+  // Amazon's payments come from the API from Sep 1, 2026; days before that only have the uploaded Transaction reports
+  // (by ship date), so they're shown that way.
+  async function loadOrderBasis(start, end) {
+    if (A.finStart === undefined) {
+      try { const r = await window.JT.rows(["min((posted_at at time zone 'America/Los_Angeles')::date)::text"], "from jt.amazon_fin_lines"); A.finStart = (r[0] && r[0][0]) || null; }
+      catch (_) { A.finStart = null; }
+    }
+    const fs = A.finStart;
+    A.shipBefore = fs && start < fs ? fs : null;
+    if (!fs || end < fs) return shipDays(start, end);
+    const [a, b] = await Promise.all([start < fs ? shipDays(start, addDays(fs, -1)) : [], loadOrderDays(start < fs ? fs : start, end)]);
+    return a.concat(b);
   }
   function setBasis(b) {
     A.basis = b; try { localStorage.setItem("jt-amz-basis", b); } catch (_) {}
@@ -675,7 +689,7 @@
     if (!S.db) { st.textContent = "Amazon data needs the database. Reload the page, or sign in again."; return; }
     if (!b) { st.textContent = A.monthsReady ? "No Amazon data yet. Upload a Transaction report (Payments → Reports Repository → Transaction)." : "Loading Amazon data…"; ["az-kpis","az-chart","az-daily","az-skus","az-orders"].forEach(id => $(id).innerHTML = ""); return; }
     if (A.err) { st.textContent = ""; azNote("bad", "Couldn't load Amazon days. Reload the page."); return; }
-    st.textContent = A.loading ? "Loading…" : `${A.basis === "order" ? "Fees & profit by order date (Amazon.com; orders not shipped yet are estimated)" : b.txLast ? `Fees & profit by ship date, through ${shortDay(b.txLast)}, ${b.txLast.slice(0, 4)}` : "No fees & profit data yet"} · showing ${shortDay(A.start)} – ${shortDay(A.end)}${A.days && A.days.length > 100 ? " · large range, may be slow" : ""}`;
+    st.textContent = A.loading ? "Loading…" : `${A.basis === "order" ? `Fees & profit by order date (Amazon.com + Amazon.com.mx; orders not shipped yet are estimated${A.shipBefore ? `; before ${shortDay(A.shipBefore)}, ${A.shipBefore.slice(0, 4)} by ship date, from the Transaction reports` : ""})` : b.txLast ? `Fees & profit by ship date, through ${shortDay(b.txLast)}, ${b.txLast.slice(0, 4)}` : "No fees & profit data yet"} · showing ${shortDay(A.start)} – ${shortDay(A.end)}${A.days && A.days.length > 100 ? " · large range, may be slow" : ""}`;
     if (!A.days) return;
     const ag = aggregate();
     // days in the range with orders from Amazon but no Transaction report yet: ordered sales only
@@ -691,9 +705,10 @@
     const gapNote = gap.length ? `${gap.length === 1 ? shortDay(gap[0]) + " isn't" : `${shortDay(gap[0])} – ${shortDay(gap[gap.length - 1])} aren't`} in Amazon's payments data yet, so ${gap.length === 1 ? "it shows" : "they show"} ordered sales only (no fees or profit). Fees and profit come in every hour.` : "";
     const sum = (k) => ag.byDay.reduce((a, r) => a + r[k], 0);
     const estSales = (A.days || []).reduce((a, d) => a + ((d.totals || {}).est_sales || 0), 0), estOrders = (A.days || []).reduce((a, d) => a + ((d.totals || {}).est_orders || 0), 0);
+    const mxSales = (A.days || []).reduce((a, d) => a + ((d.totals || {}).mx_sales || 0), 0), mxOrders = (A.days || []).reduce((a, d) => a + ((d.totals || {}).mx_orders || 0), 0);
     const sales = sum("sales"), fees = -(sum("sellfees") + sum("fbafees")), cogs = sum("cogs"), profit = sum("profit"), gp = sum("gp"), other = sum("other"), refunds = sum("refunds");
     const k = [
-      { c: "sales", l: "Product sales", v: m0(sales), s: `${sum("orders").toLocaleString()} orders · ${sum("units").toLocaleString()} units${A.basis === "order" ? estOrders ? ` · <span title="Not paid by Amazon yet: fees from each SKU's recent rate">${estOrders.toLocaleString()} orders (${m0(estSales)}) estimated</span>` : " · all paid by Amazon" : " · by ship date"}` },
+      { c: "sales", l: "Product sales", v: m0(sales), s: `${sum("orders").toLocaleString()} orders · ${sum("units").toLocaleString()} units${mxSales ? ` · Amazon.com.mx ${m0(mxSales)} (${mxOrders.toLocaleString()} orders)` : ""}${A.basis === "order" ? estOrders ? ` · <span title="Not paid by Amazon yet: fees from each SKU's recent rate">${estOrders.toLocaleString()} orders (${m0(estSales)}) estimated</span>` : " · all paid by Amazon" : " · by ship date"}` },
       { l: "Amazon fees", v: m0(fees), s: `${pct(fees / sales)} of sales · referral ${m0(-sum("sellfees"))} · FBA ${m0(-sum("fbafees"))}` },
       { l: "Refunds", v: `<span class="neg">${m0(refunds)}</span>`, s: "Net of fees Amazon returns" },
       { c: "cost", l: "Product cost", v: m0(cogs), s: `<span style="color:${ag.coverage < 0.95 ? "var(--warn)" : "inherit"}">${pct(ag.coverage)} of sales mapped</span>` },
