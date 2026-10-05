@@ -46,10 +46,10 @@ class Shopify:
         return self._token
 
     # -------------------------------------------------------------- GraphQL
-    def graphql(self, query: str, variables: dict | None = None, version: str = API_VERSION) -> dict:
+    def graphql(self, query: str, variables: dict | None = None, version: str = API_VERSION, timeout: int = 120, tries: int = 8) -> dict:
         url = f"{self.base}/admin/api/{version}/graphql.json"
-        for attempt in range(8):
-            r = self.session.post(url, json={"query": query, "variables": variables or {}}, timeout=120,
+        for attempt in range(tries):
+            r = self.session.post(url, json={"query": query, "variables": variables or {}}, timeout=timeout,
                                   headers={"X-Shopify-Access-Token": self.token()})
             if r.status_code == 429 or r.status_code >= 500:
                 time.sleep(min(2 ** attempt, 30))
@@ -1007,6 +1007,7 @@ def sync_anr_catalog(shop: Shopify, conn) -> int:
 # jt.shopify_po_lines.qty_received (migration 080). If the app can't read transfers, that's recorded in jt.settings
 # 'shopify_po_receipts' and the rest of the sync carries on.
 RECEIPT_CAP = 250
+RECEIPT_BUDGET = 240   # seconds per run
 _DONE_TRANSFER = re.compile(r"TRANSFERRED|COMPLETE|RECEIVED|CLOSED", re.I)
 
 
@@ -1073,8 +1074,11 @@ def _received_by_item(transfers: list) -> dict:
     return got
 
 
-def sync_po_receipts(shop: Shopify, conn, cap: int = RECEIPT_CAP) -> dict:
+def sync_po_receipts(shop: Shopify, conn, cap: int = RECEIPT_CAP, budget: int = RECEIPT_BUDGET) -> dict:
+    """Received units per open PO from its transfers. Time-boxed (budget seconds) so it never holds up the hourly sync;
+    the POs checked longest ago go first, so each run continues where the last one stopped."""
     import json
+    t0 = time.monotonic()
     sc = _PoSchema(shop, PO_VERSION)
     po_t = "InventoryPurchaseOrder"
     tf = next((f for f in sc.fields(po_t) if f["name"] == "transfers"), None)
@@ -1093,23 +1097,34 @@ def sync_po_receipts(shop: Shopify, conn, cap: int = RECEIPT_CAP) -> dict:
                            and coalesce(p.recv_status, '') <> 'received'
                            order by p.recv_synced nulls first, p.id desc limit %s""", (cap,))
             todo = cur.fetchall()
+        fails = 0
         for pid, units in todo:
+            if time.monotonic() - t0 > budget:
+                state["stopped"] = "time budget"
+                break
             try:
                 d = None
                 for q in (sel, sel_flat):
                     try:
                         d = shop.graphql(f"""query($id: ID!) {{ inventoryPurchaseOrder(id: $id) {{ id transfers(first: 3) {{ nodes {{ {q} }} }} }} }}""",
-                                         {"id": f"gid://shopify/InventoryPurchaseOrder/{pid}"}, version=PO_VERSION)["inventoryPurchaseOrder"] or {}
+                                         {"id": f"gid://shopify/InventoryPurchaseOrder/{pid}"}, version=PO_VERSION,
+                                         timeout=30, tries=3)["inventoryPurchaseOrder"] or {}
                         break
                     except RuntimeError as e1:
                         if q is sel_flat or not re.search(r"cost", str(e1), re.I):
                             raise
-            except RuntimeError as e:
-                errs.append(str(e)[:300])
+            except Exception as e:   # Shopify errors, timeouts, connection drops: note it, move on, give up after 3 in a row
+                errs.append(f"{type(e).__name__}: {str(e)[:300]}")
+                fails += 1
                 if re.search(r"access|scope|permission|denied|unauthori", str(e), re.I):
                     state.update(ok=False, why=str(e)[:300])
                     break
+                if fails >= 3:
+                    state.setdefault("ok", False)
+                    state["why"] = "3 failures in a row: " + errs[-1]
+                    break
                 continue
+            fails = 0
             transfers = _nodes(d.get("transfers"))
             got = _received_by_item(transfers)
             tot = sum(got.values())
@@ -1124,7 +1139,7 @@ def sync_po_receipts(shop: Shopify, conn, cap: int = RECEIPT_CAP) -> dict:
             received += 1 if status == "received" else 0
         if done and "ok" not in state:
             state["ok"] = True
-    state.update(pos=done, received=received, errors=errs[:3])
+    state.update(pos=done, received=received, errors=errs[:3], seconds=round(time.monotonic() - t0, 1), query_chars=len(sel or ""))
     with conn.cursor() as cur:
         cur.execute("""insert into jt.settings (key, value, updated_at) values ('shopify_po_receipts', %s::jsonb, now())
                        on conflict (key) do update set value = excluded.value, updated_at = now()""", (json.dumps(state),))
