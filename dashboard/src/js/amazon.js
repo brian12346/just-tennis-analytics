@@ -486,7 +486,10 @@
   // =====================================================================
   const A = { months: new Map(), titles: {}, start: null, end: null, preset: "30", days: null, loading: false, err: null, skuShown: 100, oShown: 200, reqId: 0, uploading: false,
     // orders straight from Amazon (SP-API): status = jt.v_amazon_api_status, days = day -> {mk -> [orders, units, sales, pending]}
-    api: { status: null, days: new Map(), err: null, busy: false, msg: "" } };
+    api: { status: null, days: new Map(), err: null, busy: false, msg: "" },
+    // "order": fees, refunds and profit on the day each order was bought (jt.amazon_orderday_docs, migration 076; orders not
+    // shipped yet are estimated); "ship": on the day Amazon paid them (amzdays, like the Transaction report)
+    basis: (() => { try { return localStorage.getItem("jt-amz-basis") === "ship" ? "ship" : "order"; } catch (_) { return "order"; } })() };
   const addDays = window.JTDate.addDays;
   const shortDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
   const wkDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
@@ -526,15 +529,29 @@
     if (!S.db || !A.start) return;
     const id = ++A.reqId; A.loading = true; A.err = null; renderSales();
     try {
-      const [snap] = await Promise.all([
-        S.db.collection("amzdays").where("date", ">=", A.start).where("date", "<=", A.end).limit(400).get(),
+      const [days] = await Promise.all([
+        A.basis === "order" ? loadOrderDays(A.start, A.end) : S.db.collection("amzdays").where("date", ">=", A.start).where("date", "<=", A.end).limit(400).get().then(snap => snap.docs.map(d => d.data())),
         loadApiDays(A.start, A.end).catch(e => { A.api.err = e; }),
       ]);
       if (id !== A.reqId) return;
-      A.days = snap.docs.map(d => d.data()).sort((a, b) => a.date.localeCompare(b.date));
+      A.days = days.sort((a, b) => a.date.localeCompare(b.date));
     } catch (e) { if (id === A.reqId) A.err = e; }
     if (id === A.reqId) { A.loading = false; A.skuShown = 100; A.oShown = 200; renderSales(); }
   }
+
+  // By order date: the day documents built in the database, 3 days per call (keeps each reply small)
+  async function loadOrderDays(start, end) {
+    const chunks = []; for (let d = start; d <= end; d = addDays(d, 3)) { const e = addDays(d, 2); chunks.push([d, e > end ? end : e]); }
+    const parts = await Promise.all(chunks.map(([a, b]) => window.JT.rows([`jt.amazon_orderday_docs(${window.JT.day(a)}, ${window.JT.day(b)})`], "", false)
+      .then(r => { const v = r[0] && r[0][0]; return Array.isArray(v) ? v : typeof v === "string" ? JSON.parse(v) : []; })));
+    return [].concat(...parts);
+  }
+  function setBasis(b) {
+    A.basis = b; try { localStorage.setItem("jt-amz-basis", b); } catch (_) {}
+    document.querySelectorAll("#az-basis button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.b === b)));
+    if (A.start) loadDays();
+  }
+  document.querySelectorAll("#az-basis button").forEach(x => { x.setAttribute("aria-pressed", String(x.dataset.b === A.basis)); x.addEventListener("click", () => setBasis(x.dataset.b)); });
 
   // ---------- orders straight from Amazon (SP-API) ----------
   const MK = { us: "Amazon.com", mx: "Amazon.com.mx", ca: "Amazon.ca" };
@@ -634,7 +651,7 @@
         bySku.set(sku, s);
         const k = o[1];
         const ord = orders.get(k) || { id: k, day: d.date, time: o[0], fba: o[10], lines: [], units: 0, sales: 0, ship: 0, promo: 0, sellfees: 0, fbafees: 0, net: 0, cogs: 0, unmapped: 0 };
-        ord.lines.push(sku); ord.units += o[3]; ord.sales += o[4]; ord.ship += o[5]; ord.promo += o[6]; ord.sellfees += o[7]; ord.fbafees += o[8]; ord.net += o[9]; ord.cogs += c; if (uc == null) ord.unmapped++;
+        ord.lines.push(sku); ord.units += o[3]; ord.sales += o[4]; ord.ship += o[5]; ord.promo += o[6]; ord.sellfees += o[7]; ord.fbafees += o[8]; ord.net += o[9]; ord.cogs += c; if (uc == null) ord.unmapped++; if (o[11] === 1) ord.est = true;
         orders.set(k, ord);
       }
       for (const r of d.refunds || []) {
@@ -658,7 +675,7 @@
     if (!S.db) { st.textContent = "Amazon data needs the database. Reload the page, or sign in again."; return; }
     if (!b) { st.textContent = A.monthsReady ? "No Amazon data yet. Upload a Transaction report (Payments → Reports Repository → Transaction)." : "Loading Amazon data…"; ["az-kpis","az-chart","az-daily","az-skus","az-orders"].forEach(id => $(id).innerHTML = ""); return; }
     if (A.err) { st.textContent = ""; azNote("bad", "Couldn't load Amazon days. Reload the page."); return; }
-    st.textContent = A.loading ? "Loading…" : `${b.txLast ? `Fees & profit through ${shortDay(b.txLast)}, ${b.txLast.slice(0, 4)}` : "No fees & profit data yet"} · showing ${shortDay(A.start)} – ${shortDay(A.end)}${A.days && A.days.length > 100 ? " · large range, may be slow" : ""}`;
+    st.textContent = A.loading ? "Loading…" : `${A.basis === "order" ? "Fees & profit by order date (Amazon.com; orders not shipped yet are estimated)" : b.txLast ? `Fees & profit by ship date, through ${shortDay(b.txLast)}, ${b.txLast.slice(0, 4)}` : "No fees & profit data yet"} · showing ${shortDay(A.start)} – ${shortDay(A.end)}${A.days && A.days.length > 100 ? " · large range, may be slow" : ""}`;
     if (!A.days) return;
     const ag = aggregate();
     // days in the range with orders from Amazon but no Transaction report yet: ordered sales only
@@ -673,9 +690,10 @@
     ag.byDay.sort((x, y) => x.day.localeCompare(y.day));
     const gapNote = gap.length ? `${gap.length === 1 ? shortDay(gap[0]) + " isn't" : `${shortDay(gap[0])} – ${shortDay(gap[gap.length - 1])} aren't`} in Amazon's payments data yet, so ${gap.length === 1 ? "it shows" : "they show"} ordered sales only (no fees or profit). Fees and profit come in every hour.` : "";
     const sum = (k) => ag.byDay.reduce((a, r) => a + r[k], 0);
+    const estSales = (A.days || []).reduce((a, d) => a + ((d.totals || {}).est_sales || 0), 0), estOrders = (A.days || []).reduce((a, d) => a + ((d.totals || {}).est_orders || 0), 0);
     const sales = sum("sales"), fees = -(sum("sellfees") + sum("fbafees")), cogs = sum("cogs"), profit = sum("profit"), gp = sum("gp"), other = sum("other"), refunds = sum("refunds");
     const k = [
-      { c: "sales", l: "Product sales", v: m0(sales), s: `${sum("orders").toLocaleString()} orders · ${sum("units").toLocaleString()} units` },
+      { c: "sales", l: "Product sales", v: m0(sales), s: `${sum("orders").toLocaleString()} orders · ${sum("units").toLocaleString()} units${A.basis === "order" ? estOrders ? ` · <span title="Not paid by Amazon yet: fees from each SKU's recent rate">${estOrders.toLocaleString()} orders (${m0(estSales)}) estimated</span>` : " · all paid by Amazon" : " · by ship date"}` },
       { l: "Amazon fees", v: m0(fees), s: `${pct(fees / sales)} of sales · referral ${m0(-sum("sellfees"))} · FBA ${m0(-sum("fbafees"))}` },
       { l: "Refunds", v: `<span class="neg">${m0(refunds)}</span>`, s: "Net of fees Amazon returns" },
       { c: "cost", l: "Product cost", v: m0(cogs), s: `<span style="color:${ag.coverage < 0.95 ? "var(--warn)" : "inherit"}">${pct(ag.coverage)} of sales mapped</span>` },
@@ -773,11 +791,11 @@
     const body = rows.slice(0, A.oShown).map(o => {
       const profit = o.unmapped ? null : o.net - o.cogs;
       const first = o.lines[0], more = new Set(o.lines).size - 1;
-      return `<tr><td class="l mono"><a class="olink" href="https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(o.id)}" target="_blank" rel="noopener">${esc(o.id)}</a></td><td class="l">${shortDay(o.day)} <span class="dim">${o.time}</span></td><td class="l">${o.fba ? '<span class="pill web">FBA</span>' : '<span class="pill pos">Merchant</span>'}</td>
+      return `<tr><td class="l mono"><a class="olink" href="https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(o.id)}" target="_blank" rel="noopener">${esc(o.id)}</a></td><td class="l">${shortDay(o.day)} <span class="dim">${o.time}</span>${o.est ? ' <span class="pill pos" title="Not paid by Amazon yet: fees estimated from the SKU\'s recent rate">est.</span>' : ""}</td><td class="l">${o.fba ? '<span class="pill web">FBA</span>' : '<span class="pill pos">Merchant</span>'}</td>
         <td class="l"><div class="iname">${esc(titleOf(first) || first)}</div>${more > 0 ? `<div class="small dim">+${more} more</div>` : ""}</td><td>${o.units}</td><td>${m(o.sales)}</td><td class="${o.promo < 0 ? "neg" : "dim"}">${o.promo ? m(o.promo) : "—"}</td><td class="neg">${m(o.sellfees)}</td><td class="neg">${m(o.fbafees)}</td><td>${m(o.net)}</td>
         <td>${o.unmapped ? `<button class="pill miss" data-map="${esc(o.lines.find(sku => unitCost(sku) == null))}">Map</button>` : m(o.cogs)}</td><td class="${profit != null && profit < 0 ? "neg" : ""}">${profit == null ? '<span class="dim">—</span>' : "<b>" + m(profit) + "</b>"}</td><td class="dim">${profit != null && o.sales ? pct(profit / o.sales) : ""}</td></tr>`;
     }).join("");
-    $("az-orders").innerHTML = `<thead><tr><th class="l">Order</th><th class="l">Posted</th><th class="l">Fulfillment</th><th class="l">Item</th><th>Units</th><th>Product sales</th><th>Promos</th><th>Referral fee</th><th>FBA fee</th><th>Proceeds</th><th>Product cost</th><th>Profit</th><th>Margin</th></tr></thead><tbody>${body || '<tr><td class="l dim" colspan="13">No orders match.</td></tr>'}</tbody>`;
+    $("az-orders").innerHTML = `<thead><tr><th class="l">Order</th><th class="l">${A.basis === "order" ? "Ordered" : "Posted"}</th><th class="l">Fulfillment</th><th class="l">Item</th><th>Units</th><th>Product sales</th><th>Promos</th><th>Referral fee</th><th>FBA fee</th><th>Proceeds</th><th>Product cost</th><th>Profit</th><th>Margin</th></tr></thead><tbody>${body || '<tr><td class="l dim" colspan="13">No orders match.</td></tr>'}</tbody>`;
     $("az-omore").hidden = rows.length <= A.oShown;
     $("az-ocount").textContent = rows.length ? `Showing ${Math.min(A.oShown, rows.length)} of ${rows.length.toLocaleString()} orders` : "";
   }
