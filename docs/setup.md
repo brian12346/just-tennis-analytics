@@ -99,6 +99,15 @@ app's `write_inventory` scope (already used for costs). If the store has more th
 `amazon` function's `fbm_qty` action (Listings Items API, needs the Product Listing role on the SP-API app). Every send
 is logged in `jt.fbm_pushes`. `{"action":"fbm_qty","preview":true,…}` checks with Amazon without changing anything.
 
+## 9b. Veeqo shipping labels (Amazon FBM)
+
+Amazon FBM orders are mostly shipped with labels bought in Veeqo. Add the Veeqo API key (Veeqo → Settings → API keys)
+as the GitHub Actions secret `VEEQO_ID`. Sync job `veeqo` (also hourly: last 3 days; nightly: 14 days; `--since` for
+history) reads shipped orders and keeps one row per shipment in `jt.veeqo_shipments`: order, Amazon order id, tracking,
+carrier/service, ship time and label cost (filled only for labels bought with Veeqo's rates). It is read-only and stores
+no customer details. Each run's counts and the field names Veeqo returned are in `jt.settings` key `veeqo_sync`.
+Migration 083.
+
 ## 10. Alerts
 
 The Alerts tab lists operational problems to act on: Amazon FBM orders not shipped, Shopify orders not fulfilled,

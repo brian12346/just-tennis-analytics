@@ -43,6 +43,7 @@ jobs:
           ACENRALLY_CLIENT_ID: ${{ secrets.ACENRALLY_CLIENT_ID }}
           ACENRALLY_CLIENT_SECRET: ${{ secrets.ACENRALLY_CLIENT_SECRET }}
           SHIPSTATION_API_KEY: ${{ secrets.SHIPSTATION_API_KEY }}
+          VEEQO_ID: ${{ secrets.VEEQO_ID }}
           JOB: ${{ github.event.inputs.job || 'hourly' }}
           SINCE: ${{ github.event.inputs.since }}
         run: |

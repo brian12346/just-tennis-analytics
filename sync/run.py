@@ -4,7 +4,7 @@
   python -m sync.run nightly                   # catalog costs + cost check + a 35-day re-sync to catch returns and edits
   python -m sync.run backfill --since 2025-01-01
   python -m sync.run shopify-sales --since 2026-09-01 [--until 2026-09-24]
-  python -m sync.run shopify-daily | shopify-orders | catalog | labels  (same --since/--until)
+  python -m sync.run shopify-daily | shopify-orders | catalog | labels | veeqo  (same --since/--until)
   python -m sync.run amazon-transactions path/to/report.csv
   python -m sync.run amazon-listings path/to/All+Listings+Report.txt
 """
@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 
-from .common import connect, load_env, store_today, sync_run
+from .common import connect, env, load_env, store_today, sync_run
 
 
 def _utc(d: dt.date) -> dt.datetime:
@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -131,6 +131,13 @@ def main(argv: list[str] | None = None) -> None:
         back = {"hourly": 3, "nightly": 14}.get(a.job, 7)
         since = a.since or (today - dt.timedelta(days=back))
         run("shipstation_labels", lambda: sync_labels(conn, _utc(since - dt.timedelta(days=1))))
+
+    if a.job in ("hourly", "nightly", "backfill", "veeqo") and env("VEEQO_ID", required=False):
+        # Veeqo labels (Amazon FBM shipping) -> jt.veeqo_shipments; only when the VEEQO_ID secret is set
+        from .veeqo import sync_shipments
+        back = {"hourly": 3, "nightly": 14}.get(a.job, 30)
+        since = a.since or (today - dt.timedelta(days=back))
+        run("veeqo_shipments", lambda: sync_shipments(conn, _utc(since - dt.timedelta(days=1))))
 
     if a.job.startswith("amazon-"):
         if not a.file:
