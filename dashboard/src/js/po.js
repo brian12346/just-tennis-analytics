@@ -653,10 +653,6 @@
         text: "If the rest is coming, mark it backordered (with an ETA if you have one). If the vendor won't send it, close the PO short — it moves to Received.",
         fixes: [{ label: "Mark them backordered", fix: "pbo" }, { label: "Close short", fix: "oshort" }] });
     }
-    const unpaid = ed.invoices.filter(v => v.id && !v.paidOn), late2 = unpaid.filter(overdue);
-    if (late2.length) out.push({ lvl: "warn", kind: "overdue", title: `${late2.length === 1 ? "Invoice " + esc(late2[0].no || "") + " is" : late2.length + " invoices are"} past due and not marked paid`,
-      text: late2.map(v => `${esc(v.no || "invoice")}: due ${shortDate(v.due)}${v.total != null ? " · " + m(v.total) : ""}`).join(" · ") + ". Pay it, or mark it paid if it already was.",
-      fixes: [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(late2[0])) }] });
     if (ed.id && ed.status !== "draft" && !ed.shopifyUrl.trim()) out.push({ lvl: "info", kind: "noshopify", title: "Not linked to a Shopify PO",
       text: "Create the same PO in Shopify (Products → Purchase orders) and paste its link here, so the two stay in step.",
       fixes: [{ label: "Paste the link", fix: "focus", arg: "pe-shopify" }, { label: "Shopify purchase orders", href: `${ADMIN}/purchase_orders/new` }] });
@@ -706,7 +702,6 @@
     else if (o.shopifyUrl && o.shopDiffs == null && o.status !== "draft") f.push(["info", "Shopify PO not checked"]);
     if (o.nBack) f.push([o.backEta && o.backEta < today() ? "warn" : "info", `${o.nBack} backordered${o.backEta ? " · ETA " + shortDate(o.backEta) : ""}`]);
     if (o.status === "partial" && !o.nBack) f.push(["info", "rest not backordered"]);
-    if (o.nUnpaid && o.unpaidDue && o.unpaidDue < today()) f.push(["warn", "bill overdue"]);
     if (o.status === "received") f.push(["info", "enter in QuickBooks"]);
     if (o.status === "qb_ready") f.push(["info", "complete it"]);
     return f;
@@ -735,13 +730,11 @@
     if (vsel.dataset.opts !== want) { vsel.innerHTML = `<option value="all">All vendors</option>` + vs.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join(""); vsel.dataset.opts = want; vsel.value = vs.includes(S.vendor) ? S.vendor : "all"; }
     const open = all.filter(isOpen), out = all.filter(o => ["ordered", "invoiced", "partial"].includes(o.status));
     const flagged = open.filter(o => listFlags(o).some(f => f[0] !== "info"));
-    const unpaid = all.filter(o => o.nUnpaid), overdueN = unpaid.filter(o => o.unpaidDue && o.unpaidDue < today()).length;
     $("po-kpis").innerHTML = [
       { l: "Open POs", v: n0(open.length), s: `${all.filter(o => o.status === "draft").length} draft · ${out.length} placed, not all received` },
       { c: "cost", l: "On order", v: m0(out.reduce((a, o) => a + o.cost * (o.units ? Math.max(0, o.units - o.received) / o.units : 1), 0)), s: `${n0(out.reduce((a, o) => a + Math.max(0, o.units - o.received), 0))} units to come, at cost` },
-      { l: "Unpaid invoices", v: m0(unpaid.reduce((a, o) => a + o.unpaidAmt, 0)), s: `${n0(unpaid.reduce((a, o) => a + o.nUnpaid, 0))} invoice${unpaid.reduce((a, o) => a + o.nUnpaid, 0) === 1 ? "" : "s"}${overdueN ? ` · <b class="neg">${overdueN} PO${overdueN === 1 ? "" : "s"} overdue</b>` : ""}` },
       { l: "Backordered", v: n0(all.reduce((a, o) => a + o.nBack, 0)), s: "products still to come on open POs" },
-      { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice, overdue" : "nothing flagged" },
+      { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice" : "nothing flagged" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     const q = S.q.trim().toLowerCase().replace(/^#/, "");
     const list = all.filter(o => (S.stage === "open" ? isOpen(o) : S.stage === "all" || o.status === S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
@@ -757,7 +750,7 @@
           <td class="l">${esc(o.vendor || "—")}</td>
           <td class="l"><span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span></td>
           <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
-          <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null || o.due ? `<div class="meta">${o.invTotal != null ? m(o.invTotal) : ""}${o.nUnpaid && o.unpaidDue ? ` · due ${shortDate(o.unpaidDue)}` : ""}</div>` : ""}<div>${!o.nUnpaid ? '<span class="pill ok">Paid</span>' : o.unpaidDue && o.unpaidDue < today() ? `<span class="pill miss">${o.nUnpaid < o.nInv ? o.nUnpaid + " " : ""}Overdue</span>` : `<span class="pill warn">${o.nUnpaid < o.nInv ? o.nUnpaid + " " : ""}Unpaid</span>`}</div>` : '<span class="dim">—</span>'}</td>
+          <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null ? `<div class="meta">${m(o.invTotal)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
           <td class="l small">${dates}</td>
           <td class="l">${fl.map(f => `<span class="pill ${f[0] === "info" ? "pos" : "miss"}">${esc(f[1])}</span>`).join("")}</td></tr>`;
       }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open purchase orders. Start one with New PO, then add the vendor's invoices to it." : "No purchase orders match."}</td></tr>`}</tbody>`;
@@ -951,7 +944,7 @@
   function poInvoicesHtml(ed, ro, recvHtml) {
     const iv = cur(ed);
     const chips = ed.invoices.map((v, i) => { const c = count(v), bad = c.check + c.none;
-      return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}${v.due ? " · due " + shortDate(v.due) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${recvPill(v)}${payPill(v)}</button>`; }).join("");
+      return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${recvPill(v)}${v.isNew ? '<span class="pill warn">new</span>' : ""}</button>`; }).join("");
     const head = `<div class="panel-head"><h2>Invoices</h2><span class="muted small">${ed.invoices.length ? `${ed.invoices.length} on this PO` : "none yet"} · a vendor can bill in parts · invoices are uploaded and kept on the Invoices tab</span>${!ro && ed.id ? `<label class="btn ${ed.invoices.length ? "" : "primary"} right" for="pe-file" title="Read the PDF and open it on the Invoices tab, attached to this PO">Upload invoice PDF</label>` : ""}</div>
       <div class="ivchips">${chips}${!ro && ed.id ? `<label class="ivchip add" for="pe-file"><b>+ Add invoice</b><span>it opens on the Invoices tab</span></label>` : ""}</div>`;
     if (!iv) return `<section class="panel po-inv" id="pe-drop">${head}${!ed.id ? '<div class="muted small">Save the PO first, then upload its invoices (or upload an invoice on the Invoices tab — it finds this PO by its PO #).</div>' : ""}</section>`;
