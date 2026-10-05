@@ -667,10 +667,8 @@
       text: "Download the PO as a PDF in Shopify and upload it here; every product, quantity and cost is compared with this PO.", fixes: [{ label: "Upload the Shopify PO PDF", fix: "focus", arg: "pe-shopfile" }] });
     if (ed.status === "received") out.push({ lvl: "info", kind: "toqb", title: "Received — enter the bills in QuickBooks",
       text: "Send each invoice to QuickBooks (on the Invoices tab), then mark this PO QB ready.", fixes: [{ label: "Mark QB ready", fix: "onext" }] });
-    if (ed.status === "qb_ready") out.push(unpaid.length
-      ? { lvl: "info", kind: "unpaid", title: `${unpaid.length} invoice${unpaid.length === 1 ? "" : "s"} not paid yet`, text: "Mark each invoice paid (with how it was paid) as the bills go out. Then mark the PO complete.",
-          fixes: [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(unpaid[0])) }] }
-      : { lvl: "info", kind: "allpaid", title: "Every invoice is paid", text: "Nothing left to do on this PO.", fixes: [{ label: "Mark complete", fix: "onext" }] });
+    if (ed.status === "qb_ready") out.push({ lvl: "info", kind: "tocomplete", title: "In QuickBooks — mark the PO complete",
+      text: "Payments are tracked on each invoice (Invoices tab), so the PO can be completed now.", fixes: [{ label: "Mark complete", fix: "onext" }] });
     const rank = { bad: 0, warn: 1, info: 2 };
     return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
   }
@@ -710,7 +708,7 @@
     if (o.status === "partial" && !o.nBack) f.push(["info", "rest not backordered"]);
     if (o.nUnpaid && o.unpaidDue && o.unpaidDue < today()) f.push(["warn", "bill overdue"]);
     if (o.status === "received") f.push(["info", "enter in QuickBooks"]);
-    if (o.status === "qb_ready" && !o.nUnpaid) f.push(["info", "all paid · complete it"]);
+    if (o.status === "qb_ready") f.push(["info", "complete it"]);
     return f;
   }
 
@@ -1227,15 +1225,9 @@
       return null;
     }
   }
-  // moving to a stage: completing a PO with unpaid invoices asks first
+  // moving to a stage (payments are tracked on the invoices, so completing a PO doesn't check them)
   function goStage(to) {
     const ed = S.ed; if (!ed) return;
-    const unpaid = ed.invoices.filter(v => !v.paidOn);
-    if (to === "complete" && unpaid.length && ed.confirm !== "complete") {
-      ed.confirm = "complete"; render();
-      note("warn", `${unpaid.length === 1 ? `Invoice ${esc(unpaid[0].no || "")} isn't` : `${unpaid.length} invoices aren't`} marked paid yet. <span class="dbtns"><button class="mini primary" data-pact="do-complete">Complete it anyway</button><button class="mini" data-pact="open-unpaid">Mark it paid first</button><button class="mini" data-pact="no">Cancel</button></span>`);
-      return;
-    }
     return save(to);
   }
   async function setStatus2(status, msg) {
