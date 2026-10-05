@@ -792,7 +792,7 @@ class _PoSchema:
                     continue
                 sub = self.select(self.base(node["type"])[1], 1)
                 if sub:
-                    parts.append(f"{f['name']}(first: {lines}) {{ nodes {{ {sub} }} pageInfo {{ hasNextPage }} }}")
+                    parts.append(f"{f['name']}(first: {lines}) {{ nodes {{ {sub} }} pageInfo {{ hasNextPage endCursor }} }}")
             elif kind in ("OBJECT", "INTERFACE") and depth > 0 and tname not in ("PageInfo",):
                 sub = self.select(tname, depth - 1)
                 if sub:
@@ -883,6 +883,29 @@ def _iso(v):
     return v if isinstance(v, str) and re.match(r"\d{4}-\d\d-\d\d", v) else None
 
 
+def _more_po_lines(shop: Shopify, sc: "_PoSchema", po_t: str, d: dict) -> None:
+    """A PO's line items past the first page (big POs have 100+ lines), appended to d's line connection."""
+    for f in sc.fields(po_t):
+        conn_v = d.get(f["name"])
+        if not (re.search(r"line", f["name"], re.I) and isinstance(conn_v, dict) and isinstance(conn_v.get("nodes"), list)):
+            continue
+        page = conn_v.get("pageInfo") or {}
+        tname = sc.base(f["type"])[1]
+        node = next((x for x in sc.fields(tname) if x["name"] == "nodes"), None)
+        sub = sc.select(sc.base(node["type"])[1], 1) if node else ""
+        guard = 0
+        while page.get("hasNextPage") and page.get("endCursor") and sub and guard < 50:
+            guard += 1
+            more = shop.graphql(f"""query($id: ID!, $after: String) {{ inventoryPurchaseOrder(id: $id) {{ {f['name']}(first: 100, after: $after) {{
+                nodes {{ {sub} }} pageInfo {{ hasNextPage endCursor }} }} }} }}""", {"id": d["id"], "after": page["endCursor"]},
+                                version=PO_VERSION)["inventoryPurchaseOrder"][f["name"]]
+            conn_v["nodes"] += more.get("nodes") or []
+            page = more.get("pageInfo") or {}
+        if page.get("hasNextPage"):
+            raise RuntimeError("line items still have more pages")
+        return
+
+
 def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
     import json
     sc = _PoSchema(shop, PO_VERSION)
@@ -929,6 +952,11 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
                     break
         if not d:
             continue
+        try:
+            _more_po_lines(shop, sc, po_t, d)
+        except RuntimeError as e:   # keep the first page rather than nothing; noted, and retried next run
+            errs.append(f"{d.get('name')}: more lines: {str(e)[:150]}")
+            d["_lines_incomplete"] = True
         rows = [_po_line_row(i, n, by_item) for i, n in enumerate(_po_lines(d))]
         total = _first(d, r"total", lambda v: _money(v) is not None)
         if total is None and rows:   # no PO total in 2026-10: add up the lines
@@ -941,14 +969,14 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
         with conn.cursor() as cur:
             cur.execute("""insert into jt.shopify_pos (id, name, status, supplier, destination, currency, total, lines, units, created_at, updated_at,
                              expected_at, raw, lines_synced, synced_at)
-                           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb, now(), now())
+                           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb, case when %s then null else now() end, now())
                            on conflict (id) do update set name = excluded.name, status = excluded.status, supplier = excluded.supplier,
                              destination = excluded.destination, currency = excluded.currency, total = excluded.total, lines = excluded.lines,
                              units = excluded.units, created_at = excluded.created_at, updated_at = excluded.updated_at,
-                             expected_at = excluded.expected_at, raw = excluded.raw, lines_synced = now(), synced_at = now()""",
+                             expected_at = excluded.expected_at, raw = excluded.raw, lines_synced = excluded.lines_synced, synced_at = now()""",
                         (gid_num(d.get("id")) or gid_num(h["id"]), str(d.get("name") or ""), str(d.get("status") or ""), supplier, dest, cur_code,
                          _money(total), len(rows), sum(r["qty"] for r in rows), _iso(d.get("createdAt") or d.get("dateCreated")), _iso(d.get("updatedAt") or d.get("orderedAt")), expected,
-                         json.dumps(d)))
+                         json.dumps(d), bool(d.get("_lines_incomplete"))))
             pid = gid_num(d.get("id")) or gid_num(h["id"])
             cur.execute("delete from jt.shopify_po_lines where po_id = %s", (pid,))
             cur.executemany("""insert into jt.shopify_po_lines (po_id, line_id, variant_id, sku, title, qty, qty_received, cost, raw)
@@ -1000,39 +1028,13 @@ def sync_anr_catalog(shop: Shopify, conn) -> int:
 
 
 # ---------------------------------------------------------------- Shopify PO receiving (transfers)
-# Shopify records what was received against a PO on the PO's inventory transfers (and their shipments), not on the PO's
-# lines. For open POs (newest first, RECEIPT_CAP per run) this reads each PO's transfers — every plain field, their line
-# items and shipments (and the shipments' line items), found through the schema like the POs themselves — and works out
-# units received per inventory item. Saved to jt.shopify_pos (recv_status, recv_units, receipt = Shopify's JSON) and
-# jt.shopify_po_lines.qty_received (migration 080). If the app can't read transfers, that's recorded in jt.settings
-# 'shopify_po_receipts' and the rest of the sync carries on.
+# Shopify records what was received against a PO on the PO's inventory transfers and their shipments, not on the PO's
+# lines. For open POs not yet fully received (the ones checked longest ago first, up to RECEIPT_CAP and RECEIPT_BUDGET
+# seconds per run) this reads the transfers' received totals and each shipment's accepted units per inventory item.
+# Saved to jt.shopify_pos (recv_status, recv_units, receipt = a summary of the transfers and shipments) and
+# jt.shopify_po_lines.qty_received (migration 080); the run's result is in jt.settings 'shopify_po_receipts'.
 RECEIPT_CAP = 250
 RECEIPT_BUDGET = 240   # seconds per run
-_DONE_TRANSFER = re.compile(r"TRANSFERRED|COMPLETE|RECEIVED|CLOSED", re.I)
-
-
-def _sel_nested(sc: "_PoSchema", name: str, levels: int, pat: str = r"line|shipment", first: int = 50) -> str:
-    """Plain fields of `name`, its objects' plain fields, and connections whose name matches pat (levels deep)."""
-    parts = []
-    for f in sc.fields(name):
-        if any(a["type"]["kind"] == "NON_NULL" and a.get("defaultValue") is None and a["name"] != "first" for a in f.get("args") or []):
-            continue
-        kind, tname, _ = sc.base(f["type"])
-        if kind in _SCALAR:
-            parts.append(f["name"])
-        elif kind in ("OBJECT", "INTERFACE") and tname.endswith("Connection"):
-            if levels <= 0 or not re.search(pat, f["name"], re.I):
-                continue
-            node = next((x for x in sc.fields(tname) if x["name"] == "nodes"), None)
-            sub = _sel_nested(sc, sc.base(node["type"])[1], levels - 1, pat, first) if node else ""
-            if sub:   # few shipments, up to `first` lines (keeps the query under Shopify's cost limit)
-                n = 3 if re.search(r"shipment", f["name"], re.I) else first
-                parts.append(f"{f['name']}(first: {n}) {{ nodes {{ {sub} }} }}")
-        elif kind in ("OBJECT", "INTERFACE") and tname not in ("PageInfo",) and not tname.endswith("PurchaseOrder"):
-            sub = sc.select(tname, 0)
-            if sub:
-                parts.append(f"{f['name']} {{ {sub} }}")
-    return " ".join(parts)
 
 
 def _nodes(v) -> list:
@@ -1041,107 +1043,97 @@ def _nodes(v) -> list:
     return v if isinstance(v, list) else []
 
 
-def _inv_item(n: dict) -> int | None:
-    for v in n.values():
-        if isinstance(v, dict) and str(v.get("id", "")).startswith("gid://shopify/InventoryItem/"):
-            return gid_num(v["id"])
-    return None
-
-
-def _received_by_item(transfers: list) -> dict:
-    """Units received per inventory item over a PO's transfers."""
-    got: dict = {}
-    for t in transfers:
-        ships = [s for k, v in t.items() if re.search(r"shipment", k, re.I) for s in _nodes(v)]
-        ship_lines = [ln for s in ships for k, v in s.items() if re.search(r"line", k, re.I) for ln in _nodes(v)]
-        if ship_lines:                        # received on the transfer's shipments
-            for ln in ship_lines:
-                item = _inv_item(ln)
-                q = sum(_po_int(v) for k, v in ln.items() if re.search(r"accepted|received", k, re.I) and not re.search(r"unreceived", k, re.I) and not isinstance(v, (dict, list)))
-                if item and q:
-                    got[item] = got.get(item, 0) + q
-            continue
-        done = _DONE_TRANSFER.search(str(t.get("status") or ""))
-        for k, v in t.items():
-            if not re.search(r"line", k, re.I):
-                continue
-            for ln in _nodes(v):
-                item = _inv_item(ln)
-                rk = [x for x in ln if re.search(r"received|accepted", x, re.I) and not re.search(r"unreceived", x, re.I) and not isinstance(ln[x], (dict, list))]
-                q = sum(_po_int(ln[x]) for x in rk) if rk else (_po_int(ln.get("totalQuantity") or ln.get("quantity")) if done else 0)
-                if item and q:
-                    got[item] = got.get(item, 0) + q
-    return got
-
-
 def sync_po_receipts(shop: Shopify, conn, cap: int = RECEIPT_CAP, budget: int = RECEIPT_BUDGET) -> dict:
-    """Received units per open PO from its transfers. Time-boxed (budget seconds) so it never holds up the hourly sync;
-    the POs checked longest ago go first, so each run continues where the last one stopped."""
+    """Received units per open PO from its transfers (Shopify receives a PO through transfers and their shipments).
+    PO total: the transfers' receivedQuantity. Per line: accepted units on the shipments' line items, by inventory item,
+    paged so big shipments count fully. Time-boxed (budget seconds) so it never holds up the hourly sync; the POs
+    checked longest ago go first, so each run continues where the last one stopped."""
     import json
     t0 = time.monotonic()
-    sc = _PoSchema(shop, PO_VERSION)
-    po_t = "InventoryPurchaseOrder"
-    tf = next((f for f in sc.fields(po_t) if f["name"] == "transfers"), None)
     state = {"checked_at": dt.datetime.now(dt.timezone.utc).isoformat()}
-    if not tf:
-        state.update(ok=False, why="Shopify's purchase orders have no transfers field")
-        sel = ""
-    else:
-        node = next((x for x in sc.fields(sc.base(tf["type"])[1]) if x["name"] == "nodes"), None)
-        sel = _sel_nested(sc, sc.base(node["type"])[1], 2) if node else ""
-        sel_flat = _sel_nested(sc, sc.base(node["type"])[1], 1, r"^line") if node else ""   # if the full one costs too much
-    done, errs, received = 0, [], 0
-    if sel:
-        with conn.cursor() as cur:
-            cur.execute("""select p.id, p.units from jt.shopify_pos p where p.status not in ('DRAFT', 'CLOSED', 'CANCELLED', 'CANCELED')
-                           and coalesce(p.recv_status, '') <> 'received'
-                           order by p.recv_synced nulls first, p.id desc limit %s""", (cap,))
-            todo = cur.fetchall()
-        fails = 0
-        for pid, units in todo:
-            if time.monotonic() - t0 > budget:
-                state["stopped"] = "time budget"
-                break
-            try:
-                d = None
-                for q in (sel, sel_flat):
-                    try:
-                        d = shop.graphql(f"""query($id: ID!) {{ inventoryPurchaseOrder(id: $id) {{ id transfers(first: 3) {{ nodes {{ {q} }} }} }} }}""",
-                                         {"id": f"gid://shopify/InventoryPurchaseOrder/{pid}"}, version=PO_VERSION,
-                                         timeout=30, tries=3)["inventoryPurchaseOrder"] or {}
-                        break
-                    except RuntimeError as e1:
-                        if q is sel_flat or not re.search(r"cost", str(e1), re.I):
-                            raise
-            except Exception as e:   # Shopify errors, timeouts, connection drops: note it, move on, give up after 3 in a row
-                errs.append(f"{type(e).__name__}: {str(e)[:300]}")
-                fails += 1
-                if re.search(r"access|scope|permission|denied|unauthori", str(e), re.I):
-                    state.update(ok=False, why=str(e)[:300])
-                    break
-                if fails >= 3:
-                    state.setdefault("ok", False)
-                    state["why"] = "3 failures in a row: " + errs[-1]
-                    break
-                continue
-            fails = 0
+    with conn.cursor() as cur:
+        cur.execute("""select p.id, p.units from jt.shopify_pos p where p.status not in ('DRAFT', 'CLOSED', 'CANCELLED', 'CANCELED')
+                       and coalesce(p.recv_status, '') <> 'received'
+                       order by p.recv_synced nulls first, p.id desc limit %s""", (cap,))
+        todo = cur.fetchall()
+    done, errs, received, fails = 0, [], 0, 0
+    for pid, units in todo:
+        if time.monotonic() - t0 > budget:
+            state["stopped"] = "time budget"
+            break
+        line_errs = 0
+        try:
+            d = shop.graphql(RECEIPT_Q, {"id": f"gid://shopify/InventoryPurchaseOrder/{pid}"}, version=PO_VERSION,
+                             timeout=30, tries=3)["inventoryPurchaseOrder"] or {}
             transfers = _nodes(d.get("transfers"))
-            got = _received_by_item(transfers)
-            tot = sum(got.values())
-            status = "received" if units and tot >= units else "partial" if tot > 0 else "none"
-            with conn.cursor() as cur:
-                cur.execute("""update jt.shopify_pos set recv_units = %s, recv_status = %s, receipt = %s::jsonb, recv_synced = now() where id = %s""",
-                            (tot, status, json.dumps(transfers), pid))
+            got: dict = {}
+            for t in transfers:
+                for sh_ in _nodes(t.get("shipments")):
+                    if not _po_int(sh_.get("totalAcceptedQuantity")):
+                        continue
+                    try:
+                        for item, q in _shipment_accepted(shop, sh_["id"]).items():
+                            got[item] = got.get(item, 0) + q
+                    except RuntimeError as e:
+                        line_errs += 1
+                        errs.append(f"shipment {sh_.get('name')}: {str(e)[:200]}")
+        except Exception as e:   # Shopify errors, timeouts, connection drops: note it, move on, give up after 3 in a row
+            errs.append(f"{type(e).__name__}: {str(e)[:300]}")
+            fails += 1
+            if re.search(r"access|scope|permission|denied|unauthori", str(e), re.I):
+                state.update(ok=False, why=str(e)[:300])
+                break
+            if fails >= 3:
+                state.setdefault("ok", False)
+                state["why"] = "3 failures in a row: " + errs[-1]
+                break
+            continue
+        fails = 0
+        tot = sum(_po_int(t.get("receivedQuantity")) for t in transfers) or sum(got.values())
+        status = "received" if units and tot >= units else "partial" if tot > 0 else "none"
+        summary = [{**{k: t.get(k) for k in ("name", "status", "totalQuantity", "receivedQuantity")},
+                    "shipments": [{k: x.get(k) for k in ("name", "status", "totalAcceptedQuantity", "totalReceivedQuantity")}
+                                  for x in _nodes(t.get("shipments"))]} for t in transfers]
+        with conn.cursor() as cur:
+            cur.execute("""update jt.shopify_pos set recv_units = %s, recv_status = %s, receipt = %s::jsonb, recv_synced = now() where id = %s""",
+                        (tot, status, json.dumps(summary), pid))
+            if not line_errs:
                 cur.execute("""update jt.shopify_po_lines l set qty_received = coalesce((%s::jsonb ->> (l.raw -> 'inventoryItem' ->> 'legacyResourceId'))::int, 0)
                                where l.po_id = %s""", (json.dumps({str(k): v for k, v in got.items()}), pid))
-            conn.commit()
-            done += 1
-            received += 1 if status == "received" else 0
-        if done and "ok" not in state:
-            state["ok"] = True
-    state.update(pos=done, received=received, errors=errs[:3], seconds=round(time.monotonic() - t0, 1), query_chars=len(sel or ""))
+        conn.commit()
+        done += 1
+        received += 1 if status == "received" else 0
+    if done and "ok" not in state:
+        state["ok"] = True
+    state.update(pos=done, received=received, errors=errs[:3], seconds=round(time.monotonic() - t0, 1))
     with conn.cursor() as cur:
         cur.execute("""insert into jt.settings (key, value, updated_at) values ('shopify_po_receipts', %s::jsonb, now())
                        on conflict (key) do update set value = excluded.value, updated_at = now()""", (json.dumps(state),))
     conn.commit()
     return {"variants": done, **state}
+
+
+RECEIPT_Q = """query($id: ID!) { inventoryPurchaseOrder(id: $id) { id transfers(first: 10) { nodes {
+  id name status totalQuantity receivedQuantity
+  shipments(first: 10) { nodes { id name status totalAcceptedQuantity totalReceivedQuantity } } } } } }"""
+
+SHIPMENT_LINES_Q = """query($id: ID!, $after: String) { node(id: $id) { ... on InventoryShipment {
+  lineItems(first: 250, after: $after) { nodes { acceptedQuantity inventoryItem { legacyResourceId } } pageInfo { hasNextPage endCursor } } } } }"""
+
+
+def _shipment_accepted(shop: Shopify, ship_id: str) -> dict:
+    """Accepted units per inventory item on one shipment, all pages."""
+    got: dict = {}
+    after = None
+    for _ in range(40):
+        page = (shop.graphql(SHIPMENT_LINES_Q, {"id": ship_id, "after": after}, version=PO_VERSION, timeout=30, tries=3)["node"] or {}).get("lineItems") or {}
+        for ln in page.get("nodes") or []:
+            item = _po_int((ln.get("inventoryItem") or {}).get("legacyResourceId"))
+            q = _po_int(ln.get("acceptedQuantity"))
+            if item and q:
+                got[item] = got.get(item, 0) + q
+        info = page.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            return got
+        after = info.get("endCursor")
+    raise RuntimeError("too many line pages")
