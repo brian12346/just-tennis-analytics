@@ -88,12 +88,12 @@
       `(select count(*) ${IV} and ii.paid_on is null)`, `(select min(ii.due_date)::text ${IV} and ii.paid_on is null)`, `(select sum(coalesce(ii.total, ii.subtotal)) ${IV} and ii.paid_on is null)`, "o.shopify_po_url",
       "(select coalesce(sum(l.qty_ordered), 0) from jt.prep_order_lines l where l.order_id = o.id and l.dest = 'prep')", "o.receive_into",
       "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status",
-      "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)"],
+      "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)", "o.no_shopify_po"],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
-      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "", costsReady: +x[36] || 0 }))
+      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "", costsReady: +x[36] || 0, noShop: !!x[37] }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
   }
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
@@ -276,8 +276,12 @@
   const keyOf = (l) => l.vid + "|" + (l.dest === "prep" ? l.asku || "" : "") + "|" + (l.dest || "prep");
   const variant = (vid) => vid && S.byVid ? S.byVid.get(String(vid)) : null;
   const cur = (ed) => ed.cur >= 0 ? ed.invoices[ed.cur] || null : null;
+  // Seller Sage only: no Shopify PO for this order (marked by hand, or nothing on it goes to the Shopify store)
+  const prepOnly = (ed) => ed.lines.length > 0 && !ed.lines.some(l => l.dest === "shopify");
+  const shopOff = (ed) => ed.noShop || prepOnly(ed);
+  const shopOffO = (o) => o.noShop || (o.units > 0 && o.prepUnits >= o.units) || o.into === "prep";
   function blankEd() {
-    return { id: null, status: "draft", vendor: "", po: "", kind: "order", placeBy: "", expected: "", note: "", shortOk: false, shopifyUrl: "", shopCheck: null, shopAll: false, stageAt: {}, created: null, shipments: [],
+    return { id: null, status: "draft", vendor: "", po: "", kind: "order", placeBy: "", expected: "", note: "", shortOk: false, noShop: false, shopifyUrl: "", shopCheck: null, shopAll: false, stageAt: {}, created: null, shipments: [],
       lines: [], invoices: [], cur: -1, removed: [], dest: "shopify", addTo: "shopify", split: null, add: "", recv: null, confirm: false, dirty: false, search: null, showPdf: false, boPrompt: false };
   }
   const blankInv = () => ({ id: null, no: "", date: "", due: "", total: null, terms: "", subtotal: null, fileName: "", parts: 0, status: "draft", notes: "", file: null, raw: null, rows: [], filter: "all", isNew: true,
@@ -290,7 +294,7 @@
       const [h, ol, sh, ivs, lp] = await Promise.all([
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check", "o.shopify_received_at::text", "o.shopify_received_by",
           "(select max(seen_at) from jt.variants)::text", "o.shopify_po_status", "o.shopify_po_status_at::text",
-          "(select value::text from jt.settings where key = 'shopify_po_api')"],
+          "(select value::text from jt.settings where key = 'shopify_po_api')", "o.no_shopify_po"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
@@ -302,6 +306,7 @@
       ]);
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
+      ed.noShop = !!x[x.length - 1];
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
         stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
@@ -653,6 +658,7 @@
         text: "If the rest is coming, mark it backordered (with an ETA if you have one). If the vendor won't send it, close the PO short — it moves to Received.",
         fixes: [{ label: "Mark them backordered", fix: "pbo" }, { label: "Close short", fix: "oshort" }] });
     }
+    if (!shopOff(ed)) {
     if (ed.id && ed.status !== "draft" && !ed.shopifyUrl.trim()) out.push({ lvl: "info", kind: "noshopify", title: "Not linked to a Shopify PO",
       text: "Create the same PO in Shopify (Products → Purchase orders) and paste its link here, so the two stay in step.",
       fixes: [{ label: "Paste the link", fix: "focus", arg: "pe-shopify" }, { label: "Shopify purchase orders", href: `${ADMIN}/purchase_orders/new` }] });
@@ -661,6 +667,7 @@
       fixes: [{ label: "Show the differences", fix: "focus", arg: "pe-shopcheck" }] }); }
     else if (ed.id && ed.shopifyUrl.trim() && ed.lines.length) out.push({ lvl: "info", kind: "shopnocheck", title: "Linked to a Shopify PO — check that it matches",
       text: "Download the PO as a PDF in Shopify and upload it here; every product, quantity and cost is compared with this PO.", fixes: [{ label: "Upload the Shopify PO PDF", fix: "focus", arg: "pe-shopfile" }] });
+    }
     if (ed.status === "received") out.push({ lvl: "info", kind: "toqb", title: "Received — enter the bills in QuickBooks",
       text: "Send each invoice to QuickBooks (on the Invoices tab), then mark this PO QB ready.", fixes: [{ label: "Mark QB ready", fix: "onext" }] });
     if (ed.status === "qb_ready") out.push({ lvl: "info", kind: "tocomplete", title: "In QuickBooks — mark the PO complete",
@@ -697,9 +704,9 @@
     if (["ordered", "invoiced"].includes(o.status) && o.expected && o.expected < today()) f.push(["warn", "late"]);
     if (ORDER.indexOf(o.status) >= 2 && !o.nInv) f.push(["warn", "no invoice"]);
     if (o.status === "draft" && o.kind === "booking" && o.placeBy && o.placeBy < today()) f.push(["warn", "past place-by"]);
-    if (o.status !== "draft" && !o.shopifyUrl) f.push(["info", "not in Shopify"]);
+    if (o.status !== "draft" && !o.shopifyUrl && !shopOffO(o)) f.push(["info", "not in Shopify"]);
     if (o.shopDiffs) f.push(["warn", `Shopify PO differs · ${o.shopDiffs}`]);
-    else if (o.shopifyUrl && o.shopDiffs == null && o.status !== "draft") f.push(["info", "Shopify PO not checked"]);
+    else if (o.shopifyUrl && o.shopDiffs == null && o.status !== "draft" && !shopOffO(o)) f.push(["info", "Shopify PO not checked"]);
     if (o.nBack) f.push([o.backEta && o.backEta < today() ? "warn" : "info", `${o.nBack} backordered${o.backEta ? " · ETA " + shortDate(o.backEta) : ""}`]);
     if (o.status === "partial" && !o.nBack) f.push(["info", "rest not backordered"]);
     if (o.status === "received") f.push(["info", "enter in QuickBooks"]);
@@ -746,7 +753,7 @@
       list.map(o => {
         const fl = listFlags(o), got = GOT.includes(o.status);
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
-        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${o.shopifyUrl || o.shopDiffs != null ? `<div>${o.shopifyUrl ? `<a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a>` : '<span class="small muted">Shopify PO</span>'}${o.shopDiffs === 0 ? ' <span class="pill ok" title="Checked against the Shopify PO">matches</span>' : o.shopDiffs ? ` <span class="pill miss" title="Checked against the Shopify PO">${o.shopDiffs} difference${o.shopDiffs === 1 ? "" : "s"}</span>` : ""}${o.shopStatus ? " " + shopStatusPill(o.shopStatus) : ""}</div>` : ""}</td>
+        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopOffO(o) && !o.shopifyUrl ? '<div><span class="small muted">Seller Sage only</span></div>' : o.shopifyUrl || o.shopDiffs != null ? `<div>${o.shopifyUrl ? `<a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a>` : '<span class="small muted">Shopify PO</span>'}${o.shopDiffs === 0 ? ' <span class="pill ok" title="Checked against the Shopify PO">matches</span>' : o.shopDiffs ? ` <span class="pill miss" title="Checked against the Shopify PO">${o.shopDiffs} difference${o.shopDiffs === 1 ? "" : "s"}</span>` : ""}${o.shopStatus ? " " + shopStatusPill(o.shopStatus) : ""}</div>` : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
           <td class="l"><span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span></td>
           <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
@@ -892,7 +899,7 @@
       <div class="po-top">
         <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
-        <div class="po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
+        <div class="po-head"><h2>${ed.id ? esc(ed.vendor || "Vendor order") + " · " + esc(ed.po ? poLabel(ed.po) : "#" + ed.id) : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
         ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
       </div>
       <section class="panel">
@@ -902,7 +909,7 @@
           <label class="stack">Type<span class="seg"><button data-pkind="order" aria-pressed="${ed.kind !== "booking"}" ${ed.status !== "draft" ? "disabled" : ""}>Order</button><button data-pkind="booking" aria-pressed="${ed.kind === "booking"}" ${ed.status !== "draft" ? "disabled" : ""}>Booking</button></span></label>
           ${ed.kind === "booking" ? `<label class="stack" for="pe-placeby">Place by<input id="pe-placeby" class="inp" type="date" value="${esc(ed.placeBy)}" ${ed.status !== "draft" ? "disabled" : ""}></label>` : ""}
           <label class="stack" for="pe-exp">Expected<input id="pe-exp" class="inp" type="date" value="${esc(ed.expected)}" ${ro ? "disabled" : ""}></label>
-          <label class="stack" for="pe-shopify"><span>Shopify PO${ed.shopStatus ? " " + shopStatusPill(ed.shopStatus) : ""}${shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? ` <a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open ↗</a>` : ` <a class="small dim" href="${ADMIN}/purchase_orders" target="_blank" rel="noopener">Shopify POs ↗</a>`}</span><input id="pe-shopify" class="inp" value="${esc(ed.shopifyUrl)}" placeholder="optional · paste the link from Shopify" autocomplete="off"></label>
+          ${shopOff(ed) ? `<div class="stack"><span>Shopify PO</span><div class="small muted noshop">${prepOnly(ed) && !ed.noShop ? "None needed — everything on this PO goes to the prep center" : "None — Seller Sage only"}${ed.noShop && !ro ? ' <button class="linkbtn small" data-pact="yesshop">Link a Shopify PO</button>' : ""}</div></div>` : `<label class="stack" for="pe-shopify"><span>Shopify PO${ed.shopStatus ? " " + shopStatusPill(ed.shopStatus) : ""}${shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? ` <a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open ↗</a>` : ` <a class="small dim" href="${ADMIN}/purchase_orders" target="_blank" rel="noopener">Shopify POs ↗</a>`}${!ro && ed.lines.length ? ' <button class="linkbtn small" data-pact="noshop" title="This order has no Shopify PO: stop asking for one">No Shopify PO</button>' : ""}</span><input id="pe-shopify" class="inp" value="${esc(ed.shopifyUrl)}" placeholder="optional · paste the link from Shopify" autocomplete="off"></label>`}
           <label class="stack" for="pe-dest">Receive into<select id="pe-dest" class="inp" ${ro ? "disabled" : ""}><option value="shopify" ${ed.dest === "shopify" ? "selected" : ""}>Shopify store</option><option value="prep" ${ed.dest === "prep" ? "selected" : ""}>Prep center (Amazon)</option><option value="both" ${both ? "selected" : ""}>Both — choose per product</option></select></label>
           <label class="stack" for="pe-note" style="grid-column:1 / -1">Note<input id="pe-note" class="inp" value="${esc(ed.note)}" ${ro ? "disabled" : ""} placeholder="e.g. ships in two drops"></label>
         </div>
@@ -1173,7 +1180,7 @@
           dest: l ? l.dest : "prep", amazon_sku: l && l.dest === "prep" ? l.asku || "" : "", account: r.account || "inventory" }; }) }));
     const remember = [];
     for (const iv of ed.invoices) for (const r of iv.rows) if (r.src.item_code && r.vid && isSure(r) && r.how !== "sku" && r.how !== "po") remember.push({ item_code: r.src.item_code, variant_id: Number(r.vid) });
-    return { order: { id: ed.id ? Number(ed.id) : null, vendor: ed.vendor.trim(), po_no: ed.po.trim(), kind: ed.kind, place_by: ed.placeBy || "", expected_on: ed.expected || "", note: ed.note, short_ok: !!ed.shortOk, shopify_po_url: shopUrl(ed.shopifyUrl), receive_into: ed.dest === "both" ? "both" : ed.dest,
+    return { order: { id: ed.id ? Number(ed.id) : null, vendor: ed.vendor.trim(), po_no: ed.po.trim(), kind: ed.kind, place_by: ed.placeBy || "", expected_on: ed.expected || "", note: ed.note, short_ok: !!ed.shortOk, shopify_po_url: shopUrl(ed.shopifyUrl), no_shopify_po: !!ed.noShop, receive_into: ed.dest === "both" ? "both" : ed.dest,
       shopify_check: ed.shopCheck ? { ...ed.shopCheck, lines: ed.shopCheck.lines.map(({ alts, ...x }) => x), diffs: shopDiffs(ed).n } : null },
       lines, invoices, remove_invoices: ed.removed.map(Number), remember };
   }
@@ -1329,6 +1336,7 @@
       setTimeout(() => { const i = box().querySelector('[data-f="spq"][data-k="' + (ed.split.parts.length - 1) + '"]'); if (i) { i.focus(); i.select(); } }, 0); return; }
     if (a === "sp-rm" && ed.split) { const i = Number(k); if (ed.split.parts[i] && !(ed.split.parts[i].received > 0)) ed.split.parts.splice(i, 1); render(); return; }
     if (a === "shop-api") { checkFromApi(); return; }
+    if (a === "noshop" || a === "yesshop") { ed.noShop = a === "noshop"; ed.dirty = true; render(); note("info", ed.noShop ? "Marked Seller Sage only: no Shopify PO. Save to keep it." : "This PO can be linked to a Shopify PO again. Save to keep it."); return; }
     if (a === "shop-open") { ed.shopOpen = !ed.shopOpen; render(); if (ed.shopOpen) setTimeout(() => { const el = $("pe-shopcheck"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
     if (a === "shop-all") { ed.shopAll = !ed.shopAll; render(); return; }
     if (a === "shop-rm") { ed.shopCheck = null; ed.dirty = true; render(); note("info", "Shopify PO check removed. Save to keep that."); return; }
@@ -1629,6 +1637,7 @@
     return ` <span class="shopbadge">${mark}${btn}${inp}</span>`;
   }
   function shopCheckHtml(ed, ro) {
+    if (shopOff(ed)) return "";
     if (!ed.shopCheck || !ed.shopOpen) return "";
     const up = "";
     const link = shopUrl(ed.shopifyUrl) && /^https:/.test(shopUrl(ed.shopifyUrl)) ? `<a class="small" href="${esc(shopUrl(ed.shopifyUrl))}" target="_blank" rel="noopener">open it in Shopify ↗</a>` : "";
