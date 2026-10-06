@@ -489,7 +489,11 @@ html{scroll-padding-top:130px}
 /* PO editor: the header (back, title, stages, totals, Save) stays at the top while the page scrolls */
 .po-top{position:sticky;top:var(--appbar-h,94px);z-index:30;background:var(--ground);padding:8px 0 10px;margin-top:-8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
 .po-top .po-head{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
-.po-top .po-head h2{margin:0;font-size:20px}
+.po-top .po-head h2{margin:0;font-size:26px;line-height:32px;letter-spacing:-0.02em}
+.pviews{flex-wrap:wrap;gap:8px}
+.pviews .seg{flex-wrap:wrap;height:auto}
+.pviews .seg button{display:inline-flex;align-items:center;gap:6px}
+.pviews .seg button .pill{margin:0}
 .po-top .po-head .steps{margin-left:auto}
 .po-top .po-sum{margin:0;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;font-size:13px}
 .po-crumb .right{margin-left:auto}

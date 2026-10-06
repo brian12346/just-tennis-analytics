@@ -741,11 +741,17 @@
     if (S.mode === "inv") { if (S.ed && S.invOpen) renderEditor(); else renderInvList(); return; }
     if (S.ed) renderEditor(); else renderList();
   }
+  // the tab's own header (title, PO count, New PO…) only on the list: an open PO is its own page, titled by the PO
+  function pageHead(on) {
+    const h = document.querySelector("#tab-po > header.top"), st = $("po-status");
+    if (h) h.style.display = on ? "" : "none"; if (st) st.style.display = on ? "" : "none";
+  }
   function renderBusy() { const b = $("po-busy"); if (!b) return; b.hidden = !S.busy; b.textContent = S.busy || ""; }
   function renderList() {
     if (S.mode !== "po" || $("tab-po").hidden) return;
     $("po-list-view").hidden = !!S.ed; $("po-edit-view").hidden = !S.ed;
     if (S.ed) return;
+    pageHead(true);
     if (!S.spos && !S.sposLoading) { S.sposLoading = true; loadShopPos(false).then(() => render(), () => {}).finally(() => { S.sposLoading = false; }); }
     const shopView = S.listView === "shop";
     document.querySelectorAll("#po-listview button").forEach(b => b.setAttribute("aria-pressed", String((b.dataset.lv === "shop") === shopView)));
@@ -793,6 +799,7 @@
     const ed = S.ed; if (!ed) return;
     if (S.mode === "inv") return renderInvoicePage();
     $("po-list-view").hidden = true; $("po-edit-view").hidden = false;
+    pageHead(false);
     const box = $("po-edit-view");
     const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, f: document.activeElement.dataset.f, s: document.activeElement.selectionStart } : null;
     const ro = ed.status === "complete", got = GOT.includes(ed.status);
@@ -810,11 +817,18 @@
     const lbl = (l) => window.JTListingLabel ? window.JTListingLabel(l) : l.sku;
     const both = ed.dest === "both" || new Set(ed.lines.map(l => l.dest)).size > 1;
     const anyInv = ed.invoices.length > 0;
-    // the PO table keeps what isn't on an invoice yet; invoiced products are received on their invoice
+    // what isn't on an invoice yet (invoiced products are received on their invoice)
     const onTop = (l) => { const p = pr.get(l.id); return !anyInv || p.open > 0 || (p.invoiced === 0 && p.received === 0); };
     const topLines = ed.lines.filter(onTop);
-    const NC = 9 + (anyInv ? 0 : 1) + (ed.recv ? 1 : 0), NCI = 8;
-    const ivNow = cur(ed), ivSh = ivNow && ivNow.id && !ivNow.isNew ? invShares(ed, ivNow) : new Map();
+    // which view of the PO: the entire PO, one invoice, what isn't invoiced, or (once every invoice is received) what's
+    // still to come. Receiving without an invoice works on the entire PO, or on what isn't invoiced.
+    const vw = poViews(ed, pr);
+    if (!ed.view || !vw.ok(ed.view)) ed.view = S.lastView && String(S.lastView.id) === String(ed.id) && vw.ok(S.lastView.view) ? S.lastView.view : vw.def;
+    if (ed.recv && ed.view !== "all" && ed.view !== "notinv") ed.view = anyInv ? "notinv" : "all";
+    if (ed.id) S.lastView = { id: ed.id, view: ed.view };
+    const mode = ed.view === "inv" ? "inv" : ed.view;
+    const NC = 9 + (mode === "all" && anyInv ? 1 : 0) + (ed.recv ? 1 : 0), NCI = 8;
+    const ivNow = mode === "inv" ? cur(ed) : null, ivSh = ivNow && ivNow.id && !ivNow.isNew ? invShares(ed, ivNow) : new Map();
     const canRecv = !!ed.id && !ro && !["qb_ready", "complete"].includes(ed.status);
     // a product split across the Shopify store and the prep center: its total on every part
     const splitTot = (l) => { const parts = ed.lines.filter(x => x.vid === l.vid); if (parts.length < 2) return "";
@@ -836,19 +850,25 @@
     const prodCell = (l, v) => `<td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>${splitTot(l)}` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}</td>`;
     const forCell = (l) => `<td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Split between the Shopify store and one or more prep-center ASINs">Split</button>` : ""}</div></td>`;
     const unitOf = (l, v) => l.cost === "" ? (v && v.cost) || 0 : Number(l.cost) || 0;
-    // the purchase order: what hasn't been invoiced yet
-    const lineRow = (l) => {
+    // the PO's products, in one of three views: "all" (the entire PO), "notinv" (what isn't on an invoice yet) and
+    // "left" (what's still to be received, once every invoice is in)
+    const leftOf = (l) => { const p = pr.get(l.id); return Math.max(0, p.ordered - p.received); };
+    const lineRow = (l, mode) => {
       const v = variant(l.vid), p = pr.get(l.id), badQ = l.qty !== "" && !(Number.isInteger(Number(l.qty)) && Number(l.qty) >= 0);
       const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
-      const extra = ivSh.has(l.id) ? "" : (ed.split && ed.split.id === l.id ? splitRow(l, NC) : "") + (ed.unrecv && ed.unrecv.id === l.id ? unrecvRow(l, NC) : "");
+      const extra = (ed.split && ed.split.id === l.id ? splitRow(l, NC) : "") + (ed.unrecv && ed.unrecv.id === l.id ? unrecvRow(l, NC) : "");
+      const recvCell = `<td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}${canUnrecv(l) ? `<div><button class="linkbtn small" data-pact="unrecv1" data-k="${l.id}" title="Take some or all of these back off the received count">un-receive</button></div>` : ""}</td>`;
+      const still = mode === "notinv" ? p.open : mode === "left" ? leftOf(l) : 0;
+      const boCell = (open) => `<td class="l small">${open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && open > 0 ? shortDate(l.eta) : mode === "all" ? `<span class="pill ${p.st[1]}">${esc(p.st[0])}</span>` : '<span class="dim">—</span>'}</td>`;
       return `<tr data-line="${l.id}">${prodCell(l, v)}${forCell(l)}
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badQ || p.ordered < p.received ? "bad" : ""}" data-f="qty" data-k="${l.id}" value="${esc(l.qty)}" inputmode="numeric" placeholder="0" style="width:64px">` : n0(p.ordered)}</td>
-        ${anyInv ? `<td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td><td><b class="num">${n0(p.open)}</b></td>`
-          : `<td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}${canUnrecv(l) ? `<div><button class="linkbtn small" data-pact="unrecv1" data-k="${l.id}" title="Take some or all of these back off the received count">un-receive</button></div>` : ""}</td>`}
+        ${mode === "notinv" ? `<td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td><td><b class="num">${n0(p.open)}</b></td>`
+          : mode === "left" ? `${recvCell}<td><b class="num">${n0(still)}</b></td>`
+          : `${anyInv ? `<td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td>` : ""}${recvCell}`}
         ${ed.recv ? `<td><input class="inp num sm" data-f="recv" data-k="${l.id}" value="${esc(ed.recv[keyOf(l)] ?? "")}" inputmode="numeric" placeholder="0" style="width:64px"></td>` : ""}
-        <td class="l small">${p.open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && p.open > 0 ? shortDate(l.eta) : !anyInv ? `<span class="pill ${p.st[1]}">${esc(p.st[0])}</span>` : '<span class="dim">—</span>'}</td>
+        ${boCell(mode === "all" ? p.open : still)}
         <td>${costInp(l, v, chg, "po")}</td>
-        <td>${m(anyInv ? p.open * unitOf(l, v) : lineAmt(l))}</td>
+        <td>${m(mode === "all" ? lineAmt(l) : still * unitOf(l, v))}</td>
         <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) && !p.invoiced ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${extra}`;
     };
     // one invoice's products: receive them here, once Receive is pressed for this invoice
@@ -891,12 +911,15 @@
           <span class="small ${sum !== sp.total ? "warnt" : "muted"}">${n0(sum)} of ${n0(sp.total)}${sum !== sp.total ? ` — the PO quantity becomes ${n0(sum)}` : ""}</span>
           <span class="dbtns"><button class="mini primary" data-pact="split-go">Split</button><button class="mini" data-pact="split-no">Cancel</button></span></div></div></td></tr>`;
     };
+    const viewLines = mode === "notinv" ? topLines : mode === "left" ? ed.lines.filter(l => leftOf(l) > 0) : ed.lines;
+    const unitsOf = (l) => mode === "notinv" ? pr.get(l.id).open : mode === "left" ? leftOf(l) : Number(l.qty) || 0;
+    const amtOf = (l) => mode === "all" ? lineAmt(l) : unitsOf(l) * unitOf(l, variant(l.vid));
     const bucket = (d) => {
-      const ls = topLines.filter(l => l.dest === d), u = ls.reduce((a, l) => a + (anyInv ? pr.get(l.id).open : Number(l.qty) || 0), 0), c = ls.reduce((a, l) => a + (anyInv ? pr.get(l.id).open * unitOf(l, variant(l.vid)) : lineAmt(l)), 0);
-      return `<tr class="bucket ${d}"><td colspan="${NC}" class="l"><b>→ ${DESTN[d]}</b><span class="muted small"> · ${ls.length} product${ls.length === 1 ? "" : "s"} · ${n0(u)} units${anyInv ? " not invoiced" : ""} · ${m(c)}</span></td></tr>`
-        + (ls.map(lineRow).join("") || `<tr><td colspan="${NC}" class="l muted small">${anyInv ? "Nothing here left to invoice." : "Nothing going here yet — switch products here in the first column, or Split one."}</td></tr>`);
+      const ls = viewLines.filter(l => l.dest === d), u = ls.reduce((a, l) => a + unitsOf(l), 0), c = ls.reduce((a, l) => a + amtOf(l), 0);
+      return `<tr class="bucket ${d}"><td colspan="${NC}" class="l"><b>→ ${DESTN[d]}</b><span class="muted small"> · ${ls.length} product${ls.length === 1 ? "" : "s"} · ${n0(u)} units${mode === "notinv" ? " not invoiced" : mode === "left" ? " still to come" : ""} · ${m(c)}</span></td></tr>`
+        + (ls.map(l => lineRow(l, mode)).join("") || `<tr><td colspan="${NC}" class="l muted small">${mode === "notinv" ? "Nothing here left to invoice." : mode === "left" ? "Nothing here still to come." : "Nothing going here yet — switch products here in the first column, or Split one."}</td></tr>`);
     };
-    const lineRows = both ? bucket("shopify") + bucket("prep") : topLines.map(lineRow).join("");
+    const lineRows = mode === "inv" ? "" : both ? bucket("shopify") + bucket("prep") : viewLines.map(l => lineRow(l, mode)).join("");
     // the current invoice's receiving table, shown in the invoice area
     const recvHtml = (() => {
       if (!ivNow) return "";
@@ -942,16 +965,18 @@
       </section>` : ""}
       ${shopCheckHtml(ed, ro)}
       ${iss.length ? `<section class="po-issues">${window.JTIssues.issuesHtml(iss)}</section>` : ""}
-      <section class="panel po-lines">
-        <div class="panel-head"><h2>${anyInv ? "Purchase order · not invoiced yet" : "Products on this PO"}</h2><span class="muted small">${anyInv ? "as the vendor invoices products they move to that invoice below, where they're received" : "what was ordered · receiving is against these"}</span></div>
-        ${openLines.length && !ro && !ed.recv && ed.invoices.length ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
+      <section class="panel po-lines po-inv" id="pe-drop">
+        ${viewSeg(ed, vw, ro)}
+        ${mode === "inv" ? invBarHtml(ed) + (recvHtml || "") : `
+        ${openLines.length && !ro && !ed.recv && ed.invoices.length && mode !== "all" ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
-        ${anyInv && ed.lines.length && !topLines.length ? `<div class="note ok">Everything on this PO is on an invoice — receive it in the invoice below.</div>`
-          : ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th>${anyInv ? "<th>Invoiced</th><th>Not invoiced</th>" : "<th>Received</th>"}${ed.recv ? "<th>Arrived now</th>" : ""}<th class="l">${anyInv ? "Backorder · ETA" : "Status · backorder"}</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
+        ${mode === "notinv" && ed.lines.length && !topLines.length ? `<div class="note ok">Everything on this PO is on an invoice — pick the invoice above to receive it.</div>`
+          : mode === "left" && !viewLines.length ? `<div class="note ok">Everything on this PO has been received.</div>`
+          : ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th>${mode === "notinv" ? "<th>Invoiced</th><th>Not invoiced</th>" : mode === "left" ? "<th>Received</th><th>Still to come</th>" : `${anyInv ? "<th>Invoiced</th>" : ""}<th>Received</th>`}${ed.recv ? "<th>Arrived now</th>" : ""}<th class="l">${mode === "all" ? "Status · backorder" : "Backorder · ETA"}</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
-        ${!ro && !ed.recv ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
-          ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}
+        ${!ro && !ed.recv && mode !== "left" ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
+          ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}`}
         ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order and its draft invoices? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "short" ? `<div class="note warn">Close this PO short? What wasn't received is treated as not coming (ask the vendor for a credit if it was billed), and the PO moves to Received. <span class="dbtns"><button class="mini primary" data-pact="do-short">Yes, close it short</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
@@ -959,7 +984,6 @@
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
           <span class="dbtns right">${footButtons(ed, got, ro)}</span></div>
       </section>
-      ${poInvoicesHtml(ed, ro, recvHtml)}
       <input type="file" id="pe-file" accept=".pdf,application/pdf" hidden>`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
@@ -973,20 +997,37 @@
     return v.recvAt ? `<span class="pill ok" title="${v.recvManual ? "Marked received" : "Everything on it came in"}">Received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : ""; };
   const payPill = (v) => v.isNew ? '<span class="pill warn">new</span>' : v.paidOn ? '<span class="pill ok">Paid</span>' : overdue(v) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>';
   const qbPill = (v) => v.qbo ? '<span class="pill ok" title="Entered in QuickBooks">In QuickBooks</span>' : v.id && !v.isNew ? '<span class="pill pos">Not in QuickBooks</span>' : "";
-  // On the purchase order: its invoices as chips, the chosen one's summary (the rest is on the Invoices tab) and receiving
-  function poInvoicesHtml(ed, ro, recvHtml) {
-    const iv = cur(ed);
-    const chips = ed.invoices.map((v, i) => { const c = count(v), bad = c.check + c.none;
-      return `<button class="ivchip" data-inv="${i}" aria-pressed="${i === ed.cur}"><b>${esc(v.no || "Invoice " + (i + 1))}</b><span>${v.total != null ? m(v.total) : v.subtotal != null ? m(v.subtotal) : ""}</span>${bad ? `<span class="pill miss">${bad} to check</span>` : ""}${recvPill(v)}${v.isNew ? '<span class="pill warn">new</span>' : ""}</button>`; }).join("");
-    const head = `<div class="panel-head"><h2>Invoices</h2><span class="muted small">${ed.invoices.length ? `${ed.invoices.length} on this PO` : "none yet"} · a vendor can bill in parts · invoices are uploaded and kept on the Invoices tab</span>${!ro && ed.id ? `<label class="btn ${ed.invoices.length ? "" : "primary"} right" for="pe-file" title="Read the PDF and open it on the Invoices tab, attached to this PO">Upload invoice PDF</label>` : ""}</div>
-      <div class="ivchips">${chips}${!ro && ed.id ? `<label class="ivchip add" for="pe-file"><b>+ Add invoice</b><span>it opens on the Invoices tab</span></label>` : ""}</div>`;
-    if (!iv) return `<section class="panel po-inv" id="pe-drop">${head}${!ed.id ? '<div class="muted small">Save the PO first, then upload its invoices (or upload an invoice on the Invoices tab — it finds this PO by its PO #).</div>' : ""}</section>`;
+  // Which views of a PO apply: the entire PO (default), each invoice, what isn't invoiced (once there are invoices) and,
+  // once every invoice is received and something is still to come, what's still to receive (then the default).
+  function poViews(ed, pr) {
+    const ivs = ed.invoices, anyInv = ivs.length > 0;
+    const openInv = ivs.some(v => v.id && !v.isNew && !v.recvAt);
+    const notInv = ed.lines.reduce((a, l) => a + pr.get(l.id).open, 0);
+    const left = ed.lines.reduce((a, l) => { const p = pr.get(l.id); return a + Math.max(0, p.ordered - p.received); }, 0);
+    const showLeft = !openInv && left > 0 && ed.lines.some(l => (l.received || 0) > 0);
+    const ok = (v) => v === "all" || (v === "inv" && !!cur(ed)) || (v === "notinv" && anyInv) || (v === "left" && showLeft);
+    return { anyInv, openInv, notInv, left, showLeft, ok, def: showLeft ? "left" : "all" };
+  }
+  // The view switch above the PO's table: Entire PO · each invoice · Not invoiced · Still to receive · + Add invoice
+  function viewSeg(ed, vw, ro) {
+    if (!ed.id && !ed.invoices.length) return `<div class="panel-head"><h2>Products on this PO</h2><span class="muted small">what was ordered · receiving is against these</span></div>`;
+    const v = ed.view, units = (n) => `<span class="cnt">${n0(n)}</span>`;
+    const ivBtn = (iv, i) => { const t = invTot(iv), c = count(iv), bad = c.check + c.none;
+      const st = iv.isNew ? '<span class="pill warn">new</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : iv.recvAt ? '<span class="pill ok">received</span>' : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : `<span class="pill pos">${n0(t.b)} to receive</span>`;
+      return `<button data-inv="${i}" aria-pressed="${v === "inv" && i === ed.cur}" title="Invoice ${esc(iv.no || "")}${iv.total != null ? " · " + m(iv.total) : ""}">Invoice ${esc(iv.no || "#" + (i + 1))} ${st}</button>`; };
+    return `<div class="panel-head pviews"><div class="seg" role="group" aria-label="Show">
+        <button data-pview="all" aria-pressed="${v === "all"}">Entire PO ${units(ed.lines.length)}</button>
+        ${ed.invoices.map(ivBtn).join("")}
+        ${vw.anyInv && (vw.notInv > 0 || v === "notinv") ? `<button data-pview="notinv" aria-pressed="${v === "notinv"}" title="Products, or the part of them, that aren't on an invoice yet">Not invoiced ${units(vw.notInv)}</button>` : ""}
+        ${vw.showLeft ? `<button data-pview="left" aria-pressed="${v === "left"}" title="Every invoice is received: what's still to come">Still to receive ${units(vw.left)}</button>` : ""}
+      </div>${!ro && ed.id ? `<label class="btn right" for="pe-file" title="Read the vendor's invoice PDF and open it on the Invoices tab, attached to this PO">+ Add invoice</label>` : ""}</div>`;
+  }
+  // the chosen invoice's summary line (the rest is on the Invoices tab)
+  function invBarHtml(ed) {
+    const iv = cur(ed); if (!iv) return "";
     const c = count(iv);
-    return `<section class="panel po-inv" id="pe-drop">${head}
-      <div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""} ${payPill(iv)} ${qbPill(iv)}${c.check + c.none ? ` <span class="pill miss">${c.check + c.none} line${c.check + c.none === 1 ? "" : "s"} to check</span>` : ""}</span>
-        <span class="dbtns"><button class="btn" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></span></div>
-      ${recvHtml || ""}
-    </section>`;
+    return `<div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""} ${payPill(iv)} ${qbPill(iv)}${c.check + c.none ? ` <span class="pill miss">${c.check + c.none} line${c.check + c.none === 1 ? "" : "s"} to check</span>` : ""}</span>
+        <span class="dbtns"><button class="btn" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></span></div>`;
   }
   // The Invoices tab: one invoice in full — its PO, details, payment, QuickBooks, lines and PDF
   function renderInvoicePage() {
@@ -1300,7 +1341,7 @@
     const ed = S.ed;
     if (ed && ed.dirty && !ed.leaveOk) { note("warn", `This purchase order has unsaved changes. <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="discard">Discard changes</button></span>`); return; }
     if (S.mode === "inv") { S.invOpen = false; if (ed && ed.dirty) S.ed = null; S.pend = null; note("", ""); pdfToken++; render(); loadInvList(false).then(render).catch(() => {}); return; }
-    S.ed = null; note("", ""); pdfToken++; render(); renderList();
+    S.ed = null; S.lastView = null; note("", ""); pdfToken++; render(); renderList();
   }
 
   // ---------- events ----------
@@ -1959,7 +2000,8 @@
       if (b.dataset.paddto) { ed.addTo = b.dataset.paddto; render(); return; }
       if (b.dataset.pdest) { const l = ed.lines.find(x => x.id === b.dataset.k); if (!l || l.dest === b.dataset.pdest) return;
         l.dest = b.dataset.pdest; if (l.dest === "shopify") l.asku = ""; mergeLines(ed); ed.dirty = true; render(); return; }
-      if (b.dataset.inv != null) { ed.cur = +b.dataset.inv; ed.search = null; ed.confirm = false; pdfToken++; const h = $("pe-pdf"); if (h) h.innerHTML = "";
+      if (b.dataset.pview) { ed.view = b.dataset.pview; ed.search = null; ed.confirm = false; render(); return; }
+      if (b.dataset.inv != null) { ed.cur = +b.dataset.inv; ed.view = "inv"; ed.search = null; ed.confirm = false; pdfToken++; const h = $("pe-pdf"); if (h) h.innerHTML = "";
         const v = cur(ed); if (v && v.parts && !v.file && !S.files.has(v.id)) loadFile(v).then(() => { if (S.ed === ed && cur(ed) === v) { const h2 = $("pe-pdf"); if (h2) h2.innerHTML = ""; renderPdf(); } }).catch(() => {});
         render(); return; }
       if (b.dataset.ifilter && iv) { iv.filter = b.dataset.ifilter; render(); return; }
