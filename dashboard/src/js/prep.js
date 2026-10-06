@@ -23,14 +23,17 @@
     loading = (async () => {
       // History: finished shipments, orders and list items from the last HIST_DAYS days; Activity shows the latest moves
       const la = (c) => `${c} > now() - interval '${HIST_DAYS} days'`;
-      const SHIPWHERE = `where s.status <> 'shipped' or ${la("s.shipped_at")}`;
+      // the checklist columns (migration 090); until it's applied the page works without them
+      if (FLOW == null) FLOW = await JT.rows(["count(*)"], "from information_schema.columns where table_schema = 'jt' and table_name = 'prep_shipments' and column_name = 'closed_at'", true)
+        .then(r => +(r[0] && r[0][0]) > 0).catch(() => false);
+      const SHIPWHERE = FLOW ? `where s.status <> 'shipped' or s.closed_at is null or ${la("s.closed_at")}` : `where s.status <> 'shipped' or ${la("s.shipped_at")}`;
       const ORDWHERE = `where o.status <> 'complete' or ${la("o.updated_at")}`;
       const AMZQ = (linked) => JT.rows(["i.id", "i.kind", "i.name", "i.status", "i.destination", "coalesce(i.created_at, i.first_seen)::text", "i.units_expected", "i.units_received",
           linked ? "l.shipment_id::text" : "null::text", linked ? "l.how" : "''",
           "(select json_agg(json_build_array(x.sku, x.qty_expected, x.qty_received)) from jt.inbound_shipment_items x where x.shipment_id = i.id and x.qty_expected + x.qty_received > 0)"],
         `from jt.inbound_shipments i ${linked ? "left join jt.prep_shipment_amazon l on l.amazon_id = i.id" : ""}
           where ${linked ? "l.amazon_id is not null or" : ""} (coalesce(i.created_at, i.first_seen) > now() - interval '45 days' and i.status not in ('CANCELLED', 'DELETED'))`, refresh);
-      const [items, moves, maps, lst, seed, ships, slines, ords, olines, list, ordship, amz] = await Promise.all([
+      const [items, moves, maps, lst, seed, ships, slines, ords, olines, list, ordship, amz, invl] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
           "from jt.prep_items i left join jt.variants v on v.variant_id = i.variant_id order by i.updated_at desc", refresh),
@@ -44,7 +47,8 @@
         // starting-inventory file(s): [seller SKU(s), ASIN, units] — ASINs for listings missing elsewhere, and lines that couldn't be loaded
         JT.rows(["d.id", "d.data->>'file'", "r->>0", "r->>1", "(r->>2)::int"], "from jt.docs d, jsonb_array_elements(d.data->'rows') r where d.collection = 'prepseed'", refresh),
         // shipments: in progress, and shipped in the last 60 days
-        JT.rows(["s.id::text", "s.name", "s.dest", "s.status", "s.note", "s.created_at", "s.created_by", "s.started_at", "s.shipped_at", "s.shipped_by", "s.updated_at", "s.order_id::text"],
+        JT.rows(["s.id::text", "s.name", "s.dest", "s.status", "s.note", "s.created_at", "s.created_by", "s.started_at", "s.shipped_at", "s.shipped_by", "s.updated_at", "s.order_id::text",
+          ...(FLOW ? ["s.placement", "s.checks", "s.closed_at", "s.closed_by", "s.exception", "s.exception_at", "s.exception_by"] : [])],
           `from jt.prep_shipments s ${SHIPWHERE} order by s.updated_at desc`, refresh),
         JT.rows(["l.shipment_id::text", "l.variant_id::text", "l.amazon_sku", "l.qty", "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.unit_cost", "v.vendor", "v.product_id::text"],
           `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id left join jt.variants v on v.variant_id = l.variant_id ${SHIPWHERE}`, refresh),
@@ -63,6 +67,13 @@
           `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id join jt.prep_orders o on o.id = s.order_id where o.status in ('ordered', 'invoiced', 'partial', 'received', 'qb_ready')`, refresh),
         // Seller Central shipments (last 45 days, and any linked to a prep shipment) to match with prep shipments
         AMZQ(true).catch(() => AMZQ(false)).catch(() => []),
+        // invoices not received yet, prep center lines: what's coming and when (arrival_on, migration 090)
+        JT.rows(["i.id::text", "i.vendor", "i.invoice_no", "i.invoice_date::text", "coalesce(i.order_id, (select p.id from jt.prep_orders p where p.invoice_id = i.id limit 1))::text",
+          FLOW ? "i.arrival_on::text" : "null::text", "l.variant_id::text", "l.amazon_sku", "sum(l.qty)", "(select r.qty from jt.invoice_receipts r where r.invoice_id = i.id and r.variant_id = l.variant_id)",
+          "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.vendor", "v.product_id::text", "max(l.unit_cost)"],
+          `from jt.invoices i join jt.invoice_lines l on l.invoice_id = i.id left join jt.variants v on v.variant_id = l.variant_id
+            where i.received_at is null and l.dest = 'prep' and l.variant_id is not null and l.match_how <> 'skip' and coalesce(i.invoice_date, i.created_at::date) > current_date - 180
+            group by i.id, l.variant_id, l.amazon_sku, v.variant_id order by i.id`, refresh).catch(() => []),
       ]);
       const listing = new Map(lst.map(([sku, asin, title, price]) => [sku, { sku, asin: asin || "", title: title || "", price: price == null ? null : +price }]));
       for (const [, , skus, asin] of seed) for (const k of String(skus || "").split(",").map(s => s.trim()).filter(Boolean)) {
@@ -91,7 +102,8 @@
       const mapped = new Set(maps.filter(x => x[3] === "shopify" && x[1]).map(x => x[0]));
       const unloaded = seed.filter(([, , skus]) => !String(skus || "").split(",").some(k => mapped.has(k.trim())))
         .map(([id, file, skus, asin, qty]) => ({ id, file, skus, asin, qty: +qty || 0 }));
-      const shipments = ships.map(x => ({ id: x[0], name: x[1] || "", dest: x[2], status: x[3], note: x[4] || "", created: x[5], createdBy: x[6] || "", started: x[7], shipped: x[8], shippedBy: x[9] || "", updated: x[10], orderId: x[11] || null, lines: [] }));
+      const shipments = ships.map(x => ({ id: x[0], name: x[1] || "", dest: x[2], status: x[3], note: x[4] || "", created: x[5], createdBy: x[6] || "", started: x[7], shipped: x[8], shippedBy: x[9] || "", updated: x[10], orderId: x[11] || null, lines: [],
+        placement: x[12] || "", checks: x[13] || {}, closed: x[14] || null, closedBy: x[15] || "", exception: x[16] || "", exceptionAt: x[17] || null, exceptionBy: x[18] || "" }));
       const byId = new Map(shipments.map(sh => [sh.id, sh]));
       for (const [sid, vid, asku, qty, title, sku, cost, vendor, pid] of slines) {
         const sh = byId.get(sid); if (sh) sh.lines.push({ key: vid + "|" + (asku || ""), vid, asku: asku || "", qty: +qty, title: title || `variant ${vid}`, sku: sku || "", cost: cost == null ? null : +cost, vendor: vendor || "", pid: pid || "" });
@@ -156,7 +168,21 @@
       const amzShips = amz.map(x => ({ id: x[0], kind: x[1], name: x[2] || "", status: x[3] || "", fc: x[4] || "", created: x[5] || "", ue: +x[6] || 0, ur: +x[7] || 0, linkedTo: x[8] || null, how: x[9] || "",
         items: (x[10] || []).map(([sku, qe, qr]) => ({ sku, qty: +qe || 0, got: +qr || 0 })) }));
       for (const sh of shipments) sh.amz = amzShips.filter(a => a.linkedTo === sh.id);
-      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, poRows, list: listItems, amzShips, skuUnits, loadedAt: Date.now() };
+      // open invoices: one per invoice, with its prep center lines and what's still to come (received per product is
+      // given to the invoice's lines in order)
+      const invMap = new Map();
+      for (const [iid, ven, no, idate, oid, arr, vid, asku, qty, got, title, sku, vvendor, pid, uc] of invl) {
+        let iv = invMap.get(iid);
+        if (!iv) { iv = { id: iid, vendor: ven || "", no: no || "", date: idate || "", oid: oid || null, arrival: arr || "", lines: [], gotLeft: new Map() }; invMap.set(iid, iv); }
+        if (!iv.gotLeft.has(vid)) iv.gotLeft.set(vid, +got || 0);
+        const g = Math.min(iv.gotLeft.get(vid), +qty || 0); iv.gotLeft.set(vid, iv.gotLeft.get(vid) - g);
+        const listings = byVariant.get(vid) || [];
+        iv.lines.push({ key: vid + "|" + (asku || ""), vid, asku: asku || "", qty: +qty || 0, got: g, left: Math.max(0, (+qty || 0) - g), title: title || `variant ${vid}`, sku: sku || "", vendor: vvendor || ven || "",
+          pid: pid || "", cost: uc == null ? null : +uc, listings, target: asku ? (listings.find(x => x.sku === asku) || { ...(listing.get(asku) || {}), sku: asku, units: 1 }) : null });
+      }
+      const invoicesOpen = [...invMap.values()].filter(iv => iv.lines.some(l => l.left > 0));
+      for (const iv of invoicesOpen) { const o = iv.oid ? oById.get(iv.oid) : null; iv.order = o || null; iv.when = iv.arrival || (o && o.expected) || ""; }
+      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, poRows, list: listItems, amzShips, skuUnits, invoicesOpen, loadedAt: Date.now() };
       cache.amzSuggest = amzSuggest(cache);
       return cache;
     })();
@@ -209,6 +235,7 @@
   // ---------- tab state ----------
   const P = { shown: false, loading: false, err: null, vendor: "all", q: "", modal: null, busy: false, moveKind: "all", shipView: "open", oView: "open", oStage: "all", lView: "todo", lAdd: "", lSel: new Set() };
   const HIST_DAYS = 90;
+  let FLOW = null;     // migration 090 applied (checklist columns, invoice arrival dates)
 
   const note = (kind, html) => { const n = $("prep-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
   async function refresh(force) {
@@ -271,7 +298,7 @@
           const tg = r.target;
           const lst = tg ? `${tg.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(tg.asin)}" target="_blank" rel="noopener">${esc(tg.title || tg.asin)}</a>` : esc(tg.title || "")}<div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.asin ? ` · <span class="mono">${esc(tg.asin)}</span>` : ""}${tg.units > 1 ? ` · ${tg.units} per Amazon unit` : ""}</div>`
             : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
-          return `<tr><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}${r.type ? " · " + esc(r.type) : ""}</div></td>
+          return `<tr class="prodrow" data-prod="${esc(r.vid)}" data-psku="${esc(r.asku)}" title="Click for everything about this product"><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}${r.type ? " · " + esc(r.type) : ""}</div></td>
             <td class="l">${lst}</td>
             <td><b>${n0(r.qty)}</b>${d.alloc.get(r.vid + "|" + r.asku) ? `<div class="meta ${d.alloc.get(r.vid + "|" + r.asku) > r.qty + comingOf(r.vid + "|" + r.asku) ? "neg" : ""}">${n0(d.alloc.get(r.vid + "|" + r.asku))} in shipments${d.alloc.get(r.vid + "|" + r.asku) > r.qty && d.alloc.get(r.vid + "|" + r.asku) <= r.qty + comingOf(r.vid + "|" + r.asku) ? " (some incoming)" : ""}</div>` : ""}${comingOf(r.vid + "|" + r.asku) ? `<div class="meta">+ ${n0(comingOf(r.vid + "|" + r.asku))} incoming</div>` : ""}${r.amzUnits != null && r.val && r.val.units !== 1 ? `<div class="meta">≈ ${n0(r.amzUnits)} Amazon units</div>` : ""}</td>
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
@@ -538,32 +565,113 @@
       note(warnText ? "warn" : "info", parts.join(" ") + (warnText ? " " + esc(warnText) : ""));
     } catch (e) { P.busy = false; if (P.modal) renderModal(); note("bad", "Couldn't link: " + esc(JT.message(e))); }
   }
+  // ===================== Amazon shipment checklist =====================
+  // A prep shipment goes: placeholder tied to ASINs -> stock counted -> how it ships (FBA splits / fees OK / AWD) ->
+  // incoming invoice received and combined with prep center stock -> created in Seller Central -> linked here ->
+  // shipped -> Amazon receives it -> closed. Any time it can be put in an exception state with a note, to triage.
+  const PLACEMENTS = [["optimized", "FBA · Amazon-optimized splits"], ["fees_ok", "FBA · fewer shipments, placement fees OK"], ["awd", "AWD"], ["other", "Other (see note)"]];
+  const FLOW_STEPS = ["asin", "count", "method", "combine", "sc", "link", "ship", "close"];
+  function flowOf(sh) {
+    const lines = sh.lines.filter(l => l.qty > 0), ck = sh.checks || {}, amz = sh.amz || [], shipped = sh.status === "shipped";
+    const t0 = (msOf(sh.created) || 0) - 3 * 864e5;
+    const countedAt = (vid) => cache.moves.some(m => m[2] === vid && m[1] === "adjust" && (msOf(m[0]) || 0) >= t0);
+    const counted = !!ck.counted || (lines.length > 0 && lines.every(l => countedAt(l.vid)));
+    const noAsin = lines.filter(l => !l.asku).length;
+    const short = shipped ? 0 : lines.reduce((t, l) => t + Math.max(0, l.qty - prepHere(l.vid, l.asku).qty), 0);
+    const ue = amz.reduce((t, a) => t + a.ue, 0), ur = amz.reduce((t, a) => t + a.ur, 0), amzDone = amz.length > 0 && amz.every(a => a.status === "CLOSED" || (a.ue > 0 && a.ur >= a.ue));
+    const S = {
+      asin: { label: "Placeholder tied to ASINs", done: lines.length > 0 && !noAsin, past: shipped,
+        text: !lines.length ? "Add the products going to Amazon." : noAsin ? `${noAsin} product${noAsin === 1 ? " isn't" : "s aren't"} tied to an Amazon listing yet — pick the listing (ASIN) for each.` : "Every product is tied to a listing." },
+      count: { label: "Prep center stock counted", done: counted, past: shipped, check: "counted",
+        text: counted ? (ck.counted ? `Marked counted ${when(ck.counted.at)}${ck.counted.by ? " · " + esc(ck.counted.by) : ""}.` : "Every product was counted since this shipment was set up.") : "Count each product on the shelf (Count) so the numbers are right." },
+      method: { label: "How it ships", done: !!sh.placement || sh.dest === "AWD", past: shipped,
+        text: sh.placement ? (PLACEMENTS.find(p => p[0] === sh.placement) || ["", sh.placement])[1] : sh.dest === "AWD" ? "AWD" : "FBA with Amazon's splits, fewer shipments with placement fees, or AWD." },
+      combine: { label: "Incoming received & combined", done: !!ck.combined, past: shipped, check: "combined",
+        text: ck.combined ? `Combined ${when(ck.combined.at)}${ck.combined.by ? " · " + esc(ck.combined.by) : ""}.` : short ? `${n0(short)} unit${short === 1 ? " is" : "s are"} still to arrive. Receive the invoice, then put it together with the prep center stock.` : "Everything is here — put it together in one place." },
+      sc: { label: "Created in Seller Central", done: !!ck.sc_created || amz.length > 0, past: shipped, check: "sc_created",
+        text: amz.length ? "Seller Central has it." : ck.sc_created ? `Marked created ${when(ck.sc_created.at)}.` : "Create the shipment in Send to Amazon." },
+      link: { label: "Linked to Seller Central", done: amz.length > 0,
+        text: amz.length ? `${amz.length} Amazon shipment${amz.length === 1 ? "" : "s"}: ${esc(amz.map(a => a.id).join(", "))}` : "Link it once Seller Central has made the shipment (suggestions show up on the card)." },
+      ship: { label: "Shipped", done: shipped, text: shipped ? `Shipped ${when(sh.shipped)}${sh.shippedBy ? " · " + esc(sh.shippedBy) : ""}.` : "Mark it shipped when the boxes leave — that takes the units out of the prep center." },
+      close: { label: "Received by Amazon & closed", done: !!sh.closed, ready: shipped && amzDone,
+        text: sh.closed ? `Closed ${when(sh.closed)}${sh.closedBy ? " · " + esc(sh.closedBy) : ""}.` : amz.length ? `Amazon has received ${n0(ur)} of ${n0(ue)}${amzDone ? " — ready to close." : "."}` : shipped ? "Link the Seller Central shipments to follow receiving, or close it when Amazon has it all." : "After it ships." },
+    };
+    const steps = FLOW_STEPS.map(k => ({ k, ...S[k], ok: S[k].done || S[k].past }));
+    const next = steps.find(s => !s.ok) || null;
+    return { steps, next, doneN: steps.filter(s => s.ok).length };
+  }
+  const flowBar = (f) => `<div class="flowbar" title="${f.doneN} of ${f.steps.length} steps">${f.steps.map(s => `<span class="${s.ok ? "on" : ""}"></span>`).join("")}</div>`;
+  function flowHtml(M) {
+    const sh = cache.shipments.find(x => x.id === String(M.id)); if (!sh) return "";
+    const f = flowOf(sh), ro = !FLOW;
+    const act = (s) => {
+      if (ro) return "";
+      if (s.k === "method") return `<select id="pm-place" class="inp sm" style="width:auto"><option value="">Choose…</option>${PLACEMENTS.map(([v, l]) => `<option value="${v}" ${sh.placement === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+      if (s.k === "count" && !s.done) return `<button class="mini" data-flow="check:counted">Mark counted</button>`;
+      if (s.check && !s.done && s.k !== "count") return `<button class="mini" data-flow="check:${s.check}">Mark done</button>`;
+      if (s.check && (sh.checks || {})[s.check]) return `<button class="linkbtn small" data-flow="uncheck:${s.check}">Undo</button>`;
+      if (s.k === "ship" && !s.done && sh.status === "started") return '<button class="mini primary" data-act="ship-go">Mark shipped</button>';
+      if (s.k === "close") return s.done ? '<button class="linkbtn small" data-flow="reopen">Reopen</button>' : sh.status === "shipped" ? `<button class="mini ${s.ready ? "primary" : ""}" data-flow="close">Close shipment</button>` : "";
+      return "";
+    };
+    const exc = sh.exception
+      ? `<div class="note bad"><b>Exception</b> · ${esc(sh.exception)}<div class="meta">${sh.exceptionAt ? "since " + when(sh.exceptionAt) : ""}${sh.exceptionBy ? " · " + esc(sh.exceptionBy) : ""}</div>${ro ? "" : '<span class="dbtns"><button class="mini" data-flow="exc-edit">Edit</button><button class="mini primary" data-flow="exc-clear">Resolved</button></span>'}</div>` : "";
+    const excEdit = M.excEdit != null ? `<div class="row"><input id="pm-exc" class="inp" style="flex:1" value="${esc(M.excEdit)}" placeholder="What's wrong — e.g. Amazon received 12 short, box damaged, wrong FNSKU"><button class="mini" data-flow="exc-cancel">Cancel</button><button class="mini primary" data-flow="exc-save">Save exception</button></div>` : "";
+    return `<div class="flowbox"><div class="lanehead"><h3 class="psec" style="margin:0">Checklist</h3>${flowBar(f)}<span class="muted small">${f.next ? "Next: " + esc(f.next.label) : "All done"}</span>
+        ${ro || sh.exception || M.excEdit != null ? "" : '<button class="linkbtn small right" data-flow="exc-edit">Flag a problem</button>'}</div>
+      ${exc}${excEdit}${ro ? '<div class="small muted">The checklist starts working after the next database update.</div>' : ""}
+      <ol class="flow">${f.steps.map((s, i) => `<li class="${s.ok ? "ok" : f.next === s ? "next" : ""}"><span class="fn">${s.ok ? "✓" : i + 1}</span><div class="ft"><b>${esc(s.label)}</b><span>${s.text}</span></div><div class="fa">${act(s)}</div></li>`).join("")}</ol></div>`;
+  }
+  async function flowDo(sid, body, msg) {
+    try {
+      await JT.prep.shipFlow({ id: Number(sid), ...body });
+      await load(true); render();
+      if (P.modal && P.modal.kind === "ship" && P.modal.id === String(sid)) { P.modal.sh = cache.shipments.find(x => x.id === String(sid)) || P.modal.sh; P.modal.excEdit = null; renderModal(); }
+      if (msg) note("info", msg);
+    } catch (e) { note("bad", "Couldn't update the shipment: " + esc(JT.message(e))); }
+  }
+  function flowClick(M, b) {
+    const f = b.dataset.flow, [a, k] = f.split(":");
+    if (a === "check") return flowDo(M.id, { check: { [k]: true } });
+    if (a === "uncheck") return flowDo(M.id, { check: { [k]: false } });
+    if (a === "close") return flowDo(M.id, { close: true }, "Shipment closed.");
+    if (a === "reopen") return flowDo(M.id, { close: false });
+    if (a === "exc-edit") { const sh = cache.shipments.find(x => x.id === String(M.id)); M.excEdit = (sh && sh.exception) || ""; renderModal(); setTimeout(() => { const i = $("pm-exc"); if (i) i.focus(); }, 0); return; }
+    if (a === "exc-cancel") { M.excEdit = null; renderModal(); return; }
+    if (a === "exc-save") { const t = (M.excEdit || "").trim(); if (!t) { note("bad", "Say what's wrong first."); return; } return flowDo(M.id, { exception: t }, "Shipment flagged as an exception."); }
+    if (a === "exc-clear") return flowDo(M.id, { exception: "" }, "Exception resolved.");
+  }
+  const SHVIEWS = { open: (x) => x.status !== "shipped" && !x.closed, amazon: (x) => x.status === "shipped" && !x.closed, exc: (x) => !!x.exception && !x.closed, closed: (x) => !!x.closed };
   function renderShipments() {
     const d = cache, el = $("prep-ships");
-    const prog = d.shipments.filter(x => x.status !== "shipped"), done = d.shipments.filter(x => x.status === "shipped");
-    document.querySelectorAll("#prep-shview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.shipView)); b.querySelector("span").textContent = b.dataset.v === "open" ? prog.length : done.length; });
-    const list = P.shipView === "open" ? prog.sort((a, b) => (a.status === "started" ? 0 : 1) - (b.status === "started" ? 0 : 1) || String(b.updated).localeCompare(String(a.updated)))
-      : done.sort((a, b) => String(b.shipped).localeCompare(String(a.shipped)));
+    if (!SHVIEWS[P.shipView]) P.shipView = "open";
+    document.querySelectorAll("#prep-shview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.shipView)); const c = b.querySelector("span"); if (c && SHVIEWS[b.dataset.v]) c.textContent = d.shipments.filter(SHVIEWS[b.dataset.v]).length; });
+    const list = d.shipments.filter(SHVIEWS[P.shipView]).sort(P.shipView === "closed" ? (a, b) => String(b.closed).localeCompare(String(a.closed))
+      : P.shipView === "amazon" ? (a, b) => String(b.shipped).localeCompare(String(a.shipped))
+      : (a, b) => (b.exception ? 1 : 0) - (a.exception ? 1 : 0) || (a.status === "started" ? 0 : 1) - (b.status === "started" ? 0 : 1) || String(b.updated).localeCompare(String(a.updated)));
     const card = (sh) => {
       const units = sh.lines.reduce((a, l) => a + l.qty, 0), cost = sh.lines.reduce((a, l) => a + l.qty * (l.cost || 0), 0);
-      const iss = issuesOf(sh), lvl = worst(iss), sum = issueSummary(iss);
-      const next = lvl === "bad" ? `<button class="mini" data-sact="fix" data-sid="${sh.id}">Fix</button>`
+      const iss = issuesOf(sh), lvl = sh.exception ? "bad" : worst(iss), sum = issueSummary(iss), f = flowOf(sh);
+      const next = lvl === "bad" && !sh.exception ? `<button class="mini" data-sact="fix" data-sid="${sh.id}">Fix</button>`
         : sh.status === "open" ? `<button class="mini" data-sact="started" data-sid="${sh.id}">Start</button>`
-        : sh.status === "started" ? `<button class="mini primary" data-sact="ship" data-sid="${sh.id}">Mark shipped</button>` : "";
-      const back = SPREV[sh.status] ? `<button class="mini" data-sact="back" data-sid="${sh.id}" title="Move back to ${STATUS[SPREV[sh.status]][0].toLowerCase()}${sh.status === "shipped" ? " — the units go back into the prep center" : ""}">← ${STATUS[SPREV[sh.status]][0]}</button>` : "";
-      const when2 = sh.status === "shipped" ? `Shipped ${when(sh.shipped)}${sh.shippedBy ? " · " + esc(sh.shippedBy) : ""}` : sh.status === "started" ? `Started ${when(sh.started)}` : `Created ${when(sh.created)}${sh.createdBy ? " · " + esc(sh.createdBy) : ""}`;
+        : sh.status === "started" ? `<button class="mini primary" data-sact="ship" data-sid="${sh.id}">Mark shipped</button>`
+        : sh.status === "shipped" && !sh.closed && FLOW ? `<button class="mini ${f.steps[7].ready ? "primary" : ""}" data-sact="close" data-sid="${sh.id}" title="Amazon has it all: close the shipment">Close</button>` : "";
+      const back = SPREV[sh.status] && !sh.closed ? `<button class="mini" data-sact="back" data-sid="${sh.id}" title="Move back to ${STATUS[SPREV[sh.status]][0].toLowerCase()}${sh.status === "shipped" ? " — the units go back into the prep center" : ""}">← ${STATUS[SPREV[sh.status]][0]}</button>` : "";
+      const when2 = sh.closed ? `Closed ${when(sh.closed)}` : sh.status === "shipped" ? `Shipped ${when(sh.shipped)}${sh.shippedBy ? " · " + esc(sh.shippedBy) : ""}` : sh.status === "started" ? `Started ${when(sh.started)}` : `Created ${when(sh.created)}${sh.createdBy ? " · " + esc(sh.createdBy) : ""}`;
       const contents = contentsOf(sh);
       return `<div class="shipcard ${sh.status}${lvl === "bad" || lvl === "warn" ? " issue-" + lvl : ""}" data-sid="${sh.id}" tabindex="0" role="button" aria-label="Open shipment: ${esc(contents)}${sum ? " — needs attention: " + esc(sum) : ""}">
         <div class="sc-title" title="${esc(sh.lines.map(l => n0(l.qty) + " × " + l.title).join("\n"))}">${esc(contents)}</div>
         <div class="sc-qty"><b class="num">${n0(units)}</b><span>unit${units === 1 ? "" : "s"}</span><span class="dim">· ${sh.lines.length} product${sh.lines.length === 1 ? "" : "s"} · ${m0(cost)}</span></div>
-        <div class="sc-meta">${statusPill(sh.status)}<span class="pill ${sh.dest === "AWD" ? "manual" : "web"}">${esc(sh.dest)}</span><span class="mono">${esc(shipTitle(sh))}</span></div>
-        ${sum ? `<div class="sc-issue"><span aria-hidden="true">${lvl === "bad" ? "●" : "▲"}</span><span>${esc(sum)}</span></div>` : ""}
+        <div class="sc-meta">${sh.closed ? '<span class="pill ok">Closed</span>' : statusPill(sh.status)}<span class="pill ${sh.dest === "AWD" ? "manual" : "web"}">${esc(sh.dest)}</span><span class="mono">${esc(shipTitle(sh))}</span></div>
+        ${sh.exception ? `<div class="sc-issue"><span aria-hidden="true">●</span><span>Exception: ${esc(sh.exception)}</span></div>` : sum ? `<div class="sc-issue"><span aria-hidden="true">${lvl === "bad" ? "●" : "▲"}</span><span>${esc(sum)}</span></div>` : ""}
+        ${FLOW && !sh.closed ? `<div class="sc-flow">${flowBar(f)}<span class="small">${f.next ? "Next: " + esc(f.next.label) : "Ready to close"}</span></div>` : ""}
         ${amzLine(sh)}
         <div class="sc-foot"><span class="dim small">${when2}</span><span class="dbtns">${back}${next}</span></div>
       </div>`;
     };
-    el.innerHTML = (P.shipView === "open" ? `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">Add products by ASIN or SKU</span></button>` : "")
-      + (list.map(card).join("") || (P.shipView === "open" ? "" : '<div class="muted small">No shipments shipped in the last 90 days.</div>'));
+    const empty = { open: "", amazon: '<div class="muted small">Nothing at Amazon waiting to be received.</div>', exc: '<div class="muted small">No exceptions.</div>', closed: '<div class="muted small">No shipments closed in the last 90 days.</div>' }[P.shipView];
+    el.innerHTML = (P.shipView === "open" ? `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">A placeholder for the ASINs you're sending</span></button>` : "")
+      + (list.map(card).join("") || empty);
   }
   // ===================== Incoming Inventory: vendor orders coming in =====================
   // draft -> ordered -> invoice -> packing slip -> received -> shipped. Receiving puts the units in the prep center
@@ -637,38 +745,75 @@
   const orderSummary = (list) => { const by = new Map(); for (const x of list) if (x.lvl !== "info") by.set(x.kind, (by.get(x.kind) || 0) + 1); return [...by].map(([k, n]) => (n > 1 && k === "nocost" ? n + " products " : "") + OKIND[k]).join(" · "); };
 
 
-  // Incoming products: the prep-center products on open vendor orders — received or still coming — until they're all
-  // in Amazon shipments made from that order. Ship starts a shipment from the order with what's left.
+  // Incoming shipments: what's coming to the prep center and when, so Amazon shipments can be lined up ahead of it.
+  // Groups, in date order: stock from open POs that's here and not on an Amazon shipment yet; each invoice not
+  // received yet, by its expected arrival (set here; falls back to the PO's expected date); then what's ordered
+  // but not invoiced. Ship plans a placeholder Amazon shipment for a product; "Plan shipment" does a whole invoice.
   function renderIncoming() {
     const el = $("prep-inc"), panel = $("prep-inc-panel"); if (!el || !cache) return;
     const q = P.q.trim().toLowerCase();
-    const open = (cache.poRows || []).filter(r => r.left > 0), hid = open.filter(r => r.hidden), all = P.incHidden ? open : open.filter(r => !r.hidden);
-    panel.hidden = !open.length;
+    const match = (r) => (P.vendor === "all" || r.vendor === P.vendor) && (!q || [r.title, r.sku, r.vendor, r.asku, r.target && r.target.title, r.target && r.target.asin].join(" ").toLowerCase().includes(q));
+    const po = (cache.poRows || []).filter(r => r.left > 0), hid = po.filter(r => r.hidden), usePo = P.incHidden ? po : po.filter(r => !r.hidden);
+    const invs = cache.invoicesOpen || [], td = today();
+    // open invoice units per PO + product, so "not invoiced" doesn't count them twice
+    const onInv = new Map(); for (const iv of invs) for (const l of iv.lines) if (iv.oid) onInv.set(iv.oid + "|" + l.vid, (onInv.get(iv.oid + "|" + l.vid) || 0) + l.left);
+    const groups = [];
+    const here = usePo.filter(r => r.ready > 0 && match(r)).map(r => ({ ...r, n: r.ready, kind: "po" }));
+    if (here.length) groups.push({ key: "here", sort: "0", head: `<b>In the prep center now</b> <span class="muted small">received from open POs, not on an Amazon shipment yet</span>`, rows: here });
+    for (const iv of invs) {
+      const rows = iv.lines.filter(l => l.left > 0 && match(l)).map(l => ({ ...l, n: l.left, oid: iv.oid, kind: "inv" }));
+      if (!rows.length) continue;
+      const late = iv.when && iv.when < td, units = rows.reduce((t, r) => t + r.n, 0), o = iv.order;
+      groups.push({ key: "inv" + iv.id, sort: "1" + (iv.when || "9999"), iv, rows,
+        head: `<span class="arr"><label class="small muted" for="arr-${esc(iv.id)}">Arriving</label> <input type="date" class="inp sm" id="arr-${esc(iv.id)}" data-arrival="${esc(iv.id)}" value="${esc(iv.arrival)}" ${FLOW ? "" : "disabled title=\"After the next database update\""}>${!iv.arrival && iv.when ? ` <span class="small muted">PO says ${shortDate(iv.when)}</span>` : !iv.when ? ' <span class="pill warn">set a date</span>' : ""}${late ? ' <span class="pill miss">late</span>' : ""}</span>
+          <b>${esc(iv.vendor)}</b> invoice <span class="mono">${esc(iv.no || "#" + iv.id)}</span>${iv.date ? ` <span class="small muted">· ${shortDate(iv.date)}</span>` : ""}
+          ${o ? ` · <button class="linkbtn small" data-act="gotoorder" data-oid="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "order #" + o.id)}</button>` : ""} <span class="small muted">· ${n0(units)} units</span>
+          <button class="mini right" data-act="plan-inv" data-iid="${esc(iv.id)}" title="Set up a placeholder Amazon shipment with everything on this invoice">Plan shipment</button>` });
+    }
+    const byPo = new Map();
+    for (const r of usePo) {
+      const left = Math.max(0, r.comingLeft - (onInv.get(r.oid + "|" + r.vid) || 0));
+      if (!left || !match(r)) continue;
+      onInv.set(r.oid + "|" + r.vid, Math.max(0, (onInv.get(r.oid + "|" + r.vid) || 0) - r.comingLeft));
+      const g = byPo.get(r.oid) || []; g.push({ ...r, n: left, kind: "po" }); byPo.set(r.oid, g);
+    }
+    for (const [oid, rows] of byPo) {
+      const o = cache.orders.find(x => x.id === oid), when2 = rows.map(r => r.when).filter(Boolean).sort()[0] || "";
+      groups.push({ key: "po" + oid, sort: "2" + (when2 || "9999"), rows,
+        head: `<span class="arr">${when2 ? `<span class="small muted">Expected</span> ${shortDate(when2)}` : '<span class="small muted">No date</span>'}</span> <b>Ordered, not invoiced yet</b> ·
+          <button class="linkbtn small" data-act="gotoorder" data-oid="${esc(oid)}">${esc(o ? (o.vendor ? o.vendor + " " : "") + (o.po ? poLabel(o.po) : "order #" + o.id) : "order #" + oid)}</button>
+          <span class="small muted">· ${n0(rows.reduce((t, r) => t + r.n, 0))} units</span>${rows.some(r => r.backorder) ? ' <span class="pill warn">backordered</span>' : ""}` });
+    }
+    groups.sort((a, b) => a.sort.localeCompare(b.sort));
+    panel.hidden = !groups.length && !hid.length && !invs.length;
     $("prep-inc-hid").innerHTML = hid.length ? `<button class="linkbtn small" data-act="inc-hidden">${P.incHidden ? "Hide removed" : `Show removed (${hid.length})`}</button>` : "";
-    if (!all.length) { el.innerHTML = `<div class="muted small">Nothing left to ship from open vendor orders${hid.length ? ` (${hid.length} removed from the list)` : ""}.</div>`; return; }
-    const list = all.filter(r => (P.vendor === "all" || r.vendor === P.vendor) && (!q || [r.title, r.sku, r.vendor, r.asku, r.name, r.target && r.target.title].join(" ").toLowerCase().includes(q)))
-      .sort((a, b) => Number(a.oid) - Number(b.oid) || (b.ready > 0) - (a.ready > 0) || a.title.localeCompare(b.title));
-    const tot = list.reduce((t, r) => ({ left: t.left + r.left, ready: t.ready + r.ready, coming: t.coming + r.comingLeft, used: t.used + r.used, cost: t.cost + r.left * (r.cost || 0) }), { left: 0, ready: 0, coming: 0, used: 0, cost: 0 });
-    const nPo = new Set(all.map(r => r.oid)).size;
-    $("prep-inc-sum").textContent = `${n0(tot.left)} units left to ship from ${nPo} open vendor order${nPo === 1 ? "" : "s"} · ${n0(tot.ready)} here now · ${n0(tot.coming)} still coming`;
-    el.innerHTML = `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th title="Units of this product in the prep center now, for this listing">At prep center</th><th class="l">Vendor order</th><th>Ordered</th><th>Received</th><th>Still coming</th><th>In shipments</th><th>Left to ship</th><th>Unit cost</th><th class="l"></th></tr></thead><tbody>${
-      list.map(r => {
-        const tg = r.target;
-        const lst = tg ? `${esc(tg.title || tg.asin || "")}<div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.asin ? ` · <span class="mono">${esc(tg.asin)}</span>` : ""}</div>` : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
-        const coming = r.comingLeft, ph = prepHere(r.vid, r.asku);
-        return `<tr class="prodrow" data-prod="${esc(r.vid)}" data-psku="${esc(r.asku)}" title="Click for everything about this product"><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}</div></td>
-          <td class="l small">${lst}</td>
-          <td>${ph.qty ? `<b>${n0(ph.qty)}</b>` : '<span class="dim">0</span>'}${ph.other ? `<div class="meta">+ ${n0(ph.other)} ${r.asku ? "not earmarked" : "earmarked"}</div>` : ""}${ph.inShip ? `<div class="meta">${n0(ph.inShip)} in shipments</div>` : ""}</td>
-          <td class="l small"><button class="linkbtn small" data-act="gotoorder" data-oid="${esc(r.oid)}">${esc(r.name)}</button><div class="meta">${esc(OSTAGE.get(r.status) || r.status)}</div></td>
-          <td>${n0(r.ordered)}</td><td>${r.received ? n0(r.received) : '<span class="dim">—</span>'}</td>
-          <td>${coming ? `${n0(coming)}${r.backorder ? ' <span class="pill warn">backordered</span>' : ""}${r.when ? `<div class="meta">${shortDate(r.when)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
-          <td>${r.used ? `${n0(r.used)}${r.shipped ? `<div class="meta">${n0(r.shipped)} shipped</div>` : ""}` : '<span class="dim">—</span>'}</td>
-          <td><b>${n0(r.left)}</b>${r.ready && r.ready < r.left ? `<div class="meta">${n0(r.ready)} here now</div>` : !r.ready ? '<div class="meta">none here yet</div>' : ""}</td>
-          <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td>
-          <td class="l"><span class="rbtns">${r.hidden ? `<span class="pill pos">removed</span><button class="mini" data-act="inc-show" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}">Put back</button>`
-            : `<button class="mini ${r.ready ? "primary" : ""}" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}" data-n="${r.left}" title="${r.ready ? "Put these units into an Amazon shipment" : "Plan these units into an Amazon shipment before they arrive"}">Ship</button><button class="mini" data-act="inc-hide" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}" title="Take this off the list (e.g. backordered for a long time). The PO keeps it; it comes back if more arrive.">Remove</button>`}</span></td></tr>`;
-      }).join("") || '<tr><td class="l muted" colspan="11">No incoming products match.</td></tr>'}</tbody>
-      <tfoot><tr><td class="l">Total · ${list.length} product${list.length === 1 ? "" : "s"}</td><td></td><td>${n0([...new Map(list.map(r => [r.key, prepHere(r.vid, r.asku).qty])).values()].reduce((a, b) => a + b, 0))}</td><td></td><td></td><td>${n0(tot.ready)} here</td><td>${n0(tot.coming)}</td><td>${n0(tot.used)}</td><td>${n0(tot.left)}</td><td></td><td></td></tr></tfoot></table></div>`;
+    const tot = (pred) => groups.filter(pred).reduce((t, g) => t + g.rows.reduce((u, r) => u + r.n, 0), 0);
+    const nInv = groups.filter(g => g.iv).length;
+    $("prep-inc-sum").textContent = `${n0(tot(g => g.key === "here"))} here now · ${n0(tot(g => !!g.iv))} arriving on ${nInv} invoice${nInv === 1 ? "" : "s"} · ${n0(tot(g => g.key.startsWith("po")))} ordered, not invoiced`;
+    if (!groups.length) { el.innerHTML = `<div class="muted small">Nothing coming in${hid.length ? ` (${hid.length} removed from the list)` : ""}.</div>`; return; }
+    const row = (r) => {
+      const tg = r.target, ph = prepHere(r.vid, r.asku), sh = cache.alloc.get(r.vid + "|" + r.asku) || 0;
+      const lst = tg ? `${esc(tg.title || tg.asin || "")}<div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.asin ? ` · <span class="mono">${esc(tg.asin)}</span>` : ""}</div>` : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
+      return `<tr class="prodrow" data-prod="${esc(r.vid)}" data-psku="${esc(r.asku)}" title="Click for everything about this product"><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}</div></td>
+        <td class="l small">${lst}</td>
+        <td><b>${n0(r.n)}</b>${r.kind === "inv" && r.got ? `<div class="meta">${n0(r.got)} already in</div>` : ""}${r.backorder ? '<div class="meta"><span class="pill warn">backordered</span></div>' : ""}</td>
+        <td>${ph.qty ? n0(ph.qty) : '<span class="dim">0</span>'}${ph.other ? `<div class="meta">+ ${n0(ph.other)} ${r.asku ? "not earmarked" : "earmarked"}</div>` : ""}</td>
+        <td>${sh ? n0(sh) : '<span class="dim">—</span>'}</td>
+        <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td>
+        <td class="l"><span class="rbtns">${r.hidden ? `<span class="pill pos">removed</span><button class="mini" data-act="inc-show" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}">Put back</button>`
+          : `<button class="mini ${r.kind === "po" && r.ready ? "primary" : ""}" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid || "")}" data-n="${r.n}" title="Put these units on an Amazon shipment (a placeholder until they're here)">Ship</button>${r.kind === "po" ? `<button class="mini" data-act="inc-hide" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}" title="Take this off the list (e.g. backordered for a long time). The PO keeps it; it comes back if more arrive.">Remove</button>` : ""}`}</span></td></tr>`;
+    };
+    el.innerHTML = `<div class="tbl-wrap"><table class="prept inct"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th>Coming</th><th title="Units of this product in the prep center now, for this listing">At prep center</th><th>In shipments</th><th>Unit cost</th><th class="l"></th></tr></thead><tbody>${
+      groups.map(g => `<tr class="grp"><td class="l" colspan="7"><div class="grph">${g.head}</div></td></tr>${g.rows.map(row).join("")}`).join("")}</tbody></table></div>`;
+  }
+  // a placeholder Amazon shipment with everything still to come on an invoice
+  function planInvoice(iid) {
+    const iv = (cache.invoicesOpen || []).find(x => x.id === String(iid)); if (!iv) return;
+    const ls = iv.lines.filter(l => l.left > 0), lines = [], qty = {};
+    for (const l of ls) { const k = l.vid + "|" + l.asku; if (!lines.includes(k)) lines.push(k); qty[k] = String((Number(qty[k]) || 0) + l.left); }
+    P.modal = { kind: "ship", id: null, status: "open", shipment: "", dest: "FBA", note: `${iv.vendor} invoice ${iv.no || "#" + iv.id}`, lines, qty, info: Object.fromEntries(ls.map(l => [l.vid + "|" + l.asku, l])),
+      add: "", confirm: false, fromRow: null, ...(iv.oid ? { orderId: iv.oid } : {}) };
+    renderModal();
   }
   // prep-center stock of a product for one listing (asku "" = not earmarked), the rest of that product's stock, and
   // how much of this listing's stock is in shipments in progress
@@ -1088,7 +1233,7 @@
     const asins = [...new Set(ls.map(l => l.asin).filter(Boolean))];
     const inList = (a) => a.length ? a.map(JT.q).join(",") : "''";
     const T = "(now() at time zone 'America/Los_Angeles')::date";
-    const [vr, sales, fba, invs, pos] = await Promise.all([
+    const [vr, sales, fba, invs, pos, lastShip, hist] = await Promise.all([
       JT.rows(["coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.vendor", "v.unit_cost", "v.price", "v.inventory_qty", "v.product_id::text", "v.barcode"],
         `from jt.variants v where v.variant_id = ${v}`, true),
       asins.length ? JT.rows(["a.asin", `coalesce(sum(a.units) filter (where a.day > ${T} - 7), 0)`, `coalesce(sum(a.units) filter (where a.day > ${T} - 30), 0)`, "coalesce(sum(a.units), 0)",
@@ -1102,6 +1247,15 @@
       JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "sum(l.qty_ordered)", "sum(l.qty_received)", "max(coalesce(l.eta, o.expected_on))::text", "o.created_at::date::text",
         "string_agg(distinct l.dest, ',')", "string_agg(distinct nullif(l.amazon_sku, ''), ', ')"],
         `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id where l.variant_id = ${v} group by o.id order by (o.status in ('draft', 'ordered', 'invoiced', 'partial')) desc, o.id desc limit 15`, true),
+      // last time each seller SKU went to Amazon (Seller Central shipments, and shipped prep center shipments)
+      skus.length ? JT.rows(["k", "max(d)::text"], `from (select x.sku k, coalesce(s.created_at, s.first_seen)::date d from jt.inbound_shipment_items x join jt.inbound_shipments s on s.id = x.shipment_id
+          where x.sku in (${inList(skus)}) and x.qty_expected > 0 and s.status not in ('CANCELLED', 'DELETED')
+          union all select l.amazon_sku, s.shipped_at::date from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id
+          where l.variant_id = ${v} and s.status = 'shipped' and l.amazon_sku <> '') t group by k`, true).catch(() => []) : [],
+      // last ordered (a PO placed with it), last backordered (migration 090)
+      JT.rows(["max(coalesce((o.stage_at->>'ordered')::timestamptz, o.created_at))::date::text", FLOW ? "max(l.backorder_at)::date::text" : "null::text",
+          "bool_or(l.backorder and l.qty_received < l.qty_ordered and o.status in ('ordered', 'invoiced', 'partial'))"],
+        `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id where l.variant_id = ${v} and o.status <> 'draft'`, true).catch(() => []),
     ]);
     const x = vr[0] || [];
     return {
@@ -1109,6 +1263,7 @@
       sales: new Map(sales.map(r => [r[0], { d7: +r[1], d30: +r[2], d90: +r[3], fba30: +r[4] }])),
       fba: fba.map(r => ({ sku: r[0], asin: r[1], avail: +r[2], inbound: +r[3], reserved: +r[4], unf: +r[5], active: !!r[6] })),
       invs: invs.map(r => ({ id: r[0], no: r[1] || "", vendor: r[2] || "", date: r[3] || "", oid: r[4] || null, billed: +r[5] || 0, cost: r[6] == null ? null : +r[6], got: r[7] == null ? 0 : +r[7], recv: !!r[8], paid: r[9] || "" })),
+      lastShip: new Map(lastShip.map(r => [r[0], r[1]])), lastOrdered: (hist[0] || [])[0] || "", lastBackorder: (hist[0] || [])[1] || "", backorderNow: !!(hist[0] || [])[2],
       pos: pos.map(r => ({ id: r[0], vendor: r[1] || "", po: r[2] || "", status: r[3], ordered: +r[4] || 0, received: +r[5] || 0, eta: r[6] || "", created: r[7] || "", dest: r[8] || "", askus: r[9] || "" })),
     };
   }
@@ -1127,6 +1282,13 @@
     const shipOf = (a) => cache.alloc.get(M.vid + "|" + a) || 0;
     const comingOf2 = (a) => (cache.poRows || []).filter(r => r.vid === M.vid && r.asku === a && !r.hidden).reduce((t, r) => t + r.comingLeft, 0);
     const fbaOf = (l) => I.fba.find(f => f.sku === l.sku) || null;
+    // aging: a seller SKU with no shipment in AGE_DAYS while another SKU for the same ASIN has one is an old SKU
+    const AGE_DAYS = 180, ago = (d) => d ? Math.floor((Date.now() - new Date(d + "T12:00:00Z")) / 864e5) : null;
+    const lastTxt = (l) => {
+      const d = I.lastShip.get(l.sku), a = ago(d);
+      const newer = l.asin && ls.some(x => x.sku !== l.sku && x.asin === l.asin && I.lastShip.get(x.sku) && (!d || I.lastShip.get(x.sku) > d) && ago(I.lastShip.get(x.sku)) <= AGE_DAYS);
+      return `${d ? shortDate(d) + (a > 330 ? " " + d.slice(0, 4) : "") : '<span class="dim">never</span>'}${(a == null || a > AGE_DAYS) && newer ? '<div><span class="pill warn" title="Another SKU for this ASIN has been shipping instead">old SKU</span></div>' : a > AGE_DAYS ? `<div class="meta">${Math.round(a / 30)} months ago</div>` : ""}`;
+    };
     const seenAsin = new Set();
     let tot = { prep: 0, ship: 0, coming: 0, avail: 0, inbound: 0, reserved: 0, s7: 0, s30: 0, s90: 0 };
     const nm = (x) => x ? n0(x) : '<span class="dim">—</span>';
@@ -1144,20 +1306,23 @@
         <td>${p ? `<b>${n0(p)}</b>` : '<span class="dim">0</span>'}${cm ? `<div class="meta">+ ${n0(cm)} incoming</div>` : ""}</td><td>${nm(sh)}</td>
         <td>${f ? n0(f.avail) : '<span class="dim">—</span>'}${f && f.unf ? `<div class="meta">${n0(f.unf)} unsellable</div>` : ""}</td><td>${f ? nm(f.inbound) : '<span class="dim">—</span>'}</td><td>${f ? nm(f.reserved) : '<span class="dim">—</span>'}</td>
         ${l.asin && !first ? '<td colspan="3" class="dim small">same ASIN as above</td>' : `<td>${s ? n0(s.d7) : '<span class="dim">0</span>'}</td><td>${s ? n0(s.d30) : '<span class="dim">0</span>'}</td><td>${s ? n0(s.d90) : '<span class="dim">0</span>'}</td>`}
-        <td>${cover == null ? '<span class="dim">—</span>' : cover > 365 ? "1 yr+" : cover + " days"}</td></tr>`;
+        <td>${cover == null ? '<span class="dim">—</span>' : cover > 365 ? "1 yr+" : cover + " days"}</td>
+        <td class="small">${lastTxt(l)}</td></tr>`;
     }).join("");
     const anyP = prepOf(""), anyS = shipOf(""), anyC = comingOf2("");
     tot.prep += anyP; tot.ship += anyS; tot.coming += anyC;
     const anyRow = anyP || anyS || anyC ? `<tr class="${!M.asku ? "hl" : ""}"><td class="l"><b>Any listing</b><div class="meta">prep center stock not earmarked</div></td><td></td>
-        <td>${anyP ? `<b>${n0(anyP)}</b>` : '<span class="dim">0</span>'}${anyC ? `<div class="meta">+ ${n0(anyC)} incoming</div>` : ""}</td><td>${nm(anyS)}</td><td colspan="7"></td></tr>` : "";
+        <td>${anyP ? `<b>${n0(anyP)}</b>` : '<span class="dim">0</span>'}${anyC ? `<div class="meta">+ ${n0(anyC)} incoming</div>` : ""}</td><td>${nm(anyS)}</td><td colspan="8"></td></tr>` : "";
     const multi = ls.some(l => (l.units || 1) !== 1);
     const listTbl = `<h3 class="psec">Amazon listings</h3>
-      ${ls.length || anyRow ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Listing</th><th>Price</th><th>At prep center</th><th>In shipments</th><th>FBA available</th><th>FBA inbound</th><th>FBA reserved</th><th>Sold 7d</th><th>Sold 30d</th><th>Sold 90d</th><th title="FBA available + inbound, at the last 30 days' rate">FBA cover</th></tr></thead>
+      ${ls.length || anyRow ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Listing</th><th>Price</th><th>At prep center</th><th>In shipments</th><th>FBA available</th><th>FBA inbound</th><th>FBA reserved</th><th>Sold 7d</th><th>Sold 30d</th><th>Sold 90d</th><th title="FBA available + inbound, at the last 30 days' rate">FBA cover</th><th title="Last time this seller SKU went to Amazon">Last shipment</th></tr></thead>
         <tbody>${rowsHtml}${anyRow}</tbody>
-        <tfoot><tr><td class="l">Total${multi ? " · single units" : ""}</td><td></td><td>${n0(tot.prep)}${tot.coming ? `<div class="meta">+ ${n0(tot.coming)} incoming</div>` : ""}</td><td>${n0(tot.ship)}</td><td>${n0(tot.avail)}</td><td>${n0(tot.inbound)}</td><td>${n0(tot.reserved)}</td><td>${n0(tot.s7)}</td><td>${n0(tot.s30)}</td><td>${n0(tot.s90)}</td><td></td></tr></tfoot></table></div>
+        <tfoot><tr><td class="l">Total${multi ? " · single units" : ""}</td><td></td><td>${n0(tot.prep)}${tot.coming ? `<div class="meta">+ ${n0(tot.coming)} incoming</div>` : ""}</td><td>${n0(tot.ship)}</td><td>${n0(tot.avail)}</td><td>${n0(tot.inbound)}</td><td>${n0(tot.reserved)}</td><td>${n0(tot.s7)}</td><td>${n0(tot.s30)}</td><td>${n0(tot.s90)}</td><td></td><td></td></tr></tfoot></table></div>
         <p class="muted small" style="margin:4px 0 0">Prep center and shipment counts are Shopify units (single items); FBA stock and sales are Amazon units (packs) per listing. Sales are all Amazon orders for the ASIN (FBA and FBM).</p>`
         : `<div class="note warn">No Amazon listing is mapped to this product.</div>`}`;
-    const kpis = `<div class="pkpis">${[["Shopify on hand", I.shopQty == null ? "—" : n0(I.shopQty)], ["At prep center", n0(tot.prep)], ["Incoming", n0(tot.coming)], ["FBA available", n0(tot.avail)], ["Sold 30d", n0(tot.s30)]]
+    const kpis = `<div class="pkpis">${[["Shopify on hand", I.shopQty == null ? "—" : n0(I.shopQty)], ["At prep center", n0(tot.prep)], ["Incoming", n0(tot.coming)], ["FBA available", n0(tot.avail)], ["Sold 30d", n0(tot.s30)],
+      ["Last ordered", I.lastOrdered ? shortDate(I.lastOrdered) + (ago(I.lastOrdered) > 330 ? " " + I.lastOrdered.slice(0, 4) : "") : "never"],
+      ["Last backordered", I.backorderNow ? "now" : I.lastBackorder ? shortDate(I.lastBackorder) + (ago(I.lastBackorder) > 330 ? " " + I.lastBackorder.slice(0, 4) : "") : "—"]]
       .map(([l, v]) => `<div><span class="dim small">${l}</span><b>${v}</b></div>`).join("")}</div>`;
     const OPENST = ["draft", "ordered", "invoiced", "partial"];
     const poTbl = `<h3 class="psec">Purchase orders</h3>${I.pos.length ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">PO</th><th class="l">Status</th><th>Ordered</th><th>Received</th><th>Still coming</th><th class="l">Expected</th></tr></thead><tbody>${I.pos.map(o => {
@@ -1229,6 +1394,7 @@
       const steps = ["open", "started", "shipped"].map(st2 => `<span class="step ${st2 === M.status ? "on" : ["open", "started", "shipped"].indexOf(st2) < ["open", "started", "shipped"].indexOf(M.status) ? "done" : ""}">${STATUS[st2][0]}</span>`).join('<span class="step-sep">→</span>');
       html = `<div class="panel-head"><h2>${M.id ? esc(M.shipment || "Shipment #" + M.id) : "New shipment"}</h2><span class="steps">${steps}</span><button class="mini" data-act="close">Close</button></div>
         ${!M.id && M.fromRow && open.length ? `<label class="small muted" for="pm-into">Add this product to <select id="pm-into" class="inp sm" style="width:auto"><option value="">a new shipment</option>${open.map(x => `<option value="${x.id}">${esc(shipTitle(x))} (${STATUS[x.status][0].toLowerCase()})</option>`).join("")}</select></label>` : ""}
+        ${M.id ? flowHtml(M) : ""}
         ${issuesHtml(iss)}
         ${M.orderId || (M.sh && M.sh.orderId) ? (() => { const o = cache.orders.find(x => x.id === String(M.orderId || M.sh.orderId)); return o ? `<div class="row small muted">From Incoming Inventory: <button class="linkbtn small" data-fix="gotoorder" data-arg="${o.id}">${esc(o.vendor)} ${esc(orderTitle(o))}</button></div>` : ""; })() : ""}
         ${M.id && M.sh ? amzSection(M) : ""}
@@ -1340,6 +1506,7 @@
       const b = e.target.closest("button[data-sact]");
       if (b) { e.stopPropagation(); if (b.dataset.sact === "new") return openShip(); if (b.dataset.sact === "started") return quickStatus(b.dataset.sid, "started");
         if (b.dataset.sact === "fix") return openShipment(b.dataset.sid);
+        if (b.dataset.sact === "close") { b.disabled = true; return flowDo(b.dataset.sid, { close: true }, "Shipment closed."); }
         if (b.dataset.sact === "amzlink") { const sg = cache.amzSuggest.get(b.dataset.sid); if (sg) amzLinkAsk(b.dataset.sid, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
         if (b.dataset.sact === "back") { const sh = cache.shipments.find(x => x.id === b.dataset.sid);
           if (sh.status === "shipped") { openShipment(sh.id); P.modal.confirm = "unship"; renderModal(); } else quickStatus(sh.id, SPREV[sh.status]); return; }
@@ -1348,6 +1515,12 @@
     });
     on("prep-ships", "keydown", (e) => { const c = e.target.closest(".shipcard[data-sid]"); if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openShipment(c.dataset.sid); } });
     on("prep-mkind", "click", (e) => { const b = e.target.closest("button[data-k]"); if (b) { P.moveKind = b.dataset.k; renderMoves(); } });
+    $("tab-prep").addEventListener("change", async (e) => {
+      const t = e.target; if (!t.dataset || t.dataset.arrival == null || t.closest("#prep-modal")) return;
+      t.disabled = true;
+      try { await JT.prep.setArrival({ id: Number(t.dataset.arrival), arrival_on: t.value || null }); await load(true); render(); note("info", t.value ? `Arrival set to ${shortDate(t.value)}.` : "Arrival date cleared."); }
+      catch (err) { t.disabled = false; note("bad", "Couldn't save the date: " + esc(JT.message(err))); }
+    });
     $("tab-prep").addEventListener("click", (e) => {
       const pr = e.target.closest("tr[data-prod]");
       if (pr && !e.target.closest("button, a, input, select") && !String(window.getSelection() || "")) { openProduct(pr.dataset.prod, pr.dataset.psku); return; }
@@ -1355,6 +1528,7 @@
       if (b.dataset.act === "count") openCount(b.dataset.vid, b.dataset.sku);
       if (b.dataset.act === "ship") openShip(b.dataset.vid, b.dataset.sku, b.dataset.oid, b.dataset.n ? Number(b.dataset.n) : 0);
       if (b.dataset.act === "gotoorder") openOrder(b.dataset.oid);
+      if (b.dataset.act === "plan-inv") planInvoice(b.dataset.iid);
       if (b.dataset.act === "inc-hidden") { P.incHidden = !P.incHidden; renderIncoming(); }
       if (b.dataset.act === "inc-hide" || b.dataset.act === "inc-show") {
         const hide = b.dataset.act === "inc-hide", r = (cache.poRows || []).find(x => x.oid === b.dataset.oid && x.vid === b.dataset.vid && x.asku === (b.dataset.sku || ""));
@@ -1373,6 +1547,7 @@
     box.addEventListener("input", (e) => {
       const M = P.modal, t = e.target; if (!M) return;
       if (M.kind === "assign") { if (t.dataset.aq != null) { M.qty[t.dataset.aq] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 250); } else if (t.id === "pm-anote") M.note = t.value; return; }
+      if (t.id === "pm-exc") { M.excEdit = t.value; return; }
       if (t.id === "pm-q") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-qty") { M.qty = t.value.trim(); renderModal(); return; }
       if (t.id === "pm-note") { M.note = t.value; return; }
@@ -1385,6 +1560,7 @@
       const M = P.modal; if (!M) return;
       if (e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); }
       if (e.target.id === "pm-amz") { M.amzPick = e.target.value; renderModal(); }
+      if (e.target.id === "pm-place" && M.id) flowDo(M.id, { placement: e.target.value });
       if (M.recon && e.target.dataset.rto) { const r = M.recon.rows.find(x => String(x.vid) === e.target.dataset.rto); if (r) { r.to = e.target.value; renderModal(); } }
       if (M.recon && e.target.dataset.rsku) { const r = M.recon.rows.find(x => String(x.vid) === e.target.dataset.rsku); if (r) { r.tsku = e.target.value; r.to = "prep"; renderModal(); } }
       if (e.target.id === "pm-into" && e.target.value) {
@@ -1421,6 +1597,7 @@
       if (b.dataset.rm) { M.lines = M.lines.filter(k => k !== b.dataset.rm); delete M.qty[b.dataset.rm]; M.confirm = false; renderModal(); return; }
       if (b.dataset.all) { const r = lineOf(b.dataset.all), sv = M.sh && M.sh.status !== "shipped" ? ((M.sh.lines.find(l => l.key === b.dataset.all) || {}).qty || 0) : 0;
         M.qty[b.dataset.all] = String(Math.max(0, r.qty + comingOf(b.dataset.all) - ((cache.alloc.get(b.dataset.all) || 0) - sv))); M.confirm = false; renderModal(); return; }
+      if (b.dataset.flow) return flowClick(M, b);
       if (b.dataset.act === "amz-link-sugg") { const sg = cache.amzSuggest.get(String(M.id)); if (sg) amzLinkAsk(M.id, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
       if (b.dataset.act === "amz-link-pick") { if (M.amzPick) amzLinkAsk(M.id, M.amzPick.split(","), "manual"); return; }
       if (b.dataset.act === "recon-open") return amzLinkAsk(M.id, [], "");

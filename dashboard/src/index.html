@@ -189,7 +189,7 @@
       <div class="panel-head">
         <div class="lanehead"><h2>Amazon Outgoing</h2><span class="muted small">prep center → FBA / AWD</span></div>
         <div class="seg" id="prep-shview" role="group" aria-label="Which outgoing shipments">
-          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="shipped" aria-pressed="false">Shipped <span class="cnt">0</span></button>
+          <button data-v="open" aria-pressed="true">In progress <span class="cnt">0</span></button><button data-v="amazon" aria-pressed="false">At Amazon <span class="cnt">0</span></button><button data-v="exc" aria-pressed="false">Exceptions <span class="cnt">0</span></button><button data-v="closed" aria-pressed="false">Closed <span class="cnt">0</span></button>
         </div>
       </div>
       <div class="shipgrid" id="prep-ships"></div>
@@ -212,7 +212,7 @@
       <div id="prep-list"></div>
     </section>
     <section class="panel" id="prep-inc-panel" hidden>
-      <div class="panel-head"><h2>Incoming products</h2><span class="muted small" id="prep-inc-sum"></span><span id="prep-inc-hid"></span><span class="muted small right">products on open vendor orders — received or still coming — until they're in Amazon shipments</span></div>
+      <div class="panel-head"><h2>Incoming shipments</h2><span class="muted small" id="prep-inc-sum"></span><span id="prep-inc-hid"></span><span class="muted small right">what's coming, by expected arrival — line up Amazon shipments ahead of it</span></div>
       <div id="prep-inc"></div>
     </section>
     <section class="kpis" id="prep-kpis" aria-label="Prep center totals"></section>

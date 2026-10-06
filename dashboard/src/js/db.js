@@ -417,6 +417,18 @@
         const out = await run(`select jt.prep_ship_link2(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);
         return out[0] && out[0].r;
       },
+      // shipment checklist: {id, placement?, check?: {counted|combined|sc_created: bool}, close?: bool, exception?: text}
+      async shipFlow(body) {
+        if (WEB) return await WEB.write("jt_prep_ship_flow", { p: body });
+        const out = await run(`select jt.prep_ship_flow(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);
+        return out[0] && out[0].r;
+      },
+      // an invoice's expected arrival at the prep center: {id, arrival_on: 'YYYY-MM-DD' | null}
+      async setArrival(body) {
+        if (WEB) return await WEB.write("jt_invoice_set_arrival", { p: body });
+        const out = await run(`select jt.invoice_set_arrival(${q(JSON.stringify(body))}::jsonb) as ok`, true);
+        return out[0] && out[0].ok;
+      },
       async incomingHide(body) {
         if (WEB) return await WEB.write("jt_prep_incoming_hide", { p: body });
         const out = await run(`select jt.prep_incoming_hide(${q(JSON.stringify(body))}::jsonb) as ok`, true);
