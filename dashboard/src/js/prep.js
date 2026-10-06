@@ -180,10 +180,14 @@
   const okey = (vid, asku, dest) => vid + "|" + (asku || "") + "|" + (dest || "prep");
   // On The List, shared with the Inventory value and Amazon inventory tabs ("+ List" buttons)
   const listed = (vid, asku, dest) => cache && cache.list ? cache.list.find(i => !i.closed && i.vid === String(vid) && i.asku === (asku || "") && i.dest === (dest || "prep")) || null : null;
+  // Adds to On The List, which puts it on the vendor's draft PO (migration 089). Returns {item, where}: where is
+  // e.g. "the Wilson draft PO (Order #61)" for messages.
   async function addToList(body) {
     await JT.prep.listAdd(body);
     await load(true);
     if (!$("tab-prep").hidden) render();
+    const item = listed(body.variant_id, body.amazon_sku, body.dest), o = item && item.order;
+    return { item, where: o ? `the ${o.vendor ? esc(o.vendor) + " " : ""}draft PO (${esc(orderTitle(o))})` : "On The List" };
   }
   window.JTPrep = { load, totals, listed, addToList, get data() { return cache; } };
 
@@ -937,8 +941,8 @@
       const dest = $("pl-dest").value, qty = $("pl-qty").value.trim();
       if (qty && !(Number.isInteger(Number(qty)) && Number(qty) >= 0)) { note("bad", "Quantity must be a whole number."); return; }
       try {
-        await addToList({ variant_id: Number(v.vid), amazon_sku: dest === "prep" ? v.asku || "" : "", dest, qty: qty === "" ? null : Number(qty), source: "search" });
-        add.value = ""; P.lAdd = ""; $("pl-qty").value = ""; P.lView = "todo"; render(); note("info", `Added ${esc(v.title)} to the list.`); add.focus();
+        const r = await addToList({ variant_id: Number(v.vid), amazon_sku: dest === "prep" ? v.asku || "" : "", dest, qty: qty === "" ? null : Number(qty), source: "search" });
+        add.value = ""; P.lAdd = ""; $("pl-qty").value = ""; P.lView = "todo"; render(); note("info", `Added ${esc(v.title)} to ${r.where}.`); add.focus();
       } catch (e) { note("bad", "Couldn't add it: " + esc(JT.message(e))); }
     };
     add.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(findProducts(P.lAdd)[0]); } });
@@ -1361,7 +1365,7 @@
       }
       if (b.dataset.act === "assign") openAssign(b.dataset.vid, b.dataset.sku);
       if (b.dataset.act === "list") { b.disabled = true; addToList({ variant_id: Number(b.dataset.vid), amazon_sku: b.dataset.sku || "", dest: "prep", source: "prep" })
-        .then(() => note("info", "Added to On The List."), (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); }); }
+        .then((r) => note("info", `Added to ${r.where}.`), (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); }); }
     });
     const box = $("prep-modal");
     box.addEventListener("mousedown", (e) => { if (e.target === box && !P.busy) closeModal(); });

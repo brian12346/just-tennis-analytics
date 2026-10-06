@@ -337,7 +337,7 @@
       const it = JT.fba.data.items.find(x => x.sku === b.dataset.list); if (!it || !it.map) return;
       b.disabled = true;
       window.JTPrep.addToList({ variant_id: Number(it.map.vid), amazon_sku: it.sku, dest: "prep", source: "amazon" })
-        .then(() => { note("info", `Added ${esc(it.map.title || it.sku)} (for ${esc(it.sku)}) to On The List on the Prep center tab.`); render(); },
+        .then((r) => { note("info", `Added ${esc(it.map.title || it.sku)} (for ${esc(it.sku)}) to ${r && r.where || "On The List"}.`); render(); },
               (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); });
     });
     on("fba-where", "click", (e) => { const b = e.target.closest("button[data-w]"); if (!b) return; F.where = b.dataset.w; F.page = 0; fillFilters(); render(); });

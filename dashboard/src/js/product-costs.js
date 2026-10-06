@@ -276,7 +276,7 @@
       const b = e.target.closest("button[data-list]"); if (!b || !window.JTPrep) return;
       const r = P.rows.find(x => x.vid === b.dataset.list); b.disabled = true;
       window.JTPrep.addToList({ variant_id: Number(r.vid), amazon_sku: "", dest: "shopify", source: "inventory" })
-        .then(() => { note("info", `Added ${esc(r.title)} to On The List (for the Shopify store) on the Prep center tab.`); render(); },
+        .then((x) => { note("info", `Added ${esc(r.title)} (for the Shopify store) to ${x && x.where || "On The List"}.`); render(); },
               (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); });
     });
     $("pc-inv").addEventListener("click", (e) => {
