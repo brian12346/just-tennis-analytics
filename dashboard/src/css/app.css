@@ -954,3 +954,6 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .tabs.subtabs button{font-size:13.5px;padding:4px 10px}
 .tabs.subtabs button[aria-selected="true"]{color:var(--header-ink);background:var(--header-raised);box-shadow:inset 0 -2px 0 var(--brand-gold);border-radius:6px 6px 2px 2px}
 @media (max-width:640px){ .appbar .tabs.groups{gap:0} .tabs.groups button{padding:7px 6px;font-size:13.5px} .tabs .alertsbtn .lbl{display:none} .tabs.subtabs button{font-size:14px;padding:6px 10px} }
+.tabs .grp .sm{display:none}
+@media (max-width:640px){ .tabs .grp .lg{display:none} .tabs .grp .sm{display:inline} }
+@media (max-width:640px){ .tabs .alertsbtn{gap:2px;padding-right:2px} .tabs .alertsbtn .nbadge{margin-left:0} }
