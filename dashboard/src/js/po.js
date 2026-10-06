@@ -1225,6 +1225,11 @@
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     out.push(`<button class="btn ${ed.dirty && !NEXT[ed.status] ? "primary" : ""}" data-pact="save" ${busy}>Save</button>`);
     if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
+    // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
+    // receive table has its own buttons)
+    if (ed.id && !["qb_ready", "complete"].includes(ed.status))
+      ed.invoices.forEach((iv, i) => { if (!iv.id || iv.isNew || iv.recvAt || (ed.view === "inv" && i === ed.cur)) return; const t = invTot(iv); if (!(t.b > t.g)) return;
+        out.push(`<button class="btn primary" data-pact="recv-inv" data-k="${i}" ${busy}>Receive invoice ${esc(iv.no || "#" + (i + 1))}</button>`); });
     // invoiced products are received on their invoice; this receives what isn't on one
     const anyInv = ed.invoices.length > 0, pr = progress(ed), notInv = ed.lines.some(l => pr.get(l.id).open > 0);
     if (ed.lines.length && !["qb_ready", "complete"].includes(ed.status) && (!anyInv || notInv)) out.push(`<button class="btn" data-pact="recv" ${busy}>${anyInv ? "Receive without an invoice…" : got ? "Receive more…" : "Receive…"}</button>`);
@@ -1458,6 +1463,8 @@
     }
     if (a === "recv-cancel") { ed.recv = null; render(); return; }
     if (a === "rq-start" && iv && iv.id) { ed.recvInv = iv.id; render(); return; }
+    if (a === "recv-inv") { const v = ed.invoices[Number(k)]; if (!v) return; ed.cur = Number(k); ed.view = "inv"; ed.recvInv = v.id; render();
+      setTimeout(() => { const el = document.querySelector("#po-edit-view .po-recv"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
     if (a === "rq-stop") { ed.recvInv = null; render(); return; }
     if (a === "rq-go" && l && iv && iv.id) { const sh = invShares(ed, iv).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, iv, l, sh) }, iv.id); }
     if (a === "rq-all" && iv && iv.id) {
