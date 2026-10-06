@@ -1178,6 +1178,52 @@
   }
   // Shipment editor. From a stock row: a new shipment holding that row (or add it to one in progress).
   // From a card: that shipment. More products are added by ASIN, Amazon SKU or Shopify SKU.
+  // New shipment, step 1: find the one seller SKU being sent (search by ASIN, seller SKU, Shopify SKU, UPC or name).
+  // Picking it opens the shipment with that SKU. One SKU per new shipment for now.
+  function openNewShip() {
+    P.modal = { kind: "newship", q: "" };
+    renderModal(); setTimeout(() => { const i = $("pm-nq"); if (i) i.focus(); }, 0);
+    catalog().then(() => { if (P.modal && P.modal.kind === "newship") renderModal(); }).catch(() => {});
+  }
+  function skuCandidates(q) {
+    const w = q.trim().toLowerCase().split(/\s+/).filter(Boolean); if (!w.length) return { list: [], unmapped: [] };
+    const byVid = new Map((cat || []).map(v => [v.vid, v])), seen = new Set(), out = [];
+    const add = (vid, l) => {
+      const k = vid + "|" + l.sku; if (seen.has(k)) return; seen.add(k);
+      const v = byVid.get(vid) || cache.rows.find(r => r.vid === vid) || {};
+      const text = [l.sku, l.asin, l.title, v.sku, v.title, v.vendor, v.barcode].join(" ").toLowerCase();
+      if (!w.every(t => text.includes(t))) return;
+      const ph = prepHere(vid, l.sku), any = prepHere(vid, "").qty;
+      out.push({ vid, sku: l.sku, asin: l.asin || "", ltitle: l.title || "", units: l.units || 1, title: v.title || `variant ${vid}`, vsku: v.sku || "", vendor: v.vendor || "",
+        here: ph.qty, any, coming: comingOf(vid + "|" + l.sku) + comingOf(vid + "|"), inShip: ph.inShip, status: v.status || "" });
+    };
+    for (const [vid, ls] of cache.byVariant) for (const l of ls) add(vid, l);
+    for (const r of cache.rows) if (r.asku) add(r.vid, { sku: r.asku, asin: (r.target && r.target.asin) || "", title: (r.target && r.target.title) || "", units: (r.target && r.target.units) || 1 });
+    out.sort((a, b) => (b.here > 0) - (a.here > 0) || (b.here + b.any > 0) - (a.here + a.any > 0) || (b.coming > 0) - (a.coming > 0) || a.title.localeCompare(b.title) || a.sku.localeCompare(b.sku));
+    const mappedVids = new Set(out.map(x => x.vid));
+    const unmapped = cat ? searchCat(q).filter(v => !mappedVids.has(v.vid) && !cache.byVariant.has(v.vid)).slice(0, 5) : [];
+    return { list: out.slice(0, 25), unmapped };
+  }
+  function newShipHtml(M) {
+    const { list, unmapped } = skuCandidates(M.q);
+    return `<div class="panel-head"><h2>New shipment</h2><button class="mini" data-act="close">Close</button></div>
+      <label class="stack" for="pm-nq">Which SKU are you sending?<input id="pm-nq" class="inp mono" value="${esc(M.q)}" placeholder="ASIN, seller SKU, Shopify SKU, UPC or product name" autocomplete="off"></label>
+      ${!M.q.trim() ? '<p class="muted small" style="margin:0">One seller SKU per shipment. Pick it, then enter how many units are going.</p>'
+        : `<div class="skures">${list.map((c, i) => `<button class="skuopt" data-pickship="${i}">
+            <span class="so-main"><b>${esc(c.title)}</b><span class="dim small"> · ${esc(c.vsku || "no SKU")}${c.vendor ? " · " + esc(c.vendor) : ""}</span></span>
+            <span class="so-amz"><span class="mono">${esc(c.asin || "no ASIN")}</span> · <span class="mono">${esc(c.sku)}</span>${c.units !== 1 ? ` <span class="pill warn">${c.units}-pack</span>` : ""}${c.ltitle ? `<span class="dim small"> · ${esc(c.ltitle.slice(0, 70))}</span>` : ""}</span>
+            <span class="so-stock small">${c.here ? `<b>${n0(c.here)}</b> in the prep center for this SKU` : '<span class="dim">none earmarked for this SKU</span>'}${c.any ? ` · ${n0(c.any)} not earmarked` : ""}${c.coming ? ` · ${n0(c.coming)} incoming` : ""}${c.inShip ? ` · ${n0(c.inShip)} in other shipments` : ""}</span>
+          </button>`).join("") || '<span class="muted small">No Amazon listing matches that.</span>'}
+          ${unmapped.length ? `<div class="small muted">Found in Shopify but not mapped to an Amazon listing: ${unmapped.map(v => `${esc(v.title)} <span class="mono">${esc(v.sku)}</span>`).join(" · ")} — map it on the Amazon mapping tab first.</div>` : ""}
+          ${!cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : ""}</div>`}`;
+  }
+  function pickNewShip(c) {
+    openShip(c.vid, c.sku);
+    if (P.modal && P.modal.kind === "ship") {
+      P.modal.info[c.vid + "|" + c.sku] = { vid: c.vid, asku: c.sku, title: c.title, sku: c.vsku, vendor: c.vendor, cost: null };
+      P.modal.single = true; renderModal();
+    }
+  }
   function openShip(vid, sku, oid, n) {
     const key = vid ? vid + "|" + (sku || "") : null, o = oid && cache.orders.find(x => x.id === String(oid));
     P.modal = { kind: "ship", id: null, status: "open", shipment: "", dest: "FBA", note: o ? (o.vendor ? o.vendor + " " : "") + (o.po ? poLabel(o.po) : "order #" + o.id) : "",
@@ -1386,6 +1432,8 @@
           <span class="dbtns right"><button class="btn" data-act="close">${M.back ? "Back to shipment" : "Cancel"}</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Save count"}</button></span></div>` : ""}`;
     } else if (M.kind === "assign") {
       html = assignHtml(M);
+    } else if (M.kind === "newship") {
+      html = newShipHtml(M);
     } else if (M.kind === "prod") {
       html = prodHtml(M);
     } else if (M.kind === "order") {
@@ -1411,7 +1459,7 @@
       const open = (cache.shipments || []).filter(x => x.status !== "shipped" && x.id !== M.id);
       const steps = ["open", "started", "shipped"].map(st2 => `<span class="step ${st2 === M.status ? "on" : ["open", "started", "shipped"].indexOf(st2) < ["open", "started", "shipped"].indexOf(M.status) ? "done" : ""}">${STATUS[st2][0]}</span>`).join('<span class="step-sep">→</span>');
       html = `<div class="panel-head"><h2>${M.id ? esc(M.shipment || "Shipment #" + M.id) : "New shipment"}</h2><span class="steps">${steps}</span><button class="mini" data-act="close">Close</button></div>
-        ${!M.id && M.fromRow && open.length ? `<label class="small muted" for="pm-into">Add this product to <select id="pm-into" class="inp sm" style="width:auto"><option value="">a new shipment</option>${open.map(x => `<option value="${x.id}">${esc(shipTitle(x))} (${STATUS[x.status][0].toLowerCase()})</option>`).join("")}</select></label>` : ""}
+        ${!M.id && M.fromRow && open.length && !M.single ? `<label class="small muted" for="pm-into">Add this product to <select id="pm-into" class="inp sm" style="width:auto"><option value="">a new shipment</option>${open.map(x => `<option value="${x.id}">${esc(shipTitle(x))} (${STATUS[x.status][0].toLowerCase()})</option>`).join("")}</select></label>` : ""}
         <div class="contents"><h3 class="psec" style="margin:0">What's going · pick the ASIN / seller SKU for each product</h3>
         ${rows.length ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">Amazon listing</th>${ro ? "" : "<th>On hand</th>"}<th>${ro ? "Shipped" : "Ship"}</th><th></th></tr></thead><tbody>${
           rows.map(r => { const k = keyOf(r), v = M.qty[k] ?? "", q = v === "" ? 0 : Number(v), b = v !== "" && (!Number.isInteger(q) || q < 0), ov = q > r.qty + comingOf(k), tg = !ov && q > avail(r), as = asinsOf(r);
@@ -1420,7 +1468,7 @@
               ${ro ? "" : `<td>${n0(r.qty)}${comingOf(k) ? `<div class="meta">+ ${n0(comingOf(k))} incoming</div>` : ""}${avail(r) !== r.qty + comingOf(k) ? `<div class="meta">${n0(Math.max(0, avail(r)))} not in other shipments</div>` : ""}</td>`}
               <td>${ro ? `<b>${n0(q)}</b>` : `<input class="inp num sm ${b || ov ? "bad" : tg ? "warnin" : ""}" data-k="${esc(k)}" value="${esc(v)}" inputmode="numeric" placeholder="0" style="width:80px"><div class="meta"><button class="linkbtn small" data-all="${esc(k)}">all ${n0(Math.max(0, avail(r)))}</button></div>`}</td>
               <td>${ro ? "" : `<button class="linkbtn small" data-rm="${esc(k)}" title="Remove from this shipment" aria-label="Remove ${esc(r.title)}">✕</button>`}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
-        ${ro ? "" : `<div class="addbox">
+        ${ro || (M.single && !M.id) ? "" : `<div class="addbox">
           <label class="stack" for="pm-add">Add product<input id="pm-add" class="inp mono" value="${esc(M.add)}" placeholder="ASIN, Amazon SKU or Shopify SKU" autocomplete="off"></label>
           ${M.add.trim() ? `<div class="mres">${found.map(r => `<button data-add="${esc(keyOf(r))}"><b>${esc(r.title)}</b><br><span class="dim">${esc(r.sku)}${r.asku ? " · " + esc(r.asku) : ""}${asinsOf(r).length ? " · " + esc(asinsOf(r).join(", ")) : ""} · ${n0(r.qty)} on hand${comingOf(keyOf(r)) ? ` · ${n0(comingOf(keyOf(r)))} incoming` : ""}</span></button>`).join("")
             || '<span class="muted small">Nothing in the prep center matches that ASIN or SKU.</span>'}</div>` : ""}
@@ -1524,13 +1572,13 @@
     const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
     on("prep-refresh", "click", () => refresh(true));
     on("prep-count", "click", () => openCount());
-    on("prep-ship", "click", () => openShip());
+    on("prep-ship", "click", () => openNewShip());
     on("prep-vendor", "change", (e) => { P.vendor = e.target.value; render(); });
     on("prep-q", "input", (e) => { P.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(render, 200); });
     on("prep-shview", "click", (e) => { const b = e.target.closest("button[data-v]"); if (b) { P.shipView = b.dataset.v; renderShipments(); } });
     on("prep-ships", "click", (e) => {
       const b = e.target.closest("button[data-sact]");
-      if (b) { e.stopPropagation(); if (b.dataset.sact === "new") return openShip(); if (b.dataset.sact === "started") return quickStatus(b.dataset.sid, "started");
+      if (b) { e.stopPropagation(); if (b.dataset.sact === "new") return openNewShip(); if (b.dataset.sact === "started") return quickStatus(b.dataset.sid, "started");
         if (b.dataset.sact === "fix") return openShipment(b.dataset.sid);
         if (b.dataset.sact === "close") { b.disabled = true; return flowDo(b.dataset.sid, { close: true }, "Shipment closed."); }
         if (b.dataset.sact === "amzlink") { const sg = cache.amzSuggest.get(b.dataset.sid); if (sg) amzLinkAsk(b.dataset.sid, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
@@ -1573,6 +1621,7 @@
     box.addEventListener("input", (e) => {
       const M = P.modal, t = e.target; if (!M) return;
       if (M.kind === "assign") { if (t.dataset.aq != null) { M.qty[t.dataset.aq] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 250); } else if (t.id === "pm-anote") M.note = t.value; return; }
+      if (t.id === "pm-nq") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-exc") { M.excEdit = t.value; return; }
       if (t.id === "pm-q") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-qty") { M.qty = t.value.trim(); renderModal(); return; }
@@ -1599,6 +1648,7 @@
     });
     box.addEventListener("keydown", (e) => {
       const M = P.modal; if (!M || e.key !== "Enter") return;
+      if (e.target.id === "pm-nq") { e.preventDefault(); clearTimeout(box._t); M.q = e.target.value; const c = skuCandidates(M.q).list; if (c.length === 1) pickNewShip(c[0]); else renderModal(); return; }
       if (e.target.id === "pm-q") { const b = box.querySelector(".mres button[data-pick]"); if (b) b.click(); }
       else if (e.target.id === "pm-add") { e.preventDefault(); clearTimeout(box._t); const f = findRows(M.add, M.lines); if (f.length) addLine(keyOf(f[0])); else renderModal(); }
       else if (M.kind === "ship" && e.target.dataset.k) { e.preventDefault(); const a = $("pm-add"); if (a) a.focus(); }
@@ -1607,6 +1657,7 @@
     box.addEventListener("click", (e) => {
       const M = P.modal, b = e.target.closest("button"); if (!M || !b) return;
       if (b.dataset.act === "close") return closeModal();
+      if (M.kind === "newship") { if (b.dataset.pickship != null) { const c = skuCandidates(M.q).list[+b.dataset.pickship]; if (c) pickNewShip(c); } return; }
       if (M.kind === "prod") { if (b.dataset.act === "gotoorder") { P.modal = null; renderModal(); openOrder(b.dataset.oid); } return; }
       if (b.dataset.pick) { const v = cat.find(x => x.vid === b.dataset.pick); M.pick = { vid: v.vid, sku: v.sku, title: v.title, vendor: v.vendor, cost: v.cost }; M.asku = ""; renderModal(); setTimeout(() => { const i = $("pm-qty"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "repick") { M.pick = null; M.qty = ""; renderModal(); setTimeout(() => { const i = $("pm-q"); if (i) i.focus(); }, 0); return; }
