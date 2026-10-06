@@ -957,3 +957,11 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .tabs .grp .sm{display:none}
 @media (max-width:640px){ .tabs .grp .lg{display:none} .tabs .grp .sm{display:inline} }
 @media (max-width:640px){ .tabs .alertsbtn{gap:2px;padding-right:2px} .tabs .alertsbtn .nbadge{margin-left:0} }
+
+/* PO vendor view (v0.10.83) */
+.vbar2{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.vbar2 .right{margin-left:auto}
+.vsheet{display:flex;flex-direction:column;gap:10px;border:1px solid var(--line);border-radius:var(--radius-md);padding:14px 16px;background:var(--surface)}
+.vs-head{display:flex;flex-wrap:wrap;gap:12px 32px;justify-content:space-between}
+.vs-t td,.vs-t th{white-space:nowrap}
+.vs-t td.l:nth-child(4){white-space:normal;min-width:200px}

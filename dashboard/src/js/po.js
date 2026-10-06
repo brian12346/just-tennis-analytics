@@ -284,6 +284,81 @@
   const variant = (vid) => vid && S.byVid ? S.byVid.get(String(vid)) : null;
   const cur = (ed) => ed.cur >= 0 ? ed.invoices[ed.cur] || null : null;
   // Saved POs: the details as a line of chips under the title; click one to edit (opens the details form at that field)
+  // ---------- vendor view: the PO as the vendor sees it (Brian, Oct 6) ----------
+  // One row per product (split parts added together): vendor SKU (the Shopify SKU), UPC, description, size, quantity,
+  // and the unit cost unless it's turned off. Downloads as a PDF or CSV to send to the vendor.
+  const SHIP_TO = ["Just Tennis", "9925 Businesspark Avenue, Suite C", "San Diego, CA 92131", "(858) 547-9707"];
+  function vendorRows(ed) {
+    const by = new Map();
+    for (const l of ed.lines) {
+      const q = Number(l.qty) || 0; if (q <= 0) continue;
+      const v = variant(l.vid), unit = l.cost === "" ? (v && v.cost) || 0 : Number(l.cost) || 0;
+      const r = by.get(l.vid) || by.set(l.vid, { sku: v ? v.sku : "", upc: v ? v.barcode : "", desc: v ? (v.product || v.title) : "variant " + l.vid, size: v ? v.variant : "", qty: 0, ext: 0 }).get(l.vid);
+      r.qty += q; r.ext += q * unit;
+    }
+    return [...by.values()].map(r => ({ ...r, unit: r.qty ? r.ext / r.qty : 0 }))
+      .sort((a, b) => a.desc.localeCompare(b.desc) || String(a.size).localeCompare(String(b.size), undefined, { numeric: true }) || a.sku.localeCompare(b.sku));
+  }
+  const vendorPoName = (ed) => ed.po ? poLabel(ed.po) : "PO #" + (ed.id || "new");
+  const vendorDate = (ed) => { const d = ed.stageAt && ed.stageAt.ordered ? new Date(ed.stageAt.ordered) : new Date(); return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); };
+  function vendorBar(ed) {
+    if (!ed.lines.length) return "";
+    return `<div class="vbar2"><span class="seg sm" role="group" aria-label="View"><button data-pact="vview-off" aria-pressed="${!S.vview}">Working view</button><button data-pact="vview-on" aria-pressed="${!!S.vview}" title="What the vendor needs: SKU, UPC, product, size and quantity">Vendor view</button></span>
+      ${S.vview ? `<span class="seg sm" role="group" aria-label="Cost"><button data-pact="vcost-on" aria-pressed="${!S.vnocost}">Show cost</button><button data-pact="vcost-off" aria-pressed="${!!S.vnocost}">Hide cost</button></span>
+      <span class="dbtns right"><button class="btn" data-pact="vcsv" title="Spreadsheet for the vendor (opens in Excel)">Download CSV</button><button class="btn primary" data-pact="vpdf" title="PDF to email the vendor">Download PDF</button></span>` : ""}</div>`;
+  }
+  function vendorHtml(ed) {
+    const rows = vendorRows(ed), cost = !S.vnocost, u = rows.reduce((a, r) => a + r.qty, 0), t = rows.reduce((a, r) => a + r.ext, 0);
+    return `<div class="vsheet">
+      <div class="vs-head"><div><div class="eyebrow">Purchase order</div><h3 class="h3">${esc(vendorPoName(ed))}</h3><div class="small muted">${esc(ed.vendor || "Vendor")} · ${esc(vendorDate(ed))}${ed.expected ? " · ship by " + esc(shortDate(ed.expected)) : ""}</div></div>
+        <div class="small"><div class="eyebrow">Ship to</div>${SHIP_TO.map(esc).join("<br>")}</div></div>
+      ${ed.note ? `<div class="small"><b>Note:</b> ${esc(ed.note)}</div>` : ""}
+      <div class="tbl-wrap"><table class="po-t vs-t"><thead><tr><th>#</th><th class="l">Vendor SKU</th><th class="l">UPC</th><th class="l">Product</th><th class="l">Size / color</th><th>Qty</th>${cost ? "<th>Unit cost</th><th>Total</th>" : ""}</tr></thead>
+      <tbody>${rows.map((r, i) => `<tr><td class="dim">${i + 1}</td><td class="l mono">${esc(r.sku) || '<span class="neg">no SKU</span>'}</td><td class="l mono">${esc(r.upc)}</td><td class="l">${esc(r.desc)}</td><td class="l">${esc(r.size)}</td><td><b>${n0(r.qty)}</b></td>${cost ? `<td>${m(r.unit)}</td><td>${m(r.ext)}</td>` : ""}</tr>`).join("")}</tbody>
+      <tfoot><tr><td></td><td class="l" colspan="4">${rows.length} item${rows.length === 1 ? "" : "s"}</td><td>${n0(u)}</td>${cost ? `<td></td><td>${m(t)}</td>` : ""}</tr></tfoot></table></div>
+      ${rows.length < new Set(ed.lines.map(l => l.vid)).size ? '<div class="muted small">Products with no quantity are left off.</div>' : ""}
+    </div>`;
+  }
+  const fileBase = (ed) => `${(ed.vendor || "vendor").replace(/[^A-Za-z0-9]+/g, "-")}_${vendorPoName(ed).replace(/[^A-Za-z0-9]+/g, "-")}`.replace(/-+/g, "-").replace(/^-|-$/g, "");
+  async function saveFile(name, data, mimeType) {
+    const d = window.claude && window.claude.use ? await window.claude.use("downloads").catch(() => null) : null;
+    if (!d) { note("warn", "Downloads aren't available here."); return; }
+    try { await d.save({ filename: name, data, mimeType }); } catch (e) { if (e && e.code !== "declined") note("warn", esc(JT.message(e))); }
+  }
+  async function vendorCsv(ed) {
+    const cost = !S.vnocost, q = (x) => /[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : String(x);
+    const lines = [[vendorPoName(ed), ed.vendor, vendorDate(ed)].map(q).join(","), ["Ship to", SHIP_TO.join(", ")].map(q).join(","), ""];
+    lines.push(["Vendor SKU", "UPC", "Product", "Size / color", "Qty", ...(cost ? ["Unit cost", "Total"] : [])].join(","));
+    for (const r of vendorRows(ed)) lines.push([r.sku, r.upc ? `="${r.upc}"` : "", r.desc, r.size, r.qty, ...(cost ? [r.unit.toFixed(2), r.ext.toFixed(2)] : [])].map(q).join(","));
+    await saveFile(fileBase(ed) + ".csv", lines.join("\n"), "text/csv");
+  }
+  let pdfLib = null;
+  function loadScript(src) { return new Promise((ok, bad) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = () => bad(new Error("Couldn't load " + src)); document.head.appendChild(s); }); }
+  async function vendorPdf(ed) {
+    try {
+      if (!pdfLib) {
+        await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+        await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js");
+        pdfLib = window.jspdf;
+      }
+      const cost = !S.vnocost, rows = vendorRows(ed), doc = new pdfLib.jsPDF({ unit: "pt", format: "letter" }), W = doc.internal.pageSize.getWidth();
+      doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.text("Purchase Order", 40, 50);
+      doc.setFontSize(12); doc.text(vendorPoName(ed), 40, 70);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+      doc.text([`Vendor: ${ed.vendor || ""}`, `Date: ${vendorDate(ed)}`, ...(ed.expected ? [`Ship by: ${shortDate(ed.expected)}`] : [])], 40, 92);
+      doc.setFont("helvetica", "bold"); doc.text("Ship to", W - 220, 50); doc.setFont("helvetica", "normal"); doc.text(SHIP_TO, W - 220, 64);
+      let y = 140; if (ed.note) { doc.text(doc.splitTextToSize("Note: " + ed.note, W - 80), 40, y - 14); y += 10; }
+      const money = (x) => "$" + x.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+      const units = rows.reduce((a, r) => a + r.qty, 0), total = rows.reduce((a, r) => a + r.ext, 0);
+      doc.autoTable({ startY: y, head: [["#", "Vendor SKU", "UPC", "Product", "Size / color", "Qty", ...(cost ? ["Unit cost", "Total"] : [])]],
+        body: rows.map((r, i) => [i + 1, r.sku, r.upc, r.desc, r.size, r.qty, ...(cost ? [money(r.unit), money(r.ext)] : [])]),
+        foot: [["", `${rows.length} items`, "", "", "", units, ...(cost ? ["", money(total)] : [])]],
+        styles: { fontSize: 9, cellPadding: 4 }, headStyles: { fillColor: [0, 38, 118] }, footStyles: { fillColor: [238, 241, 244], textColor: 20 },
+        columnStyles: { 0: { cellWidth: 22 }, 5: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" } } });
+      const out = doc.output("blob");
+      await saveFile(fileBase(ed) + ".pdf", out, "application/pdf");
+    } catch (e) { note("bad", "Couldn't make the PDF: " + esc(e && e.message || String(e)) + ". Download CSV works without it."); }
+  }
   function headStrip(ed, ro, both) {
     if (!ed.id || ed.editHead) return "";
     const f = (id, label, val, empty) => `<button class="hfield" data-hedit="${id}" title="Edit ${label.toLowerCase()}"><span>${label}</span><b class="${val ? "" : "dim"}">${val ? esc(val) : empty}</b></button>`;
@@ -969,8 +1044,8 @@
       ${shopCheckHtml(ed, ro)}
       ${iss.length ? `<section class="po-issues">${window.JTIssues.issuesHtml(iss)}</section>` : ""}
       <section class="panel po-lines po-inv" id="pe-drop">
-        ${viewSeg(ed, vw, ro)}
-        ${mode === "inv" ? invBarHtml(ed) + (recvHtml || "") : `
+        ${vendorBar(ed)}${S.vview && ed.lines.length ? vendorHtml(ed) : viewSeg(ed, vw, ro)}
+        ${S.vview && ed.lines.length ? "" : mode === "inv" ? invBarHtml(ed) + (recvHtml || "") : `
         ${openLines.length && !ro && !ed.recv && ed.invoices.length && mode !== "all" ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
@@ -1392,6 +1467,10 @@
   function act(a, k) {
     const ed = S.ed; if (!ed) return;
     const iv = cur(ed), r = k && iv && iv.rows.find(x => x.id === k), l = k && ed.lines.find(x => x.id === k);
+    if (a === "vview-on" || a === "vview-off") { S.vview = a === "vview-on"; render(); return; }
+    if (a === "vcost-on" || a === "vcost-off") { S.vnocost = a === "vcost-off"; render(); return; }
+    if (a === "vcsv") return vendorCsv(ed);
+    if (a === "vpdf") return vendorPdf(ed);
     if (a === "back-list") return leave();
     if (a === "inv-list") return leave();
     if (a === "open-inv") return showInvoicePage();
