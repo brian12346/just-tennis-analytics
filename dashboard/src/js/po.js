@@ -1031,8 +1031,8 @@
       const left = ls.reduce((a, l) => { const x = Number(rqVal(ed, ivNow, l, ivSh.get(l.id))); return a + (ivSh.get(l.id).left > 0 && Number.isInteger(x) && x > 0 ? x : 0); }, 0);
       const btn = ivNow.recvAt ? (ivNow.recvManual && !ro ? '<button class="mini" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "")
         : !ro && t.g > 0 ? '<button class="mini" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : "";
-      return `<div class="po-recv"><div class="panel-head"><h3 class="h3">Receive this invoice ${recvPill(ivNow)}</h3>
-          <span class="muted small">${ivNow.recvAt ? "Received in full." : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
+      return `<div class="po-recv ${ivNow.recvAt ? "done" : ""}"><div class="panel-head"><h3 class="h3">${ivNow.recvAt ? "✓ Received in full" : `Receive this invoice ${recvPill(ivNow)}`}</h3>
+          <span class="muted small">${ivNow.recvAt ? `All ${n0(t.b)} units are in.` : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
           <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
             ? `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Save${left ? ` (${n0(left)} units)` : ""}</button>`
             : `<button class="btn primary" data-pact="rq-start" title="Open receiving for this invoice">Receive</button>`) : ""}</span></div>
@@ -1128,7 +1128,7 @@
     if (!ed.id && !ed.invoices.length) return `<div class="panel-head"><h2>Products on this PO</h2><span class="muted small">what was ordered · receiving is against these</span></div>`;
     const v = ed.view, units = (n) => `<span class="cnt">${n0(n)}</span>`;
     const ivBtn = (iv, i) => { const t = invTot(iv), c = count(iv), bad = c.check + c.none;
-      const st = iv.isNew ? '<span class="pill warn">new</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : invClosed(iv) ? closedPill : iv.recvAt ? `<span class="pill ok" title="Received; still to ${esc(invLeft(iv).join(" and "))}">received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : `<span class="pill pos">${n0(t.b)} to receive</span>`;
+      const st = iv.isNew ? '<span class="pill warn">new</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : invClosed(iv) ? closedPill : iv.recvAt ? `<span class="pill ok" title="Received in full; still to ${esc(invLeft(iv).join(" and "))}">✓ received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : `<span class="pill pos">${n0(t.b)} to receive</span>`;
       return `<button data-inv="${i}" aria-pressed="${v === "inv" && i === ed.cur}" title="Invoice ${esc(iv.no || "")}${iv.total != null ? " · " + m(iv.total) : ""}">Invoice ${esc(iv.no || "#" + (i + 1))} ${st}</button>`; };
     return `<div class="panel-head pviews"><div class="seg" role="group" aria-label="Show">
         <button data-pview="all" aria-pressed="${v === "all"}" title="Every product on this PO">All</button>
@@ -1141,8 +1141,8 @@
   function invBarHtml(ed) {
     const iv = cur(ed); if (!iv) return "";
     const c = count(iv);
-    return `<div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""} ${payPill(iv)} ${qbPill(iv)}${c.check + c.none ? ` <span class="pill miss">${c.check + c.none} line${c.check + c.none === 1 ? "" : "s"} to check</span>` : ""}</span>
-        <span class="dbtns"><button class="btn" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></span></div>`;
+    return `<div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : ""}${c.check + c.none ? ` <span class="pill miss">${c.check + c.none} line${c.check + c.none === 1 ? "" : "s"} to check</span>` : ""}</span>
+        <span class="dbtns"><button class="btn" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></span></div>${invStepsHtml(ed, iv)}`;
   }
   // The Invoices tab: one invoice in full — its PO, details, payment, QuickBooks, lines and PDF
   function renderInvoicePage() {

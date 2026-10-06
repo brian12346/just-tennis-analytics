@@ -970,3 +970,6 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .ivsteps{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:13px}
 .ivstep{padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);font-weight:500}
 .ivstep.done{color:var(--good);border-color:var(--good-bg);background:var(--good-bg)}
+.po-recv.done{border:1px solid var(--good-bg);background:var(--good-bg);border-radius:var(--radius-md);padding:10px 12px}
+.po-recv.done .h3{color:var(--good)}
+.po-invbar + .ivsteps{margin-top:-4px}
