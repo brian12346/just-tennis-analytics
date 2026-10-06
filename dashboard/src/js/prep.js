@@ -241,7 +241,6 @@
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     renderShipments();
     renderList();
-    renderOrders();
     renderIncoming();
     // vendor filter
     const vs = [...new Set(all.map(r => r.vendor))].sort((a, b) => a.localeCompare(b));
@@ -633,41 +632,6 @@
   window.JTOrderIssues = { orderIssuesOf, OSTAGES, ONEXT, OPREV, OPILL, poLabel, get orderSummary() { return orderSummary; } };
   const orderSummary = (list) => { const by = new Map(); for (const x of list) if (x.lvl !== "info") by.set(x.kind, (by.get(x.kind) || 0) + 1); return [...by].map(([k, n]) => (n > 1 && k === "nocost" ? n + " products " : "") + OKIND[k]).join(" · "); };
 
-  function renderOrders() {
-    const d = cache, el = $("prep-orders");
-    const inc = incoming(d.orders);
-    const prog = inc.filter(o => o.status !== "complete"), done = inc.filter(o => o.status === "complete");
-    document.querySelectorAll("#prep-oview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.oView)); b.querySelector("span").textContent = b.dataset.v === "open" ? prog.length : done.length; });
-    const cnt = (st) => prog.filter(o => o.status === st).length;
-    $("prep-ostages").innerHTML = P.oView !== "open" || !prog.length ? "" : [["all", "All", prog.length], ...OSTAGES.filter(([k]) => k !== "complete").map(([k, n]) => [k, n, cnt(k)])]
-      .map(([k, n, c]) => `<button data-ost="${k}" aria-pressed="${P.oStage === k}">${n}<b>${c}</b></button>`).join("");
-    const list = P.oView === "open" ? prog.filter(o => P.oStage === "all" || o.status === P.oStage).sort((a, b) => OORDER.indexOf(b.status) - OORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)))
-      : done.sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
-    const card = (o) => {
-      const ord = o.lines.reduce((a, l) => a + l.ordered, 0), rec = o.lines.reduce((a, l) => a + l.received, 0), cost = o.lines.reduce((a, l) => a + l.ordered * (lineCost(l) || 0), 0);
-      const iss = orderIssuesOf(o), lvl = worst(iss), sum = orderSummary(iss);
-      const got = OGOT.includes(o.status);
-      const out = (o.shipments || []).find(sh => sh.status !== "shipped");
-      const next = ONEXT[o.status] ? `<button class="mini" data-oact="next" data-oid="${o.id}">${ONEXT[o.status][1]}</button>`
-        : ["invoiced", "partial"].includes(o.status) ? `<button class="mini primary" data-oact="recv" data-oid="${o.id}">Receive</button>`
-        : "";
-      const back = OPREV[o.status] ? `<button class="mini" data-oact="back" data-oid="${o.id}" title="Move back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}${["partial", "received"].includes(o.status) ? " — the received units come out of the prep center" : ""}">← ${OSTAGE.get(OPREV[o.status])}</button>` : "";
-      const whenTxt = o.status === "complete" ? `Complete ${when(o.stageAt.complete || o.updated)}` : got ? `Received ${when(o.stageAt.received || o.stageAt.partial)}`
-        : o.kind === "booking" && o.status === "draft" && o.placeBy ? `Place by ${shortDate(o.placeBy)}`
-        : o.expected ? `Expected ${shortDate(o.expected)}` : `${OSTAGE.get(o.status)} ${when(o.stageAt[o.status] || o.created)}`;
-      const t = o.lines.map(l => l.title), contents = !t.length ? "No products yet" : t.length === 1 ? t[0] : t.length === 2 ? t[0] + " + " + t[1] : `${t[0]} + ${t.length - 1} more`;
-      return `<div class="shipcard ord ${o.status}${lvl === "bad" || lvl === "warn" ? " issue-" + lvl : ""}" data-oid="${o.id}" tabindex="0" role="button" aria-label="Open order: ${esc(contents)}${sum ? " — needs attention: " + esc(sum) : ""}">
-        <div class="sc-title" title="${esc(o.lines.map(l => n0(l.ordered) + " × " + l.title).join("\n"))}">${esc(contents)}</div>
-        <div class="sc-qty">${got ? `<b class="num">${n0(rec)}</b><span>of ${n0(ord)} received</span>` : `<b class="num">${n0(ord)}</b><span>unit${ord === 1 ? "" : "s"}</span>`}<span class="dim">· ${m0(cost)}</span></div>
-        ${got && ord ? `<div class="sc-bar"><i style="width:${Math.min(100, rec / ord * 100).toFixed(0)}%"></i></div>` : ""}
-        <div class="sc-meta"><span class="pill ${OPILL[o.status]}">${OSTAGE.get(o.status)}</span>${o.kind === "booking" ? '<span class="pill warn">Booking</span>' : ""}${o.split ? '<span class="pill manual" title="This PO also has products going to the Shopify store; only the prep-center part is shown here">Prep part</span>' : ""}<span>${esc(o.vendor || "No vendor")}</span><span class="mono">${esc(orderTitle(o))}</span></div>
-        ${sum ? `<div class="sc-issue"><span aria-hidden="true">▲</span><span>${esc(sum)}</span></div>` : ""}
-        <div class="sc-foot"><span class="dim small">${whenTxt}</span><span class="dbtns">${back}${next}</span></div>
-      </div>`;
-    };
-    el.innerHTML = (P.oView === "open" ? `<button class="shipcard newcard" data-oact="new"><span class="plus">+</span><b>New vendor order</b><span class="dim small">Products by Shopify SKU, UPC, ASIN or Amazon SKU</span></button>` : "")
-      + (list.map(card).join("") || (P.oView === "open" ? "" : '<div class="muted small">No orders completed in the last 90 days.</div>'));
-  }
 
   // Incoming products: the prep-center products on open vendor orders — received or still coming — until they're all
   // in Amazon shipments made from that order. Ship starts a shipment from the order with what's left.
@@ -889,78 +853,6 @@
     if (d.fix === "focuskq") { setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-ok="${CSS.escape(d.k)}"]`); if (i) { i.focus(); i.select(); } }, 0); return true; }
     if (d.fix === "focuskc") { setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-oc="${CSS.escape(d.k)}"]`); if (i) { i.focus(); i.select(); } }, 0); return true; }
     return false;
-  }
-  function bindOrders() {
-    const box = $("prep-modal");
-    $("prep-oview").addEventListener("click", (e) => { const b = e.target.closest("button[data-v]"); if (b) { P.oView = b.dataset.v; renderOrders(); } });
-    $("prep-ostages").addEventListener("click", (e) => { const b = e.target.closest("button[data-ost]"); if (b) { P.oStage = b.dataset.ost; renderOrders(); } });
-    $("prep-orders").addEventListener("click", async (e) => {
-      const b = e.target.closest("button[data-oact]");
-      if (b) {
-        e.stopPropagation(); const a = b.dataset.oact, o = b.dataset.oid && cache.orders.find(x => x.id === b.dataset.oid);
-        if (a === "new") return openOrder();
-        if (a === "next") { try { await JT.prep.setOrderStatus(Number(o.id), ONEXT[o.status][0]); await load(true); render(); } catch (err) { note("bad", "Couldn't update the order: " + esc(JT.message(err))); } return; }
-        if (a === "recv") return openOrder(o.id);
-        if (a === "ship") return shipFromOrder(o);
-        if (a === "goship") return openShipment(b.dataset.sid);
-        if (a === "back") { if (["partial", "received"].includes(o.status)) return openOrder(o.id);
-          try { await JT.prep.setOrderStatus(Number(o.id), OPREV[o.status]); note("info", `${esc(o.vendor)} ${esc(orderTitle(o))} moved back to ${OSTAGE.get(OPREV[o.status]).toLowerCase()}.`); await load(true); render(); }
-          catch (err) { note("bad", "Couldn't move it back: " + esc(JT.message(err))); } return; }
-        return;
-      }
-      const c = e.target.closest(".shipcard[data-oid]"); if (c) openOrder(c.dataset.oid);
-    });
-    $("prep-orders").addEventListener("keydown", (e) => { const c = e.target.closest(".shipcard[data-oid]"); if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openOrder(c.dataset.oid); } });
-    box.addEventListener("input", (e) => {
-      const M = P.modal, t = e.target; if (!M || M.kind !== "order") return;
-      if (t.id === "po-vendor") { M.vendor = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 300); }
-      else if (t.id === "po-po") M.po = t.value;
-      else if (t.id === "po-note") M.note = t.value;
-      else if (t.id === "po-add") { M.add = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); }
-      else if (t.dataset.ok) { M.lines.find(l => l.key === t.dataset.ok).ordered = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 400); }
-      else if (t.dataset.oc) { M.lines.find(l => l.key === t.dataset.oc).cost = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 400); }
-      else if (t.dataset.rk) { M.recv[t.dataset.rk] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 300); }
-    });
-    box.addEventListener("change", (e) => {
-      const M = P.modal, t = e.target; if (!M || M.kind !== "order") return;
-      if (t.id === "po-exp") { M.expected = t.value; renderModal(); }
-      if (t.id === "po-placeby") { M.placeBy = t.value; renderModal(); }
-      if (t.dataset.odest) { const l = M.lines.find(x => x.key === t.dataset.odest), nk = okey(l.vid, "", t.value);
-        if (M.lines.some(x => x.key === nk && x !== l)) { note("warn", "That product is already on the order for there."); renderModal(); return; }
-        l.dest = t.value; l.asku = ""; l.key = nk; renderModal(); }
-      if (t.id === "po-inv") { M.invoiceId = t.value; renderModal(); }
-      if (t.dataset.osku) { const l = M.lines.find(x => x.key === t.dataset.osku), shop = t.value === "@shopify", nk = shop ? okey(l.vid, "", "shopify") : okey(l.vid, t.value, "prep");
-        if (M.lines.some(x => x.key === nk && x !== l)) { note("warn", "That product is already on the order for that listing."); renderModal(); return; }
-        l.asku = shop ? "" : t.value; l.dest = shop ? "shopify" : "prep"; l.key = nk; renderModal(); }
-    });
-    box.addEventListener("keydown", (e) => {
-      const M = P.modal; if (!M || M.kind !== "order" || e.key !== "Enter") return;
-      if (e.target.id === "po-add") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(M.add); if (f.length) addOrderLine(f[0], f[0].asku); else renderModal(); }
-      else if (e.target.dataset.ok || e.target.dataset.oc) { e.preventDefault(); const a = $("po-add"); if (a) a.focus(); }
-    });
-    box.addEventListener("click", (e) => {
-      const M = P.modal, b = e.target.closest("button"); if (!M || M.kind !== "order" || !b) return;
-      if (b.dataset.fix && orderFix(b.dataset)) { e.stopImmediatePropagation(); return; }
-      if (b.dataset.ogo) { e.stopImmediatePropagation(); saveOrder(b.dataset.ogo); return; }
-      if (b.dataset.okind) { M.okind = b.dataset.okind; renderModal(); return; }
-      if (b.dataset.oadd != null) { const v = findProducts(M.add)[+b.dataset.oadd]; if (v) addOrderLine(v, v.asku); return; }
-      if (b.dataset.orm) { M.lines = M.lines.filter(l => l.key !== b.dataset.orm); renderModal(); return; }
-      const a = b.dataset.oact; if (!a) return;
-      if (a === "save") saveOrder(null);
-      else if (a === "save-next") saveOrder(ONEXT[M.status][0]);
-      else if (a === "recv-start") orderFix({ fix: "orecv" });
-      else if (a === "recv-cancel") { M.recv = null; renderModal(); }
-      else if (a === "recv-go") receiveNow();
-      else if (a === "ship") { saveOrder(null, true).then(id => { if (id) { const o = cache.orders.find(x => x.id === String(id)); if (o) shipFromOrder(o); } }); }
-      else if (a === "shipped") { M.confirm = "shipped"; renderModal(); }
-      else if (a === "do-shipped") saveOrder("shipped");
-      else if (a === "del") { M.confirm = "del"; renderModal(); }
-      else if (a === "back") { if (M.status === "received") { M.confirm = "unrecv"; renderModal(); } else saveOrder(OPREV[M.status]); }
-      else if (a === "do-back") saveOrder(OPREV[M.status]);
-      else if (a === "no") { M.confirm = false; renderModal(); }
-      else if (a === "do-del") { P.busy = true; renderModal(); JT.prep.deleteOrder(Number(M.id)).then(async () => { P.busy = false; P.modal = null; note("info", "Order deleted."); await load(true); render(); })
-        .catch(err => { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't delete: " + esc(JT.message(err))); }); }
-    });
   }
 
   // ===================== On The List: products to re-order =====================
@@ -1545,7 +1437,6 @@
   }
 
   bind();
-  bindOrders();
   bindList();
   window.addEventListener("jt:catalog", () => { cat = null; if (!$("tab-prep").hidden) refresh(true); else P.shown = false; });
   window.prepShow = () => { if (!P.shown) { P.shown = true; refresh(false); } else render(); };
