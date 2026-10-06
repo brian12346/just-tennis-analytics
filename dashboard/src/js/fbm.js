@@ -6,7 +6,7 @@
   const S = { msg: null, lines: null, lst: null, lstErr: null, lsel: new Set(), lqty: new Map(), fba: new Map(), lfba: "all", lres: new Map(), lnote: "", lconfirm: false, sending: false, lv: "all", lq: "", lsort: ["shopify_qty", -1], lshown: 150, downloads: null, cfg: {}, view: "confirm", q: "", sel: new Set(), busy: false, err: null, loading: false, timer: null, shown: 150 };
   const COLS = ["order_id", "sku", "asin", "product_name", "quantity", "order_status", "purchased", "shipped", "cancelled", "map_kind",
     "variant_id", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id", "tracked",
-    "decision", "status", "error", "decided_by", "decided_at", "applied_at", "shopify_before", "decided_units", "location_id"];
+    "decision", "status", "error", "decided_by", "decided_at", "applied_at", "shopify_before", "decided_units", "location_id", "label_cost"];
   // the Shopify location stock comes out of (jt.settings fbm_sync.location_id); its name is typed in on this page,
   // because the Shopify app can't read location names
   const locNum = (gid) => String(gid || "").split("/").pop();
@@ -38,7 +38,7 @@
   function orders() {
     const m = new Map();
     for (const l of S.lines || []) {
-      const o = m.get(l.order_id) || { id: l.order_id, purchased: l.purchased, status: l.order_status, shipped: l.shipped, cancelled: l.cancelled, lines: [] };
+      const o = m.get(l.order_id) || { id: l.order_id, purchased: l.purchased, status: l.order_status, shipped: l.shipped, cancelled: l.cancelled, label: l.label_cost == null ? null : +l.label_cost, lines: [] };
       l.state = lineState(l); o.lines.push(l); m.set(l.order_id, o);
     }
     for (const o of m.values()) {
@@ -135,7 +135,7 @@
       const pill = o.cancelled ? '<span class="pill cx">Cancelled</span>' : o.shipped ? `<span class="pill ok">${esc(o.status)}</span>` : `<span class="pill pos">${esc(o.status || "Not shipped")}</span>`;
       return `<tr class="${S.sel.has(o.id) ? "sel" : ""}"><td>${can ? `<input type="checkbox" data-sel="${esc(o.id)}" ${S.sel.has(o.id) ? "checked" : ""} aria-label="Select order ${esc(o.id)}">` : ""}</td>
         <td class="l mono"><a class="olink" href="https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(o.id)}" target="_blank" rel="noopener">${esc(o.id)}</a></td>
-        <td class="l">${esc(fmtDT(o.purchased))}</td><td class="l">${pill}</td><td class="l items">${items}</td><td class="act">${acts}</td></tr>`;
+        <td class="l">${esc(fmtDT(o.purchased))}</td><td class="l">${pill}${o.label != null ? `<div class="meta" title="Shipping label bought in Veeqo">Label $${o.label.toFixed(2)}</div>` : ""}</td><td class="l items">${items}</td><td class="act">${acts}</td></tr>`;
     }).join("");
     $("fbm-table").innerHTML = `<thead><tr><th>${selectable.length ? `<input type="checkbox" data-selall ${allSel ? "checked" : ""} aria-label="Select all">` : ""}</th><th class="l">Order</th><th class="l">Ordered</th><th class="l">Amazon status</th><th class="l">Items → Shopify</th><th></th></tr></thead>
       <tbody>${body || `<tr><td class="l dim" colspan="6">${S.view === "confirm" ? "Nothing to confirm — every shipped FBM order has been decided." : "No orders here."}</td></tr>`}</tbody>`;

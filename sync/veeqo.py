@@ -88,39 +88,89 @@ def shipment_rows(o: dict, now: dt.datetime) -> list[tuple]:
     return rows
 
 
-def sync_shipments(conn, since: dt.datetime) -> dict:
-    """Shipped orders updated since `since` -> one row per shipment (upsert)."""
-    s = requests.Session()
-    s.headers.update({"x-api-key": env("VEEQO_ID"), "Accept": "application/json"})
-    params = {"status": "shipped", "updated_at_min": since.strftime("%Y-%m-%d %H:%M:%S"), "page_size": PAGE}
-    now = dt.datetime.now(dt.timezone.utc)
-    rows, orders, page, pages = [], 0, 1, None
-    order_keys, ship_keys, channels = set(), set(), {}
-    while True:
-        r = _get(s, "/orders", {**params, "page": page})
-        batch = r.json() or []
-        if pages is None:
-            pages = int(r.headers.get("X-Total-Pages-Count") or 0) or None
-        for o in batch:
-            orders += 1
-            order_keys.update(o.keys())
-            ck = _name(o.get("channel")) + " · " + str((o.get("channel") or {}).get("type_code") or "")
-            channels[ck] = channels.get(ck, 0) + 1
-            for al in o.get("allocations") or []:
-                if isinstance((al or {}).get("shipment"), dict):
-                    ship_keys.update(al["shipment"].keys())
-            rows += shipment_rows(o, now)
-        if len(batch) < PAGE or (pages and page >= pages) or page >= 2000:
-            break
-        page += 1
-        time.sleep(0.25)   # Veeqo allows a few requests a second
-    n = upsert(conn, "jt.veeqo_shipments", COLS, rows, ["shipment_id"])
-    with_cost = sum(1 for r in rows if r[9] is not None)
-    state = {"checked_at": now.isoformat(), "since": since.isoformat(), "orders": orders, "shipments": len(rows),
-             "with_cost": with_cost, "amazon": sum(1 for r in rows if r[5]), "channels": channels,
-             "order_fields": sorted(order_keys), "shipment_fields": sorted(ship_keys)}
+def _save_state(conn, state: dict) -> None:
     with conn.cursor() as cur:
         cur.execute("""insert into jt.settings (key, value, updated_at) values ('veeqo_sync', %s::jsonb, now())
                        on conflict (key) do update set value = excluded.value, updated_at = now()""", (json.dumps(state),))
     conn.commit()
-    return {"variants": n, "orders": orders, "shipments": len(rows), "with_cost": with_cost}
+
+
+def _load_state(conn) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("select value from jt.settings where key = 'veeqo_sync'")
+        r = cur.fetchone()
+    return (r and r[0]) or {}
+
+
+def _pages(conn, s: requests.Session, since: dt.datetime, start_page: int, deadline: float, stats: dict) -> tuple[int, bool]:
+    """Shipped orders updated since `since`, from page `start_page`, saved every 10 pages, until done or `deadline`.
+    Returns (next page, finished). Veeqo lists newest first, so orders arriving meanwhile only push others to later
+    pages (read twice, never skipped)."""
+    params = {"status": "shipped", "updated_at_min": since.strftime("%Y-%m-%d %H:%M:%S"), "page_size": PAGE}
+    now = dt.datetime.now(dt.timezone.utc)
+    page, rows = start_page, []
+
+    def flush():
+        if rows:
+            stats["saved"] = stats.get("saved", 0) + upsert(conn, "jt.veeqo_shipments", COLS, rows, ["shipment_id"])
+            conn.commit()
+            rows.clear()
+
+    while True:
+        r = _get(s, "/orders", {**params, "page": page})
+        batch = r.json() or []
+        stats["pages"] = stats.get("pages", 0) + 1
+        if r.headers.get("X-Total-Pages-Count"):
+            stats["total_pages"] = int(r.headers["X-Total-Pages-Count"])
+        for o in batch:
+            stats["orders"] = stats.get("orders", 0) + 1
+            stats.setdefault("order_fields", set()).update(o.keys())
+            ck = _name(o.get("channel")) + " · " + str((o.get("channel") or {}).get("type_code") or "")
+            chs = stats.setdefault("channels", {})
+            chs[ck] = chs.get(ck, 0) + 1
+            for al in o.get("allocations") or []:
+                if isinstance((al or {}).get("shipment"), dict):
+                    stats.setdefault("shipment_fields", set()).update(al["shipment"].keys())
+            got = shipment_rows(o, now)
+            stats["shipments"] = stats.get("shipments", 0) + len(got)
+            stats["with_cost"] = stats.get("with_cost", 0) + sum(1 for x in got if x[9] is not None)
+            rows += got
+        if len(batch) < PAGE or page >= 5000:
+            flush()
+            return page + 1, True
+        page += 1
+        if page % 10 == 0:
+            flush()
+        if time.monotonic() > deadline:
+            flush()
+            return page, False
+        time.sleep(0.25)   # Veeqo allows a few requests a second
+
+
+def sync_shipments(conn, since: dt.datetime, budget: int = 240, backfill: bool = False) -> dict:
+    """Shipped orders updated since `since` -> one row per shipment (upsert), saved as it goes.
+    A long history load (`backfill`) runs `budget` seconds at a time: where it stopped is kept in jt.settings
+    'veeqo_sync' and every later run (hourly too) continues it for another `budget` seconds until it's done."""
+    s = requests.Session()
+    s.headers.update({"x-api-key": env("VEEQO_ID"), "Accept": "application/json"})
+    t0 = time.monotonic()
+    st = _load_state(conn)
+    stats: dict = {}
+    # 1) recent changes (the hourly / nightly window)
+    if not backfill:
+        _pages(conn, s, since, 1, t0 + budget, stats)
+    # 2) a history load: start one, or continue the one in progress
+    bf = st.get("backfill") or {}
+    if backfill:
+        bf = {"since": since.isoformat(), "page": 1, "started_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if bf and not bf.get("done"):   # gets its own `budget` seconds after the recent changes
+        nxt, done = _pages(conn, s, dt.datetime.fromisoformat(bf["since"]), int(bf.get("page") or 1), time.monotonic() + budget, stats)
+        bf.update(page=nxt, done=done, pages_total=stats.get("total_pages"), at=dt.datetime.now(dt.timezone.utc).isoformat())
+        if done:
+            bf["finished_at"] = bf["at"]
+    state = {"checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "since": since.isoformat(),
+             "seconds": round(time.monotonic() - t0, 1), "backfill": bf or None,
+             **{k: (sorted(v) if isinstance(v, set) else v) for k, v in stats.items()}}
+    _save_state(conn, state)
+    return {"variants": stats.get("saved", 0), **{k: state[k] for k in ("seconds",) }, "orders": stats.get("orders", 0),
+            "shipments": stats.get("shipments", 0), "with_cost": stats.get("with_cost", 0), "backfill": bf or None}

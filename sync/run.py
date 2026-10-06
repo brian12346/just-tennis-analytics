@@ -137,7 +137,9 @@ def main(argv: list[str] | None = None) -> None:
         from .veeqo import sync_shipments
         back = {"hourly": 3, "nightly": 14}.get(a.job, 30)
         since = a.since or (today - dt.timedelta(days=back))
-        run("veeqo_shipments", lambda: sync_shipments(conn, _utc(since - dt.timedelta(days=1))))
+        # `veeqo --since …` starts a history load (continued by later runs, 5 minutes at a time)
+        run("veeqo_shipments", lambda: sync_shipments(conn, _utc(since - dt.timedelta(days=1)),
+                                                      backfill=a.job == "veeqo" and a.since is not None))
 
     if a.job.startswith("amazon-"):
         if not a.file:

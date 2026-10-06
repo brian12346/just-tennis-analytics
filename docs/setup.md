@@ -102,11 +102,13 @@ is logged in `jt.fbm_pushes`. `{"action":"fbm_qty","preview":true,…}` checks w
 ## 9b. Veeqo shipping labels (Amazon FBM)
 
 Amazon FBM orders are mostly shipped with labels bought in Veeqo. Add the Veeqo API key (Veeqo → Settings → API keys)
-as the GitHub Actions secret `VEEQO_ID`. Sync job `veeqo` (also hourly: last 3 days; nightly: 14 days; `--since` for
-history) reads shipped orders and keeps one row per shipment in `jt.veeqo_shipments`: order, Amazon order id, tracking,
+as the GitHub Actions secret `VEEQO_ID`. Sync job `veeqo` (also hourly: last 3 days; nightly: 14 days; `--since` starts a
+history load that later runs continue 4 minutes at a time, saving as it goes) reads shipped orders and keeps one row per shipment in `jt.veeqo_shipments`: order, Amazon order id, tracking,
 carrier/service, ship time and label cost (filled only for labels bought with Veeqo's rates). It is read-only and stores
 no customer details. Each run's counts and the field names Veeqo returned are in `jt.settings` key `veeqo_sync`.
-Migration 083.
+Migration 083. The cost shows on the Amazon tab (Shipping labels KPI, Labels column by day, Label per order; by order
+date on the order's purchase day, by ship date on the day it shipped) and on each order on the FBM stock tab. Veeqo bills
+these to a card, so they aren't in Amazon's payments; Amazon's own label adjustments stay in Other Amazon charges.
 
 ## 10. Alerts
 

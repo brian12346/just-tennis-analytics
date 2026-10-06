@@ -311,7 +311,8 @@
         "to_char(purchase_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shipped", "cancelled", "map_kind",
         "variant_id::text", "map_units", "units", "shopify_title", "shopify_sku", "shopify_qty", "product_id::text", "tracked",
         "decision", "status", "error", "decided_by", "to_char(decided_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')",
-        "to_char(applied_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shopify_before", "decided_units", "location_id"],
+        "to_char(applied_at at time zone 'America/Los_Angeles', 'YYYY-MM-DD HH24:MI')", "shopify_before", "decided_units", "location_id",
+        "(select sum(s.cost) from jt.veeqo_shipments s where s.amazon_order_id = v_fbm_lines.order_id and s.cost is not null)"],
         "from jt.v_fbm_lines order by purchase_at desc, order_id, sku", refresh),
       // FBM listings (All Listings report) mapped to a Shopify variant that has stock
       listings: (refresh) => rows(["sku", "asin", "title", "amazon_status", "amazon_qty", "amazon_price", "report_file",

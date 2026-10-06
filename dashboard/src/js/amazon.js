@@ -530,14 +530,34 @@
     if (!S.db || !A.start) return;
     const id = ++A.reqId; A.loading = true; A.err = null; A.fresh = !!fresh; renderSales();
     try {
-      const [days] = await Promise.all([
+      const [days, labels] = await Promise.all([
         A.basis === "order" ? loadOrderBasis(A.start, A.end) : shipDays(A.start, A.end),
+        loadLabels(A.start, A.end).catch(() => null),
         loadApiDays(A.start, A.end).catch(e => { A.api.err = e; }),
       ]);
       if (id !== A.reqId) return;
       A.days = days.sort((a, b) => a.date.localeCompare(b.date));
+      A.labels = labels;
     } catch (e) { if (id === A.reqId) A.err = e; }
     if (id === A.reqId) { A.loading = false; A.skuShown = 100; A.oShown = 200; renderSales(); }
+  }
+
+  // ---------- shipping labels bought in Veeqo (FBM orders; billed to a card, so not in Amazon's payments) ----------
+  // jt.veeqo_shipments (sync job veeqo; migration 083). By order date a label counts on its order's purchase day, by
+  // ship date on the day it shipped. Map order id -> {day, cost, n}.
+  async function loadLabels(start, end) {
+    const LA = "'America/Los_Angeles'", J = window.JT;
+    const where = A.basis === "order"
+      ? `s.amazon_order_id in (select order_id from jt.amazon_order_lines where (purchase_at at time zone ${LA})::date between ${J.day(start)} and ${J.day(end)})`
+      : `s.shipped_at >= (${J.day(start)}::timestamp at time zone ${LA}) and s.shipped_at < ((${J.day(end)} + 1)::timestamp at time zone ${LA})`;
+    const day = A.basis === "order"
+      ? `(select to_char(min(l.purchase_at at time zone ${LA}), 'YYYY-MM-DD') from jt.amazon_order_lines l where l.order_id = s.amazon_order_id)`
+      : `to_char(min(s.shipped_at at time zone ${LA}), 'YYYY-MM-DD')`;
+    const r = await J.rows(["s.amazon_order_id", day, "sum(s.cost)", "count(*)"],
+      `from jt.veeqo_shipments s where s.amazon_order_id <> '' and s.cost is not null and ${where} group by s.amazon_order_id`, A.fresh);
+    const m = new Map();
+    for (const [id, d, c, n] of r) if (d) m.set(id, { day: d, cost: +c || 0, n: +n || 0 });
+    return m;
   }
 
   // ---------- day documents, kept in this browser (js/cache.js) ----------
@@ -717,7 +737,17 @@
       totalSales += t.sales || 0; unmappedSales += (t.sales || 0) - mappedSales;
       byDay.push({ day: d.date, orders: t.orders || 0, units: t.units || 0, sales: t.sales || 0, ship: t.ship || 0, promo: t.promo || 0, sellfees: t.sellfees || 0, fbafees: t.fbafees || 0, ordersNet: t.orders_net || 0, refunds: t.refunds_net || 0, cogs, gp, other: oth, profit: gp + oth, mappedSales, otherBreak: d.other || {} });
     }
-    return { byDay, bySku, orders, coverage: totalSales ? 1 - unmappedSales / totalSales : 0 };
+    // Veeqo labels: per order, and per day (as a cost, so negative)
+    const labDay = new Map(); let labOrders = 0;
+    for (const [id, l] of A.labels || []) {
+      if (l.day < A.start || l.day > A.end) continue;
+      labDay.set(l.day, (labDay.get(l.day) || 0) - l.cost); labOrders++;
+      const o = orders.get(id); if (o) o.label = (o.label || 0) + l.cost;
+    }
+    for (const r of byDay) { r.labels = labDay.get(r.day) || 0; r.profit += r.labels; labDay.delete(r.day); }
+    for (const [day, v] of labDay) byDay.push({ day, orders: 0, units: 0, sales: 0, ship: 0, promo: 0, sellfees: 0, fbafees: 0, ordersNet: 0, refunds: 0, cogs: 0, gp: 0, other: 0, labels: v, profit: v, mappedSales: 0, otherBreak: {} });
+    byDay.sort((x, y) => x.day.localeCompare(y.day));
+    return { byDay, bySku, orders, labOrders, coverage: totalSales ? 1 - unmappedSales / totalSales : 0 };
   }
 
   function renderSales() {
@@ -738,21 +768,22 @@
     for (const day of [...A.api.days.keys()].sort()) {
       if (day < A.start || day > A.end || txDays.has(day)) continue;
       const a = apiDay(day); gap.push(day);
-      ag.byDay.push({ day, apiOnly: true, ordered: a[2], orderedOrders: a[0], orders: 0, units: 0, sales: 0, ship: 0, promo: 0, sellfees: 0, fbafees: 0, ordersNet: 0, refunds: 0, cogs: 0, gp: 0, other: 0, profit: 0, mappedSales: 0, otherBreak: {} });
+      ag.byDay.push({ day, apiOnly: true, ordered: a[2], orderedOrders: a[0], orders: 0, units: 0, sales: 0, ship: 0, promo: 0, sellfees: 0, fbafees: 0, ordersNet: 0, refunds: 0, cogs: 0, gp: 0, other: 0, labels: 0, profit: 0, mappedSales: 0, otherBreak: {} });
     }
     ag.byDay.sort((x, y) => x.day.localeCompare(y.day));
     const gapNote = gap.length ? `${gap.length === 1 ? shortDay(gap[0]) + " isn't" : `${shortDay(gap[0])} – ${shortDay(gap[gap.length - 1])} aren't`} in Amazon's payments data yet, so ${gap.length === 1 ? "it shows" : "they show"} ordered sales only (no fees or profit). Fees and profit come in every hour.` : "";
     const sum = (k) => ag.byDay.reduce((a, r) => a + r[k], 0);
     const estSales = (A.days || []).reduce((a, d) => a + ((d.totals || {}).est_sales || 0), 0), estOrders = (A.days || []).reduce((a, d) => a + ((d.totals || {}).est_orders || 0), 0);
     const mxSales = (A.days || []).reduce((a, d) => a + ((d.totals || {}).mx_sales || 0), 0), mxOrders = (A.days || []).reduce((a, d) => a + ((d.totals || {}).mx_orders || 0), 0);
-    const sales = sum("sales"), fees = -(sum("sellfees") + sum("fbafees")), cogs = sum("cogs"), profit = sum("profit"), gp = sum("gp"), other = sum("other"), refunds = sum("refunds");
+    const sales = sum("sales"), fees = -(sum("sellfees") + sum("fbafees")), cogs = sum("cogs"), profit = sum("profit"), gp = sum("gp"), other = sum("other"), refunds = sum("refunds"), labels = sum("labels");
     const k = [
       { c: "sales", l: "Product sales", v: m0(sales), s: `${sum("orders").toLocaleString()} orders · ${sum("units").toLocaleString()} units${mxSales ? ` · Amazon.com.mx ${m0(mxSales)} (${mxOrders.toLocaleString()} orders)` : ""}${A.basis === "order" ? estOrders ? ` · <span title="Not paid by Amazon yet: fees from each SKU's recent rate">${estOrders.toLocaleString()} orders (${m0(estSales)}) estimated</span>` : " · all paid by Amazon" : " · by ship date"}` },
       { l: "Amazon fees", v: m0(fees), s: `${pct(fees / sales)} of sales · referral ${m0(-sum("sellfees"))} · FBA ${m0(-sum("fbafees"))}` },
       { l: "Refunds", v: `<span class="neg">${m0(refunds)}</span>`, s: "Net of fees Amazon returns" },
       { c: "cost", l: "Product cost", v: m0(cogs), s: `<span style="color:${ag.coverage < 0.95 ? "var(--warn)" : "inherit"}">${pct(ag.coverage)} of sales mapped</span>` },
       { l: "Gross profit", v: `<span class="${gp < 0 ? "neg" : ""}">${m0(gp)}</span>`, s: `${pct(gp / sales)} margin · after fees, refunds & cost` },
-      { l: "Other Amazon charges", v: `<span class="${other < 0 ? "neg" : ""}">${m0(other)}</span>`, s: "Storage, inbound, labels, reimbursements" },
+      { l: "Other Amazon charges", v: `<span class="${other < 0 ? "neg" : ""}">${m0(other)}</span>`, s: "Storage, inbound, label adjustments, reimbursements" },
+      { l: "Shipping labels", v: `<span class="${labels < 0 ? "neg" : ""}">${m0(labels)}</span>`, s: A.labels ? `Bought in Veeqo · ${ag.labOrders.toLocaleString()} FBM order${ag.labOrders === 1 ? "" : "s"}${ag.labOrders ? " · " + m(-labels / ag.labOrders) + " each" : ""}` : "Veeqo labels didn't load" },
       { c: "sales", l: "Profit", v: `<span class="${profit < 0 ? "neg" : ""}">${m0(profit)}</span>`, s: `${pct(profit / sales)} of sales` },
     ];
     $("az-kpis").innerHTML = k.map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
@@ -797,20 +828,20 @@
   }
 
   function renderAzDaily(rows) {
-    const cols = ["Day", "Orders", "Units", "Product sales", "Ordered (Amazon)", "Promos", "Referral fees", "FBA fees", "Order proceeds", "Refunds", "Product cost", "Gross profit", "Other charges", "Profit", "Margin", "Mapped"];
-    const T = {}; const keys = ["orders", "units", "sales", "promo", "sellfees", "fbafees", "ordersNet", "refunds", "cogs", "gp", "other", "profit", "mappedSales"];
+    const cols = ["Day", "Orders", "Units", "Product sales", "Ordered (Amazon)", "Promos", "Referral fees", "FBA fees", "Order proceeds", "Refunds", "Product cost", "Gross profit", "Other charges", "Labels", "Profit", "Margin", "Mapped"];
+    const T = {}; const keys = ["orders", "units", "sales", "promo", "sellfees", "fbafees", "ordersNet", "refunds", "cogs", "gp", "other", "labels", "profit", "mappedSales"];
     keys.forEach(k => T[k] = 0); T.ordered = 0; let anyOrdered = false;
     const cell = (v) => `<td class="${v < 0 ? "neg" : ""}">${m(v)}</td>`;
     const body = [...rows].reverse().map(r => {
       if (r.ordered != null) { T.ordered += r.ordered; anyOrdered = true; }
       const ordCell = `<td class="${r.ordered == null ? "dim" : ""}" title="Ordered product sales by purchase date, from Amazon">${r.ordered == null ? "—" : m(r.ordered)}</td>`;
-      if (r.apiOnly) return `<tr class="apionly"><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td class="dim">${(r.orderedOrders || 0).toLocaleString()}</td><td class="dim">—</td><td class="dim">—</td>${ordCell}${'<td class="dim">—</td>'.repeat(11)}</tr>`;
+      if (r.apiOnly) return `<tr class="apionly"><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td class="dim">${(r.orderedOrders || 0).toLocaleString()}</td><td class="dim">—</td><td class="dim">—</td>${ordCell}${'<td class="dim">—</td>'.repeat(12)}</tr>`;
       keys.forEach(k => T[k] += r[k]);
       const ob = Object.entries(r.otherBreak).map(([k, v]) => `${({ storage: "Storage", fbaother: "FBA other", service: "Service", labels: "Labels", adjust: "Adjustments" })[k] || k} ${m(v)}`).join(" · ");
-      return `<tr class="${r.profit < 0 ? "lossday" : r.sales && r.mappedSales / r.sales < 0.95 ? "flag" : ""}"><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td>${r.orders.toLocaleString()}</td><td>${r.units.toLocaleString()}</td><td><b>${m(r.sales)}</b></td>${ordCell}${cell(r.promo)}${cell(r.sellfees)}${cell(r.fbafees)}<td>${m(r.ordersNet)}</td>${cell(r.refunds)}<td>${m(r.cogs)}</td>${cell(r.gp)}<td class="${r.other < 0 ? "neg" : ""}" title="${esc(ob)}">${m(r.other)}</td><td class="${r.profit < 0 ? "neg" : ""}"><b>${m(r.profit)}</b></td><td class="dim">${r.sales ? pct(r.profit / r.sales) : ""}</td><td class="dim">${r.sales ? pct(r.mappedSales / r.sales) : ""}</td></tr>`;
+      return `<tr class="${r.profit < 0 ? "lossday" : r.sales && r.mappedSales / r.sales < 0.95 ? "flag" : ""}"><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td><td>${r.orders.toLocaleString()}</td><td>${r.units.toLocaleString()}</td><td><b>${m(r.sales)}</b></td>${ordCell}${cell(r.promo)}${cell(r.sellfees)}${cell(r.fbafees)}<td>${m(r.ordersNet)}</td>${cell(r.refunds)}<td>${m(r.cogs)}</td>${cell(r.gp)}<td class="${r.other < 0 ? "neg" : ""}" title="${esc(ob)}">${m(r.other)}</td><td class="${r.labels < 0 ? "neg" : "dim"}" title="Shipping labels bought in Veeqo">${r.labels ? m(r.labels) : "—"}</td><td class="${r.profit < 0 ? "neg" : ""}"><b>${m(r.profit)}</b></td><td class="dim">${r.sales ? pct(r.profit / r.sales) : ""}</td><td class="dim">${r.sales ? pct(r.mappedSales / r.sales) : ""}</td></tr>`;
     }).join("");
     $("az-daily").innerHTML = `<thead><tr>${cols.map((c, i) => `<th class="${i === 0 ? "l" : ""}">${c}</th>`).join("")}</tr></thead><tbody>${body}</tbody>
-      <tfoot><tr><td class="l">Total</td><td>${T.orders.toLocaleString()}</td><td>${T.units.toLocaleString()}</td><td>${m(T.sales)}</td><td>${anyOrdered ? m(T.ordered) : "—"}</td><td>${m(T.promo)}</td><td>${m(T.sellfees)}</td><td>${m(T.fbafees)}</td><td>${m(T.ordersNet)}</td><td>${m(T.refunds)}</td><td>${m(T.cogs)}</td><td>${m(T.gp)}</td><td>${m(T.other)}</td><td class="${T.profit < 0 ? "neg" : ""}">${m(T.profit)}</td><td>${T.sales ? pct(T.profit / T.sales) : ""}</td><td>${T.sales ? pct(T.mappedSales / T.sales) : ""}</td></tr></tfoot>`;
+      <tfoot><tr><td class="l">Total</td><td>${T.orders.toLocaleString()}</td><td>${T.units.toLocaleString()}</td><td>${m(T.sales)}</td><td>${anyOrdered ? m(T.ordered) : "—"}</td><td>${m(T.promo)}</td><td>${m(T.sellfees)}</td><td>${m(T.fbafees)}</td><td>${m(T.ordersNet)}</td><td>${m(T.refunds)}</td><td>${m(T.cogs)}</td><td>${m(T.gp)}</td><td>${m(T.other)}</td><td>${m(T.labels)}</td><td class="${T.profit < 0 ? "neg" : ""}">${m(T.profit)}</td><td>${T.sales ? pct(T.profit / T.sales) : ""}</td><td>${T.sales ? pct(T.mappedSales / T.sales) : ""}</td></tr></tfoot>`;
     window.jtLabelCells($("az-daily"));
   }
 
@@ -843,13 +874,13 @@
       return true;
     }).sort((a, b) => (b.day + b.time).localeCompare(a.day + a.time));
     const body = rows.slice(0, A.oShown).map(o => {
-      const profit = o.unmapped ? null : o.net - o.cogs;
+      const profit = o.unmapped ? null : o.net - o.cogs - (o.label || 0);
       const first = o.lines[0], more = new Set(o.lines).size - 1;
       return `<tr><td class="l mono"><a class="olink" href="https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(o.id)}" target="_blank" rel="noopener">${esc(o.id)}</a></td><td class="l">${shortDay(o.day)} <span class="dim">${o.time}</span>${o.est ? ' <span class="pill pos" title="Not paid by Amazon yet: fees estimated from the SKU\'s recent rate">est.</span>' : ""}</td><td class="l">${o.fba ? '<span class="pill web">FBA</span>' : '<span class="pill pos">Merchant</span>'}</td>
         <td class="l"><div class="iname">${esc(titleOf(first) || first)}</div>${more > 0 ? `<div class="small dim">+${more} more</div>` : ""}</td><td>${o.units}</td><td>${m(o.sales)}</td><td class="${o.promo < 0 ? "neg" : "dim"}">${o.promo ? m(o.promo) : "—"}</td><td class="neg">${m(o.sellfees)}</td><td class="neg">${m(o.fbafees)}</td><td>${m(o.net)}</td>
-        <td>${o.unmapped ? `<button class="pill miss" data-map="${esc(o.lines.find(sku => unitCost(sku) == null))}">Map</button>` : m(o.cogs)}</td><td class="${profit != null && profit < 0 ? "neg" : ""}">${profit == null ? '<span class="dim">—</span>' : "<b>" + m(profit) + "</b>"}</td><td class="dim">${profit != null && o.sales ? pct(profit / o.sales) : ""}</td></tr>`;
+        <td>${o.unmapped ? `<button class="pill miss" data-map="${esc(o.lines.find(sku => unitCost(sku) == null))}">Map</button>` : m(o.cogs)}</td><td class="${o.label ? "neg" : "dim"}" title="${o.label ? "Shipping label bought in Veeqo" : o.fba ? "Shipped by Amazon" : "No Veeqo label found"}">${o.label ? m(-o.label) : "—"}</td><td class="${profit != null && profit < 0 ? "neg" : ""}">${profit == null ? '<span class="dim">—</span>' : "<b>" + m(profit) + "</b>"}</td><td class="dim">${profit != null && o.sales ? pct(profit / o.sales) : ""}</td></tr>`;
     }).join("");
-    $("az-orders").innerHTML = `<thead><tr><th class="l">Order</th><th class="l">${A.basis === "order" ? "Ordered" : "Posted"}</th><th class="l">Fulfillment</th><th class="l">Item</th><th>Units</th><th>Product sales</th><th>Promos</th><th>Referral fee</th><th>FBA fee</th><th>Proceeds</th><th>Product cost</th><th>Profit</th><th>Margin</th></tr></thead><tbody>${body || '<tr><td class="l dim" colspan="13">No orders match.</td></tr>'}</tbody>`;
+    $("az-orders").innerHTML = `<thead><tr><th class="l">Order</th><th class="l">${A.basis === "order" ? "Ordered" : "Posted"}</th><th class="l">Fulfillment</th><th class="l">Item</th><th>Units</th><th>Product sales</th><th>Promos</th><th>Referral fee</th><th>FBA fee</th><th>Proceeds</th><th>Product cost</th><th>Label</th><th>Profit</th><th>Margin</th></tr></thead><tbody>${body || '<tr><td class="l dim" colspan="14">No orders match.</td></tr>'}</tbody>`;
     $("az-omore").hidden = rows.length <= A.oShown;
     $("az-ocount").textContent = rows.length ? `Showing ${Math.min(A.oShown, rows.length)} of ${rows.length.toLocaleString()} orders` : "";
   }
