@@ -66,9 +66,9 @@
   const release = () => { const n = waiting.shift(); if (n) n(); else active--; };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-  async function once(mcp, sql, refresh) {
-    // Data syncs hourly, so a result stays good for 30 minutes (Refresh bypasses this).
-    const opts = { cache: { staleTime: 1800000, gcTime: 21600000, refresh: !!refresh } };
+  async function once(mcp, sql, refresh, ttl) {
+    // Data syncs hourly, so a result stays good for 30 minutes unless the caller says longer (Refresh bypasses this).
+    const opts = { cache: { staleTime: ttl || 1800000, gcTime: Math.max(21600000, ttl || 0), refresh: !!refresh } };
     let last;
     for (let attempt = 0; attempt < 3; attempt++) {
       try { return await mcp.callTool("Supabase", "execute_sql", { project_id: PROJECT, query: sql }, opts); }
@@ -112,11 +112,11 @@
     }
     throw { code: "server_unavailable", message: "Amazon took too long to answer.", retryable: true };
   }
-  async function run(sql, refresh) {
+  async function run(sql, refresh, ttl) {
     refresh = refresh || Date.now() < freshUntil;
     if (WEB) {
       await acquire(isWrite(sql));
-      try { return await WEB.sql(sql, refresh); }
+      try { return await WEB.sql(sql, refresh, ttl); }
       catch (e) { console.warn("[JT] database call failed", e && e.code, e && e.message); throw e; }
       finally { release(); }
     }
@@ -127,7 +127,7 @@
     else await gate.catch(() => {});
     await acquire(isWrite(sql));
     try {
-      const res = await once(mcp, sql, refresh);
+      const res = await once(mcp, sql, refresh, ttl);
       if (first) gate.done();
       return unwrap(res);
     } catch (e) {
@@ -138,20 +138,20 @@
   }
 
   // Rows as arrays: `select` is a list of SQL expressions, `from` the rest of the query (from/where/group by).
-  async function rows(select, from, refresh) {
+  async function rows(select, from, refresh, ttl) {
     const cols = select.map((e, i) => `${e} as c${i}`).join(", "), refs = select.map((_, i) => `t.c${i}`).join(", ");
     const sql = `select coalesce(json_agg(json_build_array(${refs})), '[]'::json) as j from (select ${cols} ${from}) t`;
-    const out = await run(sql, refresh);
+    const out = await run(sql, refresh, ttl);
     return (out[0] && out[0].j) || [];
   }
   // Same, split into `parts` by a hash of `key` to keep each reply small; a part whose reply comes back
   // cut off is split again (up to 64 parts).
-  async function rowsSplit(select, from, key, parts, refresh) {
+  async function rowsSplit(select, from, key, parts, refresh, ttl) {
     const [head, ...rest] = from.split(/(?=\bgroup by\b)/i);
     const hasWhere = /\bwhere\b/i.test(head);
     const part = async (n, i) => {
       const f = n <= 1 ? from : `${head} ${hasWhere ? "and" : "where"} abs(hashtext((${key})::text)) % ${n} = ${i} ${rest.join("")}`;
-      try { return await rows(select, f, refresh); }
+      try { return await rows(select, f, refresh, ttl); }
       catch (e) {
         if (!(e && e.code === "too_big") || n >= 16) throw e;
         const [a, b] = await Promise.all([part(n * 2, i), part(n * 2, i + n)]);
@@ -570,7 +570,14 @@
   // Supabase table jt.docs, one row per document. Offers the calls the tabs were written against
   // (collection/doc, where/orderBy/limit, get/set/update/delete, onSnapshot).
   const listeners = new Map(), timers = new Map();
+  // Collection reads may come from the cache (30 minutes), except for a few minutes after this page saved to it.
+  const dirty = new Map();
+  const isDirty = (c) => (dirty.get(c) || 0) > Date.now();
+  // Collections that change rarely (mappings, the daily listings report) are kept 6 hours.
+  const SLOW = new Set(["amzmap", "amzlistings", "amzmeta", "amzdeny"]);
+  window.JT.isDirty = isDirty;
   const changed = (c) => {        // after writes, refresh open views of that collection once things settle
+    dirty.set(c, Date.now() + 180000);
     clearTimeout(timers.get(c));
     timers.set(c, setTimeout(() => (listeners.get(c) || new Set()).forEach(f => f()), 600));
   };
@@ -617,7 +624,7 @@
         }
         s += ord ? ` order by data ->> ${q(ord[0])} ${ord[1]}` : " order by id";
         if (lim) s += ` limit ${int(lim)}`;
-        return snapOf(await run(s, true));
+        return snapOf(await run(s, isDirty(c), SLOW.has(c) ? 6 * 3600000 : undefined));
       },
       onSnapshot(cb, err) { const f = () => api.get().then(cb, e => err && err(e)); f(); return listen(c, f); },
       doc: (id) => docRef(c, id),

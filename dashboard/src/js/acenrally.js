@@ -16,7 +16,7 @@
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const shortDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 
-  const A = { shown: false, loading: false, preset: "30", start: null, end: null, days: null, prods: null, unmatched: null, status: null, sort: "net", reqId: 0 };
+  const A = { shown: false, loading: false, preset: "today", start: null, end: null, days: null, prods: null, unmatched: null, status: null, sort: "net", reqId: 0 };
 
   window.JTRange.seg("anr-rangeseg", "r");
   function setRange(r) {

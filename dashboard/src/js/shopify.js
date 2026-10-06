@@ -767,7 +767,7 @@
   drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); handleFile(e.dataTransfer.files[0]); });
   let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => renderChart(derive()), 150); });
 
-  setRange(14);
+  setRange("today");
   render();
 
 

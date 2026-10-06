@@ -484,7 +484,7 @@
   // =====================================================================
   // Amazon sales & profit
   // =====================================================================
-  const A = { months: new Map(), titles: {}, start: null, end: null, preset: "30", days: null, loading: false, err: null, skuShown: 100, oShown: 200, reqId: 0, uploading: false,
+  const A = { months: new Map(), titles: {}, start: null, end: null, preset: "today", days: null, loading: false, err: null, skuShown: 100, oShown: 200, reqId: 0, uploading: false,
     // orders straight from Amazon (SP-API): status = jt.v_amazon_api_status, days = day -> {mk -> [orders, units, sales, pending]}
     api: { status: null, days: new Map(), err: null, busy: false, msg: "" },
     // "order": fees, refunds and profit on the day each order was bought (jt.amazon_orderday_docs, migration 076; orders not
@@ -511,12 +511,13 @@
     return { first: firsts.sort()[0], last: lasts.sort().pop(), txLast: ms.length ? ms.map(x => x.lastDay).sort().pop() : null };
   }
   window.JTRange.seg("az-rangeseg", "days");
-  // Presets count back from the last day of Amazon data (reports are uploaded, so "today" is usually not in yet).
+  // Presets count back from today (orders and payments come from Amazon's API through today).
   function setAzRange(preset) {
     const b = dataBounds(); if (!b) return;
-    A.preset = preset; [A.start, A.end] = window.JTRange.of(preset, b.last);
+    const today = window.JTDate.today();
+    A.preset = preset; [A.start, A.end] = window.JTRange.of(preset, today);
     if (A.start < b.first) A.start = b.first;
-    if (A.end > b.last) A.end = b.last;
+    if (A.end > today) A.end = today;
     $("az-start").value = A.start; $("az-end").value = A.end;
     document.querySelectorAll("#az-rangeseg button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.days === preset)));
     loadDays();
@@ -525,9 +526,9 @@
   const onAzDate = () => { const s = $("az-start").value, e = $("az-end").value; if (!s || !e || s > e) return; A.start = s; A.end = e; A.preset = null; document.querySelectorAll("#az-rangeseg button").forEach(x => x.setAttribute("aria-pressed", "false")); loadDays(); };
   $("az-start").addEventListener("change", onAzDate); $("az-end").addEventListener("change", onAzDate);
 
-  async function loadDays() {
+  async function loadDays(fresh) {
     if (!S.db || !A.start) return;
-    const id = ++A.reqId; A.loading = true; A.err = null; renderSales();
+    const id = ++A.reqId; A.loading = true; A.err = null; A.fresh = !!fresh; renderSales();
     try {
       const [days] = await Promise.all([
         A.basis === "order" ? loadOrderBasis(A.start, A.end) : shipDays(A.start, A.end),
@@ -539,16 +540,54 @@
     if (id === A.reqId) { A.loading = false; A.skuShown = 100; A.oShown = 200; renderSales(); }
   }
 
-  // By order date: the day documents built in the database, 3 days per call (keeps each reply small)
-  async function loadOrderDays(start, end) {
+  // ---------- day documents, kept in this browser (js/cache.js) ----------
+  // Each day's document is saved locally and reused until it's too old for its age (JTCache.dayTtl: recent days 30
+  // minutes, older days hours to a week), so moving between ranges or reloading the page doesn't download them again.
+  // `fetch(a, b)` loads days a..b from the database; days with nothing are remembered too. A.fresh = reload anyway.
+  async function cachedDays(kind, start, end, fetch, fresh) {
+    const C = window.JTCache, today = window.JTDate.today(), list = [];
+    for (let d = start; d <= end; d = addDays(d, 1)) list.push(d);
+    const hits = C && !fresh ? await C.getMany(list.map(d => `d:${kind}:${d}`)) : list.map(() => null);
+    const out = [], miss = [];
+    list.forEach((d, i) => {
+      const h = hits[i];
+      if (h && Date.now() - h.t < C.dayTtl(d, today)) { if (h.v) out.push(h.v); }
+      else miss.push(d);
+    });
+    if (!miss.length) return out;
+    const runs = [];   // contiguous runs of missing days, one fetch each
+    for (const d of miss) { const r = runs[runs.length - 1]; if (r && addDays(r[1], 1) === d) r[1] = d; else runs.push([d, d]); }
+    const got = [].concat(...await Promise.all(runs.map(([a, b]) => fetch(a, b))));
+    const byDay = new Map(got.map(x => [x.date, x]));
+    if (C) C.putMany(miss.map(d => [`d:${kind}:${d}`, byDay.get(d) || null]));
+    return out.concat(got);
+  }
+
+  // By order date, built live in the database (3 days per call keeps each reply small) — only for today and yesterday
+  // and for days not stored yet; every other day is stored (jt.docs amzodays, rebuilt hourly/nightly; migration 084).
+  async function liveOrderDays(start, end) {
     const chunks = []; for (let d = start; d <= end; d = addDays(d, 3)) { const e = addDays(d, 2); chunks.push([d, e > end ? end : e]); }
-    const parts = await Promise.all(chunks.map(([a, b]) => window.JT.rows([`jt.amazon_orderday_docs(${window.JT.day(a)}, ${window.JT.day(b)})`], "", false)
+    const parts = await Promise.all(chunks.map(([a, b]) => window.JT.rows([`jt.amazon_orderday_docs(${window.JT.day(a)}, ${window.JT.day(b)})`], "", A.fresh)
       .then(r => { const v = r[0] && r[0][0]; return Array.isArray(v) ? v : typeof v === "string" ? JSON.parse(v) : []; })));
     return [].concat(...parts);
   }
-  const shipDays = (a, b) => S.db.collection("amzdays").where("date", ">=", a).where("date", "<=", b).limit(400).get().then(snap => snap.docs.map(d => d.data()));
-  // Amazon's payments come from the API from Sep 1, 2026; days before that only have the uploaded Transaction reports
-  // (by ship date), so they're shown that way.
+  const docsBetween = (coll, a, b) => S.db.collection(coll).where("date", ">=", a).where("date", "<=", b).limit(400).get().then(snap => snap.docs.map(d => d.data()));
+  async function storedOrderDays(a, b) {
+    const docs = await docsBetween("amzodays", a, b), have = new Set(docs.map(d => d.date)), gaps = [];
+    for (let d = a; d <= b; d = addDays(d, 1)) if (!have.has(d)) { const g = gaps[gaps.length - 1]; if (g && addDays(g[1], 1) === d) g[1] = d; else gaps.push([d, d]); }
+    const live = gaps.length ? [].concat(...await Promise.all(gaps.map(([x, y]) => liveOrderDays(x, y)))) : [];
+    return docs.concat(live);
+  }
+  async function loadOrderDays(start, end) {
+    const liveFrom = addDays(window.JTDate.today(), -1);
+    const older = start < liveFrom ? cachedDays("o", start, end < liveFrom ? end : addDays(liveFrom, -1), storedOrderDays, A.fresh) : [];
+    const recent = end >= liveFrom ? liveOrderDays(start > liveFrom ? start : liveFrom, end) : [];
+    const [a, b] = await Promise.all([older, recent]);
+    return a.concat(b);
+  }
+  const shipDays = (a, b) => cachedDays("s", a, b, (x, y) => docsBetween("amzdays", x, y), A.fresh);
+  // Amazon's payments come from the API from Jan 1, 2025; days before the first payment day only have the uploaded
+  // Transaction reports (by ship date), so they're shown that way.
   async function loadOrderBasis(start, end) {
     if (A.finStart === undefined) {
       try { const r = await window.JT.rows(["min((posted_at at time zone 'America/Los_Angeles')::date)::text"], "from jt.amazon_fin_lines"); A.finStart = (r[0] && r[0][0]) || null; }
@@ -625,7 +664,7 @@
       const f = await window.JT.amazon({ action: "fin_recent" });
       if (!f || !f.ok) throw new Error((f && f.error) || "Amazon didn't answer.");
       if (window.JTWeb) window.JTWeb.clearCache();
-      if (A.start) loadDays();
+      if (A.start) loadDays(true);
       A.api.msg = "Asking Amazon for the latest orders…"; renderLive();
       const r = await window.JT.amazon({ action: "sync", force: true });
       if (!r || !r.ok) throw new Error((r && r.error) || "Amazon didn't answer.");
@@ -894,6 +933,7 @@
         $("az-status").textContent = `Saving day ${++n} of ${list.length}…`;
         await S.db.collection("amzdays").doc(day).set({ date: day, skus: d.skus, orders: d.orders, refunds: d.refunds, other, totals, file: file.name, uploadedAt: now });
       }
+      if (window.JTCache) await window.JTCache.clear("d:s:");   // the uploaded days replace the ones kept in this browser
       // rebuild month summaries for the months touched
       const months = [...new Set(list.map(d => d.slice(0, 7)))];
       for (const mo of months) {
@@ -921,7 +961,7 @@
   function applyMonths(snap) {
     const mp = new Map(); for (const d of snap.docs) { const b = d.data() || {}; if (b.month) mp.set(b.month, b); }
     const had = A.months.size; A.months = mp; A.monthsReady = true;
-    if (!A.start || !had) setAzRange(A.preset || "30"); else renderSales();
+    if (!A.start || !had) setAzRange(A.preset || "today"); else renderSales();
     render(); // mapping tab uses sales totals
   }
   function skuSales() {
@@ -943,7 +983,7 @@
     const loadMaps = async () => {
       const id = ++mapsLoad;
       try {
-        const r = await window.JT.rowsSplit(["id", "data"], "from jt.docs where collection = 'amzmap'", "id", 4, true);
+        const r = await window.JT.rowsSplit(["id", "data"], "from jt.docs where collection = 'amzmap'", "id", 4, window.JT.isDirty("amzmap"), 6 * 3600000);
         if (id !== mapsLoad) return;
         applyMaps({ docs: r.map(([i, d]) => ({ id: i, data: () => d })) });
       } catch (e) { S.mapsReady = true; render(); }

@@ -931,7 +931,10 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
     with conn.cursor() as cur:
         cur.execute("select inventory_item_id, variant_id from jt.variants where inventory_item_id is not null")
         by_item = {int(a): int(b) for a, b in cur.fetchall()}
-        cur.execute("select id, raw, lines_synced is not null from jt.shopify_pos")
+        # only the list's own fields of each saved PO (not the whole saved JSON with its lines: that was ~14 MB an hour)
+        hk = sorted({k for h in heads for k in h})
+        cur.execute("""select id, (select coalesce(jsonb_object_agg(k, raw -> k), '{}'::jsonb) from unnest(%s::text[]) k where raw ? k),
+                              lines_synced is not null from jt.shopify_pos""", (hk,))
         have = {r[0]: (r[1] or {}, r[2]) for r in cur.fetchall()}
     # 2) details (with line items) for new or changed POs, newest first
     todo = [h for h in heads if gid_num(h.get("id")) not in have or not have[gid_num(h["id"])][1]

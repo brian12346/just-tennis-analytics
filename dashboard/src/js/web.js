@@ -52,7 +52,7 @@
       $("login-pass").value = "";
       signedIn(data.session);
     });
-    $("signout").addEventListener("click", async () => { cache.clear(); if (sb) await sb.auth.signOut(); location.reload(); });
+    $("signout").addEventListener("click", async () => { cache.clear(); if (window.JTCache) window.JTCache.clear(); if (sb) await sb.auth.signOut(); location.reload(); });
     boot();
   });
 
@@ -75,16 +75,20 @@
       return data;
     } finally { clearTimeout(timer); }
   }
-  // Reads are kept for 30 minutes (data syncs hourly); Refresh or any save clears them.
-  const cache = new Map();
-  async function sql(q, refresh) {
-    const hit = cache.get(q);
-    if (!refresh && hit && Date.now() - hit.t < 1800000) return hit.v;
+  // Reads are kept for 30 minutes (data syncs hourly), also across page reloads (js/cache.js); Refresh or any save
+  // clears them.
+  const cache = new Map(), TTL = 1800000, PC = () => window.JTCache;
+  async function sql(q, refresh, ttl) {
+    let hit = cache.get(q);
+    if (!refresh && !hit && PC()) { hit = await PC().get("q:" + q); if (hit) cache.set(q, hit); }
+    if (!refresh && hit && Date.now() - hit.t < (ttl || TTL)) return hit.v;
     const v = await rpc("jt_sql", { q });
-    cache.set(q, { t: Date.now(), v });
+    const e = { t: Date.now(), v }; cache.set(q, e);
+    if (PC()) PC().put("q:" + q, v);
     return v;
   }
-  async function write(fn, args) { const v = await rpc(fn, args); cache.clear(); return v; }
+  const clearAll = () => { cache.clear(); if (PC()) PC().clear("q:"); };
+  async function write(fn, args) { const v = await rpc(fn, args); clearAll(); return v; }
   // a Supabase edge function (e.g. qbo); its JSON answer, also when it answers with an error status
   async function fn(name, body) {
     await ready;
@@ -117,5 +121,5 @@
       return Promise.resolve(null);
     },
   };
-  window.JTWeb = { ready, rpc, sql, write, fn, clearCache: () => cache.clear() };
+  window.JTWeb = { ready, rpc, sql, write, fn, clearCache: clearAll };
 })();
