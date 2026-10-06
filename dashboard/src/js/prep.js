@@ -1052,14 +1052,14 @@
     const todo = P.lView === "todo";
     el.innerHTML = [...groups].sort((a, b) => a[0].localeCompare(b[0])).map(([v, list]) => {
       const dr = todo ? d.orders.find(o => o.status === "draft" && o.kind === "order" && (o.vendor || "").toLowerCase() === (v === "(no vendor)" ? "" : v.toLowerCase())) : null;
-      return `<div class="lgroup"><div class="lghead"><b>${esc(v)}</b><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${todo ? (dr ? ` · Add to PO puts them on <button class="linkbtn small" data-lord="${dr.id}">${esc(orderTitle(dr))}</button> (draft)` : " · Add to PO starts a draft PO") : ""}</span></div>
+      return `<div class="lgroup"><div class="lghead"><b>${esc(v)}</b><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${todo && dr ? ` · draft PO <button class="linkbtn small" data-lord="${dr.id}">${esc(orderTitle(dr))}</button>` : ""}</span></div>
         <div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">For</th>${todo ? "" : "<th>Qty</th>"}<th class="l">Stock now</th><th class="l">${todo ? "" : "PO"}</th><th></th></tr></thead><tbody>${
         list.map(i => `<tr>
           <td class="l">${i.pid ? `<a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>` : esc(i.title)}<div class="meta"><span class="mono">${esc(i.sku)}</span>${i.source ? " · from " + esc({ prep: "prep center", amazon: "Amazon inventory", inventory: "inventory value", search: "search" }[i.source] || i.source) : ""}${i.addedBy ? " · " + esc(i.addedBy) : ""}${i.added ? " · " + shortDate(String(i.added).slice(0, 10)) : ""}</div></td>
           <td class="l small">${i.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep / Amazon</span>${i.asku ? `<div class="meta mono">${esc(i.asku)}</div>` : ""}`}</td>
           ${todo ? "" : `<td>${(() => { const q = listQty(i); return q ? n0(q) : '<span class="dim">not set</span>'; })()}</td>`}
           <td class="l small">${stockOf(i)}</td>
-          <td class="l small">${todo ? `<button class="mini primary" data-lpo="${i.id}" title="Put it on ${esc(v)}'s draft PO">Add to PO</button>` : listStatus(i)}</td>
+          <td class="l small">${todo ? `<button class="mini primary" data-lpo="${i.id}" title="Put it on a draft PO">Add to PO</button>` : listStatus(i)}</td>
           <td>${listStage(i) === "done" ? "" : `<button class="linkbtn small" data-lrm="${i.id}" title="Take off the list${listStage(i) === "draft" ? " (and off its draft PO)" : ""}" aria-label="Remove ${esc(i.title)}">✕</button>`}</td></tr>`).join("")}</tbody></table></div></div>`;
     }).join("");
   }
@@ -1107,13 +1107,7 @@
     el.addEventListener("click", async (e) => {
       const b = e.target.closest("button"); if (!b) return;
       if (b.dataset.lgo) return listAssign(b.dataset.lgo);
-      if (b.dataset.lpo) {
-        const i = cache.list.find(x => x.id === b.dataset.lpo); b.disabled = true;
-        try { const oid = await JT.prep.listToPo(b.dataset.lpo); await load(true); render(); const o = cache.orders.find(x => x.id === String(oid));
-          note("info", `${esc(i ? i.title : "Product")} is on <button class="linkbtn" data-lord="${oid}">${esc(o ? (o.vendor ? o.vendor + " " : "") + orderTitle(o) : "order #" + oid)}</button> (draft) — it's off the To order list.`); }
-        catch (err) { b.disabled = false; note("bad", "Couldn't add it to a PO: " + esc(JT.message(err))); }
-        return;
-      }
+      if (b.dataset.lpo) { openToPo(b.dataset.lpo); return; }
       if (b.dataset.lrm) { try { await JT.prep.listRemove(Number(b.dataset.lrm)); P.lSel.delete(b.dataset.lrm); await load(true); render(); } catch (err) { note("bad", "Couldn't remove it: " + esc(JT.message(err))); } return; }
     });
     // order links anywhere on the tab (list rows, notes)
@@ -1411,6 +1405,38 @@
     M.rekey = M.rekey || {}; const from = M.rekey[k] != null ? M.rekey[k] : oldSku; delete M.rekey[k]; if (from !== (sku || "")) M.rekey[nk] = from;
     M.confirm = false;
   }
+  // On The List -> Add to PO: pick any draft PO (this vendor's first) or start a new draft PO for the vendor
+  function openToPo(id) {
+    const i = cache.list.find(x => x.id === String(id)); if (!i) return;
+    P.modal = { kind: "topo", id: i.id, pick: "" };
+    const ven = (i.vendor || "").toLowerCase(), ds = cache.orders.filter(o => o.status === "draft");
+    const mine = ds.find(o => (o.vendor || "").toLowerCase() === ven && o.kind === "order");
+    P.modal.pick = mine ? mine.id : "new";
+    renderModal();
+  }
+  function toPoHtml(M) {
+    const i = cache.list.find(x => x.id === M.id); if (!i) return "";
+    const ven = (i.vendor || "").toLowerCase();
+    const ds = cache.orders.filter(o => o.status === "draft").sort((a, b) => ((b.vendor || "").toLowerCase() === ven) - ((a.vendor || "").toLowerCase() === ven) || String(b.updated).localeCompare(String(a.updated)));
+    const opt = (v, main, sub) => `<label class="poopt ${M.pick === v ? "on" : ""}"><input type="radio" name="topo" data-topo="${esc(v)}" ${M.pick === v ? "checked" : ""}><span><b>${main}</b>${sub ? `<span class="dim small"> · ${sub}</span>` : ""}</span></label>`;
+    return `<div class="panel-head"><h2>Add to PO</h2><button class="mini" data-act="close">Close</button></div>
+      <div class="pickbox"><b>${esc(i.title)}</b> <span class="mono dim">${esc(i.sku)}</span> · ${esc(i.vendor || "no vendor")}${i.asku ? ` · for <span class="mono">${esc(i.asku)}</span>` : ""}</div>
+      <div class="poopts">${ds.map(o => opt(o.id, `${esc(o.vendor || "(no vendor)")} ${esc(orderTitle(o))}`, `${o.kind === "booking" ? "booking order" + (o.placeBy ? ", place by " + shortDate(o.placeBy) : "") : "draft"} · ${o.lines.length} product${o.lines.length === 1 ? "" : "s"}${(o.vendor || "").toLowerCase() !== ven ? ' · <span class="warnt">different vendor</span>' : ""}`)).join("")}
+        ${opt("new", "Create new draft PO", esc(i.vendor || "no vendor"))}</div>
+      <p class="muted small" style="margin:0">No quantity needed — whoever places the order sets it. The product leaves the To order list.</p>
+      <div class="row"><span class="dbtns right"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="topo-go" ${M.pick && !P.busy ? "" : "disabled"}>${P.busy ? "Adding…" : "Add to PO"}</button></span></div>`;
+  }
+  async function toPoGo() {
+    const M = P.modal; if (!M || M.kind !== "topo" || !M.pick) return;
+    const i = cache.list.find(x => x.id === M.id); if (!i) return;
+    P.busy = true; renderModal();
+    try {
+      const oid = await JT.prep.listAssign({ ids: [Number(i.id)], ...(M.pick === "new" ? { new: { vendor: i.vendor || "", kind: "order" } } : { order_id: Number(M.pick) }) });
+      P.busy = false; P.modal = null; renderModal(); await load(true); render();
+      const o = cache.orders.find(x => x.id === String(oid));
+      note("info", `${esc(i.title)} is on <button class="linkbtn" data-lord="${oid}">${esc(o ? (o.vendor ? o.vendor + " " : "") + orderTitle(o) : "order #" + oid)}</button> (draft) — it's off the To order list.`);
+    } catch (err) { P.busy = false; renderModal(); note("bad", "Couldn't add it to a PO: " + esc(JT.message(err))); }
+  }
   function renderModal() {
     const box = $("prep-modal"), M = P.modal;
     box.hidden = !M; document.body.classList.toggle("modal-open", !!M);
@@ -1438,6 +1464,8 @@
           <span class="dbtns right"><button class="btn" data-act="close">${M.back ? "Back to shipment" : "Cancel"}</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Save count"}</button></span></div>` : ""}`;
     } else if (M.kind === "assign") {
       html = assignHtml(M);
+    } else if (M.kind === "topo") {
+      html = toPoHtml(M);
     } else if (M.kind === "newship") {
       html = newShipHtml(M);
     } else if (M.kind === "prod") {
@@ -1641,6 +1669,7 @@
     box.addEventListener("change", (e) => {
       const M = P.modal; if (!M) return;
       if (e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); }
+      if (e.target.dataset && e.target.dataset.topo != null && M.kind === "topo") { M.pick = e.target.dataset.topo; renderModal(); }
       if (e.target.id === "pm-amz") { M.amzPick = e.target.value; renderModal(); }
       if (e.target.dataset && e.target.dataset.lsku != null && M.kind === "ship") { rekeyLine(M, e.target.dataset.lsku, e.target.value); renderModal(); }
       if (e.target.id === "pm-place" && M.id) flowDo(M.id, { placement: e.target.value });
@@ -1664,6 +1693,7 @@
     box.addEventListener("click", (e) => {
       const M = P.modal, b = e.target.closest("button"); if (!M || !b) return;
       if (b.dataset.act === "close") return closeModal();
+      if (M.kind === "topo") { if (b.dataset.act === "topo-go") toPoGo(); return; }
       if (M.kind === "newship") { if (b.dataset.pickship != null) { const c = skuCandidates(M.q).list[+b.dataset.pickship]; if (c) pickNewShip(c); } return; }
       if (M.kind === "prod") { if (b.dataset.act === "gotoorder") { P.modal = null; renderModal(); openOrder(b.dataset.oid); } return; }
       if (b.dataset.pick) { const v = cat.find(x => x.vid === b.dataset.pick); M.pick = { vid: v.vid, sku: v.sku, title: v.title, vendor: v.vendor, cost: v.cost }; M.asku = ""; renderModal(); setTimeout(() => { const i = $("pm-qty"); if (i) i.focus(); }, 0); return; }
