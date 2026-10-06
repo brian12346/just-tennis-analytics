@@ -34,11 +34,27 @@
     $("tab-shopify").hidden = t !== "shopify";
     $("tab-amazon").hidden = t !== "amazon";
     $("tab-amzmap").hidden = t !== "amzmap";
-    document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
+    document.querySelectorAll(".tabs button[data-tab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
+    navSync(t);
     try { history.replaceState(null, "", "#" + t); } catch (_) {}
     if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else if (t === "invoices") { if (window.invShow) window.invShow(); } else if (t === "amzmatch") { if (window.amShow) window.amShow(); } else if (t === "costs") { if (window.pcShow) window.pcShow(); } else if (t === "fba") { if (window.fbaShow) window.fbaShow(); } else if (t === "prep") { if (window.prepShow) window.prepShow(); } else if (t === "po") { if (window.poShow) window.poShow(); } else if (t === "fbm") { if (window.fbmShow) window.fbmShow(); } else if (t === "alerts") { if (window.alertsShow) window.alertsShow(); } else if (t === "shipments") { if (window.shipShow) window.shipShow(); } else if (t === "anr") { if (window.anrShow) window.anrShow(); } else window.dispatchEvent(new Event("resize"));
   }
-  document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+  document.querySelectorAll(".tabs button[data-tab]").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+  // two-row nav: sections on top (Sales, Inventory, Buying, Shipping, Setup), the open section's pages below;
+  // a section opens the page last used in it
+  function navLast() { try { return JSON.parse(localStorage.getItem("jt-nav-last") || "{}") || {}; } catch (_) { return {}; } }
+  function navSync(t) {
+    const cur = document.querySelector(`.subtabs button[data-tab="${t}"]`), g = cur ? cur.dataset.group : "";
+    document.querySelectorAll(".groups .grp").forEach(b => b.setAttribute("aria-current", String(b.dataset.group === g)));
+    document.querySelectorAll(".subtabs button").forEach(b => { b.hidden = b.dataset.group !== g; });
+    const sub = document.querySelector(".subtabs"); if (sub) sub.hidden = !g;
+    if (g) { const l = navLast(); l[g] = t; try { localStorage.setItem("jt-nav-last", JSON.stringify(l)); } catch (_) {} }
+  }
+  document.querySelectorAll(".groups .grp").forEach(b => b.addEventListener("click", () => {
+    const g = b.dataset.group, first = document.querySelector(`.subtabs button[data-group="${g}"]`);
+    const last = navLast()[g], ok = last && document.querySelector(`.subtabs button[data-group="${g}"][data-tab="${last}"]`);
+    showTab(ok ? last : first && first.dataset.tab);
+  }));
 
   // ---------- helpers ----------
   const docId = (sku) => "s_" + String(sku).replace(/[^A-Za-z0-9_\-.:@+]/g, c => "~" + c.charCodeAt(0).toString(16).padStart(2, "0")).slice(0, 190);

@@ -646,8 +646,7 @@ html{scroll-padding-top:130px}
   .tabs{margin:0 -4px;padding:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
   .tabs > *{flex:none}
   .tabs::-webkit-scrollbar{display:none}
-  .tabs button{padding:8px 11px;font-size:15px;order:7}
-  .tabs button[data-tab="shopify"]{order:1}.tabs button[data-tab="amazon"]{order:2}.tabs button[data-tab="psales"]{order:3}.tabs button[data-tab="prep"]{order:4}.tabs button[data-tab="fba"]{order:5}.tabs button[data-tab="shipments"]{order:6}.tabs button[data-tab="anr"]{order:2}
+  .tabs button{padding:8px 11px;font-size:15px}
   .tabs .acct{order:9;padding-left:10px}
   h1{font-size:24px}
   .top{flex-direction:column;align-items:stretch;gap:10px}
@@ -943,3 +942,15 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 #ps-chart{position:relative}
 #ps-chart .bar.ch-justtennis{fill:var(--ch-jt)}#ps-chart .bar.ch-acenrally{fill:var(--ch-anr)}#ps-chart .bar.ch-amazon{fill:var(--ch-amz)}
 #ps-legend{display:flex;gap:14px;font-size:12px;color:var(--muted)}
+
+/* two-row nav (v0.10.80): sections, then the open section's pages */
+.appbar .tabs.groups{gap:4px}
+.tabs .grp{font-weight:600}
+.tabs .grp[aria-current="true"]{color:#002676;background:#FFFFFF}
+.tabs .alertsbtn{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
+.tabs .alertsbtn[aria-selected="true"]{color:#002676;background:#FFFFFF}
+.appbar .tabs.subtabs{border-top:1px solid rgba(255,255,255,.14);padding-top:6px;margin-top:-2px}
+.tabs.subtabs[hidden]{display:none}
+.tabs.subtabs button{font-size:13.5px;padding:4px 10px}
+.tabs.subtabs button[aria-selected="true"]{color:var(--header-ink);background:var(--header-raised);box-shadow:inset 0 -2px 0 var(--brand-gold);border-radius:6px 6px 2px 2px}
+@media (max-width:640px){ .appbar .tabs.groups{gap:0} .tabs.groups button{padding:7px 6px;font-size:13.5px} .tabs .alertsbtn .lbl{display:none} .tabs.subtabs button{font-size:14px;padding:6px 10px} }

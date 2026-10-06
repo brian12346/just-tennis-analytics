@@ -23,22 +23,29 @@
     <span class="ws">Just Tennis</span>
     <span class="bar-right"><span id="acct" class="acct" hidden><span id="whoami"></span><button class="mini" id="signout" type="button">Sign out</button></span><span class="ver" title="Version __VERSION__ · build __BUILD__">v__VERSION__<span class="sha"> · __BUILD__</span></span></span>
   </div>
-  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-    <button role="tab" data-tab="alerts" aria-selected="false">Alerts</button>
-    <button role="tab" data-tab="psales" aria-selected="false">All sales</button>
-    <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
-    <button role="tab" data-tab="anr" aria-selected="false">Ace n Rally</button>
-    <button role="tab" data-tab="costs" aria-selected="false">Inventory value</button>
-    <button role="tab" data-tab="prep" aria-selected="false">Prep center</button>
-    <button role="tab" data-tab="fba" aria-selected="false">Amazon inventory</button>
-    <button role="tab" data-tab="shipments" aria-selected="false">Shipments</button>
-    <button role="tab" data-tab="costmap" aria-selected="false">Shopify cost mapping</button>
-    <button role="tab" data-tab="amazon" aria-selected="false">Amazon</button>
-    <button role="tab" data-tab="fbm" aria-selected="false">FBM stock</button>
-    <button role="tab" data-tab="amzmap" aria-selected="false">Amazon mapping</button>
-    <button role="tab" data-tab="amzmatch" aria-selected="false">Amazon matching</button>
-    <button role="tab" data-tab="po" aria-selected="false">Purchase orders</button>
-    <button role="tab" data-tab="invoices" aria-selected="false">Invoices</button>
+  <nav class="tabs groups" aria-label="Dashboard sections">
+    <button type="button" class="grp" data-group="sales" aria-current="false">Sales</button>
+    <button type="button" class="grp" data-group="inventory" aria-current="false">Inventory</button>
+    <button type="button" class="grp" data-group="buying" aria-current="false">Buying</button>
+    <button type="button" class="grp" data-group="shipping" aria-current="false">Shipping</button>
+    <button type="button" class="grp" data-group="setup" aria-current="false">Setup</button>
+    <button role="tab" data-tab="alerts" class="alertsbtn" aria-selected="false" aria-label="Alerts" title="Alerts"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="lbl">Alerts</span></button>
+  </nav>
+  <nav class="tabs subtabs" role="tablist" aria-label="Pages">
+    <button role="tab" data-tab="psales" data-group="sales" aria-selected="false">All sales</button>
+    <button role="tab" data-tab="shopify" data-group="sales" aria-selected="true">Just Tennis</button>
+    <button role="tab" data-tab="anr" data-group="sales" aria-selected="false">Ace n Rally</button>
+    <button role="tab" data-tab="amazon" data-group="sales" aria-selected="false">Amazon</button>
+    <button role="tab" data-tab="costs" data-group="inventory" aria-selected="false" hidden>Value</button>
+    <button role="tab" data-tab="prep" data-group="inventory" aria-selected="false" hidden>Prep center</button>
+    <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
+    <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
+    <button role="tab" data-tab="po" data-group="buying" aria-selected="false" hidden>Purchase orders</button>
+    <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" hidden>Invoices</button>
+    <button role="tab" data-tab="shipments" data-group="shipping" aria-selected="false" hidden>Shipments</button>
+    <button role="tab" data-tab="costmap" data-group="setup" aria-selected="false" hidden>Shopify cost mapping</button>
+    <button role="tab" data-tab="amzmap" data-group="setup" aria-selected="false" hidden>Amazon mapping</button>
+    <button role="tab" data-tab="amzmatch" data-group="setup" aria-selected="false" hidden>Amazon matching</button>
   </nav>
  </div>
 </header>

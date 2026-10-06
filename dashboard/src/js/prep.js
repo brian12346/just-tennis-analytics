@@ -287,7 +287,7 @@
         <div class="es-steps">
           <div><b>1 · Count stock</b><span>Pick a Shopify product, optionally the Amazon listing it's for, and enter the units on the shelf.</span></div>
           <div><b>2 · Ship to Amazon</b><span>Enter the shipment ID, FBA or AWD, and how many units of each product went out.</span></div>
-          <div><b>3 · See it in the totals</b><span>The Inventory value tab shows Shopify, prep center and Amazon separately.</span></div>
+          <div><b>3 · See it in the totals</b><span>Inventory › Value shows Shopify, prep center and Amazon separately.</span></div>
         </div>
         <div class="row" style="justify-content:center"><button class="btn primary" data-act="count">Count stock</button></div>
       </div>`;
