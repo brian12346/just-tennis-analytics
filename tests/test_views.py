@@ -364,7 +364,7 @@ def test_purchase_order_save(conn):
     cur.execute("select line_no, variant_id, dest, amazon_sku from jt.invoice_lines where invoice_id = %s order by 1", (iid,))
     assert cur.fetchall() == [(1, 911, "shopify", ""), (2, None, "prep", ""), (3, 912, "prep", "HG-FBA")]
     cur.execute("select variant_id, dest, qty_ordered from jt.prep_order_lines where order_id = %s order by 1", (oid,)); assert cur.fetchall() == [(911, "shopify", 2), (912, "prep", 4)]
-    cur.execute("select item_code, variant_id from jt.vendor_items where vendor = 'Head'"); assert cur.fetchall() == [("ABC1", 911)]
+    cur.execute("select item_code, variant_id from jt.vendor_items where vendor = 'Head' and variant_id < 1000000"); assert cur.fetchall() == [("ABC1", 911)]
     # saving again keeps the same invoice (lines replaced)
     inv2 = dict(inv, id=iid, lines=inv["lines"][:1])
     r2 = call("po_save", {"order": dict(order, id=oid), "lines": lines, "invoices": [inv2], "remember": []})

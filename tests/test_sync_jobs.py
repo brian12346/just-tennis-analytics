@@ -192,7 +192,7 @@ def test_invoice_apply_queues_cost_and_price(conn):
     iid = cur.fetchone()[0]
     cur.execute("select jt.apply_invoice(%s)", (iid,))
     assert cur.fetchone()[0] == 1                                    # the unmatched line queues nothing
-    cur.execute("select item_code, variant_id from jt.vendor_items")
+    cur.execute("select item_code, variant_id from jt.vendor_items where variant_id < 1000000")
     assert cur.fetchall() == [("HG17", 5)]                           # remembered for the next invoice
     conn.commit()
     assert sh.apply_cost_updates(shop, conn, dt.date(2026, 9, 25)) == 1

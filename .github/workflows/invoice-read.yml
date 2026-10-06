@@ -1,0 +1,32 @@
+name: Read invoices
+
+# Started by Supabase when a dropped invoice PDF is queued for reading (migration 100, jt.dispatch_invoice_read).
+# Reads everything in jt.invoice_reads with the vendor templates (pdftotext, tesseract OCR for scans), keeps listening
+# for 150 s in case more invoices are dropped, then stops. Run by hand from the Actions tab any time.
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: invoice-read   # separate from the data sync, so a read never waits behind it
+  cancel-in-progress: false
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: PDF and OCR tools
+        run: |
+          which pdftotext tesseract || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng; }
+      - name: Read queued invoices
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          WORKER_NAME: github-actions
+          OCR_CACHE: /tmp/ocr_cache
+        run: python sync/invoice_reader/worker.py --idle 150

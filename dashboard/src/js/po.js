@@ -497,8 +497,23 @@
       await catalog();
       const bytes = new Uint8Array(await file.arrayBuffer());
       const rows = await IP.pdfRows(bytes.slice());
-      const inv = IP.parseInvoice(rows, { vendors: S.vendors, known: (t, vendor) => S.bySku.has(norm(t)) || (!!vendor && S.remembered.has(vendor.toLowerCase() + "|" + norm(t))) });
-      pend = { inv, rows, f: { bytes, name: file.name, type: file.type || "application/pdf" } };
+      // the vendor-template reader first (scans, discounts, multi-invoice PDFs); the in-browser reader if it can't
+      let inv = null, readNote = "", readId = null;
+      if (window.JTReader) {
+        S.busySkip = true;
+        const rr = await window.JTReader.read(bytes, file.name, { onWait: (t) => { S.busy = t; renderBusy(); } });
+        S.busySkip = false; readId = rr.readId || null;
+        if (rr.ok) {
+          inv = rr.inv;
+          if (rr.others.length) readNote += `This PDF holds ${rr.others.length + 1} invoices (${[inv, ...rr.others].map(x => esc(x.invoice_no)).join(", ")}); this is the first. `;
+          if (inv.read.status !== "auto_ok" && inv.read.issues.length) readNote += `Read with the ${esc(inv.vendor)} template; check: ${esc(inv.read.issues.slice(0, 2).join("; "))}. `;
+          else readNote += `Read with the ${esc(inv.vendor)} template${inv.read.status === "auto_ok" ? " (lines and totals tie out)" : ""}. `;
+        } else if (rr.outcome === "unknown_vendor") readNote = "No vendor template knows this invoice yet, so the quick reader was used (it's queued for Claude to learn). ";
+        else if (rr.outcome === "unsupported") readNote = `${esc(rr.message || "This doesn't look like an invoice")}. `;
+        else if (rr.outcome === "timeout") readNote = "The invoice reader didn't answer in time, so the quick reader was used. ";
+      }
+      if (!inv) inv = IP.parseInvoice(rows, { vendors: S.vendors, known: (t, vendor) => S.bySku.has(norm(t)) || (!!vendor && S.remembered.has(vendor.toLowerCase() + "|" + norm(t))) });
+      pend = { inv, rows, f: { bytes, name: file.name, type: file.type || "application/pdf" }, readId, readNote };
     } catch (e) {
       console.error("[JT] invoice read failed", e); S.busy = ""; render();
       note("bad", "Couldn't read that PDF" + (e && e.message ? ": " + esc(e.message) : "") + "."); return;
@@ -535,6 +550,8 @@
   // the parsed invoice goes onto ed (a PO), and opens on the Invoices tab
   async function attach(pend, ed, msg) {
     const { inv, f, rows } = pend;
+    msg = (pend.readNote || "") + (msg || "");
+    const noText = !rows.length && !inv.lines.length;     // a scan the template reader couldn't read either
     S.mode = "inv";
     const dupHere = inv.invoice_no ? ed.invoices.findIndex(v => v.no && v.no.toLowerCase() === inv.invoice_no.toLowerCase()) : -1;
     if (dupHere >= 0) { ed.cur = dupHere; S.pend = null; showInvoicePage(); note("warn", `Invoice <b>${esc(inv.invoice_no)}</b> is already on this purchase order — here it is.`); return; }
@@ -554,8 +571,8 @@
     } catch (e) { note("bad", esc(JT.message(e))); return; }
     const iv = merge(ed, inv, f, rows, reuse);
     const c = count(iv), open = [...progress(ed).values()].filter((p, i) => p.open > 0 && !ed.lines[i].backorder).length;
-    msg += iv.fromPo ? `${!rows.length ? "This PDF has no text in it (probably a scan or photo)" : inv.lines.length ? "None of the lines read from this PDF matched a product" : "No item lines could be read from this PDF"}, so <b>the invoice was filled in from the PO</b>: ${iv.rows.filter(r => r.fromPo).length} product${iv.rows.filter(r => r.fromPo).length === 1 ? "" : "s"} still open on it, at the PO's quantities and costs. Check them against the PDF and change anything the vendor shipped short or billed differently.`
-      : !rows.length ? "This PDF has no text in it (it's probably a scan or photo), so no lines could be read. Add them with <b>Add line</b>."
+    msg += iv.fromPo ? `${noText ? "This PDF has no text in it (probably a scan or photo)" : inv.lines.length ? "None of the lines read from this PDF matched a product" : "No item lines could be read from this PDF"}, so <b>the invoice was filled in from the PO</b>: ${iv.rows.filter(r => r.fromPo).length} product${iv.rows.filter(r => r.fromPo).length === 1 ? "" : "s"} still open on it, at the PO's quantities and costs. Check them against the PDF and change anything the vendor shipped short or billed differently.`
+      : noText ? "This PDF has no text in it (it's probably a scan or photo), so no lines could be read. Add them with <b>Add line</b>."
       : !inv.lines.length ? "No item lines were recognised in this PDF. The PDF is shown alongside; add what's missing by hand."
       : `Read ${inv.lines.length} line${inv.lines.length === 1 ? "" : "s"}: ${c.sure} matched${c.check ? `, <b>${c.check} guess${c.check === 1 ? "" : "es"} to check</b>` : ""}${c.none ? `, <b>${c.none} not matched</b>` : ""}.`
         + (open && ed.lines.length && ed.id ? ` ${open} product${open === 1 ? " on the PO isn't" : "s on the PO aren't"} on this invoice — mark them backordered on the PO, or leave them on order.` : "")
@@ -821,7 +838,13 @@
     const h = document.querySelector("#tab-po > header.top"), st = $("po-status");
     if (h) h.style.display = on ? "" : "none"; if (st) st.style.display = on ? "" : "none";
   }
-  function renderBusy() { const b = $("po-busy"); if (!b) return; b.hidden = !S.busy; b.textContent = S.busy || ""; }
+  function renderBusy() {
+    const b = $("po-busy"); if (!b) return; b.hidden = !S.busy; b.textContent = S.busy || "";
+    if (S.busy && S.busySkip && window.JTReader) {   // waiting on the template reader: let them use the quick reader now
+      const k = document.createElement("button"); k.className = "mini"; k.style.marginLeft = "10px"; k.textContent = "Don't wait — use the quick reader";
+      k.addEventListener("click", () => window.JTReader.skip()); b.appendChild(k);
+    }
+  }
   function renderList() {
     if (S.mode !== "po" || $("tab-po").hidden) return;
     $("po-list-view").hidden = !!S.ed; $("po-edit-view").hidden = !S.ed;
