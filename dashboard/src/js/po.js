@@ -878,7 +878,7 @@
       const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
       let rq = sh.left > 0 ? '' : '<span class="pill ok">All in</span>';
       if (sh.left > 0 && canRecv && recvOn) { const val = rqVal(ed, ivNow, l, sh), bad = val !== "" && !(Number.isInteger(Number(val)) && Number(val) >= 0);
-        rq = `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"><button class="mini primary" data-pact="rq-go" data-k="${l.id}">Receive</button></div>${val !== String(sh.left) ? `<div class="meta warnt">invoice: ${n0(sh.left)}</div>` : ""}`; }
+        rq = `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"></div>${val !== String(sh.left) ? `<div class="meta warnt">invoice: ${n0(sh.left)}</div>` : ""}`; }
       else if (sh.left > 0) rq = `<span class="dim">${n0(sh.left)} to come</span>`;
       return `<tr data-line="${l.id}">${prodCell(l, v)}${forCell(l)}
         <td>${n0(sh.billed)}</td>
@@ -911,7 +911,8 @@
           <span class="small ${sum !== sp.total ? "warnt" : "muted"}">${n0(sum)} of ${n0(sp.total)}${sum !== sp.total ? ` — the PO quantity becomes ${n0(sum)}` : ""}</span>
           <span class="dbtns"><button class="mini primary" data-pact="split-go">Split</button><button class="mini" data-pact="split-no">Cancel</button></span></div></div></td></tr>`;
     };
-    const viewLines = mode === "notinv" ? topLines : mode === "left" ? ed.lines.filter(l => leftOf(l) > 0) : ed.lines;
+    const viewLines = (mode === "notinv" ? topLines : mode === "left" ? ed.lines.filter(l => leftOf(l) > 0) : ed.lines)
+      .filter(l => !ed.recv || leftOf(l) > 0);   // receiving: only what isn't received yet
     const unitsOf = (l) => mode === "notinv" ? pr.get(l.id).open : mode === "left" ? leftOf(l) : Number(l.qty) || 0;
     const amtOf = (l) => mode === "all" ? lineAmt(l) : unitsOf(l) * unitOf(l, variant(l.vid));
     const bucket = (d) => {
@@ -924,8 +925,10 @@
     const recvHtml = (() => {
       if (!ivNow) return "";
       if (!ivNow.id || ivNow.isNew) return '<div class="note info">Save to start receiving against this invoice.</div>';
-      const ls = ed.lines.filter(l => ivSh.has(l.id)), c = count(ivNow), t = invTot(ivNow);
-      const anyLeft = ls.some(l => ivSh.get(l.id).left > 0);
+      const all = ed.lines.filter(l => ivSh.has(l.id)), c = count(ivNow), t = invTot(ivNow);
+      const anyLeft = all.some(l => ivSh.get(l.id).left > 0);
+      // while receiving, only the products still to come on this invoice
+      const ls = recvOn && canRecv && anyLeft ? all.filter(l => ivSh.get(l.id).left > 0) : all;
       const back = ed.lines.filter(l => l.backorder && pr.get(l.id).open > 0).length;
       const left = ls.reduce((a, l) => { const x = Number(rqVal(ed, ivNow, l, ivSh.get(l.id))); return a + (ivSh.get(l.id).left > 0 && Number.isInteger(x) && x > 0 ? x : 0); }, 0);
       const btn = ivNow.recvAt ? (ivNow.recvManual && !ro ? '<button class="mini" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "")
@@ -933,9 +936,9 @@
       return `<div class="po-recv"><div class="panel-head"><h3 class="h3">Receive this invoice ${recvPill(ivNow)}</h3>
           <span class="muted small">${ivNow.recvAt ? "Received in full." : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
           <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
-            ? `<button class="btn" data-pact="rq-stop">Done receiving</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Receive all${left ? ` (${n0(left)} units)` : ""}</button>`
+            ? `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Save${left ? ` (${n0(left)} units)` : ""}</button>`
             : `<button class="btn primary" data-pact="rq-start" title="Open receiving for this invoice">Receive</button>`) : ""}</span></div>
-        ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived for each product and press its Receive button, or Receive all. You stay on this invoice until you press Done receiving.</div>` : ""}
+        ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived for each product still to come, then Save. Cancel leaves without receiving anything.</div>` : ""}
         ${c.check ? `<div class="note warn">${c.check} guessed product${c.check === 1 ? "" : "s"} on this invoice ${c.check === 1 ? "needs" : "need"} confirming on the invoice before ${c.check === 1 ? "it" : "they"} can be received. <button class="mini" data-pact="open-inv">Open the invoice</button></div>` : ""}
         ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
       </div>`;
@@ -1219,7 +1222,10 @@
   function footButtons(ed, got, ro) {
     const busy = S.busy ? "disabled" : "";
     if (ro) return `<button class="btn" data-pact="back">← Back to QB ready</button>${ed.dirty ? `<button class="btn primary" data-pact="save" ${busy}>Save</button>` : ""}`;
-    if (ed.recv) return `<button class="btn" data-pact="recv-cancel">Cancel</button><button class="btn primary" data-pact="recv-go" ${busy}>Receive</button>`;
+    if (ed.recv) return `<button class="btn" data-pact="recv-cancel">Cancel</button><button class="btn primary" data-pact="recv-go" ${busy}>Save</button>`;
+    const ivR = ed.view === "inv" && cur(ed);
+    if (ivR && ivR.id && ed.recvInv === ivR.id && !ivR.recvAt && !["qb_ready", "complete"].includes(ed.status))
+      return `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${busy}>Save</button>`;
     const out = [];
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
@@ -1331,7 +1337,7 @@
       const id = S.ed.id; S.busy = ""; await loadOrders(true); await openPO(id);
       const iv2 = inv && S.ed && S.ed.invoices.find(v => String(v.id) === String(inv.id));
       if (iv2) {
-        const was = S.ed.cur; S.ed.cur = S.ed.invoices.indexOf(iv2); if (!iv2.recvAt) S.ed.recvInv = iv2.id;
+        const was = S.ed.cur; S.ed.cur = S.ed.invoices.indexOf(iv2); S.ed.recvInv = null;
         if (was !== S.ed.cur) {   // openPO showed the last invoice's PDF: switch to this one's
           pdfToken++; const h = $("pe-pdf"); if (h) h.innerHTML = "";
           if (iv2.parts && !iv2.file && !S.files.has(iv2.id)) loadFile(iv2).then(() => { if (S.ed && cur(S.ed) === iv2) { const h2 = $("pe-pdf"); if (h2) h2.innerHTML = ""; renderPdf(); } }).catch(() => {});
@@ -1465,7 +1471,7 @@
     if (a === "rq-start" && iv && iv.id) { ed.recvInv = iv.id; render(); return; }
     if (a === "recv-inv") { const v = ed.invoices[Number(k)]; if (!v) return; ed.cur = Number(k); ed.view = "inv"; ed.recvInv = v.id; render();
       setTimeout(() => { const el = document.querySelector("#po-edit-view .po-recv"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
-    if (a === "rq-stop") { ed.recvInv = null; render(); return; }
+    if (a === "rq-stop") { if (ed.rq && iv) for (const kk of Object.keys(ed.rq)) if (kk.startsWith(iv.id + "#")) delete ed.rq[kk]; ed.recvInv = null; render(); return; }
     if (a === "rq-go" && l && iv && iv.id) { const sh = invShares(ed, iv).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, iv, l, sh) }, iv.id); }
     if (a === "rq-all" && iv && iv.id) {
       const sh = invShares(ed, iv), o = {};
