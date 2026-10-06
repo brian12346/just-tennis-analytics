@@ -651,13 +651,14 @@
     const list = d.shipments.filter(SHVIEWS[P.shipView]).sort(P.shipView === "closed" ? (a, b) => String(b.closed).localeCompare(String(a.closed))
       : P.shipView === "amazon" ? (a, b) => String(b.shipped).localeCompare(String(a.shipped))
       : (a, b) => (b.exception ? 1 : 0) - (a.exception ? 1 : 0) || (a.status === "started" ? 0 : 1) - (b.status === "started" ? 0 : 1) || String(b.updated).localeCompare(String(a.updated)));
+    const skuLink = (sku) => `<a class="olink mono" href="https://sellercentral.amazon.com/skucentral?mSku=${encodeURIComponent(sku)}&condition=New&ref_=myp_skuc" target="_blank" rel="noopener" title="Open in Seller Central">${esc(sku)}</a>`;
     const asinOf = (vid, asku) => ((cache.byVariant.get(vid) || []).find(l => l.sku === asku) || {}).asin || "";
     const card = (sh) => {
       const units = sh.lines.reduce((a, l) => a + l.qty, 0), cost = sh.lines.reduce((a, l) => a + l.qty * (l.cost || 0), 0);
       const iss = issuesOf(sh).filter(x => !["noid", "amzshipped", "nolisting"].includes(x.kind)), lvl = sh.exception ? "bad" : worst(issuesOf(sh)), sum = issueSummary(iss), f = flowOf(sh);
       const when2 = sh.closed ? `Closed ${when(sh.closed)}` : sh.status === "shipped" ? `Shipped ${when(sh.shipped)}${sh.shippedBy ? " · " + esc(sh.shippedBy) : ""}` : sh.status === "started" ? `Started ${when(sh.started)}` : `Created ${when(sh.created)}${sh.createdBy ? " · " + esc(sh.createdBy) : ""}`;
       const contents = contentsOf(sh), ls = sh.lines.filter(l => l.qty > 0);
-      const prod = (l) => `<div class="sc-prod"><span class="mono">${esc(l.sku || "no SKU")}</span>${l.vendor ? ` · ${esc(l.vendor)}` : ""}${ls.length > 1 ? ` · ${n0(l.qty)}` : ""}<br>${l.asku ? `<span class="mono">${esc(asinOf(l.vid, l.asku) || "no ASIN")}</span> · <span class="mono">${esc(l.asku)}</span>` : '<span class="warnt">no Amazon listing picked</span>'}</div>`;
+      const prod = (l) => `<div class="sc-prod"><span class="mono">${esc(l.sku || "no SKU")}</span>${l.vendor ? ` · ${esc(l.vendor)}` : ""}${ls.length > 1 ? ` · ${n0(l.qty)}` : ""}<br>${l.asku ? `<span class="mono">${esc(asinOf(l.vid, l.asku) || "no ASIN")}</span> · ${skuLink(l.asku)}` : '<span class="warnt">no Amazon listing picked</span>'}</div>`;
       return `<div class="shipcard ${sh.status}${lvl === "bad" || lvl === "warn" ? " issue-" + lvl : ""}" data-sid="${sh.id}" tabindex="0" role="button" aria-label="Open shipment: ${esc(contents)}${sum ? " — needs attention: " + esc(sum) : ""}">
         <div class="sc-title" title="${esc(sh.lines.map(l => n0(l.qty) + " × " + l.title).join("\n"))}">${esc(contents)}</div>
         ${ls.slice(0, 2).map(prod).join("")}${ls.length > 2 ? `<div class="sc-prod dim">+ ${ls.length - 2} more product${ls.length - 2 === 1 ? "" : "s"}</div>` : ""}
@@ -1590,9 +1591,10 @@
         if (b.dataset.sact === "back") { const sh = cache.shipments.find(x => x.id === b.dataset.sid);
           if (sh.status === "shipped") { openShipment(sh.id); P.modal.confirm = "unship"; renderModal(); } else quickStatus(sh.id, SPREV[sh.status]); return; }
         if (b.dataset.sact === "ship") { openShipment(b.dataset.sid); P.modal.confirm = "ship"; renderModal(); } return; }
+      if (e.target.closest("a")) return;   // links on the card (Seller Central SKU) open on their own
       const c = e.target.closest(".shipcard[data-sid]"); if (c) openShipment(c.dataset.sid);
     });
-    on("prep-ships", "keydown", (e) => { const c = e.target.closest(".shipcard[data-sid]"); if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openShipment(c.dataset.sid); } });
+    on("prep-ships", "keydown", (e) => { if (e.target.closest("a")) return; const c = e.target.closest(".shipcard[data-sid]"); if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openShipment(c.dataset.sid); } });
     on("prep-mkind", "click", (e) => { const b = e.target.closest("button[data-k]"); if (b) { P.moveKind = b.dataset.k; renderMoves(); } });
     $("tab-prep").addEventListener("change", async (e) => {
       const t = e.target; if (!t.dataset || t.dataset.arrival == null || t.closest("#prep-modal")) return;
