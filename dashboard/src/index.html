@@ -25,7 +25,7 @@
   </div>
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button role="tab" data-tab="alerts" aria-selected="false">Alerts</button>
-    <button role="tab" data-tab="psales" aria-selected="false">Product sales</button>
+    <button role="tab" data-tab="psales" aria-selected="false">All sales</button>
     <button role="tab" data-tab="shopify" aria-selected="true">Shopify</button>
     <button role="tab" data-tab="anr" aria-selected="false">Ace n Rally</button>
     <button role="tab" data-tab="costs" aria-selected="false">Inventory value</button>
@@ -112,12 +112,11 @@
   <div id="tab-psales" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Shopify · product sales · Pacific time</span>
-        <h1>Product sales</h1>
+        <span class="eyebrow">Just Tennis · Ace n Rally · Amazon · Pacific time</span>
+        <h1>All sales</h1>
       </div>
       <div class="controls">
-        <label class="small muted basis">Costs <select class="inp sm basis-sel" aria-label="Which product cost to use for past sales"><option value="current" title="Today's Shopify cost on past sales; products whose cost was applied from a PO are costed by layer (FIFO)">Current cost · FIFO layers</option><option value="recorded">As recorded on each order</option></select></label>
-        <div class="seg" id="ps-rangeseg" role="group" aria-label="Product sales range"></div>
+        <div class="seg" id="ps-rangeseg" role="group" aria-label="Sales range"></div>
         <div class="dates">
           <input type="date" id="ps-start" aria-label="Start date">
           <span>–</span>
@@ -126,38 +125,35 @@
         <button class="btn primary" id="ps-refresh">Refresh</button>
       </div>
     </header>
-    <div class="status" id="ps-status" aria-live="polite">Loading product sales…</div>
+    <div class="status" id="ps-status" aria-live="polite">Loading sales…</div>
     <div id="ps-note" hidden></div>
 
-    <section class="kpis" id="ps-kpis" aria-label="Product sales totals"></section>
+    <section class="kpis" id="ps-kpis" aria-label="Sales totals"></section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>By channel</h2><span class="muted small">Sales: Shopify net of discounts and returns; Amazon product sales by order date. Gross profit = sales − product cost. Profit also takes off shipping labels (less shipping charged), Amazon fees and Shopify Payments processing fees (PayPal and other gateways aren't included).</span></div>
+      <div class="tbl-wrap"><table id="ps-chans"></table></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Sales by day</h2>
+        <div class="legend" id="ps-legend"><span><i class="chsw ch-justtennis"></i>Just Tennis</span><span><i class="chsw ch-acenrally"></i>Ace n Rally</span><span><i class="chsw ch-amazon"></i>Amazon</span></div>
+      </div>
+      <div class="chart" id="ps-chart"></div>
+      <div class="tbl-wrap tall"><table id="ps-days"></table></div>
+    </section>
 
     <section class="panel">
       <div class="panel-head">
-        <h2 id="ps-h">By category, vendor and model</h2>
+        <h2>Products across all channels</h2>
         <div class="filters">
-          <label for="ps-group">Group by
-            <select id="ps-group">
-              <option value="type,vendor,title">Category › Vendor › Model</option>
-              <option value="vendor,type,title">Vendor › Category › Model</option>
-              <option value="vendor,title">Vendor › Model</option>
-              <option value="type,title">Category › Model</option>
-              <option value="title">Model</option>
-            </select>
-          </label>
-          <label for="ps-chan">Channel <select id="ps-chan"><option value="all">All channels</option></select></label>
-          <label for="ps-sort">Sort
-            <select id="ps-sort"><option value="net">Net sales</option><option value="units">Units</option><option value="gp">Gross profit</option><option value="margin">Margin</option><option value="growth">Change vs last year</option></select>
-          </label>
-          <label for="ps-q">Search <input id="ps-q" class="inp" type="search" placeholder="Category, vendor or model"></label>
+          <label for="ps-sort">Sort <select id="ps-sort"><option value="net">Sales</option><option value="gp">Gross profit</option><option value="profit">After fees</option><option value="units">Units</option></select></label>
+          <label for="ps-q">Search <input id="ps-q" class="inp" type="search" placeholder="Product or vendor"></label>
         </div>
       </div>
-      <div class="row">
-        <button class="btn" id="ps-expand">Expand all</button>
-        <button class="btn" id="ps-collapse">Collapse all</button>
-        <button class="btn" id="ps-dl" hidden>Download CSV</button>
-        <span class="muted small">Net sales = gross sales − discounts − returns. Margin is on sales with a product cost recorded. Last year is the same dates a year earlier.</span>
-      </div>
-      <div class="tbl-wrap tall xl"><table id="ps-table"></table></div>
+      <div class="tbl-wrap tall xl"><table id="ps-prods"></table></div>
+      <div class="row" id="ps-more"></div>
+      <span class="muted small">Ace n Rally products appear under the Just Tennis product they match; Amazon listings under the Shopify product they're mapped to (units in Shopify units). "Not mapped" rows have no match yet.</span>
     </section>
 
     <section class="panel" id="cw">
