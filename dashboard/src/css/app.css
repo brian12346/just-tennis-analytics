@@ -965,3 +965,8 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .vs-head{display:flex;flex-wrap:wrap;gap:12px 32px;justify-content:space-between}
 .vs-t td,.vs-t th{white-space:nowrap}
 .vs-t td.l:nth-child(4){white-space:normal;min-width:200px}
+
+/* invoice close-out steps (v0.10.85) */
+.ivsteps{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:13px}
+.ivstep{padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);font-weight:500}
+.ivstep.done{color:var(--good);border-color:var(--good-bg);background:var(--good-bg)}
