@@ -1341,6 +1341,24 @@
         `<tr><td class="l">${esc(s.name || "(no shipment ID)")} <span class="pill ${s.dest === "AWD" ? "manual" : "web"}">${esc(s.dest)}</span></td><td class="l small">${esc(s.status)}</td><td class="l mono small">${esc(l.asku || "any")}</td><td>${n0(l.qty)}</td></tr>`).join("")).join("")}</tbody></table></div>` : "";
     return head + kpis + listTbl + poTbl + invTbl + shipTbl;
   }
+  // the Amazon listing (ASIN / seller SKU) a shipment line is for; changing it re-keys the line, and Save earmarks
+  // not-earmarked prep center stock for the new listing
+  function listingPick(r, k) {
+    const ls = cache.byVariant.get(r.vid) || [], opts = ls.slice();
+    if (r.asku && !opts.some(l => l.sku === r.asku)) opts.unshift({ sku: r.asku, asin: (r.target && r.target.asin) || "", units: 1 });
+    if (!opts.length) return '<span class="dim">Any listing</span><div class="meta warnt">no Amazon listing mapped</div>';
+    return `<select class="inp sm ${r.asku ? "" : "warnin"}" data-lsku="${esc(k)}" style="width:auto;max-width:300px"><option value="" ${r.asku ? "" : "selected"}>Pick a listing…</option>${opts.map(l => `<option value="${esc(l.sku)}" ${l.sku === r.asku ? "selected" : ""}>${esc(l.asin || "no ASIN")} · ${esc(l.sku)}${(l.units || 1) !== 1 ? ` (${l.units}-pack)` : ""}</option>`).join("")}</select>`;
+  }
+  function rekeyLine(M, k, sku) {
+    const [vid, oldSku] = k.split("|"), nk = vid + "|" + (sku || ""); if (nk === k) return;
+    const q = (Number(M.qty[k]) || 0) + (Number(M.qty[nk]) || 0);
+    const r = lineOf(k), info = M.info[k] || (r ? { vid, asku: oldSku, title: r.title, sku: r.sku, vendor: r.vendor, cost: r.cost } : {});
+    M.lines = M.lines.includes(nk) ? M.lines.filter(x => x !== k) : M.lines.map(x => x === k ? nk : x);
+    delete M.qty[k]; M.qty[nk] = q ? String(q) : "";
+    M.info[nk] = { ...info, asku: sku || "" };
+    M.rekey = M.rekey || {}; const from = M.rekey[k] != null ? M.rekey[k] : oldSku; delete M.rekey[k]; if (from !== (sku || "")) M.rekey[nk] = from;
+    M.confirm = false;
+  }
   function renderModal() {
     const box = $("prep-modal"), M = P.modal;
     box.hidden = !M; document.body.classList.toggle("modal-open", !!M);
@@ -1394,20 +1412,11 @@
       const steps = ["open", "started", "shipped"].map(st2 => `<span class="step ${st2 === M.status ? "on" : ["open", "started", "shipped"].indexOf(st2) < ["open", "started", "shipped"].indexOf(M.status) ? "done" : ""}">${STATUS[st2][0]}</span>`).join('<span class="step-sep">→</span>');
       html = `<div class="panel-head"><h2>${M.id ? esc(M.shipment || "Shipment #" + M.id) : "New shipment"}</h2><span class="steps">${steps}</span><button class="mini" data-act="close">Close</button></div>
         ${!M.id && M.fromRow && open.length ? `<label class="small muted" for="pm-into">Add this product to <select id="pm-into" class="inp sm" style="width:auto"><option value="">a new shipment</option>${open.map(x => `<option value="${x.id}">${esc(shipTitle(x))} (${STATUS[x.status][0].toLowerCase()})</option>`).join("")}</select></label>` : ""}
-        ${M.id ? flowHtml(M) : ""}
-        ${issuesHtml(iss)}
-        ${M.orderId || (M.sh && M.sh.orderId) ? (() => { const o = cache.orders.find(x => x.id === String(M.orderId || M.sh.orderId)); return o ? `<div class="row small muted">From Incoming Inventory: <button class="linkbtn small" data-fix="gotoorder" data-arg="${o.id}">${esc(o.vendor)} ${esc(orderTitle(o))}</button></div>` : ""; })() : ""}
-        ${M.id && M.sh ? amzSection(M) : ""}
-        ${ro ? `<div class="note info">Shipped ${when(M.sh.shipped)}${M.sh.shippedBy ? " by " + esc(M.sh.shippedBy) : ""} to ${esc(M.dest)}. These units left the prep center.</div>` : ""}
-        <div class="pmgrid">
-          <label class="stack" for="pm-ship">Shipment ID or name<input id="pm-ship" class="inp mono" value="${esc(M.shipment)}" placeholder="e.g. FBA18ABC1234" ${ro ? "disabled" : ""}></label>
-          <label class="stack">Going to<span class="seg" id="pm-dest"><button data-dest="FBA" aria-pressed="${M.dest === "FBA"}" ${ro ? "disabled" : ""}>FBA</button><button data-dest="AWD" aria-pressed="${M.dest === "AWD"}" ${ro ? "disabled" : ""}>AWD</button></span></label>
-          <label class="stack" for="pm-snote" style="grid-column:span 2">Note (optional)<input id="pm-snote" class="inp" value="${esc(M.note)}" ${ro ? "disabled" : ""}></label>
-        </div>
+        <div class="contents"><h3 class="psec" style="margin:0">What's going · pick the ASIN / seller SKU for each product</h3>
         ${rows.length ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">Amazon listing</th>${ro ? "" : "<th>On hand</th>"}<th>${ro ? "Shipped" : "Ship"}</th><th></th></tr></thead><tbody>${
           rows.map(r => { const k = keyOf(r), v = M.qty[k] ?? "", q = v === "" ? 0 : Number(v), b = v !== "" && (!Number.isInteger(q) || q < 0), ov = q > r.qty + comingOf(k), tg = !ov && q > avail(r), as = asinsOf(r);
             return `<tr><td class="l">${esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku)}</span> · ${esc(r.vendor)}</div></td>
-              <td class="l small">${r.asku ? `<span class="mono">${esc(r.asku)}</span>` : '<span class="dim">Any listing</span>'}${as.length ? `<div class="meta mono">${esc(as.join(", "))}</div>` : ""}</td>
+              <td class="l small">${ro ? `${r.asku ? `<span class="mono">${esc(r.asku)}</span>` : '<span class="dim">Any listing</span>'}${as.length ? `<div class="meta mono">${esc(as.join(", "))}</div>` : ""}` : listingPick(r, k)}</td>
               ${ro ? "" : `<td>${n0(r.qty)}${comingOf(k) ? `<div class="meta">+ ${n0(comingOf(k))} incoming</div>` : ""}${avail(r) !== r.qty + comingOf(k) ? `<div class="meta">${n0(Math.max(0, avail(r)))} not in other shipments</div>` : ""}</td>`}
               <td>${ro ? `<b>${n0(q)}</b>` : `<input class="inp num sm ${b || ov ? "bad" : tg ? "warnin" : ""}" data-k="${esc(k)}" value="${esc(v)}" inputmode="numeric" placeholder="0" style="width:80px"><div class="meta"><button class="linkbtn small" data-all="${esc(k)}">all ${n0(Math.max(0, avail(r)))}</button></div>`}</td>
               <td>${ro ? "" : `<button class="linkbtn small" data-rm="${esc(k)}" title="Remove from this shipment" aria-label="Remove ${esc(r.title)}">✕</button>`}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
@@ -1416,6 +1425,17 @@
           ${M.add.trim() ? `<div class="mres">${found.map(r => `<button data-add="${esc(keyOf(r))}"><b>${esc(r.title)}</b><br><span class="dim">${esc(r.sku)}${r.asku ? " · " + esc(r.asku) : ""}${asinsOf(r).length ? " · " + esc(asinsOf(r).join(", ")) : ""} · ${n0(r.qty)} on hand${comingOf(keyOf(r)) ? ` · ${n0(comingOf(keyOf(r)))} incoming` : ""}</span></button>`).join("")
             || '<span class="muted small">Nothing in the prep center matches that ASIN or SKU.</span>'}</div>` : ""}
         </div>`}
+        </div>
+        <div class="pmgrid">
+          <label class="stack" for="pm-ship">Shipment ID or name<input id="pm-ship" class="inp mono" value="${esc(M.shipment)}" placeholder="e.g. FBA18ABC1234" ${ro ? "disabled" : ""}></label>
+          <label class="stack">Going to<span class="seg" id="pm-dest"><button data-dest="FBA" aria-pressed="${M.dest === "FBA"}" ${ro ? "disabled" : ""}>FBA</button><button data-dest="AWD" aria-pressed="${M.dest === "AWD"}" ${ro ? "disabled" : ""}>AWD</button></span></label>
+          <label class="stack" for="pm-snote" style="grid-column:span 2">Note (optional)<input id="pm-snote" class="inp" value="${esc(M.note)}" ${ro ? "disabled" : ""}></label>
+        </div>
+        ${ro ? `<div class="note info">Shipped ${when(M.sh.shipped)}${M.sh.shippedBy ? " by " + esc(M.sh.shippedBy) : ""} to ${esc(M.dest)}. These units left the prep center.</div>` : ""}
+        ${M.id ? flowHtml(M) : ""}
+        ${issuesHtml(iss)}
+        ${M.orderId || (M.sh && M.sh.orderId) ? (() => { const o = cache.orders.find(x => x.id === String(M.orderId || M.sh.orderId)); return o ? `<div class="row small muted">From Incoming Inventory: <button class="linkbtn small" data-fix="gotoorder" data-arg="${o.id}">${esc(o.vendor)} ${esc(orderTitle(o))}</button></div>` : ""; })() : ""}
+        ${M.id && M.sh ? amzSection(M) : ""}
         ${M.confirm === "ship" ? `<div class="note warn">Mark <b>${esc(M.shipment || "this shipment")}</b> shipped to ${esc(M.dest)}? ${n0(units)} units (${lines} product${lines === 1 ? "" : "s"}, ${m0(cost)} at cost) leave the prep center. This can't be undone. <span class="dbtns"><button class="mini primary" data-act="do-ship" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, shipped"}</button><button class="mini" data-act="no-ship">Cancel</button></span></div>` : ""}
         ${M.confirm === "unship" ? (() => { const u = M.lines.reduce((a, k) => a + (Number(M.qty[k]) || 0), 0), o = M.sh && M.sh.orderId && cache.orders.find(x => x.id === String(M.sh.orderId));
           return `<div class="note warn">Move <b>${esc(M.shipment || "this shipment")}</b> back to started? ${n0(u)} units go back into the prep center${o && o.status === "shipped" ? `, and ${esc(o.vendor)} ${esc(orderTitle(o))} goes back to received` : ""}. <span class="dbtns"><button class="mini primary" data-act="do-unship" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Yes, move it back"}</button><button class="mini" data-act="no-ship">Cancel</button></span></div>`; })() : ""}
@@ -1462,6 +1482,12 @@
     const lines = M.lines.map(k => { const [vid, sku] = k.split("|"); return { variant_id: Number(vid), amazon_sku: sku || "", qty: Number(M.qty[k]) || 0 }; }).filter(l => l.qty > 0);
     P.busy = true; renderModal();
     try {
+      // lines moved from "any listing" to a listing: earmark the not-earmarked stock they'll ship from
+      if (M.status !== "shipped") for (const [nk, from] of Object.entries(M.rekey || {})) {
+        const [vid, sku] = nk.split("|"), q = Number(M.qty[nk]) || 0; if (from !== "" || !sku || !q || !M.lines.includes(nk)) continue;
+        const have = prepHere(vid, sku).qty, take = Math.min(Math.max(0, q - have), prepHere(vid, "").qty);
+        if (take > 0) await JT.prep.assign({ variant_id: Number(vid), from_sku: "", moves: [{ to_sku: sku, qty: take }], note: "for shipment " + (M.shipment.trim() || "#" + (M.id || "new")) });
+      }
       const id = await JT.prep.saveShipment({ id: M.id ? Number(M.id) : null, name: M.shipment.trim(), dest: M.dest, note: M.note || "", lines, ...(M.orderId ? { order_id: Number(M.orderId) } : {}) });
       if (next) await JT.prep.setShipmentStatus(id, next);
       const u = lines.reduce((a, l) => a + l.qty, 0), nm = M.shipment.trim() || "Shipment #" + id;
@@ -1560,6 +1586,7 @@
       const M = P.modal; if (!M) return;
       if (e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); }
       if (e.target.id === "pm-amz") { M.amzPick = e.target.value; renderModal(); }
+      if (e.target.dataset && e.target.dataset.lsku != null && M.kind === "ship") { rekeyLine(M, e.target.dataset.lsku, e.target.value); renderModal(); }
       if (e.target.id === "pm-place" && M.id) flowDo(M.id, { placement: e.target.value });
       if (M.recon && e.target.dataset.rto) { const r = M.recon.rows.find(x => String(x.vid) === e.target.dataset.rto); if (r) { r.to = e.target.value; renderModal(); } }
       if (M.recon && e.target.dataset.rsku) { const r = M.recon.rows.find(x => String(x.vid) === e.target.dataset.rsku); if (r) { r.tsku = e.target.value; r.to = "prep"; renderModal(); } }

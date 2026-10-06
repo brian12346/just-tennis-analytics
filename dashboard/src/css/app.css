@@ -412,6 +412,7 @@ ol.flow li.ok .fn{background:var(--ok,#2e8b57);color:#fff;border-color:transpare
 ol.flow .ft{display:flex;flex-direction:column;font-size:13px}
 ol.flow .ft span{color:var(--muted,#667);font-size:12px}
 ol.flow li.ok .ft b{font-weight:500}
+.prep-card .contents{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .recon{display:flex;flex-direction:column;gap:8px}
 .rradio{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0}
 .amzbox{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
