@@ -508,6 +508,12 @@
         return Number(out[0] && out[0].n) || 0;
       },
       // On The List: mark a product for re-order, put items on a draft / booking order, take one off
+      // put one list item on its vendor's draft PO (migration 091); returns the order id
+      async listToPo(id) {
+        if (WEB) return Number(await WEB.write("jt_prep_list_to_po", { p: { id: Number(id) } }));
+        const out = await run(`select jt.prep_list_to_po(${q(JSON.stringify({ id: Number(id), by: "Claude dashboard" }))}::jsonb) as id`, true);
+        return Number(out[0] && out[0].id);
+      },
       async listAdd(body) {
         if (WEB) return Number(await WEB.write("jt_prep_list_add", { p: body }));
         const out = await run(`select jt.prep_list_add(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);

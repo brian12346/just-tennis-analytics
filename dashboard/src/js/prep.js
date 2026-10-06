@@ -304,7 +304,7 @@
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
             <td>${r.amzPrice == null ? dash : m(r.amzPrice)}</td><td>${r.amzValue == null ? dash : m0(r.amzValue)}</td>
             <td class="l small">${when(r.upd)}${r.note ? `<div class="meta">${esc(r.note)}</div>` : ""}</td>
-            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}${listed(r.vid, r.asku, "prep") ? '<span class="pill ok" title="On The List">On list</span>' : `<button class="mini" data-act="list" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Put on On The List to re-order">+ List</button>`}</span></td></tr>`;
+            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}${listed(r.vid, r.asku, "prep") ? (listed(r.vid, r.asku, "prep").order ? `<span class="pill ok" title="On ${esc(orderTitle(listed(r.vid, r.asku, "prep").order))}">On PO</span>` : '<span class="pill ok" title="On The List">On list</span>') : `<button class="mini" data-act="list" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Put on On The List to re-order">+ List</button>`}</span></td></tr>`;
         }).join("") || `<tr><td class="l muted" colspan="9">No products match.</td></tr>`}</tbody>
         <tfoot><tr><td class="l">Total · ${rows.length.toLocaleString()} products</td><td></td><td>${n0(t.units)}</td><td></td><td>${m0(t.cost)}</td><td></td><td>${m0(t.amz)}</td><td></td><td></td></tr></tfoot></table></div>`;
     }
@@ -1035,32 +1035,31 @@
     parts.push(`Shopify ${i.shopQty == null ? "—" : n0(i.shopQty)}`);
     return parts.join(" · ");
   }
+  // On The List: products to re-order. "To order" is what isn't on a PO yet; "Add to PO" puts a row on its
+  // vendor's draft PO (no quantity needed — whoever places the order sets it) and it moves to "On a PO".
   function renderList() {
     const d = cache, el = $("prep-list");
     const by = { todo: [], onorder: [], done: [] };
-    for (const i of d.list) { const st = listStage(i); (st === "need" || st === "draft" ? by.todo : st === "onorder" ? by.onorder : by.done).push(i); }
+    for (const i of d.list) { const st = listStage(i); (st === "need" ? by.todo : st === "draft" || st === "onorder" ? by.onorder : by.done).push(i); }
     document.querySelectorAll("#prep-lview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.lView)); b.querySelector("span").textContent = by[b.dataset.v].length; });
     const items = by[P.lView];
     const found = P.lAdd.trim() && cat ? findProducts(P.lAdd).slice(0, 8) : [];
     $("prep-lres").innerHTML = P.lAdd.trim() ? (!cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((v, k) => `<button data-ladd="${k}"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.sku)} · ${esc(v.vendor)}${v.asku ? " · for " + esc(v.asku) : ""}</span></button>`).join("") || '<span class="muted small">No products match.</span>') : "";
-    if (!items.length) { el.innerHTML = `<div class="muted small" style="padding:6px 2px">${P.lView === "todo" ? "Nothing on the list. Add products with the box above, or with “+ List” on Prep center stock, Amazon inventory and Inventory value." : P.lView === "onorder" ? "Nothing on a placed order yet." : "Nothing received from the list in the last 90 days."}</div>`; return; }
+    if (!items.length) { el.innerHTML = `<div class="muted small" style="padding:6px 2px">${P.lView === "todo" ? "Nothing to order. Add products with the box above, or with “+ List” on Prep center stock, Amazon inventory and Inventory value." : P.lView === "onorder" ? "Nothing from the list is on a PO." : "Nothing received from the list in the last 90 days."}</div>`; return; }
     const groups = new Map();
     for (const i of items) { const k = i.vendor || "(no vendor)"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
-    const drafts = (v) => d.orders.filter(o => o.status === "draft" && (o.vendor || "").toLowerCase() === (v === "(no vendor)" ? "" : v.toLowerCase()));
+    const todo = P.lView === "todo";
     el.innerHTML = [...groups].sort((a, b) => a[0].localeCompare(b[0])).map(([v, list]) => {
-      const need = list.filter(i => listStage(i) === "need").length, ticked = list.filter(i => P.lSel.has(i.id)).length;
-      const ds = drafts(v);
-      const put = P.lView === "todo" ? `<span class="dbtns right"><select class="inp sm" data-lput="${esc(v)}" style="width:auto">${ds.map(o => `<option value="${o.id}">${o.kind === "booking" ? "Booking" : "Draft"} · ${esc(orderTitle(o))}${o.kind === "booking" && o.placeBy ? " · place by " + shortDate(o.placeBy) : ""} (${o.lines.length} products)</option>`).join("")}<option value="new">New draft order</option><option value="booking">New booking order</option></select>
-        <button class="mini primary" data-lgo="${esc(v)}" ${ticked ? "" : "disabled"}>Put ${ticked || ""} on it</button></span>` : "";
-      return `<div class="lgroup"><div class="lghead"><label class="inline"><input type="checkbox" data-lall="${esc(v)}" ${ticked && ticked === list.length ? "checked" : ""} ${P.lView !== "todo" ? "hidden" : ""}><b>${esc(v)}</b></label><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${need ? ` · ${need} need${need === 1 ? "s" : ""} an order` : ""}</span>${put}</div>
-        <div class="tbl-wrap"><table class="prept"><thead><tr>${P.lView === "todo" ? "<th></th>" : ""}<th class="l">Product</th><th class="l">For</th><th>Qty</th><th class="l">Stock now</th><th class="l">Status</th><th></th></tr></thead><tbody>${
-        list.map(i => `<tr>${P.lView === "todo" ? `<td><input type="checkbox" data-lsel="${i.id}" ${P.lSel.has(i.id) ? "checked" : ""} aria-label="Tick ${esc(i.title)}"></td>` : ""}
-          <td class="l">${i.pid ? `<a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>` : esc(i.title)}<div class="meta"><span class="mono">${esc(i.sku)}</span>${i.source ? " · from " + esc({ prep: "prep center", amazon: "Amazon inventory", inventory: "inventory value", search: "search" }[i.source] || i.source) : ""}${i.addedBy ? " · " + esc(i.addedBy) : ""}</div></td>
+      const dr = todo ? d.orders.find(o => o.status === "draft" && o.kind === "order" && (o.vendor || "").toLowerCase() === (v === "(no vendor)" ? "" : v.toLowerCase())) : null;
+      return `<div class="lgroup"><div class="lghead"><b>${esc(v)}</b><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${todo ? (dr ? ` · Add to PO puts them on <button class="linkbtn small" data-lord="${dr.id}">${esc(orderTitle(dr))}</button> (draft)` : " · Add to PO starts a draft PO") : ""}</span></div>
+        <div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">For</th>${todo ? "" : "<th>Qty</th>"}<th class="l">Stock now</th><th class="l">${todo ? "" : "PO"}</th><th></th></tr></thead><tbody>${
+        list.map(i => `<tr>
+          <td class="l">${i.pid ? `<a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>` : esc(i.title)}<div class="meta"><span class="mono">${esc(i.sku)}</span>${i.source ? " · from " + esc({ prep: "prep center", amazon: "Amazon inventory", inventory: "inventory value", search: "search" }[i.source] || i.source) : ""}${i.addedBy ? " · " + esc(i.addedBy) : ""}${i.added ? " · " + shortDate(String(i.added).slice(0, 10)) : ""}</div></td>
           <td class="l small">${i.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep / Amazon</span>${i.asku ? `<div class="meta mono">${esc(i.asku)}</div>` : ""}`}</td>
-          <td>${(() => { const q = listQty(i); return listStage(i) === "need" || listStage(i) === "draft" ? `<input class="inp num sm" data-lqty="${i.id}" value="${q || ""}" inputmode="numeric" placeholder="qty" style="width:70px">` : q == null ? '<span class="dim">—</span>' : n0(q); })()}</td>
+          ${todo ? "" : `<td>${(() => { const q = listQty(i); return q ? n0(q) : '<span class="dim">not set</span>'; })()}</td>`}
           <td class="l small">${stockOf(i)}</td>
-          <td class="l small">${listStatus(i)}</td>
-          <td>${listStage(i) === "done" ? "" : `<button class="linkbtn small" data-lrm="${i.id}" title="Take off the list${listStage(i) === "draft" ? " (and off its draft order)" : ""}" aria-label="Remove ${esc(i.title)}">✕</button>`}</td></tr>`).join("")}</tbody></table></div></div>`;
+          <td class="l small">${todo ? `<button class="mini primary" data-lpo="${i.id}" title="Put it on ${esc(v)}'s draft PO">Add to PO</button>` : listStatus(i)}</td>
+          <td>${listStage(i) === "done" ? "" : `<button class="linkbtn small" data-lrm="${i.id}" title="Take off the list${listStage(i) === "draft" ? " (and off its draft PO)" : ""}" aria-label="Remove ${esc(i.title)}">✕</button>`}</td></tr>`).join("")}</tbody></table></div></div>`;
     }).join("");
   }
   async function listAssign(vendor) {
@@ -1083,11 +1082,10 @@
     add.addEventListener("input", () => { P.lAdd = add.value; clearTimeout(add._t); add._t = setTimeout(renderList, 150); });
     const doAdd = async (v) => {
       if (!v) return;
-      const dest = $("pl-dest").value, qty = $("pl-qty").value.trim();
-      if (qty && !(Number.isInteger(Number(qty)) && Number(qty) >= 0)) { note("bad", "Quantity must be a whole number."); return; }
+      const dest = $("pl-dest").value;
       try {
-        const r = await addToList({ variant_id: Number(v.vid), amazon_sku: dest === "prep" ? v.asku || "" : "", dest, qty: qty === "" ? null : Number(qty), source: "search" });
-        add.value = ""; P.lAdd = ""; $("pl-qty").value = ""; P.lView = "todo"; render(); note("info", `Added ${esc(v.title)} to ${r.where}.`); add.focus();
+        const r = await addToList({ variant_id: Number(v.vid), amazon_sku: dest === "prep" ? v.asku || "" : "", dest, source: "search" });
+        add.value = ""; P.lAdd = ""; P.lView = "todo"; render(); note("info", `Added ${esc(v.title)} to ${r.where}.`); add.focus();
       } catch (e) { note("bad", "Couldn't add it: " + esc(JT.message(e))); }
     };
     add.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(findProducts(P.lAdd)[0]); } });
@@ -1108,6 +1106,13 @@
     el.addEventListener("click", async (e) => {
       const b = e.target.closest("button"); if (!b) return;
       if (b.dataset.lgo) return listAssign(b.dataset.lgo);
+      if (b.dataset.lpo) {
+        const i = cache.list.find(x => x.id === b.dataset.lpo); b.disabled = true;
+        try { const oid = await JT.prep.listToPo(b.dataset.lpo); await load(true); render(); const o = cache.orders.find(x => x.id === String(oid));
+          note("info", `${esc(i ? i.title : "Product")} is on <button class="linkbtn" data-lord="${oid}">${esc(o ? (o.vendor ? o.vendor + " " : "") + orderTitle(o) : "order #" + oid)}</button> (draft) — it's off the To order list.`); }
+        catch (err) { b.disabled = false; note("bad", "Couldn't add it to a PO: " + esc(JT.message(err))); }
+        return;
+      }
       if (b.dataset.lrm) { try { await JT.prep.listRemove(Number(b.dataset.lrm)); P.lSel.delete(b.dataset.lrm); await load(true); render(); } catch (err) { note("bad", "Couldn't remove it: " + esc(JT.message(err))); } return; }
     });
     // order links anywhere on the tab (list rows, notes)
