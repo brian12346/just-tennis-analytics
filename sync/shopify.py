@@ -673,6 +673,65 @@ def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int | dict:
     return len(rows)
 
 
+# ---------------------------------------------------------------- Shopify Payments fees (All sales, migration 094)
+# Every balance transaction (charge, refund, chargeback, adjustment) with the fee Shopify kept. Needs the app's
+# Shopify Payments scope (read_shopify_payments / read_shopify_payments_accounts / _payouts); a store without it is
+# skipped and says why in jt.sync_runs.detail.
+FEES_Q = """query($after: String, $q: String) { shopifyPaymentsAccount { balanceTransactions(first: 250, after: $after, query: $q,
+  sortKey: PROCESSED_AT, hideTransfers: true) { nodes { id type test transactionDate sourceType amount { amount currencyCode }
+  fee { amount } net { amount } associatedOrder { id name } } pageInfo { hasNextPage endCursor } } } }"""
+
+
+def fee_rows(store: str, nodes: list[dict]) -> list[tuple]:
+    out = []
+    for n in nodes:
+        amt, order = n.get("amount") or {}, n.get("associatedOrder") or {}
+        oid = (order.get("id") or "").split("/")[-1]
+        out.append((store, int(n["id"].split("/")[-1]), n.get("type") or "", n.get("sourceType") or "", n["transactionDate"],
+                    float(amt.get("amount") or 0), float((n.get("fee") or {}).get("amount") or 0),
+                    float((n.get("net") or {}).get("amount") or 0), amt.get("currencyCode") or "USD",
+                    int(oid) if oid.isdigit() else None, order.get("name") or "", bool(n.get("test"))))
+    return out
+
+
+def sync_payment_fees(shop: "Shopify", conn, store: str = "justtennis", since: "dt.date | None" = None) -> int | dict:
+    """Shopify Payments balance transactions -> jt.shopify_payment_tx. From a week before the newest one we have
+    (late fees and refunds), or from Jan 2025 the first time (or `since`)."""
+    with conn.cursor() as cur:
+        cur.execute("select max(processed_at) from jt.shopify_payment_tx where store = %s", (store,))
+        last = cur.fetchone()[0]
+    start = since or ((last - dt.timedelta(days=7)).date() if last else dt.date(2025, 1, 1))
+    q, after, n = f"processed_at:>={start.isoformat()}", None, 0
+    while True:
+        try:
+            acct = (shop.graphql(FEES_Q, {"after": after, "q": q}) or {}).get("shopifyPaymentsAccount")
+        except RuntimeError as e:
+            if any(w in str(e).lower() for w in ("access denied", "scope", "not approved", "unauthorized")):
+                print(f"shopify fees ({store}): skipped —", str(e)[:200])
+                return {"variants": 0, "skipped": str(e)[:300]}
+            raise
+        if acct is None:
+            return {"variants": 0, "note": "no Shopify Payments account"}
+        bt = acct.get("balanceTransactions") or {}
+        rows = fee_rows(store, bt.get("nodes") or [])
+        if rows:
+            with conn.cursor() as cur:
+                cur.executemany("""insert into jt.shopify_payment_tx (store, id, type, source_type, processed_at, amount, fee, net,
+                                     currency, order_id, order_name, test, synced_at)
+                                   values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                                   on conflict (store, id) do update set type = excluded.type, source_type = excluded.source_type,
+                                     processed_at = excluded.processed_at, amount = excluded.amount, fee = excluded.fee, net = excluded.net,
+                                     currency = excluded.currency, order_id = excluded.order_id, order_name = excluded.order_name,
+                                     test = excluded.test, synced_at = now()""", rows)
+            conn.commit()
+            n += len(rows)
+        page = bt.get("pageInfo") or {}
+        if not page.get("hasNextPage") or not rows:
+            break
+        after = page["endCursor"]
+    return n
+
+
 # ---------------------------------------------------------------- Shopify purchase order status
 # Shopify's purchase orders API (inventoryPurchaseOrders, scope read_inventory_purchase_orders) is a preview that
 # live stores can't use yet. Try it: when the store is refused, record why and carry on; when it works, each linked
