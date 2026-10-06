@@ -878,7 +878,7 @@
       const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
       let rq = sh.left > 0 ? '' : '<span class="pill ok">All in</span>';
       if (sh.left > 0 && canRecv && recvOn) { const val = rqVal(ed, ivNow, l, sh), bad = val !== "" && !(Number.isInteger(Number(val)) && Number(val) >= 0);
-        rq = `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"></div>${val !== String(sh.left) ? `<div class="meta warnt">invoice: ${n0(sh.left)}</div>` : ""}`; }
+        rq = `<div class="rq"><input class="inp num sm ${bad ? "bad" : ""}" data-f="rq" data-k="${l.id}" value="${esc(val)}" inputmode="numeric" placeholder="0" style="width:60px" aria-label="Quantity arrived"><button class="mini primary" data-pact="rq-go" data-k="${l.id}" title="Receive just this product now">Receive</button></div>${val !== String(sh.left) ? `<div class="meta warnt">invoice: ${n0(sh.left)}</div>` : ""}`; }
       else if (sh.left > 0) rq = `<span class="dim">${n0(sh.left)} to come</span>`;
       return `<tr data-line="${l.id}">${prodCell(l, v)}${forCell(l)}
         <td>${n0(sh.billed)}</td>
@@ -938,7 +938,7 @@
           <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
             ? `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Save${left ? ` (${n0(left)} units)` : ""}</button>`
             : `<button class="btn primary" data-pact="rq-start" title="Open receiving for this invoice">Receive</button>`) : ""}</span></div>
-        ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived for each product still to come, then Save. Cancel leaves without receiving anything.</div>` : ""}
+        ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived and press a product's Receive, or Save to receive everything entered. Cancel leaves without receiving the rest.</div>` : ""}
         ${c.check ? `<div class="note warn">${c.check} guessed product${c.check === 1 ? "" : "s"} on this invoice ${c.check === 1 ? "needs" : "need"} confirming on the invoice before ${c.check === 1 ? "it" : "they"} can be received. <button class="mini" data-pact="open-inv">Open the invoice</button></div>` : ""}
         ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
       </div>`;
@@ -1318,7 +1318,7 @@
     try { await JT.prep.invoiceReceived(iv.id, on); S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); } note("info", on ? `Invoice ${esc(iv.no || iv.id)} marked received.` : `Invoice ${esc(iv.no || iv.id)} reopened.`); }
     catch (e) { S.busy = ""; render(); note("bad", "Couldn't change the invoice: " + esc(JT.message(e))); }
   }
-  async function receiveNow(obj, invId) {
+  async function receiveNow(obj, invId, stay) {
     const ed = S.ed; obj = obj || (ed && ed.recv); if (!ed || !obj) return;
     const lines = [];
     for (const [k, v] of Object.entries(obj)) {
@@ -1337,7 +1337,7 @@
       const id = S.ed.id; S.busy = ""; await loadOrders(true); await openPO(id);
       const iv2 = inv && S.ed && S.ed.invoices.find(v => String(v.id) === String(inv.id));
       if (iv2) {
-        const was = S.ed.cur; S.ed.cur = S.ed.invoices.indexOf(iv2); S.ed.recvInv = null;
+        const was = S.ed.cur; S.ed.cur = S.ed.invoices.indexOf(iv2); S.ed.recvInv = stay && !iv2.recvAt ? iv2.id : null;
         if (was !== S.ed.cur) {   // openPO showed the last invoice's PDF: switch to this one's
           pdfToken++; const h = $("pe-pdf"); if (h) h.innerHTML = "";
           if (iv2.parts && !iv2.file && !S.files.has(iv2.id)) loadFile(iv2).then(() => { if (S.ed && cur(S.ed) === iv2) { const h2 = $("pe-pdf"); if (h2) h2.innerHTML = ""; renderPdf(); } }).catch(() => {});
@@ -1472,7 +1472,7 @@
     if (a === "recv-inv") { const v = ed.invoices[Number(k)]; if (!v) return; ed.cur = Number(k); ed.view = "inv"; ed.recvInv = v.id; render();
       setTimeout(() => { const el = document.querySelector("#po-edit-view .po-recv"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
     if (a === "rq-stop") { if (ed.rq && iv) for (const kk of Object.keys(ed.rq)) if (kk.startsWith(iv.id + "#")) delete ed.rq[kk]; ed.recvInv = null; render(); return; }
-    if (a === "rq-go" && l && iv && iv.id) { const sh = invShares(ed, iv).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, iv, l, sh) }, iv.id); }
+    if (a === "rq-go" && l && iv && iv.id) { const sh = invShares(ed, iv).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, iv, l, sh) }, iv.id, true); }
     if (a === "rq-all" && iv && iv.id) {
       const sh = invShares(ed, iv), o = {};
       for (const x of ed.lines) { const y = sh.get(x.id); if (y && y.left > 0) o[keyOf(x)] = rqVal(ed, iv, x, y); }
