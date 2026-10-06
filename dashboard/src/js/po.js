@@ -252,9 +252,16 @@
       if (!b.has(l.vid)) continue;
       const last = lastOf.get(l.vid) === l.id, ord = Number(l.qty) || 0;
       const bb = last ? bl.get(l.vid) : Math.min(bl.get(l.vid), ord); bl.set(l.vid, bl.get(l.vid) - bb);
-      const gg = last ? gl.get(l.vid) : Math.min(gl.get(l.vid), bb); gl.set(l.vid, gl.get(l.vid) - gg);
-      out.set(l.id, { billed: bb, got: gg, left: Math.max(0, bb - gg) });
+      out.set(l.id, { billed: bb, got: 0, left: 0 });
     }
+    // what this invoice already received goes first to the lines that received it (a split product's parts are separate
+    // ASINs: the units still to come must stay on the part that hasn't received them), then to the rest in order
+    for (const pass of [0, 1]) for (const l of ed.lines) {
+      const sh = out.get(l.id); if (!sh) continue;
+      const room = sh.billed - sh.got, can = pass === 0 ? Math.min(room, Math.max(0, (l.received || 0) - sh.got)) : room;
+      const g = Math.min(can, gl.get(l.vid)); sh.got += g; gl.set(l.vid, gl.get(l.vid) - g);
+    }
+    for (const sh of out.values()) sh.left = Math.max(0, sh.billed - sh.got);
     return out;
   }
   const rqKey = (iv, l) => iv.id + "#" + keyOf(l);
@@ -310,7 +317,7 @@
           "(select max(seen_at) from jt.variants)::text", "o.shopify_po_status", "o.shopify_po_status_at::text",
           "(select value::text from jt.settings where key = 'shopify_po_api')", "o.no_shopify_po"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
-        JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id`, true),
+        JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id, dest desc, amazon_sku`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
         JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
           "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id"],
