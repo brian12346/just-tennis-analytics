@@ -1008,7 +1008,7 @@
     const ok = (v) => v === "all" || (v === "inv" && !!cur(ed)) || (v === "notinv" && anyInv) || (v === "left" && showLeft);
     return { anyInv, openInv, notInv, left, showLeft, ok, def: showLeft ? "left" : "all" };
   }
-  // The view switch above the PO's table: Entire PO · each invoice · Not invoiced · Still to receive · + Add invoice
+  // The view switch above the PO's table: All · each invoice · Not invoiced · Still to receive · + Add invoice
   function viewSeg(ed, vw, ro) {
     if (!ed.id && !ed.invoices.length) return `<div class="panel-head"><h2>Products on this PO</h2><span class="muted small">what was ordered · receiving is against these</span></div>`;
     const v = ed.view, units = (n) => `<span class="cnt">${n0(n)}</span>`;
@@ -1016,7 +1016,7 @@
       const st = iv.isNew ? '<span class="pill warn">new</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : iv.recvAt ? '<span class="pill ok">received</span>' : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : `<span class="pill pos">${n0(t.b)} to receive</span>`;
       return `<button data-inv="${i}" aria-pressed="${v === "inv" && i === ed.cur}" title="Invoice ${esc(iv.no || "")}${iv.total != null ? " · " + m(iv.total) : ""}">Invoice ${esc(iv.no || "#" + (i + 1))} ${st}</button>`; };
     return `<div class="panel-head pviews"><div class="seg" role="group" aria-label="Show">
-        <button data-pview="all" aria-pressed="${v === "all"}">Entire PO ${units(ed.lines.length)}</button>
+        <button data-pview="all" aria-pressed="${v === "all"}" title="Every product on this PO">All</button>
         ${ed.invoices.map(ivBtn).join("")}
         ${vw.anyInv && (vw.notInv > 0 || v === "notinv") ? `<button data-pview="notinv" aria-pressed="${v === "notinv"}" title="Products, or the part of them, that aren't on an invoice yet">Not invoiced ${units(vw.notInv)}</button>` : ""}
         ${vw.showLeft ? `<button data-pview="left" aria-pressed="${v === "left"}" title="Every invoice is received: what's still to come">Still to receive ${units(vw.left)}</button>` : ""}
