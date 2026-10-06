@@ -102,11 +102,26 @@ def _load_state(conn) -> dict:
     return (r and r[0]) or {}
 
 
+def label_channels(s: requests.Session) -> list[dict]:
+    """Veeqo's sales channels that can have labels: all but Amazon FBA (Veeqo lists FBA orders too, and they're
+    most of the orders — about 20 to every FBM order — with nothing to ship)."""
+    out, page = [], 1
+    while page < 20:
+        batch = _get(s, "/channels", {"page_size": 100, "page": page}).json() or []
+        out += [{"id": c.get("id"), "name": c.get("name"), "type": c.get("type_code")} for c in batch if c.get("id")]
+        if len(batch) < 100:
+            break
+        page += 1
+    return [c for c in out if str(c.get("type") or "") != "amazon_fba"]
+
+
 def _pages(conn, s: requests.Session, since: dt.datetime, start_page: int, deadline: float, stats: dict) -> tuple[int, bool]:
     """Shipped orders updated since `since`, from page `start_page`, saved every 10 pages, until done or `deadline`.
     Returns (next page, finished). Veeqo lists newest first, so orders arriving meanwhile only push others to later
     pages (read twice, never skipped)."""
     params = {"status": "shipped", "updated_at_min": since.strftime("%Y-%m-%d %H:%M:%S"), "page_size": PAGE}
+    if stats.get("channel_ids"):
+        params["channel_ids[]"] = stats["channel_ids"]
     now = dt.datetime.now(dt.timezone.utc)
     page, rows = start_page, []
 
@@ -156,6 +171,13 @@ def sync_shipments(conn, since: dt.datetime, budget: int = 240, backfill: bool =
     t0 = time.monotonic()
     st = _load_state(conn)
     stats: dict = {}
+    try:
+        chans = label_channels(s)
+        stats["channels_read"] = [f"{c['name']} ({c['type']})" for c in chans]
+        if chans:
+            stats["channel_ids"] = [c["id"] for c in chans]
+    except RuntimeError as e:   # no channel list: read every channel (slower, same result)
+        stats["channels_error"] = str(e)[:200]
     # 1) recent changes (the hourly / nightly window)
     if not backfill:
         _pages(conn, s, since, 1, t0 + budget, stats)
@@ -163,6 +185,8 @@ def sync_shipments(conn, since: dt.datetime, budget: int = 240, backfill: bool =
     bf = st.get("backfill") or {}
     if backfill:
         bf = {"since": since.isoformat(), "page": 1, "started_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if bf and not bf.get("done") and bf.get("channels") != stats.get("channel_ids"):
+        bf.update(page=1, channels=stats.get("channel_ids"))   # a different channel list pages differently: start over
     if bf and not bf.get("done"):   # gets its own `budget` seconds after the recent changes
         nxt, done = _pages(conn, s, dt.datetime.fromisoformat(bf["since"]), int(bf.get("page") or 1), time.monotonic() + budget, stats)
         bf.update(page=nxt, done=done, pages_total=stats.get("total_pages"), at=dt.datetime.now(dt.timezone.utc).isoformat())
