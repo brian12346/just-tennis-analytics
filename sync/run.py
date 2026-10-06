@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "shopify-pickups", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         from .shopify import Shopify
         return Shopify()
 
-    if a.job in ("hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders", "catalog", "shopify-pos", "shopify-po-probe"):
+    if a.job in ("hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders", "shopify-pickups", "catalog", "shopify-pos", "shopify-po-probe"):
         from . import shopify as sh
         shop = shopify()
         days = {"hourly": 3, "nightly": 35}.get(a.job, 7)
@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None) -> None:
         if a.job in ("hourly", "nightly", "backfill", "shopify-orders"):
             # orders changed since the start of the window (one day of overlap for safety)
             run("shopify_orders", lambda: sh.sync_orders(shop, conn, _utc(since - dt.timedelta(days=1))))
+        if a.job in ("hourly", "nightly", "backfill", "shopify-orders", "shopify-pickups"):
+            # in-store pickup orders: no label to buy (migration 096)
+            run("shopify_pickups", lambda: sh.sync_pickups(shop, conn))
         if a.job in ("nightly", "catalog"):
             run("catalog", lambda: sh.sync_catalog(shop, conn, today))
             # linked Shopify POs' status (Shopify's PO API is preview-only: this records "not available" until it opens)
@@ -88,6 +91,7 @@ def main(argv: list[str] | None = None) -> None:
             run("acenrally_sales", lambda: sh4.sync_sales(anr, conn, asince, until, table="jt.anr_sales"))
             # orders changed since the start of the window (tracking numbers match combined ShipStation shipments)
             run("acenrally_orders", lambda: sh4.sync_orders(anr, conn, _utc(asince - dt.timedelta(days=1)), prefix="jt.anr"))
+            run("acenrally_pickups", lambda: sh4.sync_pickups(anr, conn, "jt.anr_orders"))
         if a.job in ("nightly", "acenrally", "acenrally-catalog"):
             run("acenrally_catalog", lambda: sh4.sync_anr_catalog(anr, conn))
 

@@ -202,6 +202,32 @@ def _line_row(order_id: int, li: dict) -> tuple:
             _amt(li, "discountedUnitPriceAfterAllDiscountsSet"))
 
 
+PICKUPS_Q = """query($after: String, $q: String) { orders(first: 250, after: $after, query: $q, sortKey: UPDATED_AT) {
+  pageInfo { hasNextPage endCursor } nodes { id } } }"""
+
+
+def sync_pickups(shop: "Shopify", conn, table: str = "jt.shopify_orders") -> int:
+    """In-store pickup orders (Shopify's delivery_method:pick-up search) -> <table>.pickup. Orders changed in the last
+    3 days, or every order since Jan 2025 the first time (none marked yet)."""
+    assert table in ("jt.shopify_orders", "jt.anr_orders")
+    with conn.cursor() as cur:
+        cur.execute(f"select exists (select 1 from {table} where pickup)")
+        seen = cur.fetchone()[0]
+    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ") if seen else "2025-01-01T00:00:00Z"
+    q, after, ids = f"delivery_method:pick-up updated_at:>='{since}'", None, []
+    while True:
+        page = shop.graphql(PICKUPS_Q, {"after": after, "q": q})["orders"]
+        ids += [gid_num(n["id"]) for n in page["nodes"]]
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        after = page["pageInfo"]["endCursor"]
+    if ids:
+        with conn.cursor() as cur:
+            cur.execute(f"update {table} set pickup = true where order_id = any(%s) and not pickup", (ids,))
+        conn.commit()
+    return len(ids)
+
+
 def sync_orders(shop: Shopify, conn, updated_since: dt.datetime, prefix: str = "jt.shopify") -> int:
     """Orders (and their line items) created or changed since `updated_since`. prefix "jt.anr" = Ace n Rally's tables."""
     from .common import upsert

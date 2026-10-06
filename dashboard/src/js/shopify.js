@@ -93,9 +93,9 @@
     return by;
   }
 
-  const ORDER_COLS = ["order_id::text", "name", "created_at", "order_day", "source_name", "channel", "financial_status", "fulfillment_status", "cancelled_at is not null", "subtotal", "discounts", "shipping", "tax", "total", "refunded", "item_qty"];
+  const ORDER_COLS = ["order_id::text", "name", "created_at", "order_day", "source_name", "channel", "financial_status", "fulfillment_status", "cancelled_at is not null", "subtotal", "discounts", "shipping", "tax", "total", "refunded", "item_qty", "pickup"];
   const toOrder = (x) => ({ id: "gid://shopify/Order/" + x[0], sid: x[0], name: x[1], key: orderKey(x[1]), created: x[2], day: x[3], source: x[4], chan: x[5],
-    fin: x[6], ful: x[7], cancelled: !!x[8], subtotal: num(x[9]), discounts: num(x[10]), shipping: num(x[11]), tax: num(x[12]), total: num(x[13]), refunded: num(x[14]), qty: num(x[15]) });
+    fin: x[6], ful: x[7], cancelled: !!x[8], subtotal: num(x[9]), discounts: num(x[10]), shipping: num(x[11]), tax: num(x[12]), total: num(x[13]), refunded: num(x[14]), qty: num(x[15]), pickup: x[16] === true || x[16] === "t" || x[16] === "true" });
   async function loadOrders(refresh, onPage) {
     let n = 0;
     const all = await byChunks(60, async (s, e) => {
@@ -173,6 +173,8 @@
     // same tracking number as another order's label: shipped in that box, its label is counted there
     const cb = state.shipComb && state.shipComb.get(o.sid);
     if (cb) return { cost: 0, labels: 0, services: new Set(["combined with " + cb.name + " (same tracking)"]), manual: true, auto: true, combined: cb.name, note: "Same tracking number " + cb.tracking + " as " + cb.name + "'s label" };
+    // picked up in store: no label to buy
+    if (o.pickup) return { cost: 0, labels: 0, services: new Set(["in-store pickup"]), pickup: true };
     return null;
   }
 
@@ -267,7 +269,7 @@
       { c:"sales", l:"Profit after shipping", v: haveOrders && haveDaily ? `<span class="${profitAfterShip(sum("gp"), shipCh, cost) < 0 ? "neg" : ""}">${m0(profitAfterShip(sum("gp"), shipCh, cost))}</span>` : dash, s: haveOrders && haveDaily && net ? `${pct(profitAfterShip(sum("gp"), shipCh, cost)/net)} of net sales` : "Gross profit + shipping charged − labels" },
       // share of shipped (non-POS) orders that have a ShipStation label cost matched to them
       { c:"", l:"Label cost coverage", v: haveOrders ? (dv.webShipped ? pct(dv.webShippedWithCost/dv.webShipped) : dash) : dash,
-        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a label cost (ShipStation, combined or entered)${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
+        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a label cost (ShipStation, combined, entered or in-store pickup at $0)${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
     ];
     $("kpis").innerHTML = k.map(x => `<div class="kpi ${x.c}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
   }
@@ -392,7 +394,8 @@
       const s = shipFor(o); const c = s ? s.cost : 0;
       const k = costFor(o);
       const shipped = o.chan !== "pos" && /FULFILLED/.test(o.ful) && !/UNFULFILLED/.test(o.ful);
-      const costCell = s && s.manual ? `<button class="costbtn" data-act="shipedit" data-sid="${o.sid}" title="${esc(s.note || "Entered by hand — click to change")}">${m(c)} <span class="pill manual">${s.combined ? "with " + esc(s.combined) + (s.auto ? " · auto" : "") : "Entered"}</span></button>`
+      const costCell = s && s.pickup ? `${m(0)} <span class="pill other" title="Picked up in store: no shipping label">Pickup</span>`
+        : s && s.manual ? `<button class="costbtn" data-act="shipedit" data-sid="${o.sid}" title="${esc(s.note || "Entered by hand — click to change")}">${m(c)} <span class="pill manual">${s.combined ? "with " + esc(s.combined) + (s.auto ? " · auto" : "") : "Entered"}</span></button>`
         : s ? `${m(c)}${s.labels > 1 ? ` <span class="dim">×${s.labels}</span>` : ""}`
         : shipped ? `<button class="pill miss" data-act="shipedit" data-sid="${o.sid}" title="Enter the shipping cost, or the order it shipped with">No label · enter</button>` : `<span class="dim">—</span>`;
       const load = '<span class="dim">…</span>';
