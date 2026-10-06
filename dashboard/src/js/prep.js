@@ -455,31 +455,88 @@
         const l = sh.lines.find(x => x.vid === v), t = l ? l.title : (cache.rows.find(x => x.vid === v) || {}).title || "variant " + v;
         return `${esc(t)}: ${n0(pc.get(v) || 0)} here, ${n0(ac.byVid.get(v) || 0)} in Seller Central`; });
       html += `<table class="prept">${head}<tbody>${linked.map(a => row(a, `<button class="linkbtn small" data-act="amz-unlink" data-aid="${esc(a.id)}" title="Unlink this Amazon shipment">Unlink</button>`)).join("")}</tbody></table>
-        ${r && r.exact ? '<div class="small pos">Contents match.</div>' : diffs.length || ac.unmapped.length ? `<div class="small warnt">Contents differ (Shopify units): ${diffs.join(" · ")}${ac.unmapped.length ? `${diffs.length ? " · " : ""}not mapped to a Shopify product: ${esc(ac.unmapped.join(", "))}` : ""}</div>` : ""}`;
+        ${M.recon ? "" : r && r.exact ? '<div class="small pos">Contents match.</div>' : diffs.length || ac.unmapped.length ? `<div class="row small"><span class="warnt">Contents differ (Shopify units): ${diffs.join(" · ")}${ac.unmapped.length ? `${diffs.length ? " · " : ""}not mapped to a Shopify product: ${esc(ac.unmapped.join(", "))}` : ""}</span>${ac.unmapped.length ? "" : '<button class="mini primary" data-act="recon-open">Make it match Seller Central</button>'}</div>` : ""}`;
     } else if (sg) {
       const u = sg.g.ships.reduce((t, a) => t + a.ue, 0);
       html += `<div class="note ${sg.how === "close" ? "warn" : "info"}"><b>${sg.how === "id" ? "Matches the shipment ID" : sg.how === "exact" ? "Same contents" : `Close match (${sg.diff > 0 ? "+" : ""}${n0(sg.diff)} units in Seller Central)`}:</b> ${esc(sg.g.label)} · ${sg.g.ships.length} shipment${sg.g.ships.length === 1 ? "" : "s"} · ${n0(u)} units
-        <button class="mini primary" data-act="amz-link-sugg">Link</button></div>
+        ${M.recon ? "" : '<button class="mini primary" data-act="amz-link-sugg">Link</button>'}</div>
         <table class="prept">${head}<tbody>${sg.g.ships.map(a => row(a, "")).join("")}</tbody></table>`;
     }
     const free = amzGroups(cache.amzShips.filter(a => !a.linkedTo)).sort((a, b) => String(b.ships[0].created).localeCompare(String(a.ships[0].created)));
     const opt = (v, t) => `<option value="${esc(v)}" ${M.amzPick === v ? "selected" : ""}>${esc(t)}</option>`;
-    const picker = free.length ? `<div class="row small"><label for="pm-amz" class="muted">${linked.length ? "Link another" : sg ? "Or link a different one" : "Link a Seller Central shipment"}</label>
+    const picker = free.length && !M.recon ? `<div class="row small"><label for="pm-amz" class="muted">${linked.length ? "Link another" : sg ? "Or link a different one" : "Link a Seller Central shipment"}</label>
       <select id="pm-amz" class="inp sm" style="width:auto;max-width:560px"><option value="">Choose…</option>${free.map(g => {
         const u = g.ships.reduce((t, a) => t + a.ue, 0), sk = [...new Set(g.ships.flatMap(a => a.items.map(i => i.sku)))];
         return opt(g.ships.map(a => a.id).join(","), `${g.label} · ${g.ships.length > 1 ? g.ships.length + " shipments · " : ""}${g.ships[0].status.toLowerCase().replace(/_/g, " ")} · ${n0(u)} units · ${sk.slice(0, 3).join(", ")}${sk.length > 3 ? " +" + (sk.length - 3) : ""}`)
           + (g.ships.length > 1 ? g.ships.map(a => opt(a.id, `    just ${a.id} (${a.fc}) · ${n0(a.ue)} units`)).join("") : "");
       }).join("")}</select><button class="mini" data-act="amz-link-pick" ${M.amzPick ? "" : "disabled"}>Link</button></div>` : "";
+    if (M.recon) html = reconHtml(M) + html;
     if (!html && !picker) return "";
     return `<div class="amzbox"><div class="lanehead"><h3 class="psec" style="margin:0">Seller Central</h3>${linked.length ? "" : '<span class="muted small">not linked yet</span>'}</div>${html}${picker}</div>`;
   }
-  async function amzLink(sid, ids, how, unlink) {
+  // Seller Central is the source of truth for a linked shipment: its contents in Shopify units by seller SKU, and per
+  // product how far the prep shipment is off. unmapped: seller SKUs with no Shopify product (can't be reconciled).
+  function reconPlan(sh, ships) {
+    const bySku = new Map(), unmapped = [];
+    for (const a of ships) for (const it of a.items) {
+      const m = cache.skuUnits.get(it.sku); if (!m) { unmapped.push(it.sku); continue; }
+      const x = bySku.get(it.sku) || { variant_id: m.vid, amazon_sku: it.sku, qty: 0 }; x.qty += it.qty * m.units; bySku.set(it.sku, x);
+    }
+    const lines = [...bySku.values()], pc = prepContents(sh), rows = [];
+    for (const vid of new Set([...pc.keys(), ...lines.map(l => l.variant_id)])) {
+      const o = pc.get(vid) || 0, n = lines.filter(l => l.variant_id === vid).reduce((t, l) => t + l.qty, 0);
+      if (o === n) continue;
+      const l = sh.lines.find(x => x.vid === vid), r = cache.rows.find(x => x.vid === vid);
+      const best = lines.filter(x => x.variant_id === vid).sort((a2, b2) => b2.qty - a2.qty)[0];
+      rows.push({ vid, title: (l && l.title) || (r && r.title) || "variant " + vid, sku: (l && l.sku) || (r && r.sku) || "", prep: o, amz: n,
+        to: "prep", tsku: (best && best.amazon_sku) || (l && l.asku) || ((cache.byVariant.get(vid) || [])[0] || {}).sku || "" });
+    }
+    return { lines, rows, unmapped: [...new Set(unmapped)] };
+  }
+  // link (ids) and/or make the shipment match Seller Central. Differences in quantity are asked about first.
+  function amzLinkAsk(sid, ids, how) {
+    const sh = cache.shipments.find(x => x.id === String(sid)); if (!sh) return;
+    const ships = [...(sh.amz || []), ...cache.amzShips.filter(a => ids.includes(a.id) && !(sh.amz || []).some(x => x.id === a.id))];
+    const plan = reconPlan(sh, ships);
+    if (plan.unmapped.length) {    // can't work out Shopify units: link only, and say why the quantities weren't matched
+      if (ids.length) amzLink(sid, ids, how, false, null, `Seller Central has ${plan.unmapped.join(", ")}, which ${plan.unmapped.length === 1 ? "isn't" : "aren't"} mapped to a Shopify product, so the shipment's quantities weren't changed. Map ${plan.unmapped.length === 1 ? "it" : "them"} on the Amazon mapping tab, then use “Make it match Seller Central”.`);
+      else note("bad", `Map ${esc(plan.unmapped.join(", "))} to a Shopify product first (Amazon mapping tab).`);
+      return;
+    }
+    if (!plan.rows.length) return amzLink(sid, ids, how, false, { lines: plan.lines, dispose: [] });   // same quantities: just take Seller Central's listings
+    if (!P.modal || P.modal.kind !== "ship" || P.modal.id !== String(sid)) openShipment(sid);
+    P.modal.recon = { ids, how, rows: plan.rows, lines: plan.lines };
+    renderModal();
+    setTimeout(() => { const el = document.querySelector("#prep-mcard .recon"); if (el) el.scrollIntoView({ block: "nearest" }); }, 0);
+  }
+  function reconHtml(M) {
+    const R = M.recon, shipped = M.status === "shipped";
+    const opts = (r) => { const ls = cache.byVariant.get(r.vid) || [], list = ls.some(l => l.sku === r.tsku) || !r.tsku ? ls : [{ sku: r.tsku, asin: "" }, ...ls];
+      return list.map(l => `<option value="${esc(l.sku)}" ${l.sku === r.tsku ? "selected" : ""}>${esc(l.sku)}${l.asin ? " · " + esc(l.asin) : ""}${(l.units || 1) !== 1 ? ` (${l.units}-pack)` : ""}</option>`).join("") + `<option value="" ${!r.tsku ? "selected" : ""}>Any listing (not earmarked)</option>`; };
+    return `<div class="recon note warn"><b>Seller Central is the source of truth.</b> ${R.ids.length ? "Linking" : "Updating"} changes this shipment to Seller Central's quantities. What should happen to the difference?
+      <div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th>This shipment</th><th>Seller Central</th><th>Difference</th><th class="l">The difference</th></tr></thead><tbody>${R.rows.map(r => {
+        const d = r.amz - r.prep, extra = -d;
+        return `<tr><td class="l">${esc(r.title)}<div class="meta mono">${esc(r.sku)}</div></td><td>${n0(r.prep)}</td><td>${n0(r.amz)}</td><td class="${d < 0 ? "neg" : "pos"}">${d > 0 ? "+" : ""}${n0(d)}</td>
+          <td class="l small">${extra > 0 ? `<label class="rradio"><input type="radio" name="rto-${esc(r.vid)}" data-rto="${esc(r.vid)}" value="prep" ${r.to === "prep" ? "checked" : ""}> ${shipped ? "Back into" : "Stays in"} the prep center for <select class="inp sm" data-rsku="${esc(r.vid)}" style="width:auto;max-width:260px">${opts(r)}</select></label>
+              <label class="rradio"><input type="radio" name="rto-${esc(r.vid)}" data-rto="${esc(r.vid)}" value="shopify" ${r.to === "shopify" ? "checked" : ""}> Into Shopify inventory <span class="dim">(${n0(extra)} added to Shopify's available stock${shipped ? "" : ", taken out of the prep center"})</span></label>`
+            : `${n0(d)} more ${shipped ? "come out of the prep center now" : "will come out of the prep center when it ships"}${!shipped && (prepHere(r.vid, r.tsku).qty + prepHere(r.vid, "").qty) < r.amz ? ' <span class="warnt">— the prep center doesn\'t have that many</span>' : ""}`}</td></tr>`; }).join("")}</tbody></table></div>
+      <div class="row"><span class="dbtns right"><button class="btn" data-act="recon-cancel">Cancel</button><button class="btn primary" data-act="recon-go" ${P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : R.ids.length ? "Link and update shipment" : "Update shipment"}</button></span></div></div>`;
+  }
+  async function amzLink(sid, ids, how, unlink, reconcile, warnText) {
+    P.busy = true; if (P.modal) renderModal();
     try {
-      await JT.prep.shipLink({ shipment_id: Number(sid), amazon_ids: ids, how, unlink: !!unlink });
+      const r = await JT.prep.shipLink({ shipment_id: Number(sid), amazon_ids: ids, how, unlink: !!unlink, ...(reconcile ? { reconcile } : {}) });
+      P.busy = false;
       await load(true); render();
-      if (P.modal && P.modal.kind === "ship" && P.modal.id === String(sid)) { P.modal.sh = cache.shipments.find(x => x.id === String(sid)) || P.modal.sh; P.modal.amzPick = ""; renderModal(); }
-      note("info", unlink ? "Unlinked from Seller Central." : `Linked ${ids.length} Seller Central shipment${ids.length === 1 ? "" : "s"}.`);
-    } catch (e) { note("bad", "Couldn't link: " + esc(JT.message(e))); }
+      if (P.modal && P.modal.kind === "ship" && P.modal.id === String(sid)) { if (reconcile) openShipment(sid); else { P.modal.sh = cache.shipments.find(x => x.id === String(sid)) || P.modal.sh; P.modal.amzPick = ""; P.modal.recon = null; renderModal(); } }
+      const rc = r && r.reconcile;
+      const parts = [unlink ? "Unlinked from Seller Central." : ids.length ? `Linked ${ids.length} Seller Central shipment${ids.length === 1 ? "" : "s"}.` : "Shipment updated to Seller Central's quantities."];
+      if (rc && rc.to_prep) parts.push(`${n0(rc.to_prep)} unit${rc.to_prep === 1 ? "" : "s"} kept in the prep center.`);
+      if (rc && rc.to_shopify) parts.push(`${n0(rc.to_shopify)} unit${rc.to_shopify === 1 ? "" : "s"} going back into Shopify inventory (the sync applies it in a minute or two).`);
+      if (rc && rc.taken) parts.push(`${n0(rc.taken)} more taken out of the prep center.`);
+      if (rc && rc.short) parts.push(`<span class="warnt">The prep center was ${n0(rc.short)} short — recount that product.</span>`);
+      note(warnText ? "warn" : "info", parts.join(" ") + (warnText ? " " + esc(warnText) : ""));
+    } catch (e) { P.busy = false; if (P.modal) renderModal(); note("bad", "Couldn't link: " + esc(JT.message(e))); }
   }
   function renderShipments() {
     const d = cache, el = $("prep-ships");
@@ -1390,7 +1447,7 @@
       const b = e.target.closest("button[data-sact]");
       if (b) { e.stopPropagation(); if (b.dataset.sact === "new") return openShip(); if (b.dataset.sact === "started") return quickStatus(b.dataset.sid, "started");
         if (b.dataset.sact === "fix") return openShipment(b.dataset.sid);
-        if (b.dataset.sact === "amzlink") { const sg = cache.amzSuggest.get(b.dataset.sid); if (sg) { b.disabled = true; amzLink(b.dataset.sid, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); } return; }
+        if (b.dataset.sact === "amzlink") { const sg = cache.amzSuggest.get(b.dataset.sid); if (sg) amzLinkAsk(b.dataset.sid, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
         if (b.dataset.sact === "back") { const sh = cache.shipments.find(x => x.id === b.dataset.sid);
           if (sh.status === "shipped") { openShipment(sh.id); P.modal.confirm = "unship"; renderModal(); } else quickStatus(sh.id, SPREV[sh.status]); return; }
         if (b.dataset.sact === "ship") { openShipment(b.dataset.sid); P.modal.confirm = "ship"; renderModal(); } return; }
@@ -1435,6 +1492,8 @@
       const M = P.modal; if (!M) return;
       if (e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); }
       if (e.target.id === "pm-amz") { M.amzPick = e.target.value; renderModal(); }
+      if (M.recon && e.target.dataset.rto) { const r = M.recon.rows.find(x => String(x.vid) === e.target.dataset.rto); if (r) { r.to = e.target.value; renderModal(); } }
+      if (M.recon && e.target.dataset.rsku) { const r = M.recon.rows.find(x => String(x.vid) === e.target.dataset.rsku); if (r) { r.tsku = e.target.value; r.to = "prep"; renderModal(); } }
       if (e.target.id === "pm-into" && e.target.value) {
         const oid = M.orderId, k = M.fromRow, qv = M.qty[k];
         openShipment(e.target.value, k);
@@ -1469,8 +1528,11 @@
       if (b.dataset.rm) { M.lines = M.lines.filter(k => k !== b.dataset.rm); delete M.qty[b.dataset.rm]; M.confirm = false; renderModal(); return; }
       if (b.dataset.all) { const r = lineOf(b.dataset.all), sv = M.sh && M.sh.status !== "shipped" ? ((M.sh.lines.find(l => l.key === b.dataset.all) || {}).qty || 0) : 0;
         M.qty[b.dataset.all] = String(Math.max(0, r.qty + comingOf(b.dataset.all) - ((cache.alloc.get(b.dataset.all) || 0) - sv))); M.confirm = false; renderModal(); return; }
-      if (b.dataset.act === "amz-link-sugg") { const sg = cache.amzSuggest.get(String(M.id)); if (sg) amzLink(M.id, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
-      if (b.dataset.act === "amz-link-pick") { if (M.amzPick) amzLink(M.id, M.amzPick.split(","), "manual"); return; }
+      if (b.dataset.act === "amz-link-sugg") { const sg = cache.amzSuggest.get(String(M.id)); if (sg) amzLinkAsk(M.id, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
+      if (b.dataset.act === "amz-link-pick") { if (M.amzPick) amzLinkAsk(M.id, M.amzPick.split(","), "manual"); return; }
+      if (b.dataset.act === "recon-open") return amzLinkAsk(M.id, [], "");
+      if (b.dataset.act === "recon-cancel") { M.recon = null; renderModal(); return; }
+      if (b.dataset.act === "recon-go") { const R = M.recon; if (R) amzLink(M.id, R.ids, R.how, false, { lines: R.lines, dispose: R.rows.filter(x => x.prep > x.amz).map(x => ({ variant_id: Number(x.vid), to: x.to, ...(x.to === "prep" ? { amazon_sku: x.tsku } : {}) })) }); return; }
       if (b.dataset.act === "amz-unlink") return amzLink(M.id, [b.dataset.aid], "", true);
       if (b.dataset.act === "save") return saveShipment(null);
       if (b.dataset.act === "save-start") return saveShipment("started");

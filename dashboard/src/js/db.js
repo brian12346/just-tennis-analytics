@@ -409,11 +409,13 @@
     // Prep center (Prep center tab): set counts, or ship units to Amazon. Returns the number of lines changed.
     prep: {
       // take a product off (hide: true) or put it back on (false) the prep center's Incoming products list
-      // link Seller Central shipments to a prep center shipment ({shipment_id, amazon_ids, how}), or unlink them (unlink: true)
+      // link Seller Central shipments to a prep center shipment ({shipment_id, amazon_ids, how}), or unlink them
+      // (unlink: true); with reconcile: {lines, dispose} the shipment takes Seller Central's quantities (migration 087).
+      // Returns {linked, reconcile}.
       async shipLink(body) {
-        if (WEB) return Number(await WEB.write("jt_prep_ship_link", { p: body }));
-        const out = await run(`select jt.prep_ship_link(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
-        return Number(out[0] && out[0].n) || 0;
+        if (WEB) return await WEB.write("jt_prep_ship_link2", { p: body });
+        const out = await run(`select jt.prep_ship_link2(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);
+        return out[0] && out[0].r;
       },
       async incomingHide(body) {
         if (WEB) return await WEB.write("jt_prep_incoming_hide", { p: body });

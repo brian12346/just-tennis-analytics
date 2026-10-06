@@ -100,6 +100,8 @@ def main(argv: list[str] | None = None) -> None:
         # Amazon FBM orders confirmed on the dashboard -> Shopify stock (a confirm starts job fbm-inventory right away)
         from . import shopify as sh3
         run("fbm_inventory", lambda: sh3.apply_fbm_adjustments(shopify(), conn))
+        # units sent back to Shopify from the prep center (Seller Central reconcile; migration 087)
+        run("stock_moves", lambda: sh3.apply_stock_moves(shopify(), conn))
 
     if a.job in ("hourly", "nightly", "shopify-payouts"):
         # Shopify Payments payouts for the finance dashboard's cash flow page (needs read_shopify_payments_payouts)

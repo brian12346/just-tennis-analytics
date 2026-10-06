@@ -480,6 +480,92 @@ def _fbm_location_setting(conn) -> str | None:
     return row[0] if row and row[0] else None
 
 
+def _adjust_available(shop: "Shopify", item, delta: int, loc_setting, names: dict, key: str, ref: str):
+    """Change Shopify's "available" quantity of one inventory item by `delta` at the store's location (the FBM
+    location setting, else the item's only location). Returns (quantity before, location id); raises on any problem."""
+    lv = shop.graphql(LEVELS_Q, {"item": f"gid://shopify/InventoryItem/{item}"})["inventoryItem"]
+    if not lv:
+        raise RuntimeError("Shopify doesn't have this inventory item any more")
+    if not lv.get("tracked"):
+        raise RuntimeError("Shopify doesn't track inventory for this product, so there's nothing to change")
+    levels = (lv.get("inventoryLevels") or {}).get("nodes") or []
+    if loc_setting:
+        level = next((x for x in levels if x["location"]["id"] == loc_setting), None)
+        if not level:
+            raise RuntimeError("this product isn't stocked at the Shopify location FBM orders ship from")
+    elif len(levels) == 1:
+        level = levels[0]
+    elif not levels:
+        raise RuntimeError("this product isn't stocked at any Shopify location")
+    else:
+        where = ", ".join(names.get(x["location"]["id"], x["location"]["id"].split("/")[-1]) for x in levels)
+        raise RuntimeError(f"this product is stocked at {len(levels)} Shopify locations ({where}); choose the one FBM "
+                           "orders ship from at the top of the FBM page")
+    loc = level["location"]["id"]
+    before = next((q["quantity"] for q in level["quantities"] if q["name"] == "available"), None)
+    change = {"inventoryItemId": f"gid://shopify/InventoryItem/{item}", "locationId": loc, "delta": int(delta)}
+    attempts = [(True, True), (False, True), (True, False), (False, False)]   # (changeFromQuantity, idempotency key)
+    last = None
+    for with_from, with_key in attempts:
+        ch = dict(change, **({"changeFromQuantity": before} if with_from and before is not None else {}))
+        q = ADJUST_M.replace("{IDEM}", ", $key: String!" if with_key else "").replace("{IDEMUSE}", " @idempotent(key: $key)" if with_key else "")
+        vars_ = {"input": {"reason": "correction", "name": "available", "referenceDocumentUri": ref, "changes": [ch]}}
+        if with_key:
+            vars_["key"] = key
+        try:
+            out = shop.graphql(q, vars_)["inventoryAdjustQuantities"]
+        except RuntimeError as e:
+            m = str(e).lower()
+            # the API version doesn't know the field/directive: try the next form; anything else is real
+            if ("changefromquantity" in m or "idempotent" in m or "directive" in m) and (with_from or with_key):
+                last = e
+                continue
+            raise
+        ue = out.get("userErrors") or []
+        if ue:
+            msg = "; ".join(x["message"] for x in ue)
+            if ("changeFromQuantity" in msg or "idempot" in msg.lower()) and (with_from or with_key):
+                last = RuntimeError(msg)
+                continue
+            raise RuntimeError(msg)
+        return before, loc
+    raise last if last is not None else RuntimeError("Shopify didn't change the quantity")
+
+
+def apply_stock_moves(shop: "Shopify", conn) -> int:
+    """Units put back into Shopify's available stock (or taken out) from the dashboard: jt.shopify_stock_moves, status
+    pending (e.g. units a Seller Central shipment didn't take, migration 087)."""
+    with conn.cursor() as cur:
+        cur.execute("""select m.id, m.variant_id, v.inventory_item_id, m.delta from jt.shopify_stock_moves m
+                       left join jt.variants v on v.variant_id = m.variant_id where m.status = 'pending' order by m.id""")
+        todo = cur.fetchall()
+    if not todo:
+        return 0
+    names = _fbm_save_locations(shop, conn)
+    loc_setting = _fbm_location_setting(conn)
+    done = 0
+    for mid, vid, item, delta in todo:
+        before, err, loc = None, "", None
+        try:
+            if not item:
+                raise RuntimeError(f"variant {vid} has no Shopify inventory item (not in the catalog sync)")
+            before, loc = _adjust_available(shop, item, int(delta), loc_setting, names, f"jt-stock-{mid}", f"gid://just-tennis/StockMove/{mid}")
+        except Exception as e:  # noqa: BLE001 - record it on the move and carry on
+            err = str(e)[:500]
+        with conn.cursor() as cur:
+            if err:
+                cur.execute("update jt.shopify_stock_moves set status = 'failed', error = %s, applied_at = now() where id = %s and status = 'pending'", (err, mid))
+            else:
+                cur.execute("""update jt.shopify_stock_moves set status = 'done', error = '', applied_at = now(), shopify_before = %s, location_id = %s
+                               where id = %s and status = 'pending'""", (before, loc, mid))
+                cur.execute("update jt.variants set inventory_qty = coalesce(inventory_qty, 0) + %s where inventory_item_id = %s", (delta, item))
+                cur.execute("""update jt.location_stock set available = available + %s, updated_at = now()
+                               where location_id = %s and inventory_item_id = %s""", (delta, loc, item))
+                done += 1
+        conn.commit()
+    return done
+
+
 def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
     """Take confirmed Amazon FBM orders out of Shopify's available stock (jt.fbm_decisions, status pending)."""
     with conn.cursor() as cur:
@@ -494,57 +580,8 @@ def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
     for oid, sku, item, units, stamp in todo:
         before, err, loc = None, "", None
         try:
-            lv = shop.graphql(LEVELS_Q, {"item": f"gid://shopify/InventoryItem/{item}"})["inventoryItem"]
-            if not lv:
-                raise RuntimeError("Shopify doesn't have this inventory item any more")
-            if not lv.get("tracked"):
-                raise RuntimeError("Shopify doesn't track inventory for this product, so there's nothing to take out")
-            levels = (lv.get("inventoryLevels") or {}).get("nodes") or []
-            if loc_setting:
-                level = next((x for x in levels if x["location"]["id"] == loc_setting), None)
-                if not level:
-                    raise RuntimeError("this product isn't stocked at the Shopify location FBM orders ship from")
-            elif len(levels) == 1:
-                level = levels[0]
-            elif not levels:
-                raise RuntimeError("this product isn't stocked at any Shopify location")
-            else:
-                where = ", ".join(names.get(x["location"]["id"], x["location"]["id"].split("/")[-1]) for x in levels)
-                raise RuntimeError(f"this product is stocked at {len(levels)} Shopify locations ({where}); choose the one FBM "
-                                   "orders ship from at the top of this page")
-            loc = level["location"]["id"]
-            before = next((q["quantity"] for q in level["quantities"] if q["name"] == "available"), None)
-            change = {"inventoryItemId": f"gid://shopify/InventoryItem/{item}", "locationId": loc, "delta": -int(units)}
-            key = f"jt-fbm-{oid}-{sku}-{stamp}"[:255]
-            attempts = [(True, True), (False, True), (True, False), (False, False)]   # (changeFromQuantity, idempotency key)
-            last = None
-            for with_from, with_key in attempts:
-                ch = dict(change, **({"changeFromQuantity": before} if with_from and before is not None else {}))
-                q = ADJUST_M.replace("{IDEM}", ", $key: String!" if with_key else "").replace("{IDEMUSE}", " @idempotent(key: $key)" if with_key else "")
-                vars_ = {"input": {"reason": "correction", "name": "available",
-                                   "referenceDocumentUri": f"gid://just-tennis/AmazonOrder/{oid}", "changes": [ch]}}
-                if with_key:
-                    vars_["key"] = key
-                try:
-                    out = shop.graphql(q, vars_)["inventoryAdjustQuantities"]
-                except RuntimeError as e:
-                    m = str(e).lower()
-                    # the API version doesn't know the field/directive: try the next form; anything else is real
-                    if ("changefromquantity" in m or "idempotent" in m or "directive" in m) and (with_from or with_key):
-                        last = e
-                        continue
-                    raise
-                ue = out.get("userErrors") or []
-                if ue:
-                    msg = "; ".join(x["message"] for x in ue)
-                    if ("changeFromQuantity" in msg or "idempot" in msg.lower()) and (with_from or with_key):
-                        last = RuntimeError(msg)
-                        continue
-                    raise RuntimeError(msg)
-                last = None
-                break
-            if last is not None:
-                raise last
+            before, loc = _adjust_available(shop, item, -int(units), loc_setting, names, f"jt-fbm-{oid}-{sku}-{stamp}"[:255],
+                                            f"gid://just-tennis/AmazonOrder/{oid}")
         except Exception as e:  # noqa: BLE001 - record it on the order and carry on
             err = str(e)[:500]
         with conn.cursor() as cur:
