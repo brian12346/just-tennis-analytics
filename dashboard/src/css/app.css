@@ -391,7 +391,8 @@ table.prept tr.picked td{background:var(--sales-soft)}
 .prep-card{width:min(860px,100%)}
 .prep-card.prod-card{width:min(1180px,100%)}
 .sc-amz{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}
-.sc-amz .mini{margin-left:auto}
+.shipcard .sc-prod{font-size:12px;color:var(--muted);line-height:1.35}
+.shipcard .sc-prod .mono{color:var(--ink)}
 .prept.inct tr.grp td{background:var(--surface-sunken,rgba(127,127,127,.08));padding-top:10px;padding-bottom:8px}
 .grph{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .grph .right{margin-left:auto}
@@ -399,7 +400,7 @@ table.prept tr.picked td{background:var(--sales-soft)}
 .flowbar{display:inline-flex;gap:3px}
 .flowbar span{width:14px;height:6px;border-radius:3px;background:var(--line,rgba(127,127,127,.3))}
 .flowbar span.on{background:var(--ok,#2e8b57)}
-.sc-flow{display:flex;align-items:center;gap:8px}
+.sc-flow{display:flex;flex-direction:column;align-items:flex-start;gap:3px}
 .flowbox{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .flowbox .lanehead{display:flex;align-items:center;gap:10px}
 .flowbox .right{margin-left:auto}

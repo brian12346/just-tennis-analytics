@@ -458,16 +458,18 @@
   const AMZ_STAGE = (st) => ({ WORKING: "Working", READY_TO_SHIP: "Ready to ship", SHIPPED: "Shipped", IN_TRANSIT: "In transit", DELIVERED: "Delivered", CHECKED_IN: "Checked in", RECEIVING: "Receiving", CLOSED: "Closed", CREATED: "Created", CANCELLED: "Cancelled", DELETED: "Deleted" }[st] || st);
   const AMZ_GONE = new Set(["SHIPPED", "IN_TRANSIT", "DELIVERED", "CHECKED_IN", "RECEIVING", "CLOSED"]);
   // one line about a prep shipment's Seller Central side, for its card
+  // the card's Seller Central line: Linked (with Amazon's status), Match / Likely (a suggestion to link inside the
+  // shipment), or No shipment. Linking and every other change happen inside the shipment, not on the card.
   function amzLine(sh) {
     if (sh.amz.length) {
       const sts = [...new Set(sh.amz.map(a => AMZ_STAGE(a.status)))], ue = sh.amz.reduce((t, a) => t + a.ue, 0), ur = sh.amz.reduce((t, a) => t + a.ur, 0);
-      return `<div class="sc-amz linked" title="${esc(sh.amz.map(a => `${a.id} · ${a.fc} · ${AMZ_STAGE(a.status)} · ${a.ur}/${a.ue}`).join("\n"))}"><span class="pill ok">Seller Central</span> ${sh.amz.length} shipment${sh.amz.length === 1 ? "" : "s"} · ${esc(sts.join(", "))}${ur ? ` · ${n0(ur)} of ${n0(ue)} received` : ""}</div>`;
+      const gone = sh.status !== "shipped" && sh.amz.some(a => AMZ_GONE.has(a.status));
+      return `<div class="sc-amz" title="${esc(sh.amz.map(a => `${a.id} · ${a.fc} · ${AMZ_STAGE(a.status)} · ${a.ur}/${a.ue}`).join("\n"))}"><span class="pill ok">Linked</span><span>${sh.amz.length} shipment${sh.amz.length === 1 ? "" : "s"} · ${esc(sts.join(", "))}${ur ? ` · ${n0(ur)} of ${n0(ue)} received` : ""}</span>${gone ? '<span class="warnt">· on its way — mark shipped</span>' : ""}</div>`;
     }
     const sg = cache.amzSuggest && cache.amzSuggest.get(sh.id);
-    if (!sg) return "";
+    if (!sg) return `<div class="sc-amz"><span class="pill miss">No shipment</span><span class="dim">not in Seller Central yet</span></div>`;
     const u = sg.g.ships.reduce((t, a) => t + a.ue, 0);
-    return `<div class="sc-amz sugg"><span class="pill ${sg.how === "close" ? "warn" : "pos"}">${sg.how === "close" ? "Close match" : "Match"}</span> <span class="small">${esc(sg.g.label)} · ${sg.g.ships.length} shipment${sg.g.ships.length === 1 ? "" : "s"} · ${n0(u)} units${sg.how === "close" ? ` (${sg.diff > 0 ? "+" : ""}${n0(sg.diff)})` : ""}</span>
-      <button class="mini primary" data-sact="amzlink" data-sid="${sh.id}" title="Link this prep shipment to ${esc(sg.g.ships.map(a => a.id).join(", "))}">Link</button></div>`;
+    return `<div class="sc-amz" title="${esc(sg.g.ships.map(a => a.id).join(", "))}"><span class="pill ${sg.how === "close" ? "warn" : "pos"}">${sg.how === "close" ? "Likely" : "Match"}</span><span>${esc(sg.g.label)} · ${sg.g.ships.length > 1 ? sg.g.ships.length + " shipments · " : ""}${n0(u)} units${sg.how === "close" ? ` (${sg.diff > 0 ? "+" : ""}${n0(sg.diff)})` : ""}</span></div>`;
   }
   // the popup's Seller Central part: linked Amazon shipments (with how their contents compare), the suggested match,
   // and a list to link any other recent Seller Central shipment by hand
@@ -649,24 +651,22 @@
     const list = d.shipments.filter(SHVIEWS[P.shipView]).sort(P.shipView === "closed" ? (a, b) => String(b.closed).localeCompare(String(a.closed))
       : P.shipView === "amazon" ? (a, b) => String(b.shipped).localeCompare(String(a.shipped))
       : (a, b) => (b.exception ? 1 : 0) - (a.exception ? 1 : 0) || (a.status === "started" ? 0 : 1) - (b.status === "started" ? 0 : 1) || String(b.updated).localeCompare(String(a.updated)));
+    const asinOf = (vid, asku) => ((cache.byVariant.get(vid) || []).find(l => l.sku === asku) || {}).asin || "";
     const card = (sh) => {
       const units = sh.lines.reduce((a, l) => a + l.qty, 0), cost = sh.lines.reduce((a, l) => a + l.qty * (l.cost || 0), 0);
-      const iss = issuesOf(sh), lvl = sh.exception ? "bad" : worst(iss), sum = issueSummary(iss), f = flowOf(sh);
-      const next = lvl === "bad" && !sh.exception ? `<button class="mini" data-sact="fix" data-sid="${sh.id}">Fix</button>`
-        : sh.status === "open" ? `<button class="mini" data-sact="started" data-sid="${sh.id}">Start</button>`
-        : sh.status === "started" ? `<button class="mini primary" data-sact="ship" data-sid="${sh.id}">Mark shipped</button>`
-        : sh.status === "shipped" && !sh.closed && FLOW ? `<button class="mini ${f.steps[7].ready ? "primary" : ""}" data-sact="close" data-sid="${sh.id}" title="Amazon has it all: close the shipment">Close</button>` : "";
-      const back = SPREV[sh.status] && !sh.closed ? `<button class="mini" data-sact="back" data-sid="${sh.id}" title="Move back to ${STATUS[SPREV[sh.status]][0].toLowerCase()}${sh.status === "shipped" ? " — the units go back into the prep center" : ""}">← ${STATUS[SPREV[sh.status]][0]}</button>` : "";
+      const iss = issuesOf(sh).filter(x => !["noid", "amzshipped", "nolisting"].includes(x.kind)), lvl = sh.exception ? "bad" : worst(issuesOf(sh)), sum = issueSummary(iss), f = flowOf(sh);
       const when2 = sh.closed ? `Closed ${when(sh.closed)}` : sh.status === "shipped" ? `Shipped ${when(sh.shipped)}${sh.shippedBy ? " · " + esc(sh.shippedBy) : ""}` : sh.status === "started" ? `Started ${when(sh.started)}` : `Created ${when(sh.created)}${sh.createdBy ? " · " + esc(sh.createdBy) : ""}`;
-      const contents = contentsOf(sh);
+      const contents = contentsOf(sh), ls = sh.lines.filter(l => l.qty > 0);
+      const prod = (l) => `<div class="sc-prod"><span class="mono">${esc(l.sku || "no SKU")}</span>${l.vendor ? ` · ${esc(l.vendor)}` : ""}${ls.length > 1 ? ` · ${n0(l.qty)}` : ""}<br>${l.asku ? `<span class="mono">${esc(asinOf(l.vid, l.asku) || "no ASIN")}</span> · <span class="mono">${esc(l.asku)}</span>` : '<span class="warnt">no Amazon listing picked</span>'}</div>`;
       return `<div class="shipcard ${sh.status}${lvl === "bad" || lvl === "warn" ? " issue-" + lvl : ""}" data-sid="${sh.id}" tabindex="0" role="button" aria-label="Open shipment: ${esc(contents)}${sum ? " — needs attention: " + esc(sum) : ""}">
         <div class="sc-title" title="${esc(sh.lines.map(l => n0(l.qty) + " × " + l.title).join("\n"))}">${esc(contents)}</div>
+        ${ls.slice(0, 2).map(prod).join("")}${ls.length > 2 ? `<div class="sc-prod dim">+ ${ls.length - 2} more product${ls.length - 2 === 1 ? "" : "s"}</div>` : ""}
         <div class="sc-qty"><b class="num">${n0(units)}</b><span>unit${units === 1 ? "" : "s"}</span><span class="dim">· ${sh.lines.length} product${sh.lines.length === 1 ? "" : "s"} · ${m0(cost)}</span></div>
         <div class="sc-meta">${sh.closed ? '<span class="pill ok">Closed</span>' : statusPill(sh.status)}<span class="pill ${sh.dest === "AWD" ? "manual" : "web"}">${esc(sh.dest)}</span><span class="mono">${esc(shipTitle(sh))}</span></div>
+        ${amzLine(sh)}
         ${sh.exception ? `<div class="sc-issue"><span aria-hidden="true">●</span><span>Exception: ${esc(sh.exception)}</span></div>` : sum ? `<div class="sc-issue"><span aria-hidden="true">${lvl === "bad" ? "●" : "▲"}</span><span>${esc(sum)}</span></div>` : ""}
         ${FLOW && !sh.closed ? `<div class="sc-flow">${flowBar(f)}<span class="small">${f.next ? "Next: " + esc(f.next.label) : "Ready to close"}</span></div>` : ""}
-        ${amzLine(sh)}
-        <div class="sc-foot"><span class="dim small">${when2}</span><span class="dbtns">${back}${next}</span></div>
+        <div class="sc-foot"><span class="dim small">${when2}</span></div>
       </div>`;
     };
     const empty = { open: "", amazon: '<div class="muted small">Nothing at Amazon waiting to be received.</div>', exc: '<div class="muted small">No exceptions.</div>', closed: '<div class="muted small">No shipments closed in the last 90 days.</div>' }[P.shipView];
