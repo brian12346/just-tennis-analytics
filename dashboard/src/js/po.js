@@ -1005,10 +1005,10 @@
     const notInv = ed.lines.reduce((a, l) => a + pr.get(l.id).open, 0);
     const left = ed.lines.reduce((a, l) => { const p = pr.get(l.id); return a + Math.max(0, p.ordered - p.received); }, 0);
     const showLeft = !openInv && left > 0 && ed.lines.some(l => (l.received || 0) > 0);
-    const ok = (v) => v === "all" || (v === "inv" && !!cur(ed)) || (v === "notinv" && anyInv) || (v === "left" && showLeft);
+    const ok = (v) => v === "all" || (v === "inv" && !!cur(ed)) || v === "notinv" || (v === "left" && showLeft);
     return { anyInv, openInv, notInv, left, showLeft, ok, def: showLeft ? "left" : "all" };
   }
-  // The view switch above the PO's table: All · each invoice · Not invoiced · Still to receive · + Add invoice
+  // The view switch above the PO's table: All · each invoice · Still to receive · Not invoiced (last) · + Add invoice
   function viewSeg(ed, vw, ro) {
     if (!ed.id && !ed.invoices.length) return `<div class="panel-head"><h2>Products on this PO</h2><span class="muted small">what was ordered · receiving is against these</span></div>`;
     const v = ed.view, units = (n) => `<span class="cnt">${n0(n)}</span>`;
@@ -1018,8 +1018,8 @@
     return `<div class="panel-head pviews"><div class="seg" role="group" aria-label="Show">
         <button data-pview="all" aria-pressed="${v === "all"}" title="Every product on this PO">All</button>
         ${ed.invoices.map(ivBtn).join("")}
-        ${vw.anyInv && (vw.notInv > 0 || v === "notinv") ? `<button data-pview="notinv" aria-pressed="${v === "notinv"}" title="Products, or the part of them, that aren't on an invoice yet">Not invoiced ${units(vw.notInv)}</button>` : ""}
         ${vw.showLeft ? `<button data-pview="left" aria-pressed="${v === "left"}" title="Every invoice is received: what's still to come">Still to receive ${units(vw.left)}</button>` : ""}
+        <button data-pview="notinv" aria-pressed="${v === "notinv"}" title="Products, or the part of them, that aren't on an invoice yet${vw.anyInv ? ` (${n0(vw.notInv)} units)` : ""}">Not invoiced</button>
       </div>${!ro && ed.id ? `<label class="btn right" for="pe-file" title="Read the vendor's invoice PDF and open it on the Invoices tab, attached to this PO">+ Add invoice</label>` : ""}</div>`;
   }
   // the chosen invoice's summary line (the rest is on the Invoices tab)
