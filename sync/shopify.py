@@ -883,6 +883,15 @@ def _iso(v):
     return v if isinstance(v, str) and re.match(r"\d{4}-\d\d-\d\d", v) else None
 
 
+def _pacific_day(v) -> str:
+    """YYYY-MM-DD in Pacific time of a Shopify timestamp ('' if it doesn't parse)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(ZoneInfo("America/Los_Angeles")).date().isoformat()
+    except (ValueError, TypeError):
+        return ""
+
+
 def _more_po_lines(shop: Shopify, sc: "_PoSchema", po_t: str, d: dict) -> None:
     """A PO's line items past the first page (big POs have 100+ lines), appended to d's line connection."""
     for f in sc.fields(po_t):
@@ -936,6 +945,21 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
         cur.execute("""select id, (select coalesce(jsonb_object_agg(k, raw -> k), '{}'::jsonb) from unnest(%s::text[]) k where raw ? k),
                               lines_synced is not null from jt.shopify_pos""", (hk,))
         have = {r[0]: (r[1] or {}, r[2]) for r in cur.fetchall()}
+        # Seller Sage keeps Shopify POs created on or after jt.settings 'shopify_pos_since' (Pacific date; Brian, Oct 6,
+        # 2026: the history only slowed the page down), plus any older one a Seller Sage PO links to.
+        cur.execute("select value #>> '{}' from jt.settings where key = 'shopify_pos_since'")
+        r = cur.fetchone()
+        since = (r and r[0]) or ""
+        cur.execute("select shopify_po_url from jt.prep_orders where shopify_po_url ~ '/purchase_orders/[0-9]+'")
+        linked = {int(re.search(r"/purchase_orders/(\d+)", u).group(1)) for (u,) in cur.fetchall()}
+
+    def wanted(h: dict) -> bool:
+        if not since or gid_num(h.get("id")) in linked or gid_num(h.get("id")) in have:
+            return True
+        made = h.get("dateCreated") or h.get("createdAt")
+        return not made or (_pacific_day(made) or str(made)[:10]) >= since
+    skipped = sum(1 for h in heads if not wanted(h))
+    heads = [h for h in heads if wanted(h)]
     # 2) details (with line items) for new or changed POs, newest first
     todo = [h for h in heads if gid_num(h.get("id")) not in have or not have[gid_num(h["id"])][1]
             or {k: v for k, v in (have[gid_num(h["id"])][0] or {}).items() if k in h} != h]
@@ -996,7 +1020,8 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
                 cur.execute("update jt.shopify_pos set status = %s, synced_at = now() where id = %s and status is distinct from %s",
                             (str(h.get("status") or ""), pid, str(h.get("status") or "")))
     conn.commit()
-    return {"variants": saved, "pos": len(heads), "details": saved, "lines": lines_n, "left": max(0, len(todo) - cap), "errors": errs[:3]}
+    return {"variants": saved, "pos": len(heads), "details": saved, "lines": lines_n, "left": max(0, len(todo) - cap),
+            "before_cutoff": skipped, "errors": errs[:3]}
 
 
 # ---------------------------------------------------------------- Ace n Rally (second store, sales only)
