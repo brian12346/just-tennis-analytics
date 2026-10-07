@@ -356,6 +356,7 @@
     list.addEventListener("click", (e) => {
       if (A.mode !== "products") return;
       const b = e.target.closest("button"); const r = rowOf(e.target); if (!r) return;
+      if (/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { A.cur = r.i; return; }   // re-rendering here would drop the box being clicked into
       A.cur = r.i;
       if (!b) { render(); return; }
       if (b.dataset.act) { act(b.dataset.act, r.i); return; }
