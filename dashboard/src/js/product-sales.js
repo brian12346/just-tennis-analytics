@@ -28,14 +28,14 @@
     const W = `where day between ${JT.day(P.start)} and ${JT.day(P.end)}`;
     try {
       const [days, prods] = await Promise.all([
-        JT.rows(["day::text", "channel", "orders", "units", "net_sales", "cogs", "gross_profit", "sales_no_cost", "ship_charged", "labels", "amz_fees", "fba_fees", "other_fees", "profit", "pay_fees"],
+        JT.rows(["day::text", "channel", "orders", "units", "net_sales", "cogs", "gross_profit", "sales_no_cost", "ship_charged", "labels", "amz_fees", "fba_fees", "other_fees", "profit", "pay_fees", "ad_spend"],
           `from jt.v_sales_channels_daily ${W} order by day`, refresh),
         JT.rowsSplit(["coalesce(product_id::text, '')", "max(title)", "max(vendor)", "channel", "sum(units)", "sum(net_sales)", "sum(cogs)", "sum(gross_profit)", "sum(amz_fees)"],
           `from jt.v_sales_products_daily ${W} group by coalesce(product_id::text, title), coalesce(product_id::text, ''), channel`, "coalesce(product_id::text, title)", 2, refresh),
       ]);
       if (id !== P.reqId) return;
       P.days = days.map(x => ({ day: x[0], ch: x[1], orders: +x[2] || 0, units: +x[3] || 0, net: +x[4] || 0, cogs: +x[5] || 0, gp: +x[6] || 0, nocost: +x[7] || 0,
-        shipIn: +x[8] || 0, labels: +x[9] || 0, refFees: +x[10] || 0, fbaFees: +x[11] || 0, other: +x[12] || 0, profit: +x[13] || 0, payFees: +x[14] || 0 }));
+        shipIn: +x[8] || 0, labels: +x[9] || 0, refFees: +x[10] || 0, fbaFees: +x[11] || 0, other: +x[12] || 0, profit: +x[13] || 0, payFees: +x[14] || 0, ads: +x[15] || 0 }));
       const pm = new Map();
       for (const [pid, title, vendor, ch, units, net, cogs, gp, fee] of prods) {
         const k = pid || "t:" + title; let p = pm.get(k);
@@ -50,7 +50,7 @@
   }
 
   function totals() {
-    const F = ["orders", "units", "net", "cogs", "gp", "nocost", "shipIn", "labels", "refFees", "fbaFees", "other", "payFees", "profit"], z = () => Object.fromEntries(F.map(f => [f, 0]));
+    const F = ["orders", "units", "net", "cogs", "gp", "nocost", "shipIn", "labels", "refFees", "fbaFees", "other", "payFees", "ads", "profit"], z = () => Object.fromEntries(F.map(f => [f, 0]));
     const t = {}; for (const [k] of CH) t[k] = z();
     const all = z();
     for (const r of P.days || []) { const a = t[r.ch]; if (!a) continue; for (const f of F) { a[f] += r[f]; all[f] += r[f]; } }
@@ -67,7 +67,8 @@
       { l: "Gross profit", v: `<span class="${a.gp < 0 ? "neg" : ""}">${m0(a.gp)}</span>`, s: `${pct(marginOf(a))} margin · sales − product cost${a.nocost > 0.5 ? ` · <span style="color:var(--warn)">${m0(a.nocost)} of sales have no cost</span>` : ""}` },
       { l: "Shipping labels", v: m0(a.labels), s: `${m0(a.shipIn)} charged to customers · net ${m0(a.labels - a.shipIn)}` },
       { l: "Fees", v: m0(allFees(a)), s: `Amazon referral ${m0(amz.refFees)} · FBA ${m0(amz.fbaFees)} · other ${m0(amz.other)} · Shopify payments ${m0(a.payFees)}` },
-      { c: "sales", l: "Profit", v: `<span class="${a.profit < 0 ? "neg" : ""}">${m0(a.profit)}</span>`, s: `${a.net ? pct(a.profit / a.net) : "—"} of sales · after product cost, shipping and fees` },
+      { l: "Ad spend", v: m0(a.ads), s: a.ads ? `Google Ads ${CH.filter(([k2]) => T.t[k2].ads).map(([k2, n]) => `${n} ${m0(T.t[k2].ads)}`).join(" · ")} · ${a.net ? pct(a.ads / a.net) : "—"} of sales` : "Google Ads (Just Tennis) once its script is running" },
+      { c: "sales", l: "Profit", v: `<span class="${a.profit < 0 ? "neg" : ""}">${m0(a.profit)}</span>`, s: `${a.net ? pct(a.profit / a.net) : "—"} of sales · after product cost, shipping, fees and ads` },
     ];
     $("ps-kpis").innerHTML = k.map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
   }
@@ -77,9 +78,9 @@
       <td>${m(x.net)}<div class="meta">${a.net > 0 ? pct(x.net / a.net) + " of sales" : ""}</div></td>
       <td>${neg(x.cogs)}${x.nocost > 0.5 ? `<div class="meta"><span class="pill miss" title="Sales with no product cost">${m0(x.nocost)} no cost</span></div>` : ""}</td>
       <td class="${x.gp < 0 ? "neg" : ""}">${m(x.gp)}<div class="meta">${pct(marginOf(x))}</div></td>
-      <td>${d(x.shipIn)}</td><td>${neg(x.labels)}</td><td>${neg(x.refFees)}</td><td>${neg(x.fbaFees)}</td><td>${neg(x.other)}</td><td>${neg(x.payFees)}</td>
+      <td>${d(x.shipIn)}</td><td>${neg(x.labels)}</td><td>${neg(x.refFees)}</td><td>${neg(x.fbaFees)}</td><td>${neg(x.other)}</td><td>${neg(x.payFees)}</td><td>${neg(x.ads)}</td>
       <td class="${x.profit < 0 ? "neg" : ""}"><b>${m(x.profit)}</b><div class="meta">${x.net ? pct(x.profit / x.net) : "—"}</div></td></tr>`;
-    $("ps-chans").innerHTML = `<thead><tr><th class="l">Channel</th><th>Sales</th><th>Product cost</th><th>Gross profit</th><th title="Shipping customers paid">Shipping charged</th><th title="ShipStation labels; Amazon: labels bought in Seller Central and Veeqo (FBM)">Shipping labels</th><th title="Amazon referral (selling) fees">Referral fees</th><th title="Amazon FBA fulfillment fees">FBA fees</th><th title="Amazon promotions, refunds, storage, inbound and adjustments">Other fees</th><th title="Shopify Payments processing fees and chargeback fees (other gateways like PayPal aren't included)">Payment fees</th><th>Profit</th></tr></thead>
+    $("ps-chans").innerHTML = `<thead><tr><th class="l">Channel</th><th>Sales</th><th>Product cost</th><th>Gross profit</th><th title="Shipping customers paid">Shipping charged</th><th title="ShipStation labels; Amazon: labels bought in Seller Central and Veeqo (FBM)">Shipping labels</th><th title="Amazon referral (selling) fees">Referral fees</th><th title="Amazon FBA fulfillment fees">FBA fees</th><th title="Amazon promotions, refunds, storage, inbound and adjustments">Other fees</th><th title="Shopify Payments processing fees and chargeback fees (other gateways like PayPal aren't included)">Payment fees</th><th title="Google Ads spend (Amazon ads aren't in yet)">Ad spend</th><th>Profit</th></tr></thead>
       <tbody>${CH.map(([k, n]) => row(n, T.t[k], k)).join("")}</tbody><tfoot>${row("All channels", a, null)}</tfoot>`;
   }
   // stacked bars: sales per day by channel (one y axis, dollars)
@@ -126,10 +127,10 @@
   }
   function renderDays() {
     const by = new Map();
-    for (const r of P.days || []) { const x = by.get(r.day) || { day: r.day, justtennis: 0, acenrally: 0, amazon: 0, net: 0, gp: 0, nocost: 0, orders: 0, labels: 0, fees: 0, profit: 0 }; x[r.ch] += r.net; x.net += r.net; x.gp += r.gp; x.nocost += r.nocost; x.orders += r.orders; x.labels += r.labels; x.fees += allFees(r); x.profit += r.profit; by.set(r.day, x); }
+    for (const r of P.days || []) { const x = by.get(r.day) || { day: r.day, justtennis: 0, acenrally: 0, amazon: 0, net: 0, gp: 0, nocost: 0, orders: 0, labels: 0, fees: 0, profit: 0 }; x[r.ch] += r.net; x.net += r.net; x.gp += r.gp; x.nocost += r.nocost; x.orders += r.orders; x.labels += r.labels; x.fees += allFees(r); x.ads = (x.ads || 0) + r.ads; x.profit += r.profit; by.set(r.day, x); }
     const rows = [...by.values()].sort((a, b) => b.day.localeCompare(a.day));
-    $("ps-days").innerHTML = `<thead><tr><th class="l">Day</th>${CH.map(([k, n]) => `<th>${sw(k)}${n}</th>`).join("")}<th>All sales</th><th>Orders</th><th>Gross profit</th><th>Shipping labels</th><th title="Amazon fees and Shopify payment fees">Fees</th><th>Profit</th></tr></thead>
-      <tbody>${rows.map(r => `<tr><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td>${CH.map(([k]) => `<td>${r[k] ? m(r[k]) : '<span class="dim">—</span>'}</td>`).join("")}<td><b>${m(r.net)}</b></td><td>${n0(r.orders)}</td><td class="${r.gp < 0 ? "neg" : ""}">${m(r.gp)}<div class="meta">${pct(marginOf(r))}</div></td><td>${r.labels ? m(r.labels) : '<span class="dim">—</span>'}</td><td>${r.fees ? m(r.fees) : '<span class="dim">—</span>'}</td><td class="${r.profit < 0 ? "neg" : ""}"><b>${m(r.profit)}</b></td></tr>`).join("") || '<tr><td class="l dim" colspan="10">No sales in this range.</td></tr>'}</tbody>`;
+    $("ps-days").innerHTML = `<thead><tr><th class="l">Day</th>${CH.map(([k, n]) => `<th>${sw(k)}${n}</th>`).join("")}<th>All sales</th><th>Orders</th><th>Gross profit</th><th>Shipping labels</th><th title="Amazon fees and Shopify payment fees">Fees</th><th title="Google Ads spend">Ad spend</th><th>Profit</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td>${CH.map(([k]) => `<td>${r[k] ? m(r[k]) : '<span class="dim">—</span>'}</td>`).join("")}<td><b>${m(r.net)}</b></td><td>${n0(r.orders)}</td><td class="${r.gp < 0 ? "neg" : ""}">${m(r.gp)}<div class="meta">${pct(marginOf(r))}</div></td><td>${r.labels ? m(r.labels) : '<span class="dim">—</span>'}</td><td>${r.fees ? m(r.fees) : '<span class="dim">—</span>'}</td><td>${r.ads ? m(r.ads) : '<span class="dim">—</span>'}</td><td class="${r.profit < 0 ? "neg" : ""}"><b>${m(r.profit)}</b></td></tr>`).join("") || '<tr><td class="l dim" colspan="11">No sales in this range.</td></tr>'}</tbody>`;
   }
   function renderProducts() {
     const q = P.q.trim().toLowerCase(), key = { net: (p) => p.net, gp: (p) => p.gp, profit: (p) => p.gp - p.fees, units: (p) => p.units }[P.sort] || ((p) => p.net);
