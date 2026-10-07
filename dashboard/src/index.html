@@ -357,37 +357,29 @@
   <div id="tab-costs" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Shopify + Amazon inventory at cost · edit Shopify product costs, biggest sellers first</span>
+        <span class="eyebrow">Units and cost in the Shopify store, prep center, Amazon FBA and AWD · edit Shopify product costs</span>
         <h1>Inventory value</h1>
       </div>
       <div class="controls">
-        <span class="small muted">Sales in</span>
-        <div class="seg" id="pc-rangeseg" role="group" aria-label="Sales period"></div>
-        <div class="dates">
-          <input type="date" id="pc-start" aria-label="Sales from">
-          <span>–</span>
-          <input type="date" id="pc-end" aria-label="Sales to">
-        </div>
         <button class="btn" id="pc-refresh">Refresh</button>
       </div>
     </header>
-    <div class="status" id="pc-status" aria-live="polite">Loading products and sales…</div>
+    <div class="status" id="pc-status" aria-live="polite">Loading products and stock…</div>
     <div id="pc-note" hidden></div>
     <section class="panel inv-panel">
       <div class="panel-head"><h2>Totals</h2><span class="muted small" id="pc-inv-scope"></span></div>
       <section class="kpis" id="pc-inv" aria-label="Inventory value"></section>
     </section>
-    <section class="kpis" id="pc-kpis" aria-label="Cost health"></section>
     <section class="panel">
       <div class="panel-head">
-        <h2>Costs by product</h2>
+        <h2>Units and cost by product</h2>
         <div class="filters">
           <label for="pc-vendor">Vendor <select id="pc-vendor" class="inp sm"></select></label>
           <label for="pc-cat">Category <select id="pc-cat" class="inp sm"></select></label>
-          <label for="pc-stat">Status <select id="pc-stat" class="inp sm"><option value="ACTIVE">Active</option><option value="DRAFT">Draft</option><option value="ARCHIVED">Archived</option><option value="all">All</option></select></label>
-          <label for="pc-issue">Cost <select id="pc-issue" class="inp sm"><option value="all">Any</option><option value="issue">Needs a look</option><option value="missing">No cost</option><option value="above">Cost above price</option><option value="low">Margin under 10%</option><option value="high">Margin over 75%</option><option value="edited">Edited, not saved</option></select></label>
-          <label for="pc-sold">Sold <select id="pc-sold" class="inp sm"><option value="sold">Sold in period</option><option value="stock">In stock</option><option value="all">All products</option></select></label>
-          <label for="pc-sort">Sort <select id="pc-sort" class="inp sm"><option value="sales">Total sales</option><option value="invcost">Inventory value at cost</option><option value="invprice">Inventory value at retail</option><option value="qty">Units on hand</option></select></label>
+          <label for="pc-stat">Status <select id="pc-stat" class="inp sm"><option value="all">All</option><option value="ACTIVE">Active</option><option value="DRAFT">Draft</option><option value="ARCHIVED">Archived</option></select></label>
+          <label for="pc-issue">Cost <select id="pc-issue" class="inp sm"><option value="all">Any</option><option value="missing">No cost</option><option value="edited">Edited, not saved</option><option value="extra">Not tied to a Shopify product</option></select></label>
+          <label for="pc-where">Stock <select id="pc-where" class="inp sm"><option value="stock">In stock anywhere</option><option value="shop">In the Shopify store</option><option value="prep">In the prep center</option><option value="fba">At Amazon FBA</option><option value="awd">At Amazon AWD</option><option value="all">All products</option></select></label>
+          <label for="pc-sort">Sort <select id="pc-sort" class="inp sm"><option value="cost">Value at cost</option><option value="units">Total units</option><option value="shop">Shopify store units</option><option value="prep">Prep center units</option><option value="fba">FBA units</option><option value="awd">AWD units</option><option value="name">Name</option></select></label>
           <label for="pc-q">Search <input id="pc-q" class="inp" type="search" placeholder="Product, SKU or vendor"></label>
         </div>
       </div>

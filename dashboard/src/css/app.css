@@ -329,7 +329,7 @@ table.amv tr.conf td{background:transparent}
 table.amv tr.guess td:nth-child(4) select{border-color:var(--warn)}
 
 /* Product costs */
-#pc-vendor,#pc-cat,#pc-status,#pc-issue,#pc-sold,#pc-period,#pc-sort,#pc-stat{width:auto;min-width:120px}
+#pc-vendor,#pc-cat,#pc-status,#pc-issue,#pc-where,#pc-period,#pc-sort,#pc-stat{width:auto;min-width:120px}
 .inv-panel .panel-head{align-items:baseline;gap:12px;flex-wrap:wrap}
 .inv-panel .kpis{border-radius:10px}
 table.pct{width:100%;min-width:1280px;font-size:13px;table-layout:fixed}

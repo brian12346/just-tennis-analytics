@@ -1,7 +1,8 @@
 (() => {
   // ===================== Inventory value (was Product costs) =====================
-  // Every Shopify variant with its current unit cost, sorted by how much it sells (Shopify + Amazon) so the costs
-  // that matter most get fixed first. Edited costs are queued in jt.cost_updates and written to Shopify by the sync.
+  // Every Shopify variant with its unit cost and its units in each place we hold stock: the Shopify store, the prep
+  // center, Amazon FBA and Amazon AWD, valued at cost (Brian, Oct 7: units and cost, not price or sales).
+  // Edited costs are queued in jt.cost_updates and written to Shopify by the sync.
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
@@ -15,60 +16,36 @@
 
   const P = {
     shown: false, loading: false, reqId: 0,
-    rows: null,             // [{vid, pid, sku, title, vendor, type, status, price, cost, qty, sUnits, sSales, aUnits, aSales, total}]
+    rows: null,             // [{vid, pid, sku, title, vendor, type, status, price, cost, qty}]
     pending: new Map(),     // vid -> queued cost not yet in Shopify
     edits: new Map(),       // vid -> typed text
-    period: "12m", vendor: "all", cat: "all", status: "ACTIVE", issue: "all", sold: "sold", q: "", sort: "sales", page: 0,
+    vendor: "all", cat: "all", status: "all", issue: "all", where: "stock", q: "", sort: "cost", page: 0,
     asOf: null,             // last catalog sync (inventory quantities are as of then)
     saving: false, confirm: false,
   };
   const note = (kind, html) => { const n = $("pc-note"); if (!html) { n.hidden = true; n.innerHTML = ""; return; } n.hidden = false; n.innerHTML = `<div class="note ${kind}">${html}</div>`; };
 
-  // Sales period: the standard presets (default 12m) or custom dates
-  window.JTRange.seg("pc-rangeseg", "r");
-  const range = () => P.period === "custom" ? [P.from, P.to] : window.JTRange.of(P.period);
-  function showRange() {
-    const [a, b] = range(); $("pc-start").value = a; $("pc-end").value = b;
-    document.querySelectorAll("#pc-rangeseg button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.r === P.period)));
-  }
-
   async function load(refresh) {
     const id = ++P.reqId; P.loading = true; render();
-    const [from, to] = range();
-    $("pc-status").textContent = "Loading products and sales…";
+    $("pc-status").textContent = "Loading products and stock…";
     try {
-      const [cat, ss, maps, months, pend, asof] = await Promise.all([
+      const [cat, pend, asof] = await Promise.all([
         JT.rowsSplit(["variant_id::text", "product_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "product_type", "status", "price", "unit_cost", "inventory_qty"],
           "from jt.variants where removed_at is null", "variant_id", 4, refresh),
-        JT.rowsSplit(["variant_id::text", "sum(units)", "sum(net)"],
-          `from jt.shopify_sales where day between ${JT.day(from)} and ${JT.day(to)} and variant_id <> 0 group by variant_id`, "variant_id", 2, refresh),
-        JT.rowsSplit(["data->>'sku'", "data->>'variantId'", "coalesce(data->>'units', '1')"], "from jt.docs where collection = 'amzmap' and data->>'kind' = 'shopify'", "id", 2, refresh),
-        JT.rowsSplit(["id", "data->'skus'"], `from jt.docs where collection = 'amzmonths' and id between ${JT.q(from.slice(0, 7))} and ${JT.q(to.slice(0, 7))}`, "id", 4, refresh),
         JT.rows(["variant_id::text", "new_cost"], "from jt.cost_updates where status = 'pending' and new_cost is not null", true),
         JT.rows(["extract(epoch from max(seen_at))"], "from jt.variants", refresh),
       ]);
-      P.asOf = asof && asof[0] && asof[0][0] ? new Date(+asof[0][0] * 1000) : null;
       if (id !== P.reqId) return;
-      const shop = new Map(ss.map(([v, u, n]) => [v, [+u || 0, +n || 0]]));
-      // Amazon sales per variant: listing sales from the monthly summaries, through each listing's mapping
-      const amz = new Map();
-      const mp = new Map(maps.map(([sku, gid, u]) => [sku, [String(gid || "").split("/").pop(), +u || 1]]));
-      for (const [, skus] of months) for (const k in skus || {}) {
-        const t = mp.get(k); if (!t || !t[0]) continue;
-        const a = amz.get(t[0]) || [0, 0]; a[0] += (skus[k][0] || 0) * t[1]; a[1] += skus[k][1] || 0; amz.set(t[0], a);
-      }
-      P.rows = cat.map(x => {
-        const s = shop.get(x[0]) || [0, 0], a = amz.get(x[0]) || [0, 0];
-        return { vid: x[0], pid: x[1], sku: x[2] || "", title: x[3] || "", vendor: x[4] || "", type: x[5] || "", status: x[6] || "",
-          price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8], qty: x[9] == null ? null : +x[9],
-          sUnits: s[0], sSales: s[1], aUnits: a[0], aSales: a[1], total: s[1] + a[1] };
-      });
+      P.asOf = asof && asof[0] && asof[0][0] ? new Date(+asof[0][0] * 1000) : null;
+      P.rows = cat.map(x => ({ vid: x[0], pid: x[1], sku: x[2] || "", title: x[3] || "", vendor: x[4] || "", type: x[5] || "", status: x[6] || "",
+        price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8], qty: x[9] == null ? null : +x[9] }));
       P.pending = new Map(pend.map(([v, c]) => [v, +c]));
       fillFilters();
       if (JT.fba) JT.fba.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
       if (window.JTPrep) window.JTPrep.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
       if (window.JTCost) window.JTCost.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
-      $("pc-status").textContent = `${P.rows.length.toLocaleString()} Shopify variants · sales ${from} to ${to} (Shopify net sales + Amazon product sales)`;
+      const when = P.asOf ? P.asOf.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+      $("pc-status").textContent = `${P.rows.length.toLocaleString()} Shopify variants${when ? ` · Shopify stock as of ${when}` : ""}`;
     } catch (e) { note("bad", esc(JT.message(e))); $("pc-status").textContent = ""; }
     finally { if (id === P.reqId) { P.loading = false; render(); } }
   }
@@ -81,138 +58,158 @@
     opt("pc-vendor", vend, P.vendor, "All vendors"); opt("pc-cat", cats, P.cat, "All categories");
   }
 
-  const costOf = (r) => P.edits.has(r.vid) ? money(P.edits.get(r.vid)) : P.pending.has(r.vid) ? P.pending.get(r.vid) : r.cost;
-  function issueOf(r) {
-    const c = costOf(r);
-    if (c == null) return "missing";
-    if (r.price > 0 && c > r.price) return "above";
-    if (r.price > 0 && (r.price - c) / r.price < 0.10) return "low";
-    if (r.price > 0 && (r.price - c) / r.price > 0.75) return "high";
-    return "";
-  }
-  // Inventory value: on-hand units (all locations, from the last catalog sync) × unit cost / price. Negative on-hand
-  // counts are shown but add nothing to the value.
-  const onHand = (r) => r.qty > 0 ? r.qty : 0;
-  // the cost stock is valued at: FIFO cost layers where a purchase order set the cost (JTCost), else the cost
-  const layered = (r) => !P.edits.has(r.vid) && window.JTCost && window.JTCost.has(r.vid);
+  const costOf = (r) => r.extra ? r.unit : P.edits.has(r.vid) ? money(P.edits.get(r.vid)) : P.pending.has(r.vid) ? P.pending.get(r.vid) : r.cost;
+  const noCost = (c) => c == null || isNaN(c);
+  // the cost stock is valued at: FIFO cost layers where a purchase order set the cost (JTCost), else the unit cost
+  const layered = (r) => !r.extra && !P.edits.has(r.vid) && window.JTCost && window.JTCost.has(r.vid);
   const valCost = (r) => layered(r) ? window.JTCost.unit(r.vid, costOf(r)) : costOf(r);
-  const extCost = (r) => { const c = valCost(r); return onHand(r) && c != null && !isNaN(c) ? onHand(r) * c : 0; };
-  const extPrice = (r) => onHand(r) && r.price != null ? onHand(r) * r.price : 0;
+  // the saved cost (sorting uses it, so a row doesn't jump while its cost is being typed)
+  const savedCost = (r) => { if (r.extra) return r.unit; const c = P.pending.has(r.vid) ? P.pending.get(r.vid) : r.cost; return window.JTCost && window.JTCost.has(r.vid) ? window.JTCost.unit(r.vid, c) : c; };
+
+  // ---- Units by location, in Shopify units ----
+  // Shopify store: on hand in Shopify (last catalog sync; negative counts are shown but count as 0).
+  // Prep center: the Prep center tab's stock. FBA / AWD: the Amazon inventory reports (FBA available + in transfer +
+  // inbound; AWD available + inbound to AWD), turned into Shopify units through each listing's mapping (a 3-pack = 3).
+  // Prep center and Amazon stock that isn't tied to a Shopify product is kept apart ("not tied to a product").
+  const LOCS = [["shop", "Shopify store"], ["prep", "Prep center"], ["fba", "Amazon FBA"], ["awd", "Amazon AWD"]];
+  let LC = { rows: null, fd: null, pd: null, by: new Map(), extra: [] };
+  function locs() {
+    const fd = JT.fba && JT.fba.data, pd = window.JTPrep && window.JTPrep.data;
+    if (LC.rows === P.rows && LC.fd === fd && LC.pd === pd) return LC;
+    const known = new Set((P.rows || []).map(r => r.vid)), by = new Map(), extra = [];
+    const get = (v) => { let x = by.get(v); if (!x) by.set(v, x = { prep: 0, fba: 0, awd: 0, skus: [] }); return x; };
+    // stock not tied to a Shopify product: a row of its own (no editable cost; Amazon listings use their manual cost)
+    const ex = (key, o) => { const r = { extra: true, vid: key, pid: "", status: "", qty: 0, price: null, cost: o.unit, u: { shop: 0, prep: 0, fba: 0, awd: 0 }, ...o }; extra.push(r); return r; };
+    if (pd) for (const r of pd.rows) {
+      if (!(r.qty > 0)) continue;
+      const v = String(r.vid);
+      if (known.has(v)) get(v).prep += r.qty;
+      else ex("p:" + v + "|" + r.asku, { src: "prep", title: r.title, sku: r.sku, vendor: r.vendor, type: r.type, unit: r.cost }).u.prep = r.qty;
+    }
+    if (fd) for (const it of fd.items) {
+      const fu = JT.fba.unitsOf(it, true, "fba"), au = JT.fba.unitsOf(it, true, "awd");
+      if (fu + au <= 0) continue;
+      const v = it.map && it.map.vid ? String(it.map.vid) : null;
+      if (v && known.has(v)) { const x = get(v), k = it.map.units || 1; x.fba += fu * k; x.awd += au * k; x.skus.push(it.sku); continue; }
+      const r = ex("a:" + it.sku, { src: "amazon", title: it.name || it.sku, sku: it.sku, asin: it.asin, vendor: it.vendor, type: it.type, unit: it.cost, manual: !!(it.map && it.map.kind === "manual") });
+      r.u.fba = fu; r.u.awd = au;
+    }
+    LC = { rows: P.rows, fd, pd, by, extra };
+    return LC;
+  }
+  const NONE = { prep: 0, fba: 0, awd: 0, skus: [] };
+  const unitsAt = (r) => { if (r.extra) return r.u; const x = locs().by.get(r.vid) || NONE; return { shop: r.qty > 0 ? r.qty : 0, prep: x.prep, fba: x.fba, awd: x.awd }; };
+  const totalUnits = (u) => u.shop + u.prep + u.fba + u.awd;
+
   const matchesBase = (r, q) => (P.vendor === "all" || r.vendor === P.vendor) && (P.cat === "all" || r.type === P.cat)
-    && (!q || (r.title + " " + r.sku + " " + r.vendor).toLowerCase().includes(q));
+    && (!q || [r.title, r.sku, r.vendor, r.asin || ""].join(" ").toLowerCase().includes(q));
   function visible() {
     if (!P.rows) return [];
     const q = P.q.trim().toLowerCase();
-    // sort on the saved cost so a row doesn't jump while its cost is being typed
-    const saved = (r) => { const c = P.pending.has(r.vid) ? P.pending.get(r.vid) : r.cost; return c == null ? 0 : onHand(r) * c; };
-    const by = P.sort === "invcost" ? (a, b) => saved(b) - saved(a) : P.sort === "invprice" ? (a, b) => extPrice(b) - extPrice(a)
-      : P.sort === "qty" ? (a, b) => onHand(b) - onHand(a) : () => 0;
-    return P.rows.filter(r => matchesBase(r, q)
-      && (P.status === "all" || r.status === P.status)
-      && (P.sold === "all" || (P.sold === "stock" ? r.qty > 0 : r.sSales || r.aSales || r.sUnits || r.aUnits))
-      && (P.issue === "all" || (P.issue === "edited" ? P.edits.has(r.vid) : P.issue === "issue" ? !!issueOf(r) : issueOf(r) === P.issue)))
-      .sort((a, b) => by(a, b) || b.total - a.total || (b.sUnits + b.aUnits) - (a.sUnits + a.aUnits) || a.title.localeCompare(b.title));
+    const key = (r) => { const u = unitsAt(r); return P.sort === "cost" ? totalUnits(u) * (savedCost(r) || 0) : P.sort === "units" ? totalUnits(u) : u[P.sort] || 0; };
+    const rows = P.rows.concat(locs().extra).filter(r => {
+      if (!matchesBase(r, q) || (P.status !== "all" && r.status !== P.status)) return false;
+      if (P.issue === "missing" && !noCost(costOf(r))) return false;
+      if (P.issue === "edited" && !P.edits.has(r.vid)) return false;
+      if (P.issue === "extra" && !r.extra) return false;
+      if (P.where === "all") return true;
+      const u = unitsAt(r);
+      return P.where === "stock" ? totalUnits(u) > 0 || r.qty < 0 : u[P.where] > 0;
+    });
+    const k = new Map(rows.map(r => [r.vid, key(r)]));
+    return P.sort === "name" ? rows.sort((a, b) => a.title.localeCompare(b.title))
+      : rows.sort((a, b) => k.get(b.vid) - k.get(a.vid) || a.title.localeCompare(b.title));
   }
 
-  function invTotals(rows) {
-    const t = { cost: 0, price: 0, units: 0, skus: 0, noCost: 0, noCostUnits: 0, neg: 0 };
+  // per-location units and cost for a set of product rows (+ optional stock not tied to a product)
+  function sumUp(rows) {
+    const t = { units: 0, cost: 0, noCost: 0, noCostUnits: 0, neg: 0, n: 0 };
+    for (const [l] of LOCS) t[l] = { units: 0, cost: 0, noCostUnits: 0 };
     for (const r of rows) {
       if (r.qty < 0) t.neg++;
-      if (!(r.qty > 0)) continue;
-      t.units += r.qty; t.skus++; t.cost += extCost(r); t.price += extPrice(r);
-      const c = costOf(r); if (c == null || isNaN(c)) { t.noCost++; t.noCostUnits += r.qty; }
+      const u = unitsAt(r), tu = totalUnits(u); if (!tu) continue;
+      const c = valCost(r); t.n++;
+      if (noCost(c)) { t.noCost++; t.noCostUnits += tu; }
+      for (const [l] of LOCS) { t[l].units += u[l]; if (noCost(c)) t[l].noCostUnits += u[l]; else t[l].cost += u[l] * c; }
     }
+    for (const [l] of LOCS) { t.units += t[l].units; t.cost += t[l].cost; }
     return t;
   }
-  // Inventory summary: every product with stock on hand (any status, sold or not), narrowed only by vendor, category
-  // and search, so the total is the whole store unless one of those is set.
+
+  // Totals: every product with stock anywhere (any status), narrowed only by vendor, category and search
   function renderInv() {
     const el = $("pc-inv"); if (!P.rows) { el.innerHTML = ""; return; }
     const q = P.q.trim().toLowerCase();
     const scoped = P.vendor !== "all" || P.cat !== "all" || !!q;
-    const t = invTotals(P.rows.filter(r => matchesBase(r, q)));
-    const all = scoped ? invTotals(P.rows) : t;
+    const L = locs(), every = P.rows.concat(L.extra), ex = L.extra.filter(x => matchesBase(x, q));
+    const t = sumUp(every.filter(r => matchesBase(r, q)));
+    const all = scoped ? sumUp(every) : t;
+    const fd = L.fd, pd = L.pd;
     const scope = [P.vendor !== "all" ? esc(P.vendor || "(no vendor)") : "", P.cat !== "all" ? esc(P.cat || "(no category)") : "", q ? `“${esc(P.q.trim())}”` : ""].filter(Boolean).join(" · ");
-    // Amazon FBA units (FBA tab), narrowed by the same vendor / category / search
-    const fd = JT.fba && JT.fba.data, fitems = fd ? fd.items.filter(i => (P.vendor === "all" || i.vendor === P.vendor) && (P.cat === "all" || i.type === P.cat)
-      && (!q || [i.name, i.sku, i.asin, i.map && i.map.title, i.map && i.map.vsku, i.vendor].join(" ").toLowerCase().includes(q))) : [];
-    const f = fd ? JT.fba.totals(fitems, true) : null;
-    const allF = fd ? (scoped ? JT.fba.totals(fd.items, true) : f) : null;
-    // Prep center (Prep center tab), same filters
-    const pd = window.JTPrep && window.JTPrep.data;
-    const pr = pd ? window.JTPrep.totals(pd.rows.filter(r => (P.vendor === "all" || r.vendor === P.vendor) && (P.cat === "all" || r.type === P.cat)
-      && (!q || [r.title, r.sku, r.vendor, r.asku].join(" ").toLowerCase().includes(q)))) : null;
-    const totCost = t.cost + (f ? f.cost : 0) + (pr ? pr.cost : 0), totPrice = t.price + (f ? f.price : 0) + (pr ? pr.retail : 0);
-    const gm = totPrice ? (totPrice - totCost) / totPrice : null;
+    const day = (d) => new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
     const when = P.asOf ? P.asOf.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
-    const snap = fd && fd.meta.snapshot ? new Date(fd.meta.snapshot + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
-    $("pc-inv-scope").innerHTML = (scoped ? `Filtered to ${scope} · total ${m0(all.cost + (allF ? allF.cost : 0))} at cost` : "Every product with stock: Shopify, the prep center and Amazon (FBA + AWD)")
-      + (when ? ` · Shopify as of ${when}` : "") + (snap ? ` · FBA report of ${snap}` : "") + (fd && fd.awdMeta && fd.awdMeta.snapshot ? ` · AWD report of ${new Date(fd.awdMeta.snapshot + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}` : "");
-    const goFba = `<button class="linkbtn small" data-go-fba>open Amazon inventory</button>`;
+    $("pc-inv-scope").innerHTML = (scoped ? `Filtered to ${scope} · all stock ${m0(all.cost)} at cost` : "All stock at cost: Shopify store, prep center, Amazon FBA and AWD")
+      + (when ? ` · Shopify as of ${when}` : "") + (fd && fd.meta.snapshot ? ` · FBA report of ${day(fd.meta.snapshot)}` : "") + (fd && fd.awdMeta && fd.awdMeta.snapshot ? ` · AWD report of ${day(fd.awdMeta.snapshot)}` : "");
+    const n = (x) => Math.round(x).toLocaleString();
+    const loaded = { shop: true, prep: !!pd, fba: !!fd, awd: !!fd };
+    const go = { prep: `<button class="linkbtn small" data-go-prep>open prep center</button>`, fba: `<button class="linkbtn small" data-go-fba>open Amazon inventory</button>`, awd: "" };
+    const loc = (l, label) => {
+      const x = t[l], exU = ex.reduce((a, e) => a + e.u[l], 0);
+      const s = !loaded[l] ? (l === "prep" ? "loading…" : `No Amazon report loaded · ${go.fba}`)
+        : [`${n(x.units)} units`, x.noCostUnits ? `${n(x.noCostUnits)} with no cost` : "", exU ? `<button class="linkbtn small" data-extra>${n(exU)} not tied to a Shopify product</button>` : "", go[l] || ""].filter(Boolean).join(" · ");
+      return { l: `${label} at cost`, v: loaded[l] ? m0(x.cost) : "—", s };
+    };
+    const sh = (l) => t.cost ? ` (${pct(t[l].cost / t.cost)})` : "";
     el.innerHTML = [
-      { c: "cost", l: "Total inventory at cost", v: m0(totCost), s: `Shopify ${m0(t.cost)} · Prep center ${pr ? m0(pr.cost) : "…"} · Amazon ${f ? m0(f.cost) : "…"}` },
-      { l: "Shopify at cost", v: m0(t.cost), s: `${Math.round(t.units).toLocaleString()} units · ${m0(t.price)} at Shopify price` },
-      { l: "Prep center at cost", v: pr ? m0(pr.cost) : "—", s: pr ? (pr.units ? `${Math.round(pr.units).toLocaleString()} units waiting to go to Amazon · <button class="linkbtn small" data-go-prep>open prep center</button>` : `empty · <button class="linkbtn small" data-go-prep>open prep center</button>`) : "loading…" },
-      { l: "Amazon (FBA + AWD) at cost", v: f ? m0(f.cost) : "—", s: f ? `FBA ${m0(f.fbaCost)} · AWD ${m0(f.awdCost)} · ${Math.round(f.units).toLocaleString()} units incl. inbound · ${m0(f.price)} at Amazon price · ${goFba}` : `No Amazon report loaded · ${goFba}` },
-      { c: "sales", l: "Total at retail", v: m0(totPrice), s: gm == null ? "" : `${m0(totPrice - totCost)} margin in stock (${pct(gm)})` },
-      { l: "Not valued", v: (t.noCost + t.neg + (f ? f.noCost : 0)).toLocaleString(), s: `Shopify: ${t.noCost} with no cost, ${t.neg} negative on-hand${f ? ` · Amazon: ${f.noCost} SKUs not costed (${Math.round(f.noCostUnits).toLocaleString()} units)` : ""}` },
-    ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
-  }
-
-
-  function renderKpis(rows) {
-    const el = $("pc-kpis");
-    const tot = rows.reduce((a, r) => a + r.total, 0);
-    const bad = rows.filter(r => issueOf(r) === "missing" || issueOf(r) === "above");
-    const warn = rows.filter(r => issueOf(r) === "low" || issueOf(r) === "high");
-    const badS = bad.reduce((a, r) => a + r.total, 0), warnS = warn.reduce((a, r) => a + r.total, 0);
-    el.innerHTML = [
-      { l: "Sales in view", v: m0(tot), s: `${rows.length.toLocaleString()} variants · Shopify + Amazon` },
-      { l: "No cost or cost above price", v: bad.length.toLocaleString(), s: tot ? `${m0(badS)} of sales (${pct(badS / tot)})` : "" },
-      { l: "Margin under 10% or over 75%", v: warn.length.toLocaleString(), s: tot ? `${m0(warnS)} of sales (${pct(warnS / tot)}) — worth a check` : "" },
-      { l: "Edited, not saved", v: P.edits.size.toLocaleString(), s: P.pending.size ? `${P.pending.size} saved, waiting for Shopify` : "type a cost to edit" },
-    ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
+      { c: "cost", l: "Total inventory at cost", v: m0(t.cost), s: `${n(t.units)} units · ` + LOCS.map(([l, lb]) => `${lb.replace("Amazon ", "")} ${m0(t[l].cost)}${sh(l)}`).join(" · ") },
+      ...LOCS.map(([l, lb]) => loc(l, lb)),
+      { l: "Not valued", v: n(t.noCostUnits), s: `units with no cost · ${t.noCost.toLocaleString()} product${t.noCost === 1 ? "" : "s"}${t.neg ? ` · ${t.neg} with negative Shopify on-hand` : ""} · <button class="linkbtn small" data-nocost>show them</button>` },
+    ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
 
   let pageRows = [];
   function render() {
     if ($("tab-costs").hidden) return;
     const t = $("pc-table");
-    if (!P.rows) { t.innerHTML = `<tbody><tr><td class="l muted">${P.loading ? "Loading…" : ""}</td></tr></tbody>`; $("pc-kpis").innerHTML = ""; $("pc-inv").innerHTML = ""; return; }
+    if (!P.rows) { t.innerHTML = `<tbody><tr><td class="l muted">${P.loading ? "Loading…" : ""}</td></tr></tbody>`; $("pc-inv").innerHTML = ""; return; }
     const rows = visible();
     renderInv();
-    renderKpis(rows);
-    const vt = invTotals(rows);
+    const vt = sumUp(rows);
     const pages = Math.max(1, Math.ceil(rows.length / PER)); if (P.page >= pages) P.page = pages - 1;
     pageRows = rows.slice(P.page * PER, P.page * PER + PER);
     const ae = document.activeElement, keep = ae && ae.dataset && ae.dataset.vid, sel = keep ? [ae.selectionStart, ae.selectionEnd] : null;
-    t.innerHTML = `<thead><tr><th class="l">Product</th><th class="l">Vendor · category</th><th>On hand</th><th>Unit cost</th><th>Ext. cost</th><th>Price</th><th>Ext. price</th><th>Margin</th><th>Shopify</th><th>Amazon</th><th>Total sales</th><th class="l">Status</th></tr></thead><tbody>${
+    const cell = (u, c) => !u ? '<span class="dim">—</span>' : `${Math.round(u).toLocaleString()}${noCost(c) ? "" : `<div class="meta">${m0(u * c)}</div>`}`;
+    t.innerHTML = `<thead><tr><th class="l">Product</th><th class="l">Vendor · category</th><th>Unit cost</th><th title="Shopify store on hand">Store</th><th title="Prep center">Prep</th><th title="Amazon FBA (incl. inbound)">FBA</th><th title="Amazon AWD (incl. inbound)">AWD</th><th>Total units</th><th>Ext. cost</th><th class="l">Status</th></tr></thead><tbody>${
       pageRows.map((r) => {
-        const iss = issueOf(r), c = costOf(r), edited = P.edits.has(r.vid), v = edited ? P.edits.get(r.vid) : c == null ? "" : c.toFixed(2);
-        const bad = edited && (c == null || isNaN(c) || c < 0);
-        const mg = r.price > 0 && c != null && !isNaN(c) ? (r.price - c) / r.price : null;
-        const pill = P.pending.has(r.vid) && !edited ? '<span class="pill warn">Saving to Shopify</span>'
-          : iss === "missing" ? '<span class="pill miss">No cost</span>' : iss === "above" ? '<span class="pill miss">Cost above price</span>'
-          : iss === "low" ? '<span class="pill warn">Low margin</span>' : iss === "high" ? '<span class="pill warn">High margin</span>' : '<span class="pill ok">OK</span>';
-        return `<tr class="${iss === "missing" || iss === "above" ? "flag-bad" : iss ? "flag-warn" : ""}">
-          <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span>${r.status !== "ACTIVE" ? " · " + esc(r.status.toLowerCase()) : ""}</div></td>
+        if (r.extra) {
+          const tu = totalUnits(r.u);
+          return `<tr class="${r.unit == null ? "flag-bad" : "flag-warn"}">
+          <td class="l">${esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span>${r.asin ? ` · ${esc(r.asin)}` : ""}</div></td>
           <td class="l">${esc(r.vendor)}<div class="meta">${esc(r.type || "—")}</div></td>
-          <td class="${r.qty < 0 ? "neg" : ""}">${r.qty == null ? '<span class="dim">—</span>' : r.qty.toLocaleString()}</td>
-          <td><input class="pcin ${edited ? "edited" : ""} ${bad ? "bad" : ""}" data-vid="${esc(r.vid)}" value="${esc(v)}" inputmode="decimal" aria-label="Unit cost for ${esc(r.title)}">${edited && r.cost != null ? `<div class="meta">was ${m(r.cost)}</div>` : ""}</td>
-          <td>${onHand(r) ? (c == null || isNaN(c) ? '<span class="dim">no cost</span>' : m(extCost(r)) + (layered(r) ? `<div class="meta" title="${esc(window.JTCost.describe(r.vid))}">FIFO · ${m(valCost(r))}/unit</div>` : "")) : '<span class="dim">—</span>'}</td>
-          <td>${m(r.price)}</td>
-          <td>${onHand(r) && r.price != null ? m(extPrice(r)) : '<span class="dim">—</span>'}</td>
-          <td class="${mg != null && mg < 0 ? "neg" : ""}">${pct(mg)}</td>
-          <td>${r.sSales ? m0(r.sSales) : '<span class="dim">—</span>'}<div class="meta">${r.sUnits ? Math.round(r.sUnits).toLocaleString() + " sold" : ""}</div></td>
-          <td>${r.aSales ? m0(r.aSales) : '<span class="dim">—</span>'}<div class="meta">${r.aUnits ? Math.round(r.aUnits).toLocaleString() + " sold" : ""}</div></td>
-          <td><b>${m0(r.total)}</b></td>
+          <td>${r.unit == null ? '<span class="dim">no cost</span>' : m(r.unit)}${r.manual ? '<div class="meta">manual cost</div>' : ""}</td>
+          <td><span class="dim">—</span></td><td>${cell(r.u.prep, r.unit)}</td><td>${cell(r.u.fba, r.unit)}</td><td>${cell(r.u.awd, r.unit)}</td>
+          <td><b>${Math.round(tu).toLocaleString()}</b></td>
+          <td><b>${r.unit == null ? '<span class="dim">no cost</span>' : m0(tu * r.unit)}</b></td>
+          <td class="l"><span class="pill ${r.unit == null ? "miss" : "warn"}" title="${r.src === "amazon" ? "This Amazon listing isn't mapped to a Shopify product" : "This prep center product isn't in Shopify"}">Not tied to Shopify</span>${r.src === "amazon" ? ' <button class="mini" data-go="amzmap">Map it</button>' : ""}</td></tr>`;
+        }
+        const c = costOf(r), vc = valCost(r), edited = P.edits.has(r.vid), v = edited ? P.edits.get(r.vid) : c == null ? "" : c.toFixed(2);
+        const bad = edited && (noCost(c) || c < 0);
+        const u = unitsAt(r), tu = totalUnits(u), x = locs().by.get(r.vid);
+        const pill = P.pending.has(r.vid) && !edited ? '<span class="pill warn">Saving to Shopify</span>' : noCost(c) ? (tu ? '<span class="pill miss">No cost</span>' : '<span class="pill">No cost</span>') : "";
+        return `<tr class="${noCost(c) && tu ? "flag-bad" : ""}">
+          <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span>${r.status !== "ACTIVE" ? " · " + esc(r.status.toLowerCase()) : ""}${x && x.skus.length ? ` · <span title="Amazon seller SKUs">${esc(x.skus.slice(0, 3).join(", "))}${x.skus.length > 3 ? "…" : ""}</span>` : ""}</div></td>
+          <td class="l">${esc(r.vendor)}<div class="meta">${esc(r.type || "—")}</div></td>
+          <td><input class="pcin ${edited ? "edited" : ""} ${bad ? "bad" : ""}" data-vid="${esc(r.vid)}" value="${esc(v)}" inputmode="decimal" aria-label="Unit cost for ${esc(r.title)}">${edited && r.cost != null ? `<div class="meta">was ${m(r.cost)}</div>` : layered(r) ? `<div class="meta" title="${esc(window.JTCost.describe(r.vid))}">FIFO ${m(vc)}</div>` : ""}</td>
+          <td class="${r.qty < 0 ? "neg" : ""}">${r.qty < 0 ? r.qty.toLocaleString() : cell(u.shop, vc)}</td>
+          <td>${cell(u.prep, vc)}</td><td>${cell(u.fba, vc)}</td><td>${cell(u.awd, vc)}</td>
+          <td><b>${tu ? Math.round(tu).toLocaleString() : '<span class="dim">0</span>'}</b></td>
+          <td><b>${!tu ? '<span class="dim">—</span>' : noCost(vc) ? '<span class="dim">no cost</span>' : m0(tu * vc)}</b></td>
           <td class="l">${pill}${!window.JTPrep ? "" : window.JTPrep.listed(r.vid, "", "shopify") ? ' <span class="pill ok" title="On The List (Prep center tab)">On list</span>'
             : ` <button class="mini" data-list="${esc(r.vid)}" title="Put on On The List (Prep center tab) to re-order for the Shopify store">+ List</button>`}</td></tr>`;
-      }).join("") || `<tr><td class="l muted" colspan="12">No products match these filters.</td></tr>`}</tbody>${rows.length ? `<tfoot><tr>
-          <td class="l"><b>Total · ${rows.length.toLocaleString()} variants in view</b></td><td></td>
-          <td><b>${Math.round(vt.units).toLocaleString()}</b></td><td></td><td><b>${m0(vt.cost)}</b></td><td></td><td><b>${m0(vt.price)}</b></td>
-          <td>${pct(vt.price ? (vt.price - vt.cost) / vt.price : null)}</td>
-          <td>${m0(rows.reduce((a, r) => a + r.sSales, 0))}</td><td>${m0(rows.reduce((a, r) => a + r.aSales, 0))}</td><td><b>${m0(rows.reduce((a, r) => a + r.total, 0))}</b></td><td></td></tr></tfoot>` : ""}`;
+      }).join("") || `<tr><td class="l muted" colspan="10">No products match these filters.</td></tr>`}</tbody>${rows.length ? `<tfoot><tr>
+          <td class="l"><b>Total · ${rows.length.toLocaleString()} in view</b></td><td></td><td></td>
+          ${LOCS.map(([l]) => `<td><b>${Math.round(vt[l].units).toLocaleString()}</b><div class="meta">${m0(vt[l].cost)}</div></td>`).join("")}
+          <td><b>${Math.round(vt.units).toLocaleString()}</b></td><td><b>${m0(vt.cost)}</b>${vt.noCostUnits ? `<div class="meta">${Math.round(vt.noCostUnits).toLocaleString()} units not valued</div>` : ""}</td><td></td></tr></tfoot>` : ""}`;
     if (keep) { const el = t.querySelector(`input[data-vid="${CSS.escape(keep)}"]`); if (el) { el.focus(); try { el.setSelectionRange(sel[0], sel[1]); } catch (_) {} } }
     $("pc-prev").hidden = P.page === 0; $("pc-next").hidden = P.page >= pages - 1;
     $("pc-count").textContent = rows.length ? `${P.page * PER + 1}–${P.page * PER + pageRows.length} of ${rows.length.toLocaleString()}` : "";
@@ -261,18 +258,16 @@
     on("pc-cat", "change", (e) => { P.cat = e.target.value; P.page = 0; render(); });
     on("pc-stat", "change", (e) => { P.status = e.target.value; P.page = 0; render(); });
     on("pc-issue", "change", (e) => { P.issue = e.target.value; P.page = 0; render(); });
-    on("pc-sold", "change", (e) => { P.sold = e.target.value; P.page = 0; render(); });
+    on("pc-where", "change", (e) => { P.where = e.target.value; P.page = 0; render(); });
     on("pc-sort", "change", (e) => { P.sort = e.target.value; P.page = 0; render(); });
     on("pc-q", "input", (e) => { P.q = e.target.value; P.page = 0; clearTimeout(e.target._t); e.target._t = setTimeout(render, 200); });
-    on("pc-rangeseg", "click", (e) => { const b = e.target.closest("button[data-r]"); if (!b) return; P.period = b.dataset.r; P.page = 0; showRange(); load(false); });
-    const onPcDate = () => { const a = $("pc-start").value, b = $("pc-end").value; if (!a || !b || a > b) return; P.period = "custom"; P.from = a; P.to = b; P.page = 0; showRange(); load(false); };
-    on("pc-start", "change", onPcDate); on("pc-end", "change", onPcDate);
     on("pc-refresh", "click", () => load(true));
     on("pc-prev", "click", () => { P.page--; render(); $("pc-table").scrollIntoView({ block: "start" }); });
     on("pc-next", "click", () => { P.page++; render(); $("pc-table").scrollIntoView({ block: "start" }); });
     on("pc-discard", "click", () => { P.edits.clear(); P.confirm = false; render(); });
     on("pc-save", "click", () => { P.confirm = true; render(); });
     t.addEventListener("click", (e) => {
+      const g = e.target.closest("button[data-go]"); if (g) { const b = document.querySelector(`.tabs button[data-tab="${g.dataset.go}"]`); if (b) b.click(); return; }
       const b = e.target.closest("button[data-list]"); if (!b || !window.JTPrep) return;
       const r = P.rows.find(x => x.vid === b.dataset.list); b.disabled = true;
       window.JTPrep.addToList({ variant_id: Number(r.vid), amazon_sku: "", dest: "shopify", source: "inventory" })
@@ -280,6 +275,8 @@
               (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); });
     });
     $("pc-inv").addEventListener("click", (e) => {
+      if (e.target.closest("[data-extra]")) { P.issue = "extra"; P.where = "stock"; P.page = 0; $("pc-issue").value = "extra"; $("pc-where").value = "stock"; render(); $("pc-table").scrollIntoView({ block: "start" }); return; }
+      if (e.target.closest("[data-nocost]")) { P.issue = "missing"; P.where = "stock"; P.page = 0; $("pc-issue").value = "missing"; $("pc-where").value = "stock"; render(); $("pc-table").scrollIntoView({ block: "start" }); return; }
       const go = e.target.closest("[data-go-fba]") ? "fba" : e.target.closest("[data-go-prep]") ? "prep" : null;
       if (go) { const b = document.querySelector(`.tabs button[data-tab="${go}"]`); if (b) b.click(); }
     });
@@ -288,7 +285,6 @@
   }
 
   bind();
-  showRange();
   window.pcRender = () => render();
   window.addEventListener("jt:catalog", () => { if (!$("tab-costs").hidden) load(true); else P.shown = false; });
   window.pcShow = () => { if (!P.shown) { P.shown = true; load(false); } else render(); };
