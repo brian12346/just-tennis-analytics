@@ -216,11 +216,35 @@
     const valid = [...P.edits.entries()].filter(([, v]) => { const c = money(v); return c != null && !isNaN(c) && c >= 0; });
     $("pc-save").disabled = !valid.length || P.saving; $("pc-save").textContent = valid.length ? `Save ${valid.length} cost${valid.length === 1 ? "" : "s"} to Shopify` : "Save costs to Shopify";
     $("pc-discard").disabled = !P.edits.size || P.saving;
+    $("pc-csv").disabled = !rows.length;
     const cf = $("pc-confirm");
     if (P.confirm && valid.length) {
       cf.hidden = false;
       cf.innerHTML = `<div class="note warn">Write ${valid.length} unit cost${valid.length === 1 ? "" : "s"} to Shopify? This changes the cost Shopify uses for new orders and profit reports. <span class="dbtns"><button class="mini primary" id="pc-yes">Yes, save</button><button class="mini" id="pc-no">Cancel</button></span></div>`;
     } else { cf.hidden = true; cf.innerHTML = ""; }
+  }
+
+  // CSV of every row in view (all pages): units and cost per location, at the cost stock is valued at (FIFO where set)
+  async function saveFile(name, data, mimeType) {
+    const d = window.claude && window.claude.use ? await window.claude.use("downloads").catch(() => null) : null;
+    if (d) { try { await d.save({ filename: name, data, mimeType }); } catch (e) { if (e && e.code !== "declined") note("warn", esc(JT.message(e))); } return; }
+    const a = document.createElement("a"), url = URL.createObjectURL(new Blob([data], { type: mimeType }));
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function csv() {
+    const q = (x) => /[",\n]/.test(String(x ?? "")) ? `"${String(x).replace(/"/g, '""')}"` : String(x ?? "");
+    const r2 = (x) => x == null || isNaN(x) ? "" : (Math.round(x * 100) / 100).toFixed(2);
+    const lines = [["Product", "SKU", "Amazon SKUs", "ASIN", "Vendor", "Category", "Status", "Tied to Shopify", "Unit cost", "Cost basis",
+      "Store units", "Store cost", "Prep units", "Prep cost", "FBA units", "FBA cost", "AWD units", "AWD cost", "Total units", "Ext. cost"].join(",")];
+    for (const r of visible()) {
+      const u = unitsAt(r), c = valCost(r), x = !r.extra && locs().by.get(r.vid);
+      const at = (n) => noCost(c) ? "" : r2(n * c);
+      lines.push([r.title, r.extra ? "" : r.sku, r.extra ? (r.src === "amazon" ? r.sku : "") : x ? x.skus.join(" ") : "", r.asin || "", r.vendor, r.type, r.status.toLowerCase(),
+        r.extra ? "no" : "yes", r2(c), noCost(c) ? "no cost" : layered(r) ? "FIFO" : P.edits.has(r.vid) ? "edited, not saved" : r.manual ? "manual" : "unit cost",
+        u.shop, at(u.shop), u.prep, at(u.prep), u.fba, at(u.fba), u.awd, at(u.awd), totalUnits(u), at(totalUnits(u))].map(q).join(","));
+    }
+    const d = new Date(), day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    await saveFile(`inventory-value_${day}.csv`, lines.join("\n"), "text/csv");
   }
 
   async function save() {
@@ -264,6 +288,7 @@
     on("pc-refresh", "click", () => load(true));
     on("pc-prev", "click", () => { P.page--; render(); $("pc-table").scrollIntoView({ block: "start" }); });
     on("pc-next", "click", () => { P.page++; render(); $("pc-table").scrollIntoView({ block: "start" }); });
+    on("pc-csv", "click", () => csv());
     on("pc-discard", "click", () => { P.edits.clear(); P.confirm = false; render(); });
     on("pc-save", "click", () => { P.confirm = true; render(); });
     t.addEventListener("click", (e) => {
