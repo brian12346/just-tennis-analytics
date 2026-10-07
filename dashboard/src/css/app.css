@@ -973,3 +973,15 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .po-recv.done{border:1px solid var(--good-bg);background:var(--good-bg);border-radius:var(--radius-md);padding:10px 12px}
 .po-recv.done .h3{color:var(--good)}
 .po-invbar + .ivsteps{margin-top:-4px}
+
+/* Amazon Outgoing "In progress": lanes (Analyze · Open · Started) */
+.shiplanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+.shiplanes .lane{background:var(--line-soft);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.shiplanes .lane-h{display:flex;align-items:baseline;gap:6px;padding:2px 4px;flex-wrap:wrap}
+.shiplanes .lane-h .cnt{font-size:12px;color:var(--muted)}
+.shiplanes .lane-h .small{margin-left:auto}
+.shiplanes .lane-b{display:flex;flex-direction:column;gap:8px}
+.shiplanes .lane-empty{padding:10px 6px}
+.shipcard.anacard{cursor:default;border-left-color:var(--sales)}
+.shipcard.anacard textarea{width:100%;resize:vertical;font:inherit;font-size:12px}
+@media (max-width:900px){.shiplanes{grid-template-columns:1fr}}

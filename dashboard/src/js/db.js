@@ -429,6 +429,12 @@
         const out = await run(`select jt.invoice_set_arrival(${q(JSON.stringify(body))}::jsonb) as ok`, true);
         return out[0] && out[0].ok;
       },
+      // Analyze flag on a prep product (migration 107): {variant_id, amazon_sku, on, note?}
+      async analyzeSet(body) {
+        if (WEB) return await WEB.write("jt_prep_analyze_set", { p: body });
+        const out = await run(`select jt.prep_analyze_set(${q(JSON.stringify({ ...body, by: body.by || "Claude dashboard" }))}::jsonb) as ok`, true);
+        return out[0] && out[0].ok;
+      },
       async incomingHide(body) {
         if (WEB) return await WEB.write("jt_prep_incoming_hide", { p: body });
         const out = await run(`select jt.prep_incoming_hide(${q(JSON.stringify(body))}::jsonb) as ok`, true);

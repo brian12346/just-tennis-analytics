@@ -36,6 +36,8 @@
           "(select json_agg(json_build_array(x.sku, x.qty_expected, x.qty_received)) from jt.inbound_shipment_items x where x.shipment_id = i.id and x.qty_expected + x.qty_received > 0)"],
         `from jt.inbound_shipments i ${linked ? "left join jt.prep_shipment_amazon l on l.amazon_id = i.id" : ""}
           where ${linked ? "l.amazon_id is not null or" : ""} (coalesce(i.created_at, i.first_seen) > now() - interval '45 days' and i.status not in ('CANCELLED', 'DELETED'))`, refresh);
+      // products set aside to analyze (migration 107; empty until it's applied)
+      const anaQ = JT.rows(["variant_id::text", "amazon_sku", "note", "added_at", "added_by"], "from jt.prep_analyze where done_at is null", refresh).catch(() => []);
       const [items, moves, maps, lst, seed, ships, slines, ords, olines, list, ordship, amz, invl] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
@@ -185,7 +187,8 @@
       }
       const invoicesOpen = [...invMap.values()].filter(iv => iv.lines.some(l => l.left > 0));
       for (const iv of invoicesOpen) { const o = iv.oid ? oById.get(iv.oid) : null; iv.order = o || null; iv.when = iv.arrival || (o && o.expected) || ""; }
-      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, poRows, list: listItems, amzShips, skuUnits, invoicesOpen, loadedAt: Date.now() };
+      const analyze = new Map((await anaQ).map(([v, k, nt, at, by]) => [v + "|" + (k || ""), { note: nt || "", at, by: by || "" }]));
+      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, poRows, list: listItems, amzShips, skuUnits, invoicesOpen, analyze, loadedAt: Date.now() };
       cache.amzSuggest = amzSuggest(cache);
       return cache;
     })();
@@ -666,6 +669,34 @@
     if (a === "exc-clear") return flowDo(M.id, { exception: "" }, "Exception resolved.");
   }
   const SHVIEWS = { open: (x) => x.status !== "shipped" && !x.closed, amazon: (x) => x.status === "shipped" && !x.closed, exc: (x) => !!x.exception && !x.closed, closed: (x) => !!x.closed };
+  // ---------- Analyze lane (migration 107): products set aside to look at more closely before a shipment ----------
+  const isAnalyzed = (vid, asku) => !!(cache && cache.analyze && cache.analyze.has(vid + "|" + (asku || "")));
+  function anaCards() {
+    const out = [];
+    for (const [k, a] of (cache.analyze || new Map())) {
+      const i = k.indexOf("|"), vid = k.slice(0, i), asku = k.slice(i + 1);
+      const same = (r) => r.vid === vid && (r.asku || "") === asku;
+      const src = cache.rows.find(same) || (cache.poRows || []).find(same) || cache.rows.find(r => r.vid === vid) || (cache.poRows || []).find(r => r.vid === vid)
+        || (cache.invoicesOpen || []).flatMap(iv => iv.lines).find(r => r.vid === vid) || {};
+      const ph = prepHere(vid, asku);
+      const coming = (cache.invoicesOpen || []).reduce((t, iv) => t + iv.lines.filter(same).reduce((u, l) => u + l.left, 0), 0);
+      const listing = asku ? ((cache.byVariant.get(vid) || []).find(l => l.sku === asku) || { sku: asku }) : null;
+      out.push({ vid, asku, a, title: src.title || "variant " + vid, sku: src.sku || "", vendor: src.vendor || "", here: ph.qty, other: ph.other, inShip: ph.inShip, coming, listing });
+    }
+    return out.sort((x, y) => String(x.a.at).localeCompare(String(y.a.at)));
+  }
+  function anaCard(c) {
+    const free = Math.max(0, c.here - c.inShip);
+    return `<div class="shipcard anacard">
+      <div class="sc-title">${esc(c.title)}</div>
+      <div class="sc-prod"><span class="mono">${esc(c.sku || "no SKU")}</span>${c.vendor ? ` · ${esc(c.vendor)}` : ""}<br>${c.listing ? `<span class="mono">${esc(c.listing.asin || "no ASIN")}</span> · <span class="mono">${esc(c.asku)}</span>` : '<span class="dim">any listing</span>'}</div>
+      <div class="sc-qty"><b class="num">${n0(c.here)}</b><span>here</span>${c.inShip ? `<span class="dim">· ${n0(c.inShip)} in shipments</span>` : ""}${c.coming ? `<span class="dim">· ${n0(c.coming)} on invoices</span>` : ""}${c.other ? `<span class="dim">· ${n0(c.other)} ${c.asku ? "not earmarked" : "earmarked"}</span>` : ""}</div>
+      <textarea class="inp sm ana-note" rows="2" data-ana-vid="${esc(c.vid)}" data-ana-sku="${esc(c.asku)}" placeholder="What to look at…" aria-label="Analyze note for ${esc(c.title)}">${esc(c.a.note || "")}</textarea>
+      <div class="sc-foot"><span class="dim small">Set aside ${when(c.a.at)}${c.a.by ? " · " + esc(c.a.by) : ""}</span><span class="rbtns">
+        <button class="mini primary" data-act="ship" data-vid="${esc(c.vid)}" data-sku="${esc(c.asku)}" data-oid="" data-n="${free || c.coming}" title="Make an Amazon shipment with it">Ship</button>
+        <button class="mini" data-act="ana-off" data-vid="${esc(c.vid)}" data-sku="${esc(c.asku)}" title="Done analyzing: take it out of this lane">Done</button></span></div>
+    </div>`;
+  }
   function renderShipments() {
     const d = cache, el = $("prep-ships");
     if (!SHVIEWS[P.shipView]) P.shipView = "open";
@@ -692,6 +723,17 @@
         <div class="sc-foot"><span class="dim small">${when2}</span></div>
       </div>`;
     };
+    const lanes = P.shipView === "open";
+    el.classList.toggle("shipgrid", !lanes); el.classList.toggle("shiplanes", lanes);
+    if (lanes) {
+      // In progress = lanes, left to right: Analyze (products set aside to look at before shipping) · Open · Started
+      const ana = anaCards(), open = list.filter(x => x.status !== "started"), started = list.filter(x => x.status === "started");
+      const lane = (title, hint, n, body) => `<div class="lane"><div class="lane-h"><b>${title}</b> <span class="cnt">${n}</span><span class="dim small">${hint}</span></div><div class="lane-b">${body}</div></div>`;
+      el.innerHTML = lane("Analyze", "look at before shipping", ana.length, ana.map(anaCard).join("") || '<div class="muted small lane-empty">Nothing set aside. Use <b>Analyze</b> on a product in Incoming shipments.</div>')
+        + lane("Open", "placeholders", open.length, `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">A placeholder for the ASINs you're sending</span></button>` + open.map(card).join(""))
+        + lane("Started", "being packed", started.length, started.map(card).join("") || '<div class="muted small lane-empty">None started.</div>');
+      return;
+    }
     const empty = { open: "", amazon: '<div class="muted small">Nothing at Amazon waiting to be received.</div>', exc: '<div class="muted small">No exceptions.</div>', closed: '<div class="muted small">No shipments closed in the last 90 days.</div>' }[P.shipView];
     el.innerHTML = (P.shipView === "open" ? `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">A placeholder for the ASINs you're sending</span></button>` : "")
       + (list.map(card).join("") || empty);
@@ -779,6 +821,7 @@
     const po = (cache.poRows || []).filter(r => r.left > 0), hid = po.filter(r => r.hidden), usePo = P.incHidden ? po : po.filter(r => !r.hidden);
     const invs = cache.invoicesOpen || [], td = today();
     const groups = [];
+    const isAna = (r) => isAnalyzed(r.vid, r.asku);
     const here = usePo.filter(r => r.ready > 0 && match(r)).map(r => ({ ...r, n: r.ready, kind: "po" }));
     if (here.length) groups.push({ key: "here", sort: "0", head: `<b>In the prep center now</b> <span class="muted small">received from POs, not on an Amazon shipment yet</span>`, rows: here });
     for (const iv of invs) {
@@ -803,12 +846,12 @@
       const lst = tg ? `${esc(tg.title || tg.asin || "")}<div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.asin ? ` · <span class="mono">${esc(tg.asin)}</span>` : ""}</div>` : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
       return `<tr class="prodrow" data-prod="${esc(r.vid)}" data-psku="${esc(r.asku)}" title="Click for everything about this product"><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}</div></td>
         <td class="l small">${lst}</td>
-        <td><b>${n0(r.n)}</b>${r.kind === "inv" && r.got ? `<div class="meta">${n0(r.got)} already in</div>` : ""}${r.backorder ? '<div class="meta"><span class="pill warn">backordered</span></div>' : ""}</td>
+        <td><b>${n0(r.n)}</b>${isAna(r) ? '<div class="meta"><span class="pill manual" title="In the Analyze lane of Amazon Outgoing">analyzing</span></div>' : ""}${r.kind === "inv" && r.got ? `<div class="meta">${n0(r.got)} already in</div>` : ""}${r.backorder ? '<div class="meta"><span class="pill warn">backordered</span></div>' : ""}</td>
         <td>${ph.qty ? n0(ph.qty) : '<span class="dim">0</span>'}${ph.other ? `<div class="meta">+ ${n0(ph.other)} ${r.asku ? "not earmarked" : "earmarked"}</div>` : ""}</td>
         <td>${sh ? n0(sh) : '<span class="dim">—</span>'}</td>
         <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td>
         <td class="l"><span class="rbtns">${r.hidden ? `<span class="pill pos">removed</span><button class="mini" data-act="inc-show" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}">Put back</button>`
-          : `<button class="mini ${r.kind === "po" && r.ready ? "primary" : ""}" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid || "")}" data-n="${r.n}" title="Put these units on an Amazon shipment (a placeholder until they're here)">Ship</button>${r.kind === "po" ? `<button class="mini" data-act="inc-hide" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}" title="Take this off the list (e.g. backordered for a long time). The PO keeps it; it comes back if more arrive.">Remove</button>` : ""}`}</span></td></tr>`;
+          : `<button class="mini ${r.kind === "po" && r.ready ? "primary" : ""}" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid || "")}" data-n="${r.n}" title="Put these units on an Amazon shipment (a placeholder until they're here)">Ship</button>${isAna(r) ? "" : `<button class="mini" data-act="ana-on" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Set aside in the Analyze lane (Amazon Outgoing) to look at more closely before making a shipment">Analyze</button>`}${r.kind === "po" ? `<button class="mini" data-act="inc-hide" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}" title="Take this off the list (e.g. backordered for a long time). The PO keeps it; it comes back if more arrive.">Remove</button>` : ""}`}</span></td></tr>`;
     };
     el.innerHTML = `<div class="tbl-wrap"><table class="prept inct"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th>Coming</th><th title="Units of this product in the prep center now, for this listing">At prep center</th><th>In shipments</th><th>Unit cost</th><th class="l"></th></tr></thead><tbody>${
       groups.map(g => `<tr class="grp"><td class="l" colspan="7"><div class="grph">${g.head}</div></td></tr>${g.rows.map(row).join("")}`).join("")}</tbody></table></div>`;
@@ -1578,6 +1621,10 @@
       }
       const id = await JT.prep.saveShipment({ id: M.id ? Number(M.id) : null, name: M.shipment.trim(), dest: M.dest, note: M.note || "", lines, ...(M.orderId ? { order_id: Number(M.orderId) } : {}) });
       if (next) await JT.prep.setShipmentStatus(id, next);
+      // made from the Analyze lane: it's on a shipment now, so it leaves the lane
+      if (M.anaKey && lines.some(l => l.variant_id + "|" + (l.amazon_sku || "") === M.anaKey)) {
+        const i = M.anaKey.indexOf("|"); await JT.prep.analyzeSet({ variant_id: Number(M.anaKey.slice(0, i)), amazon_sku: M.anaKey.slice(i + 1), on: false }).catch(() => {});
+      }
       const u = lines.reduce((a, l) => a + l.qty, 0), nm = M.shipment.trim() || "Shipment #" + id;
       closeModal();
       note("info", next === "shipped" ? `<b>${esc(nm)}</b> marked shipped to ${esc(M.dest)}: ${n0(u)} units taken out of the prep center.`
@@ -1637,14 +1684,26 @@
       try { await JT.prep.setArrival({ id: Number(t.dataset.arrival), arrival_on: t.value || null }); await load(true); render(); note("info", t.value ? `Arrival set to ${shortDate(t.value)}.` : "Arrival date cleared."); }
       catch (err) { t.disabled = false; note("bad", "Couldn't save the date: " + esc(JT.message(err))); }
     });
+    $("tab-prep").addEventListener("change", (e) => {
+      const t = e.target.closest(".ana-note"); if (!t) return;
+      JT.prep.analyzeSet({ variant_id: Number(t.dataset.anaVid), amazon_sku: t.dataset.anaSku || "", on: true, note: t.value.trim() })
+        .then(() => { const a = cache.analyze && cache.analyze.get(t.dataset.anaVid + "|" + (t.dataset.anaSku || "")); if (a) a.note = t.value.trim(); note("info", "Note saved."); })
+        .catch(err => note("bad", "Couldn't save the note: " + esc(JT.message(err))));
+    });
     $("tab-prep").addEventListener("click", (e) => {
       const pr = e.target.closest("tr[data-prod]");
       if (pr && !e.target.closest("button, a, input, select") && !String(window.getSelection() || "")) { openProduct(pr.dataset.prod, pr.dataset.psku); return; }
       const b = e.target.closest("[data-act]"); if (!b || b.closest("#prep-modal")) return;
       if (b.dataset.act === "count") openCount(b.dataset.vid, b.dataset.sku);
-      if (b.dataset.act === "ship") openShip(b.dataset.vid, b.dataset.sku, b.dataset.oid, b.dataset.n ? Number(b.dataset.n) : 0);
+      if (b.dataset.act === "ship") { openShip(b.dataset.vid, b.dataset.sku, b.dataset.oid, b.dataset.n ? Number(b.dataset.n) : 0); if (b.closest(".anacard") && P.modal) P.modal.anaKey = b.dataset.vid + "|" + (b.dataset.sku || ""); }
       if (b.dataset.act === "gotoorder") openOrder(b.dataset.oid);
       if (b.dataset.act === "plan-inv") planInvoice(b.dataset.iid);
+      if (b.dataset.act === "ana-on" || b.dataset.act === "ana-off") {
+        const on = b.dataset.act === "ana-on"; b.disabled = true;
+        JT.prep.analyzeSet({ variant_id: Number(b.dataset.vid), amazon_sku: b.dataset.sku || "", on })
+          .then(async () => { await load(true); render(); note("info", on ? "Set aside in the <b>Analyze</b> lane (Amazon Outgoing, In progress). Add a note there on what to look at." : "Done analyzing — it's back on the list."); })
+          .catch(err => { b.disabled = false; note("bad", "Couldn't update it: " + esc(JT.message(err))); });
+      }
       if (b.dataset.act === "inc-hidden") { P.incHidden = !P.incHidden; renderIncoming(); }
       if (b.dataset.act === "inc-hide" || b.dataset.act === "inc-show") {
         const hide = b.dataset.act === "inc-hide", r = (cache.poRows || []).find(x => x.oid === b.dataset.oid && x.vid === b.dataset.vid && x.asku === (b.dataset.sku || ""));
