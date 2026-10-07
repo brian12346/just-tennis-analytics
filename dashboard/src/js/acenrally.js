@@ -16,7 +16,8 @@
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const shortDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 
-  const A = { shown: false, loading: false, preset: "today", start: null, end: null, days: null, prods: null, unmatched: null, status: null, sort: "net", reqId: 0 };
+  const A = { shown: false, loading: false, preset: "today", start: null, end: null, days: null, prods: null, unmatched: null, status: null, sort: "net", reqId: 0,
+    nocost: null, edit: {}, saving: null };
 
   window.JTRange.seg("anr-rangeseg", "r");
   function setRange(r) {
@@ -30,18 +31,21 @@
     const id = ++A.reqId; A.loading = true; render();
     const s = JT.day(A.start), e = JT.day(A.end);
     try {
-      const [days, prods, un, st, ship] = await Promise.all([
+      const [days, prods, un, st, ship, nco] = await Promise.all([
         JT.rows(["day::text", "orders", "gross", "discounts", "returns", "net", "shipping", "taxes", "total", "cogs", "gross_profit", "net_no_cost"],
-          `from jt.v_anr_daily_costed where day between ${s} and ${e} order by day desc`, refresh),
+          `from jt.v_anr_daily_final where day between ${s} and ${e} order by day desc`, refresh),
         JT.rows(["s.product_title", "max(s.vendor)", "max(s.product_type)", "sum(s.units)", "sum(s.gross)", "sum(s.discounts)", "sum(s.net)", "sum(s.cogs)", "sum(s.net_no_cost)",
           "count(distinct s.order_id)", "bool_and(s.jt_variant_id is not null)", "bool_or(s.jt_variant_id is not null)", "max(v.product_id)::text",
           "max(coalesce(nullif(v.display_name, ''), v.product_title))"],
-          `from jt.v_anr_sales_costed s left join jt.variants v on v.variant_id = s.jt_variant_id where s.day between ${s} and ${e} group by s.product_title`, refresh),
+          `from jt.v_anr_sales_final s left join jt.variants v on v.variant_id = s.jt_variant_id where s.day between ${s} and ${e} group by s.product_title`, refresh),
         JT.rows(["anr_variant_id::text", "sku", "barcode", "title"], "from jt.v_anr_variant_map where jt_variant_id is null and anr_variant_id in (select variant_id from jt.anr_sales) order by title", refresh),
         JT.rows(["job", "finished_at", "ok"], "from jt.v_sync_status where job like 'acenrally%'", refresh).catch(() => []),
         // ShipStation labels (shared account) on Ace n Rally orders, by order day (migration 074)
         JT.rows(["order_day::text", "sum(label_cost)", "count(*) filter (where labels > 0)", "count(*) filter (where labels = 0 and net > 0 and combined_with = '')", "count(*) filter (where labels = 0 and combined_with <> '')"],
           `from jt.v_anr_order_shipping where order_day between ${s} and ${e} group by 1`, refresh).catch(() => []),
+        // orders whose items have no Just Tennis cost, and any cost entered for them (migration 103)
+        JT.rows(["order_id::text", "order_name", "day::text", "net", "net_no_cost", "items", "cost", "note", "cost_by"],
+          `from jt.v_anr_orders_nocost where day between ${s} and ${e} order by (cost is not null), net_no_cost desc`, refresh).catch(() => []),
       ]);
       if (id !== A.reqId) return;
       const sh = new Map(ship.map(x => [x[0], { labels: num(x[1]), withLabel: num(x[2]), noLabel: num(x[3]), combined: num(x[4]) }]));
@@ -51,6 +55,7 @@
         cogs: num(x[7]), nocost: num(x[8]), orders: num(x[9]), all: !!x[10], any: !!x[11], pid: x[12] || "", jt: x[13] || "" }));
       A.unmatched = un.map(x => ({ vid: x[0], sku: x[1] || "", barcode: x[2] || "", title: x[3] || "" }));
       A.status = st;
+      A.nocost = nco.map(x => ({ id: x[0], name: x[1] || "", day: x[2], net: num(x[3]), nc: num(x[4]), items: x[5] || "", cost: x[6] == null ? null : num(x[6]), note: x[7] || "", by: x[8] || "" }));
       note("", "");
     } catch (err) { if (id === A.reqId) note("bad", esc(JT.message(err))); }
     finally { if (id === A.reqId) { A.loading = false; render(); } }
@@ -79,7 +84,7 @@
       { c: "sales", l: "Gross profit", v: `<span class="${gp < 0 ? "neg" : ""}">${m0(gp)}</span>`, s: `${costed > 0 ? pct(gp / costed) : "—"} margin on sales with a cost` },
       { c: "cost", l: "Shipping labels", v: m0(lab), s: `ShipStation · ${orders ? m(lab / orders) : "—"} per order · customers paid ${m0(chg)}${comb ? ` · ${n0(comb)} shipped with another order` : ""}${noLab ? ` · ${n0(noLab)} order${noLab === 1 ? "" : "s"} with no label` : ""}` },
       { c: "sales", l: "Profit after shipping", v: `<span class="${after < 0 ? "neg" : ""}">${m0(after)}</span>`, s: `gross profit + shipping charged − labels${costed > 0 ? ` · ${pct(after / costed)} of costed sales` : ""}` },
-      { c: nc > 0.5 ? "warnk" : "", l: "Not costed", v: m0(nc), s: nc > 0.5 ? `net sales with no Just Tennis match · ${A.unmatched.length} product${A.unmatched.length === 1 ? "" : "s"} to match` : "every product matched" },
+      { c: nc > 0.5 ? "warnk" : "", l: "Not costed", v: m0(nc), s: nc > 0.5 ? `net sales with no cost · ${(A.nocost || []).filter(o => o.cost == null).length} order${(A.nocost || []).filter(o => o.cost == null).length === 1 ? "" : "s"} to enter a cost for, below` : "every sale has a cost" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
 
     $("anr-days").innerHTML = `<thead><tr><th class="l">Day</th><th>Orders</th><th>Gross</th><th>Discounts</th><th>Returns</th><th>Net sales</th><th>Shipping</th><th>Product cost</th><th>Gross profit</th><th>Margin</th><th>Labels</th><th>After shipping</th></tr></thead><tbody>${
@@ -98,11 +103,41 @@
           <td>${n0(p.units)}</td><td>${n0(p.orders)}</td><td><b>${m(p.net)}</b></td><td>${c > 0.005 ? m(p.cogs) : "—"}</td><td class="${g < 0 ? "neg" : ""}">${c > 0.005 ? m(g) : "—"}</td><td>${c > 0.005 ? pct(g / c) : "—"}</td></tr>`; }).join("")
       || '<tr><td class="l dim" colspan="8">No product sales in this range.</td></tr>'}</tbody>`;
 
+    renderNoCost();
     $("anr-unm").hidden = !A.unmatched.length;
     $("anr-unm-list").innerHTML = A.unmatched.map(u => `<li><b>${esc(u.title)}</b> <span class="mono small">${esc(u.sku || "no SKU")}${u.barcode ? " · " + esc(u.barcode) : ""}</span></li>`).join("");
   }
 
+  // orders with uncosted items: enter what they cost (custom items, used rackets with no Just Tennis cost)
+  function renderNoCost() {
+    const box = $("anr-nc"); if (!box) return;
+    const L = A.nocost || [];
+    box.hidden = !L.length;
+    if (!L.length) return;
+    const open = L.filter(o => o.cost == null);
+    $("anr-nc-head").innerHTML = `<h2>Orders with no cost</h2><span class="muted small">${open.length ? `${open.length} order${open.length === 1 ? "" : "s"} · ${m0(open.reduce((a, o) => a + o.nc, 0))} of sales with no cost. Enter what the uncosted items cost; it's used for gross profit everywhere.` : "Every order here has a cost entered."}</span>`;
+    $("anr-nc-t").innerHTML = `<thead><tr><th class="l">Order</th><th class="l">Day</th><th class="l">Items with no cost</th><th>Their sales</th><th>Cost</th><th class="l">Note</th><th></th></tr></thead><tbody>${
+      L.map(o => { const ed = A.edit[o.id], editing = !!ed || o.cost == null, busy = A.saving === o.id;
+        return `<tr data-nc="${esc(o.id)}"><td class="l mono">${esc(o.name)}</td><td class="l small">${esc(shortDay(o.day))}</td><td class="l small" style="white-space:normal;max-width:380px">${esc(o.items)}</td><td>${m(o.nc)}</td>
+          <td>${editing ? `<input class="inp num sm" data-ncf="cost" value="${esc(ed ? ed.cost : "")}" inputmode="decimal" placeholder="0.00" style="width:90px" aria-label="Cost of the uncosted items">`
+            : `<b>${m(o.cost)}</b><div class="meta">${o.nc > 0 ? pct((o.nc - o.cost) / o.nc) + " margin" : ""}</div>`}</td>
+          <td class="l">${editing ? `<input class="inp sm" data-ncf="note" value="${esc(ed ? ed.note : o.note)}" placeholder="optional" style="width:160px">` : `<span class="small">${esc(o.note)}</span>${o.by ? `<div class="meta">${esc(o.by)}</div>` : ""}`}</td>
+          <td class="nowrap">${editing ? `<button class="mini primary" data-nca="save" ${busy ? "disabled" : ""}>${busy ? "Saving…" : "Save"}</button>${o.cost != null ? ' <button class="mini" data-nca="cancel">Cancel</button>' : ""}`
+            : '<button class="mini" data-nca="edit">Change</button> <button class="linkbtn small" data-nca="clear" title="Take the entered cost off">clear</button>'}</td></tr>`; }).join("")}</tbody>`;
+  }
+  async function saveCost(o, cost, note) {
+    const body = { order_id: Number(o.id), order_name: o.name, cost: cost === "" ? "" : Number(cost), note };
+    A.saving = o.id; renderNoCost();
+    try {
+      if (window.JTWeb) await window.JTWeb.write("jt_save_anr_cost", { p: body });
+      else await JT.run(`select jt.save_anr_cost(${JT.q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);
+      delete A.edit[o.id]; A.saving = null;
+      await load(true);
+    } catch (err) { A.saving = null; note("bad", esc(JT.message(err))); renderNoCost(); }
+  }
+
   function bind() {
+    on2();
     const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
     on("anr-rangeseg", "click", (e) => { const b = e.target.closest("button[data-r]"); if (!b) return; setRange(b.dataset.r); load(false); });
     const custom = () => { const s = $("anr-start").value, e = $("anr-end").value; if (!s || !e || s > e) return; A.preset = ""; A.start = s; A.end = e;
@@ -110,6 +145,21 @@
     on("anr-start", "change", custom); on("anr-end", "change", custom);
     on("anr-refresh", "click", () => load(true));
     on("anr-sort", "change", (e) => { A.sort = e.target.value; render(); });
+  }
+  function on2() {
+    const t = $("anr-nc-t"); if (!t) return;
+    t.addEventListener("input", (e) => { const f = e.target.dataset.ncf, tr = e.target.closest("tr[data-nc]"); if (!f || !tr) return;
+      const id = tr.dataset.nc, o = A.nocost.find(x => x.id === id); A.edit[id] = A.edit[id] || { cost: o.cost == null ? "" : String(o.cost), note: o.note }; A.edit[id][f] = e.target.value; });
+    t.addEventListener("click", (e) => { const b = e.target.closest("[data-nca]"), tr = e.target.closest("tr[data-nc]"); if (!b || !tr) return;
+      const id = tr.dataset.nc, o = A.nocost.find(x => x.id === id), a = b.dataset.nca;
+      if (a === "edit") { A.edit[id] = { cost: String(o.cost), note: o.note }; renderNoCost(); return; }
+      if (a === "cancel") { delete A.edit[id]; renderNoCost(); return; }
+      if (a === "clear") return saveCost(o, "", o.note);
+      if (a === "save") { const ed = A.edit[id] || { cost: tr.querySelector('[data-ncf="cost"]').value, note: tr.querySelector('[data-ncf="note"]').value };
+        const c = String(ed.cost).replace(/[$,\s]/g, "");
+        if (c === "" || !(Number(c) >= 0)) { note("warn", "Enter the cost as a number, e.g. 85.00 (0 is fine)."); return; }
+        return saveCost(o, c, ed.note || ""); } });
+    t.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.dataset.ncf) { const b = e.target.closest("tr").querySelector('[data-nca="save"]'); if (b) b.click(); } });
   }
 
   setRange(A.preset);
