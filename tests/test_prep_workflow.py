@@ -43,3 +43,14 @@ def test_backorder_at(conn):
     cur.execute("update jt.prep_order_lines set backorder = true where order_id = 7")
     cur.execute("select backorder_at from jt.prep_order_lines where order_id = 7")
     assert cur.fetchone()[0] is not None
+
+
+def test_awd_placement_sets_dest(conn):
+    """Migration 104: how it ships decides FBA / AWD (so AWD shipments match Seller Central AWD shipments)."""
+    cur = conn.cursor()
+    cur.execute("insert into jt.prep_shipments (id, name, dest, status) values (7, '', 'FBA', 'started'), (8, '', 'FBA', 'shipped')")
+    assert flow(cur, {"id": 7, "placement": "awd"})["dest"] == "AWD"
+    assert flow(cur, {"id": 7, "placement": "other"})["dest"] == "AWD"         # 'other' leaves it
+    assert flow(cur, {"id": 7, "placement": "optimized"})["dest"] == "FBA"
+    assert flow(cur, {"id": 8, "placement": "awd"})["dest"] == "FBA"           # shipped: unchanged
+    conn.rollback()

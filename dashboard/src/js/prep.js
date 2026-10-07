@@ -628,7 +628,7 @@
     try {
       await JT.prep.shipFlow({ id: Number(sid), ...body });
       await load(true); render();
-      if (P.modal && P.modal.kind === "ship" && P.modal.id === String(sid)) { P.modal.sh = cache.shipments.find(x => x.id === String(sid)) || P.modal.sh; P.modal.excEdit = null; renderModal(); }
+      if (P.modal && P.modal.kind === "ship" && P.modal.id === String(sid)) { P.modal.sh = cache.shipments.find(x => x.id === String(sid)) || P.modal.sh; P.modal.dest = P.modal.sh.dest; P.modal.excEdit = null; renderModal(); }   // how it ships sets FBA / AWD (migration 104)
       if (msg) note("info", msg);
     } catch (e) { note("bad", "Couldn't update the shipment: " + esc(JT.message(e))); }
   }
