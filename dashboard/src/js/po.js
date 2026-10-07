@@ -26,11 +26,12 @@
   const shortDate = (ds) => ds ? new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
   const OI = () => window.JTOrderIssues;
 
-  // draft -> ordered -> invoiced -> partial (some received) -> received -> qb_ready (bills in QuickBooks) -> complete
-  const STAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoiced", "Invoiced"], ["partial", "Partly received"], ["received", "Received"], ["qb_ready", "QB Ready"], ["complete", "Complete"]];
-  const STAGE = new Map(STAGES), ORDER = STAGES.map(x => x[0]), PRE = ["draft", "ordered", "invoiced"], GOT = ["partial", "received", "qb_ready", "complete"];
-  const NEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoiced", "Mark invoiced"], received: ["qb_ready", "Mark QB ready"], qb_ready: ["complete", "Mark complete"] };
-  const PREV = { ordered: "draft", invoiced: "ordered", partial: "invoiced", received: "invoiced", qb_ready: "received", complete: "qb_ready" };
+  // draft -> ordered -> invoiced -> partial (some received) -> complete (fully received or closed short). QuickBooks is
+  // done per invoice (migration 106: the old received / QB ready steps are complete).
+  const STAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoiced", "Invoiced"], ["partial", "Partly received"], ["complete", "Complete"]];
+  const STAGE = new Map([...STAGES, ["received", "Complete"], ["qb_ready", "Complete"]]), ORDER = STAGES.map(x => x[0]), PRE = ["draft", "ordered", "invoiced"], GOT = ["partial", "received", "qb_ready", "complete"];
+  const NEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoiced", "Mark invoiced"] };
+  const PREV = { ordered: "draft", invoiced: "ordered", partial: "invoiced", received: "invoiced", qb_ready: "invoiced", complete: "invoiced" };
   const PILL = { draft: "pos", ordered: "manual", invoiced: "other", partial: "warn", received: "ok", qb_ready: "web", complete: "ok" };
   const PAY = [["ach", "ACH"], ["check", "Check"], ["credit_card", "Credit card"], ["wire", "Wire"], ["cash", "Cash"], ["other", "Other"]], PAYN = new Map(PAY);
   const payTxt = (iv) => iv.paidOn ? [PAYN.get(iv.payMethod) || "Paid", shortDate(iv.paidOn), iv.payRef, iv.paidFrom ? "from " + iv.paidFrom : ""].filter(Boolean).join(" · ") : "";
@@ -769,7 +770,7 @@
     if (ed.status === "partial") {
       const short = ed.lines.filter(l => pr.get(l.id).received < pr.get(l.id).ordered && !l.backorder);
       if (short.length) out.push({ lvl: "warn", kind: "partial", title: `Partly received · ${short.length} product${short.length === 1 ? "" : "s"} still to come`,
-        text: "If the rest is coming, mark it backordered (with an ETA if you have one). If the vendor won't send it, close the PO short — it moves to Received.",
+        text: "If the rest is coming, mark it backordered (with an ETA if you have one). If the vendor won't send it, close the PO short — it's complete.",
         fixes: [{ label: "Mark them backordered", fix: "pbo" }, { label: "Close short", fix: "oshort" }] });
     }
     if (!shopOff(ed)) {
@@ -782,10 +783,6 @@
     else if (ed.id && ed.shopifyUrl.trim() && ed.lines.length) out.push({ lvl: "info", kind: "shopnocheck", title: "Linked to a Shopify PO — check that it matches",
       text: "Download the PO as a PDF in Shopify and upload it here; every product, quantity and cost is compared with this PO.", fixes: [{ label: "Upload the Shopify PO PDF", fix: "focus", arg: "pe-shopfile" }] });
     }
-    if (ed.status === "received") out.push({ lvl: "info", kind: "toqb", title: "Received — enter the bills in QuickBooks",
-      text: "Send each invoice to QuickBooks (on the Invoices tab), then mark this PO QB ready.", fixes: [{ label: "Mark QB ready", fix: "onext" }] });
-    if (ed.status === "qb_ready") out.push({ lvl: "info", kind: "tocomplete", title: "In QuickBooks — mark the PO complete",
-      text: "Payments are tracked on each invoice (Invoices tab), so the PO can be completed now.", fixes: [{ label: "Mark complete", fix: "onext" }] });
     const rank = { bad: 0, warn: 1, info: 2 };
     return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
   }
@@ -823,8 +820,6 @@
     else if (o.shopifyUrl && o.shopDiffs == null && o.status !== "draft" && !shopOffO(o)) f.push(["info", "Shopify PO not checked"]);
     if (o.nBack) f.push([o.backEta && o.backEta < today() ? "warn" : "info", `${o.nBack} backordered${o.backEta ? " · ETA " + shortDate(o.backEta) : ""}`]);
     if (o.status === "partial" && !o.nBack) f.push(["info", "rest not backordered"]);
-    if (o.status === "received") f.push(["info", "enter in QuickBooks"]);
-    if (o.status === "qb_ready") f.push(["info", "complete it"]);
     return f;
   }
 
@@ -901,7 +896,7 @@
     pageHead(false);
     const box = $("po-edit-view");
     const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, f: document.activeElement.dataset.f, s: document.activeElement.selectionStart } : null;
-    const ro = ed.status === "complete", got = GOT.includes(ed.status);
+    const ro = false, got = GOT.includes(ed.status);      // a complete PO stays editable (receive more, un-receive, invoices)
     const at = ORDER.indexOf(ed.status);
     // the stage pills: before anything is received you can jump between draft / ordered / invoiced; after that, the
     // next stage (received → QB ready → complete) is a click too
@@ -928,14 +923,14 @@
     const mode = ed.view === "inv" ? "inv" : ed.view;
     const NC = 9 + (mode === "all" && anyInv ? 1 : 0) + (ed.recv ? 1 : 0), NCI = 8;
     const ivNow = mode === "inv" ? cur(ed) : null, ivSh = ivNow && ivNow.id && !ivNow.isNew ? invShares(ed, ivNow) : new Map();
-    const canRecv = !!ed.id && !ro && !["qb_ready", "complete"].includes(ed.status);
+    const canRecv = !!ed.id && !ro && true;
     // a product split across the Shopify store and the prep center: its total on every part
     const splitTot = (l) => { const parts = ed.lines.filter(x => x.vid === l.vid); if (parts.length < 2) return "";
       const q = (x) => Number(x.qty) || 0, sum = parts.reduce((a, x) => a + q(x), 0), tot = ed.splitTot && ed.splitTot[l.vid] != null ? ed.splitTot[l.vid] : sum;
       const rec = parts.reduce((a, x) => a + (x.received || 0), 0), sh = parts.filter(x => x.dest === "shopify").reduce((a, x) => a + q(x), 0), pp = sum - sh;
       return `<div class="splittot"><span class="pill manual">Split</span> <b class="num">${n0(tot)}</b> total · ${n0(sh)} Shopify + ${n0(pp)} prep${rec ? ` · ${n0(rec)} received` : ""}${sum !== tot ? ` <span class="neg">· parts add to ${n0(sum)}</span>` : ""}</div>`; };
     const canSplit = (l) => !ro && !ed.recv && ed.lines.filter(x => x.vid === l.vid).reduce((a, x) => a + (Number(x.qty) || 0), 0) > 1;
-    const canUnrecv = (l) => l.received > 0 && ed.id && !ed.recv && !["qb_ready", "complete"].includes(ed.status);
+    const canUnrecv = (l) => l.received > 0 && ed.id && !ed.recv && true;
     const destSel = (l) => {
       const canPick = !ro && !(l.received > 0) && (!ed.recv || PRE.includes(ed.status) || true);
       if (!canPick) return l.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep center</span>${l.asku ? `<div class="meta mono">${esc(lbl((S.listings.get(l.vid) || []).find(x => x.sku === l.asku) || { sku: l.asku }))}</div>` : '<div class="meta">any ASIN</div>'}`;
@@ -1152,7 +1147,7 @@
     $("inv-list-view").hidden = true; box.hidden = false;
     if (!iv) { S.invOpen = false; render(); return; }
     const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, f: document.activeElement.dataset.f, s: document.activeElement.selectionStart } : null;
-    const ro = ed.status === "complete", pdfOn = !!(ed.showPdf && (iv.file || iv.parts));
+    const ro = false, pdfOn = !!(ed.showPdf && (iv.file || iv.parts));
     const t = invTot(iv), others = ed.invoices.length - 1;
     const poName = ed.id ? `${esc(ed.vendor || "Vendor")} · ${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}` : `New PO · ${esc(ed.vendor || "vendor")}${ed.po ? " " + esc(poLabel(ed.po)) : ""}`;
     const canMove = ed.id && iv.id && !iv.isNew && !ro && !(t.g > 0);
@@ -1339,7 +1334,7 @@
     if (ro) return `<button class="btn" data-pact="back">← Back to QB ready</button>${ed.dirty ? `<button class="btn primary" data-pact="save" ${busy}>Save</button>` : ""}`;
     if (ed.recv) return `<button class="btn" data-pact="recv-cancel">Cancel</button><button class="btn primary" data-pact="recv-go" ${busy}>Save</button>`;
     const ivR = ed.view === "inv" && cur(ed);
-    if (ivR && ivR.id && ed.recvInv === ivR.id && !ivR.recvAt && !["qb_ready", "complete"].includes(ed.status))
+    if (ivR && ivR.id && ed.recvInv === ivR.id && !ivR.recvAt && true)
       return `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${busy}>Save</button>`;
     const out = [];
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
@@ -1348,12 +1343,12 @@
     if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
     // receive table has its own buttons)
-    if (ed.id && !["qb_ready", "complete"].includes(ed.status))
+    if (ed.id && true)
       ed.invoices.forEach((iv, i) => { if (!iv.id || iv.isNew || iv.recvAt || (ed.view === "inv" && i === ed.cur)) return; const t = invTot(iv); if (!(t.b > t.g)) return;
         out.push(`<button class="btn primary" data-pact="recv-inv" data-k="${i}" ${busy}>Receive invoice ${esc(iv.no || "#" + (i + 1))}</button>`); });
     // invoiced products are received on their invoice; this receives what isn't on one
     const anyInv = ed.invoices.length > 0, pr = progress(ed), notInv = ed.lines.some(l => pr.get(l.id).open > 0);
-    if (ed.lines.length && !["qb_ready", "complete"].includes(ed.status) && (!anyInv || notInv)) out.push(`<button class="btn" data-pact="recv" ${busy}>${anyInv ? "Receive without an invoice…" : got ? "Receive more…" : "Receive…"}</button>`);
+    if (ed.lines.length && true && (!anyInv || notInv)) out.push(`<button class="btn" data-pact="recv" ${busy}>${anyInv ? "Receive without an invoice…" : got ? "Receive more…" : "Receive…"}</button>`);
     if (ed.status === "partial") out.push(`<button class="btn" data-pact="short" ${busy}>Close short</button>`);
     if (got && ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn" data-pact="amzship">Create Amazon shipment</button>`);
     return out.join("");
@@ -1573,10 +1568,10 @@
     if (a === "no") { ed.confirm = false; render(); return; }
     if (a === "do-del") { S.busy = "Deleting…"; render(); JT.po.remove(Number(ed.id)).then(async () => { S.busy = ""; S.ed = null; await loadOrders(true); render(); renderList(); note("info", "Purchase order deleted."); })
       .catch(e => { S.busy = ""; ed.confirm = false; render(); note("bad", "Couldn't delete: " + esc(JT.message(e))); }); return; }
-    if (a === "back") { if (["partial", "received"].includes(ed.status)) { ed.confirm = "unrecv"; render(); } else if (ed.dirty) note("warn", "Save or discard your changes first."); else setStatus2(PREV[ed.status], `Moved back to ${STAGE.get(PREV[ed.status]).toLowerCase()}.`); return; }
+    if (a === "back") { if (["partial", "received", "qb_ready", "complete"].includes(ed.status)) { ed.confirm = "unrecv"; render(); } else if (ed.dirty) note("warn", "Save or discard your changes first."); else setStatus2(PREV[ed.status], `Moved back to ${STAGE.get(PREV[ed.status]).toLowerCase()}.`); return; }
     if (a === "do-back") return setStatus2(PREV[ed.status], "Moved back to invoiced; the received units came out of the prep center.");
     if (a === "short") { ed.confirm = "short"; render(); return; }
-    if (a === "do-short") { if (ed.dirty) { save("received"); return; } return setStatus2("received", "Closed short and moved to received."); }
+    if (a === "do-short") { if (ed.dirty) { save("received"); return; } return setStatus2("received", "Closed short — the PO is complete."); }
     if (a === "pay" && iv) { markPaid(ed, iv); render(); focusArg("pe-paymethod"); return; }
     if (a === "unpay" && iv) { iv.paidOn = ""; iv.paidAmount = null; iv.payRef = ""; ed.dirty = true; render(); return; }
     if (a === "recv") {

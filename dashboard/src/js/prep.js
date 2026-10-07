@@ -27,7 +27,10 @@
       if (FLOW == null) FLOW = await JT.rows(["count(*)"], "from information_schema.columns where table_schema = 'jt' and table_name = 'prep_shipments' and column_name = 'closed_at'", true)
         .then(r => +(r[0] && r[0][0]) > 0).catch(() => false);
       const SHIPWHERE = FLOW ? `where s.status <> 'shipped' or s.closed_at is null or ${la("s.closed_at")}` : `where s.status <> 'shipped' or ${la("s.shipped_at")}`;
-      const ORDWHERE = `where o.status <> 'complete' or ${la("o.updated_at")}`;
+      // complete POs stay loaded while products they brought into the prep center haven't all gone out (Incoming shipments
+      // keeps them until they're shipped or removed, whatever the PO's stage)
+      const ORDWHERE = `where o.status <> 'complete' or ${la("o.updated_at")} or (o.updated_at > now() - interval '365 days' and exists (select 1 from jt.prep_order_lines x
+        where x.order_id = o.id and x.dest = 'prep' and x.qty_received > coalesce(x.incoming_hidden_qty, 0)))`;
       const AMZQ = (linked) => JT.rows(["i.id", "i.kind", "i.name", "i.status", "i.destination", "coalesce(i.created_at, i.first_seen)::text", "i.units_expected", "i.units_received",
           linked ? "l.shipment_id::text" : "null::text", linked ? "l.how" : "''",
           "(select json_agg(json_build_array(x.sku, x.qty_expected, x.qty_received)) from jt.inbound_shipment_items x where x.shipment_id = i.id and x.qty_expected + x.qty_received > 0)"],
@@ -64,7 +67,7 @@
           `from jt.prep_list i left join jt.variants v on v.variant_id = i.variant_id where i.closed_at is null or ${la("i.closed_at")} order by i.added_at desc`, refresh),
         // Amazon shipments made from open vendor orders (any date), so Incoming products can count down
         JT.rows(["s.order_id::text", "s.status", "l.variant_id::text", "l.amazon_sku", "l.qty"],
-          `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id join jt.prep_orders o on o.id = s.order_id where o.status in ('ordered', 'invoiced', 'partial', 'received', 'qb_ready')`, refresh),
+          `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id join jt.prep_orders o on o.id = s.order_id where o.status in ('ordered', 'invoiced', 'partial', 'received', 'qb_ready', 'complete')`, refresh),
         // Seller Central shipments (last 45 days, and any linked to a prep shipment) to match with prep shipments
         AMZQ(true).catch(() => AMZQ(false)).catch(() => []),
         // invoices not received yet, prep center lines: what's coming and when (arrival_on, migration 090)
@@ -127,9 +130,9 @@
       // Units still to come on placed vendor orders, by prep row (product + listing): the shipment editor counts these
       // as available when planning, and flags lines that are waiting on them.
       const incoming = new Map();
-      // Incoming products: every prep-center product on an open vendor order (placed, not complete), received or
+      // Incoming products: every prep-center product on a placed vendor order (any stage, complete too), received or
       // still coming, until it's all in Amazon shipments made from that order.
-      const OPEN = ["ordered", "invoiced", "partial", "received", "qb_ready"], poRows = [];
+      const OPEN = ["ordered", "invoiced", "partial", "received", "qb_ready", "complete"], poRows = [];   // any PO stage: a product stays until it's shipped or removed
       for (const o of orders) if (OPEN.includes(o.status)) for (const l of o.lines) {
         if (l.dest !== "prep") continue;
         const k = l.vid + "|" + l.asku, left = Math.max(0, l.ordered - l.received);
@@ -697,11 +700,11 @@
   // draft -> ordered -> invoice -> packing slip -> received -> shipped. Receiving puts the units in the prep center
   // (in parts if needed); "shipped" is when the received stock goes out again, normally on an Amazon Outgoing shipment
   // made from the order. Exceptions work like the outgoing ones: the card turns amber, the popup says how to fix it.
-  const OSTAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoiced", "Invoiced"], ["partial", "Partly received"], ["received", "Received"], ["qb_ready", "QB Ready"], ["complete", "Complete"]];
-  const OSTAGE = new Map(OSTAGES), OORDER = OSTAGES.map(x => x[0]);
+  const OSTAGES = [["draft", "Draft"], ["ordered", "Ordered"], ["invoiced", "Invoiced"], ["partial", "Partly received"], ["complete", "Complete"]];   // migration 106
+  const OSTAGE = new Map([...OSTAGES, ["received", "Complete"], ["qb_ready", "Complete"]]), OORDER = OSTAGES.map(x => x[0]);
   const PRE = ["draft", "ordered", "invoiced"], OGOT = ["partial", "received", "qb_ready", "complete"];
-  const ONEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoiced", "Mark invoiced"], received: ["qb_ready", "Mark QB ready"], qb_ready: ["complete", "Mark complete"] };
-  const OPREV = { ordered: "draft", invoiced: "ordered", partial: "invoiced", received: "invoiced", qb_ready: "received", complete: "qb_ready" };
+  const ONEXT = { draft: ["ordered", "Mark ordered"], ordered: ["invoiced", "Mark invoiced"] };
+  const OPREV = { ordered: "draft", invoiced: "ordered", partial: "invoiced", received: "invoiced", qb_ready: "invoiced", complete: "invoiced" };
   const OPILL = { draft: "pos", ordered: "manual", invoiced: "other", partial: "warn", received: "ok", qb_ready: "web", complete: "ok" };
   const RECEIVED_IDLE_DAYS = 14;
   const lineCost = (l) => l.unitCost != null ? l.unitCost : l.shopCost;
@@ -777,7 +780,7 @@
     const invs = cache.invoicesOpen || [], td = today();
     const groups = [];
     const here = usePo.filter(r => r.ready > 0 && match(r)).map(r => ({ ...r, n: r.ready, kind: "po" }));
-    if (here.length) groups.push({ key: "here", sort: "0", head: `<b>In the prep center now</b> <span class="muted small">received from open POs, not on an Amazon shipment yet</span>`, rows: here });
+    if (here.length) groups.push({ key: "here", sort: "0", head: `<b>In the prep center now</b> <span class="muted small">received from POs, not on an Amazon shipment yet</span>`, rows: here });
     for (const iv of invs) {
       const rows = iv.lines.filter(l => l.left > 0 && match(l)).map(l => ({ ...l, n: l.left, oid: iv.oid, kind: "inv" }));
       if (!rows.length) continue;
