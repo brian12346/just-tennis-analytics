@@ -18,6 +18,11 @@ def test_amazon_day_doc_feeds_channel_view(conn):
     o, u, net, cogs, gp, nocost = map(float, cur.fetchone())
     assert (o, u, net, cogs, nocost) == (2, 4, 40, 15, 10)        # 3 units x 2 per unit x $2.50; SKU2 unmapped
     assert gp == 40 - 15                                        # gross profit = sales - product cost
+    # a Shopify cost change reaches the cached SKU cost map (migration 101)
+    cur.execute("update jt.variants set unit_cost = 5 where variant_id = 1")
+    cur.execute("select cogs from jt.v_sales_channels_daily where channel = 'amazon' and day = '2026-10-01'")
+    assert float(cur.fetchone()[0]) == 30
+    cur.execute("update jt.variants set unit_cost = 2.5 where variant_id = 1")
     cur.execute("select labels, amz_fees, fba_fees, other_fees, profit from jt.v_sales_channels_daily where channel = 'amazon' and day = '2026-10-01'")
     assert tuple(map(float, cur.fetchone())) == (0, 0, 0, 1, 25 - 1 - 15)   # refunds as other; profit after fees
     # a re-saved day replaces its lines
