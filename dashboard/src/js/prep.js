@@ -266,9 +266,9 @@
       { c: "sales", l: "Value at Amazon price", v: m0(t.amz), s: "earmarked listing, or the only listing mapped to the product" },
       (() => { const op = d.shipments.filter(x => x.status !== "shipped"); const u = op.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.qty, 0), 0);
         return { l: "In open shipments", v: n0(u), s: op.length ? `units · ${op.filter(x => x.status === "open").length} open, ${op.filter(x => x.status === "started").length} started` : "no shipments in progress" }; })(),
-      (() => { const op = incoming(d.orders).filter(o => ["ordered", "invoiced", "partial"].includes(o.status)); const u = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received), 0), 0);
-        const c = op.reduce((a, o) => a + o.lines.reduce((b, l) => b + Math.max(0, l.ordered - l.received) * (lineCost(l) || 0), 0), 0);
-        return { l: "On order", v: n0(u), s: op.length ? `units · ${m0(c)} at cost · ${op.length} vendor order${op.length === 1 ? "" : "s"}` : "no vendor orders out" }; })(),
+      (() => { const iv = d.invoicesOpen || []; const u = iv.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.left, 0), 0);
+        const c = iv.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.left * (l.cost || 0), 0), 0);
+        return { l: "Incoming on invoices", v: n0(u), s: iv.length ? `units · ${m0(c)} at cost · ${iv.length} invoice${iv.length === 1 ? "" : "s"} not received yet` : "no invoices waiting to arrive" }; })(),
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     renderShipments();
     renderList();
@@ -748,16 +748,14 @@
 
   // Incoming shipments: what's coming to the prep center and when, so Amazon shipments can be lined up ahead of it.
   // Groups, in date order: stock from open POs that's here and not on an Amazon shipment yet; each invoice not
-  // received yet, by its expected arrival (set here; falls back to the PO's expected date); then what's ordered
-  // but not invoiced. Ship plans a placeholder Amazon shipment for a product; "Plan shipment" does a whole invoice.
+  // received yet, by its expected arrival (set here; falls back to the PO's expected date). Orders that aren't
+  // invoiced yet aren't shown: the invoice is what's actually coming (Brian, Oct 7). Ship plans a placeholder Amazon shipment for a product; "Plan shipment" does a whole invoice.
   function renderIncoming() {
     const el = $("prep-inc"), panel = $("prep-inc-panel"); if (!el || !cache) return;
     const q = P.q.trim().toLowerCase();
     const match = (r) => (P.vendor === "all" || r.vendor === P.vendor) && (!q || [r.title, r.sku, r.vendor, r.asku, r.target && r.target.title, r.target && r.target.asin].join(" ").toLowerCase().includes(q));
     const po = (cache.poRows || []).filter(r => r.left > 0), hid = po.filter(r => r.hidden), usePo = P.incHidden ? po : po.filter(r => !r.hidden);
     const invs = cache.invoicesOpen || [], td = today();
-    // open invoice units per PO + product, so "not invoiced" doesn't count them twice
-    const onInv = new Map(); for (const iv of invs) for (const l of iv.lines) if (iv.oid) onInv.set(iv.oid + "|" + l.vid, (onInv.get(iv.oid + "|" + l.vid) || 0) + l.left);
     const groups = [];
     const here = usePo.filter(r => r.ready > 0 && match(r)).map(r => ({ ...r, n: r.ready, kind: "po" }));
     if (here.length) groups.push({ key: "here", sort: "0", head: `<b>In the prep center now</b> <span class="muted small">received from open POs, not on an Amazon shipment yet</span>`, rows: here });
@@ -771,26 +769,12 @@
           ${o ? ` · <button class="linkbtn small" data-act="gotoorder" data-oid="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "order #" + o.id)}</button>` : ""} <span class="small muted">· ${n0(units)} units</span>
           <button class="mini right" data-act="plan-inv" data-iid="${esc(iv.id)}" title="Set up a placeholder Amazon shipment with everything on this invoice">Plan shipment</button>` });
     }
-    const byPo = new Map();
-    for (const r of usePo) {
-      const left = Math.max(0, r.comingLeft - (onInv.get(r.oid + "|" + r.vid) || 0));
-      if (!left || !match(r)) continue;
-      onInv.set(r.oid + "|" + r.vid, Math.max(0, (onInv.get(r.oid + "|" + r.vid) || 0) - r.comingLeft));
-      const g = byPo.get(r.oid) || []; g.push({ ...r, n: left, kind: "po" }); byPo.set(r.oid, g);
-    }
-    for (const [oid, rows] of byPo) {
-      const o = cache.orders.find(x => x.id === oid), when2 = rows.map(r => r.when).filter(Boolean).sort()[0] || "";
-      groups.push({ key: "po" + oid, sort: "2" + (when2 || "9999"), rows,
-        head: `<span class="arr">${when2 ? `<span class="small muted">Expected</span> ${shortDate(when2)}` : '<span class="small muted">No date</span>'}</span> <b>Ordered, not invoiced yet</b> ·
-          <button class="linkbtn small" data-act="gotoorder" data-oid="${esc(oid)}">${esc(o ? (o.vendor ? o.vendor + " " : "") + (o.po ? poLabel(o.po) : "order #" + o.id) : "order #" + oid)}</button>
-          <span class="small muted">· ${n0(rows.reduce((t, r) => t + r.n, 0))} units</span>${rows.some(r => r.backorder) ? ' <span class="pill warn">backordered</span>' : ""}` });
-    }
     groups.sort((a, b) => a.sort.localeCompare(b.sort));
     panel.hidden = !groups.length && !hid.length && !invs.length;
     $("prep-inc-hid").innerHTML = hid.length ? `<button class="linkbtn small" data-act="inc-hidden">${P.incHidden ? "Hide removed" : `Show removed (${hid.length})`}</button>` : "";
     const tot = (pred) => groups.filter(pred).reduce((t, g) => t + g.rows.reduce((u, r) => u + r.n, 0), 0);
     const nInv = groups.filter(g => g.iv).length;
-    $("prep-inc-sum").textContent = `${n0(tot(g => g.key === "here"))} here now · ${n0(tot(g => !!g.iv))} arriving on ${nInv} invoice${nInv === 1 ? "" : "s"} · ${n0(tot(g => g.key.startsWith("po")))} ordered, not invoiced`;
+    $("prep-inc-sum").textContent = `${n0(tot(g => g.key === "here"))} here now · ${n0(tot(g => !!g.iv))} arriving on ${nInv} invoice${nInv === 1 ? "" : "s"}`;
     if (!groups.length) { el.innerHTML = `<div class="muted small">Nothing coming in${hid.length ? ` (${hid.length} removed from the list)` : ""}.</div>`; return; }
     const row = (r) => {
       const tg = r.target, ph = prepHere(r.vid, r.asku), sh = cache.alloc.get(r.vid + "|" + r.asku) || 0;
