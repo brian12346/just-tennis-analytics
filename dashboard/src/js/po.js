@@ -649,8 +649,9 @@
         paidOn: x[10] || "", recvAt: x[11] || "", qbo: x[12] || "", parts: +x[13] || 0, got: +x[14] || 0, billed: +x[15] || 0, check: +x[16] || 0, created: x[17] || "", terms: x[18] || "" }));
     } finally { S.invLoading = false; }
   }
-  const INVF = [["all", "All"], ["open", "Open"], ["closed", "Closed"], ["unpaid", "To pay"], ["noqb", "Not in QuickBooks"], ["notrecv", "Not received"], ["check", "Lines to check"], ["nopo", "No PO"]];
-  const invMatch = (v, f) => f === "all" ? true : f === "open" ? !invClosed(v) : f === "closed" ? invClosed(v) : f === "unpaid" ? !v.paidOn : f === "noqb" ? !v.qbo : f === "notrecv" ? !v.recvAt : f === "check" ? v.check > 0 : f === "nopo" ? !v.oid : true;
+  // Open = not in QuickBooks yet; Closed (always last) = sent to QuickBooks. Payment doesn't affect it — that's finance's.
+  const INVF = [["all", "All"], ["open", "Open"], ["notrecv", "Not received"], ["check", "Lines to check"], ["nopo", "No PO"], ["unpaid", "To pay"], ["closed", "Closed"]];
+  const invMatch = (v, f) => f === "all" ? true : f === "open" ? !invClosed(v) : f === "closed" ? invClosed(v) : f === "unpaid" ? !v.paidOn : f === "notrecv" ? !v.recvAt : f === "check" ? v.check > 0 : f === "nopo" ? !v.oid : true;
   function renderInvList() {
     if (S.mode !== "inv" || $("tab-invoices").hidden) return;
     $("inv-list-view").hidden = false; $("po-edit-view").hidden = true;
@@ -661,7 +662,7 @@
     $("inv-kpis").innerHTML = [
       { l: "To pay", v: m0(unpaid.reduce((a, v) => a + (v.total || 0), 0)), s: `${n0(unpaid.length)} unpaid invoice${unpaid.length === 1 ? "" : "s"}` },
       { l: "Overdue", v: m0(late.reduce((a, v) => a + (v.total || 0), 0)), s: late.length ? `<b class="neg">${n0(late.length)} past due</b>` : "nothing past due" },
-      { l: "Not in QuickBooks", v: n0(all.filter(v => !v.qbo).length), s: "invoices still to send as bills" },
+      { l: "Open", v: n0(all.filter(v => !invClosed(v)).length), s: "not in QuickBooks yet — closes once sent" },
       { l: "Not received", v: n0(all.filter(v => !v.recvAt && v.billed > 0).length), s: "invoices with products still to come in" },
     ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     const q = S.invQ.trim().toLowerCase().replace(/^#/, "");
@@ -1098,10 +1099,11 @@
     return v.recvAt ? `<span class="pill ok" title="${v.recvManual ? "Marked received" : "Everything on it came in"}">Received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : ""; };
   const payPill = (v) => v.isNew ? '<span class="pill warn">new</span>' : v.paidOn ? '<span class="pill ok">Paid</span>' : overdue(v) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>';
   const qbPill = (v) => v.qbo ? '<span class="pill ok" title="Entered in QuickBooks">In QuickBooks</span>' : v.id && !v.isNew ? '<span class="pill pos">Not in QuickBooks</span>' : "";
-  // an invoice is closed once it's received, paid and in QuickBooks (whatever its PO is still waiting on)
-  const invLeft = (v) => [!v.recvAt && "receive it", !v.paidOn && "pay it", !v.qbo && "send it to QuickBooks"].filter(Boolean);
-  const invClosed = (v) => !v.isNew && !!v.id && !invLeft(v).length;
-  const closedPill = '<span class="pill ok" title="Received, paid and in QuickBooks">✓ Closed</span>';
+  // an invoice is closed in Seller Sage once it's been sent to QuickBooks (v0.10.87). Payment is tracked for finance
+  // and doesn't keep it open; receiving still shows on the PO.
+  const invLeft = (v) => [!v.qbo && "send it to QuickBooks"].filter(Boolean);
+  const invClosed = (v) => !v.isNew && !!v.id && !!v.qbo;
+  const closedPill = '<span class="pill ok" title="Sent to QuickBooks — payment is up to finance">✓ Closed</span>';
   function invStepsHtml(ed, iv) {
     if (iv.isNew || !iv.id) return "";
     const step = (ok, label) => `<span class="ivstep ${ok ? "done" : ""}">${ok ? "✓" : "○"} ${label}</span>`;
@@ -1109,8 +1111,8 @@
     const wait = ed.invoices.filter(x => x !== iv && x.id && !x.isNew && !x.recvAt && invTot(x).b > invTot(x).g);
     const poNote = iv.recvAt && wait.length && !["received", "qb_ready", "complete"].includes(ed.status)
       ? ` The PO stays <b>${esc(STAGE.get(ed.status))}</b> until ${wait.map(x => `invoice <b>${esc(x.no || "")}</b> (${n0(invTot(x).b - invTot(x).g)} units still to come)`).join(" and ")} ${wait.length === 1 ? "is" : "are"} received.` : "";
-    return `<div class="ivsteps">${step(!!iv.recvAt, "Received")}${step(!!iv.paidOn, "Paid")}${step(!!iv.qbo, "In QuickBooks")}
-      <span class="small">${left.length ? `Left on this invoice: ${left.join(", ")}.` : "<b>This invoice is closed</b> — nothing left to do on it."}${poNote}</span></div>`;
+    return `<div class="ivsteps">${step(!!iv.recvAt, "Received")}${step(!!iv.qbo, "In QuickBooks")}
+      <span class="small">${left.length ? `To close it: ${left.join(", ")}.` : `<b>This invoice is closed</b> — it's in QuickBooks; payment is up to finance.${iv.recvAt ? "" : " Products still to receive show on the PO."}`}${poNote}</span></div>`;
   }
   // Which views of a PO apply: the entire PO (default), each invoice, what isn't invoiced (once there are invoices) and,
   // once every invoice is received and something is still to come, what's still to receive (then the default).
@@ -1128,7 +1130,7 @@
     if (!ed.id && !ed.invoices.length) return `<div class="panel-head"><h2>Products on this PO</h2><span class="muted small">what was ordered · receiving is against these</span></div>`;
     const v = ed.view, units = (n) => `<span class="cnt">${n0(n)}</span>`;
     const ivBtn = (iv, i) => { const t = invTot(iv), c = count(iv), bad = c.check + c.none;
-      const st = iv.isNew ? '<span class="pill warn">new</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : invClosed(iv) ? closedPill : iv.recvAt ? `<span class="pill ok" title="Received in full; still to ${esc(invLeft(iv).join(" and "))}">✓ received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : `<span class="pill pos">${n0(t.b)} to receive</span>`;
+      const st = iv.isNew ? '<span class="pill warn">new</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : invClosed(iv) && (iv.recvAt || !(t.b > t.g)) ? closedPill : iv.recvAt ? `<span class="pill ok" title="Received in full; still to ${esc(invLeft(iv).join(" and "))}">✓ received</span>` : t.g > 0 ? `<span class="pill manual">${n0(t.g)} of ${n0(t.b)} in</span>` : `<span class="pill pos">${n0(t.b)} to receive</span>`;
       return `<button data-inv="${i}" aria-pressed="${v === "inv" && i === ed.cur}" title="Invoice ${esc(iv.no || "")}${iv.total != null ? " · " + m(iv.total) : ""}">Invoice ${esc(iv.no || "#" + (i + 1))} ${st}</button>`; };
     return `<div class="panel-head pviews"><div class="seg" role="group" aria-label="Show">
         <button data-pview="all" aria-pressed="${v === "all"}" title="Every product on this PO">All</button>
