@@ -290,7 +290,7 @@
     if (S.mode === "manual") {
       const c = money(S.manual);
       if (c == null || c < 0) { note("bad", "Enter the cost per Amazon unit as a dollar amount, like 12.50."); return; }
-      body = { ...body, kind: "manual", manualCost: Math.round(c * 100) / 100 };
+      body = { ...body, kind: "manual", manualCost: Math.round(c * 100) / 100, noShopify: true };
     } else {
       if (!S.pick) { note("warn", "Pick a Shopify product from the search results first."); return; }
       const u = Number(S.units);
@@ -387,10 +387,10 @@
 
   function editorRow(l) {
     const pk = packOf(l.title);
-    const modeBtns = `<div class="seg" role="group" aria-label="Cost source"><button data-a="mode" data-v="shopify" aria-pressed="${S.mode === "shopify"}">Shopify product</button><button data-a="mode" data-v="manual" aria-pressed="${S.mode === "manual"}">Enter cost</button></div>`;
+    const modeBtns = `<div class="seg" role="group" aria-label="Cost source"><button data-a="mode" data-v="shopify" aria-pressed="${S.mode === "shopify"}">Shopify product</button><button data-a="mode" data-v="manual" aria-pressed="${S.mode === "manual"}" title="Old or deleted listing with no product in Shopify: enter its cost">No Shopify product</button></div>`;
     let body;
     if (S.mode === "manual") {
-      body = `<div class="row"><label class="stack" for="amz-manual">Cost per Amazon unit (what one sale of this listing costs you)<input id="amz-manual" class="inp num" type="text" inputmode="decimal" value="${esc(S.manual)}" placeholder="0.00"></label>${l.price ? `<span class="muted small">Listing price ${m(l.price)}</span>` : ""}</div>`;
+      body = `<div class="row"><label class="stack" for="amz-manual">No Shopify product for this listing (old or deleted). Cost per Amazon unit (what one sale of this listing costs you)<input id="amz-manual" class="inp num" type="text" inputmode="decimal" value="${esc(S.manual)}" placeholder="0.00"></label>${l.price ? `<span class="muted small">Listing price ${m(l.price)}</span>` : ""}</div>`;
     } else {
       const res = S.searching ? '<div class="skel">Searching Shopify…</div>'
         : S.searchErr ? `<div class="note bad">${esc(mcpMsg(S.searchErr))}</div>`
@@ -433,7 +433,7 @@
     const body = shown.map(l => {
       const mp = S.maps.get(l.sku), c = costOf(mp), open = S.open === l.sku;
       const mapped = !mp ? '<span class="pill miss">Not mapped</span>'
-        : mp.kind === "manual" ? '<span class="pill manual">Manual cost</span>'
+        : mp.kind === "manual" ? '<span class="pill manual" title="No product in Shopify; cost entered here">No Shopify product</span>'
         : `<div class="iname">${shopLink(mp.productId || (S.costs.get(mp.variantId) || {}).pid, mp.variantId, esc((S.costs.get(mp.variantId) || {}).displayName || mp.vtitle))}</div><div class="mono dim small">${esc(mp.vsku || "")}</div>`;
       const pctv = c && c.cost != null && l.price ? Math.round(c.cost / l.price * 100) : null;
       return `<tr class="${open ? "openrow" : ""}"><td class="l"><div class="iname">${esc(l.title)}</div><div class="small dim">${l.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(l.asin)}" target="_blank" rel="noopener">${esc(l.asin)}</a> · ` : ""}<span class="mono">${esc(l.sku)}</span></div></td>

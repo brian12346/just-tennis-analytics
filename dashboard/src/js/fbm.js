@@ -121,7 +121,7 @@
       const items = o.lines.map(l => {
         const shop = l.units != null
           ? `→ ${l.product_id ? `<a class="olink" href="${esc(shopUrl(l.product_id, l.variant_id))}" target="_blank" rel="noopener">${esc(l.shopify_title || l.shopify_sku || "Shopify product")}</a>` : esc(l.shopify_title || "")}${l.shopify_sku ? ` <span class="mono">${esc(l.shopify_sku)}</span>` : ""}${l.map_units > 1 ? ` · ${l.quantity} × ${l.map_units}` : ""} · Shopify has ${l.shopify_qty == null ? "?" : Number(l.shopify_qty).toLocaleString()}${l.tracked === false ? " (not tracked)" : ""}`
-          : l.map_kind && l.map_kind !== "shopify" ? `<span class="warnt">Mapped to a manual cost, not a Shopify product</span> <button class="mini" type="button" data-map="${esc(l.sku)}">Map</button>`
+          : l.map_kind && l.map_kind !== "shopify" ? `<span class="warnt">No Shopify product (Amazon cost entered), so it can't come out of Shopify stock</span> <button class="mini" type="button" data-map="${esc(l.sku)}">Map</button>`
           : `<span class="warnt">Not mapped to a Shopify product</span> <button class="mini" type="button" data-map="${esc(l.sku)}">Map</button>`;
         const state = { done: `<span class="pill ok" title="${esc(l.location_id ? "From " + locName(l.location_id) : "")}">Taken out ${esc(fmtDT(l.applied_at))}${l.location_id ? " · " + esc(locName(l.location_id)) : ""}</span>`, pending: `<span class="pill web">Sending to Shopify…</span>`,
           failed: `<span class="pill cx">Shopify refused</span>`, skipped: `<span class="pill pos">Not taken out</span>`, cancelled: `<span class="pill pos">Cancelled</span>` }[l.state] || "";

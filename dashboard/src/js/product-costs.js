@@ -183,14 +183,15 @@
       pageRows.map((r) => {
         if (r.extra) {
           const tu = totalUnits(r.u);
-          return `<tr class="${r.unit == null ? "flag-bad" : "flag-warn"}">
+          return `<tr class="${r.unit == null ? "flag-bad" : r.manual ? "" : "flag-warn"}">
           <td class="l">${esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span>${r.asin ? ` · ${esc(r.asin)}` : ""}</div></td>
           <td class="l">${esc(r.vendor)}<div class="meta">${esc(r.type || "—")}</div></td>
-          <td>${r.unit == null ? '<span class="dim">no cost</span>' : m(r.unit)}${r.manual ? '<div class="meta">manual cost</div>' : ""}</td>
+          <td>${r.unit == null ? '<span class="dim">no cost</span>' : m(r.unit)}${r.manual ? '<div class="meta">Amazon cost</div>' : ""}</td>
           <td><span class="dim">—</span></td><td>${cell(r.u.prep, r.unit)}</td><td>${cell(r.u.fba, r.unit)}</td><td>${cell(r.u.awd, r.unit)}</td>
           <td><b>${Math.round(tu).toLocaleString()}</b></td>
           <td><b>${r.unit == null ? '<span class="dim">no cost</span>' : m0(tu * r.unit)}</b></td>
-          <td class="l"><span class="pill ${r.unit == null ? "miss" : "warn"}" title="${r.src === "amazon" ? "This Amazon listing isn't mapped to a Shopify product" : "This prep center product isn't in Shopify"}">Not tied to Shopify</span>${r.src === "amazon" ? ' <button class="mini" data-go="amzmap">Map it</button>' : ""}</td></tr>`;
+          <td class="l">${r.manual ? '<span class="pill manual" title="Marked as having no Shopify product, with an Amazon cost (Amazon mapping)">No Shopify product</span>'
+            : `<span class="pill ${r.unit == null ? "miss" : "warn"}" title="${r.src === "amazon" ? "This Amazon listing isn't mapped to a Shopify product" : "This prep center product isn't in Shopify"}">Not tied to Shopify</span>${r.src === "amazon" ? ' <button class="mini" data-go="amzmap">Map it</button>' : ""}`}</td></tr>`;
         }
         const c = costOf(r), vc = valCost(r), edited = P.edits.has(r.vid), v = edited ? P.edits.get(r.vid) : c == null ? "" : c.toFixed(2);
         const bad = edited && (noCost(c) || c < 0);

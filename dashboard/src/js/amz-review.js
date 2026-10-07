@@ -203,12 +203,26 @@
     } catch (e) { note("bad", "Couldn't save: " + esc(JT.message(e))); }
     finally { A.busy.delete(l.sku); render(); }
   }
+  // cost for a listing with no Shopify product: an amzmap manual-cost mapping (same as Amazon mapping → No Shopify product)
+  async function saveCost(l, raw) {
+    const t = String(raw ?? "").trim().replace(/[$,\s]/g, ""), c = /^\d*\.?\d+$/.test(t) ? Number(t) : NaN;
+    if (!(c >= 0)) { note("bad", "Enter the cost per Amazon unit as a dollar amount, like 12.50."); return; }
+    const body = { sku: l.sku, asin: l.asin, title: l.title, updatedAt: new Date().toISOString(), kind: "manual", manualCost: Math.round(c * 100) / 100, noShopify: true, via: "match" };
+    A.busy.add(l.sku); render();
+    try { await A.db.collection("amzmap").doc(docId(l.sku)).set(body); A.maps.set(l.sku, body); const s = st(l.sku); delete s.cost; delete s.editCost; note(null); }
+    catch (e) { note("bad", "Couldn't save: " + esc(JT.message(e))); }
+    finally { A.busy.delete(l.sku); render(); }
+  }
   async function undo(l) {
     const s = st(l.sku);
     A.busy.add(l.sku); render();
     try {
       if (s.done === "approved") { await A.db.collection("amzmap").doc(docId(l.sku)).delete(); A.maps.delete(l.sku); }
-      else if (s.done === "none" || (A.deny.get(l.sku) || {}).none) { A.busy.delete(l.sku); await saveDeny(l, { none: false }); return; }
+      else if (s.done === "none" || (A.deny.get(l.sku) || {}).none) {
+        const mp = A.maps.get(l.sku);
+        if (mp && mp.kind === "manual") { await A.db.collection("amzmap").doc(docId(l.sku)).delete(); A.maps.delete(l.sku); }
+        A.busy.delete(l.sku); await saveDeny(l, { none: false }); return;
+      }
       delete s.done; delete s.pick;
     } catch (e) { note("bad", "Couldn't undo: " + esc(JT.message(e))); }
     finally { A.busy.delete(l.sku); render(); }
@@ -234,11 +248,11 @@
     const mSales = mapped.reduce((a, l) => a + l.sales, 0);
     const open = selling.filter(l => !A.maps.has(l.sku) && !((A.deny.get(l.sku) || {}).none));
     const byConf = { high: 0, medium: 0, low: 0 }; for (const l of open) byConf[guessFor(l).conf]++;
-    const none = selling.filter(l => (A.deny.get(l.sku) || {}).none).length;
+    const noneL = selling.filter(l => (A.deny.get(l.sku) || {}).none), none = noneL.length, noneC = noneL.filter(l => (A.maps.get(l.sku) || {}).kind === "manual").length;
     el.innerHTML = [
       { l: "Amazon sales mapped", v: total ? (mSales / total * 100).toFixed(1) + "%" : "—", s: `${m0(mSales)} of ${m0(total)} · ${mapped.length} of ${selling.length} selling listings` },
       { l: "To review", v: open.length.toLocaleString(), s: `${byConf.high} likely · ${byConf.medium} maybe · ${byConf.low} unsure` },
-      { l: "No match in Shopify", v: none.toLocaleString(), s: "marked by you" },
+      { l: "No Shopify product", v: none.toLocaleString(), s: none ? `marked by you · ${noneC} with an Amazon cost${none - noneC ? `, ${none - noneC} still need one` : ""}` : "marked by you" },
     ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
   function shopLine(v) {
@@ -255,7 +269,12 @@
         <div class="acts"><span class="pill conf-high">Approved</span><button class="mini" data-act="undo" ${busy ? "disabled" : ""}>Undo</button></div></div>`;
     }
     if (s.done === "none" || A.scope === "denied") {
-      return `<div class="amrow done" data-i="${i}">${amz}<div class="arrow">→</div><div class="shop"><span class="muted">No match in Shopify</span></div>
+      // no Shopify product (old or deleted): enter what one Amazon unit costs, saved as a manual-cost mapping
+      const mp = A.maps.get(l.sku), has = mp && mp.kind === "manual" && typeof mp.manualCost === "number";
+      const cost = has && !st(l.sku).editCost ? `<div class="meta">Amazon cost <b>${m(mp.manualCost)}</b> per unit <button class="linkbtn small" data-act="costedit">change</button></div>`
+        : `<div class="meta units">Amazon cost <input class="inp num sm" data-cost="${i}" value="${esc(s.cost || "")}" inputmode="decimal" placeholder="0.00"> per unit
+            <button class="mini primary" data-act="cost" ${busy ? "disabled" : ""}>Save cost</button></div>`;
+      return `<div class="amrow done" data-i="${i}">${amz}<div class="arrow">→</div><div class="shop"><span class="pill manual">No Shopify product</span>${cost}</div>
         <div class="acts"><button class="mini" data-act="undo" ${busy ? "disabled" : ""}>Undo</button></div></div>`;
     }
     const g = guessFor(l);
@@ -315,6 +334,8 @@
     else if (kind === "deny") { const c = currentPick(l); if (c) { delete st(l.sku).pick; await saveDeny(l, { vid: c.v.vid }); } }
     else if (kind === "none") { await saveDeny(l, { none: true }); advance(i); }
     else if (kind === "undo") await undo(l);
+    else if (kind === "cost") { const el = document.querySelector(`input[data-cost="${i}"]`); await saveCost(l, el ? el.value : st(l.sku).cost); }
+    else if (kind === "costedit") { const mp = A.maps.get(l.sku); st(l.sku).editCost = true; st(l.sku).cost = mp ? mp.manualCost.toFixed(2) : ""; render(); }
     else if (kind === "search") { A.search = { sku: l.sku, q: "" }; render(); const s = $("am-sq"); if (s) s.focus(); }
   }
   function bind() {
@@ -343,9 +364,13 @@
     list.addEventListener("input", (e) => {
       if (e.target.id === "am-sq") { A.search.q = e.target.value; clearTimeout(list._t); list._t = setTimeout(render, 200); }
       if (A.mode === "products" && e.target.dataset.units != null) { const l = pageRows[+e.target.dataset.units]; st(l.sku).units = e.target.value; }
+      if (A.mode === "products" && e.target.dataset.cost != null) { const l = pageRows[+e.target.dataset.cost]; st(l.sku).cost = e.target.value; }
     });
     list.addEventListener("change", (e) => { if (A.mode === "products" && e.target.dataset.units != null) render(); });
-    list.addEventListener("keydown", (e) => { if (e.target.id === "am-sq" && e.key === "Escape") { A.search = null; render(); } });
+    list.addEventListener("keydown", (e) => {
+      if (e.target.id === "am-sq" && e.key === "Escape") { A.search = null; render(); }
+      if (e.target.dataset && e.target.dataset.cost != null && e.key === "Enter") { e.preventDefault(); act("cost", +e.target.dataset.cost); }
+    });
     $("am-q").addEventListener("input", (e) => { A.q = e.target.value; A.page = 0; A.cur = 0; clearTimeout($("am-q")._t); $("am-q")._t = setTimeout(render, 200); });
     $("am-scope").addEventListener("change", (e) => { A.scope = e.target.value; A.page = 0; A.cur = 0; A.sel.clear(); fillVendorSelects(); render(); });
     $("am-conf").addEventListener("click", (e) => { const b = e.target.closest("button[data-c]"); if (!b) return; A.conf = b.dataset.c; A.page = 0; A.cur = 0; document.querySelectorAll("#am-conf button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); render(); });

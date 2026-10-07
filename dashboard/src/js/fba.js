@@ -274,7 +274,7 @@
       pageRows.map(i => {
         const u = unitsOf(i, F.inbound, F.where), mp = i.map, mg = i.profit != null && i.price ? i.profit / i.price : null;
         const shop = !mp ? `<span class="pill miss">Not mapped</span><div class="meta">${esc(i.vendor || "no vendor")}</div>`
-          : mp.kind === "manual" ? `<span class="pill manual">Manual cost</span><div class="meta">${esc(i.vendor || "")}</div>`
+          : mp.kind === "manual" ? `<span class="pill manual" title="No product in Shopify; cost entered on Amazon mapping">No Shopify product</span><div class="meta">${esc(i.vendor || "")}</div>`
           : `${mp.pid ? `<a class="olink" href="${ADMIN}/products/${esc(mp.pid)}/variants/${esc(mp.vid)}" target="_blank" rel="noopener">${esc(mp.title)}</a>` : esc(mp.title || "(removed from Shopify)")}
              <div class="meta"><span class="mono">${esc(mp.vsku) || "no SKU"}</span>${mp.units !== 1 ? ` · ×${mp.units} per Amazon unit` : ""}</div><div class="meta">${esc(i.vendor)}${i.type ? " · " + esc(i.type) : ""}</div>`;
         const onList = mp && mp.kind === "shopify" && window.JTPrep && window.JTPrep.listed(mp.vid, i.sku, "prep");
