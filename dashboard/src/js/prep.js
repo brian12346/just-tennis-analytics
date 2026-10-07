@@ -243,6 +243,25 @@
     try { if (JT.fba) await JT.fba.load(false).catch(() => {}); await load(force); } catch (e) { P.err = e; note("bad", esc(JT.message(e))); }
     finally { P.loading = false; render(); }
   }
+  // Sync from Seller Central now (same as the hourly sync: FBA + AWD shipments changed in the last 3 days), so new
+  // shipments can be linked without waiting for the hour
+  async function syncAmz() {
+    if (P.amzSyncing) return;
+    P.amzSyncing = true; syncBtns(); note("info", "Getting new and changed shipments from Seller Central. This can take a minute…");
+    try {
+      const r = await JT.amazon({ action: "inbound_shipments" });
+      if (r && r.ok === false) throw new Error(r.error || "Amazon sync failed");
+      const n = ((r && r.fba && r.fba.found) || 0) + ((r && r.awd && r.awd.found) || 0);
+      await load(true); render();
+      if (P.modal && P.modal.kind === "ship" && P.modal.id) { P.modal.sh = cache.shipments.find(x => x.id === P.modal.id) || P.modal.sh; renderModal(); }
+      note("info", `Synced from Seller Central: ${n} shipment${n === 1 ? "" : "s"} changed in the last 3 days${r && r.done === false ? " (the rest come with the hourly sync)" : ""}.`);
+    } catch (e) { note("bad", "Couldn't sync from Seller Central: " + esc(e && e.message ? e.message : JT.message(e))); }
+    finally { P.amzSyncing = false; syncBtns(); }
+  }
+  function syncBtns() {
+    const b = $("prep-amzsync"); if (b) { b.disabled = !!P.amzSyncing; b.textContent = P.amzSyncing ? "Syncing…" : "Sync Amazon shipments"; }
+    document.querySelectorAll('[data-act="amz-sync"]').forEach(x => { x.disabled = !!P.amzSyncing; x.textContent = P.amzSyncing ? "Syncing from Seller Central…" : "Sync from Seller Central"; });
+  }
   function visible() {
     const d = cache; if (!d) return [];
     const q = P.q.trim().toLowerCase();
@@ -500,8 +519,8 @@
           + (g.ships.length > 1 ? g.ships.map(a => opt(a.id, `    just ${a.id} (${a.fc}) · ${n0(a.ue)} units`)).join("") : "");
       }).join("")}</select><button class="mini" data-act="amz-link-pick" ${M.amzPick ? "" : "disabled"}>Link</button></div>` : "";
     if (M.recon) html = reconHtml(M) + html;
-    if (!html && !picker) return "";
-    return `<div class="amzbox"><div class="lanehead"><h3 class="psec" style="margin:0">Seller Central</h3>${linked.length ? "" : '<span class="muted small">not linked yet</span>'}</div>${html}${picker}</div>`;
+    const syncL = M.recon ? "" : `<button class="linkbtn small" data-act="amz-sync" ${P.amzSyncing ? "disabled" : ""} title="Get shipments made in Seller Central since the hourly sync">${P.amzSyncing ? "Syncing from Seller Central…" : "Sync from Seller Central"}</button>`;
+    return `<div class="amzbox"><div class="lanehead"><h3 class="psec" style="margin:0">Seller Central</h3>${linked.length ? "" : '<span class="muted small">not linked yet</span>'}<span class="right">${syncL}</span></div>${html}${picker}${!html && !picker ? '<div class="muted small">No Seller Central shipments to link yet. Made one just now? Sync from Seller Central.</div>' : ""}</div>`;
   }
   // Seller Central is the source of truth for a linked shipment: its contents in Shopify units by seller SKU, and per
   // product how far the prep shipment is off. unmapped: seller SKUs with no Shopify product (can't be reconciled).
@@ -1589,6 +1608,7 @@
   function bind() {
     const on = (id, ev, fn) => $(id).addEventListener(ev, fn);
     on("prep-refresh", "click", () => refresh(true));
+    on("prep-amzsync", "click", () => syncAmz());
     on("prep-count", "click", () => openCount());
     on("prep-ship", "click", () => openNewShip());
     on("prep-vendor", "change", (e) => { P.vendor = e.target.value; render(); });
@@ -1698,6 +1718,7 @@
         M.qty[b.dataset.all] = String(Math.max(0, r.qty + comingOf(b.dataset.all) - ((cache.alloc.get(b.dataset.all) || 0) - sv))); M.confirm = false; renderModal(); return; }
       if (b.dataset.flow) return flowClick(M, b);
       if (b.dataset.act === "amz-link-sugg") { const sg = cache.amzSuggest.get(String(M.id)); if (sg) amzLinkAsk(M.id, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
+      if (b.dataset.act === "amz-sync") { syncAmz(); return; }
       if (b.dataset.act === "amz-link-pick") { if (M.amzPick) amzLinkAsk(M.id, M.amzPick.split(","), "manual"); return; }
       if (b.dataset.act === "recon-open") return amzLinkAsk(M.id, [], "");
       if (b.dataset.act === "recon-cancel") { M.recon = null; renderModal(); return; }
