@@ -18,7 +18,7 @@
   // ---------- tabs ----------
   function showTab(t) {
     if (window.JT && window.JT.checkCatalog) window.JT.checkCatalog().catch(() => {});      // a sync from Shopify since? every tab reloads
-    if (!["amzmap", "amazon", "psales", "costmap", "invoices", "amzmatch", "costs", "fba", "prep", "po", "fbm", "alerts", "shipments", "anr"].includes(t)) t = "shopify";
+    if (!["amzmap", "amazon", "psales", "costmap", "invoices", "amzmatch", "costs", "fba", "prep", "po", "fbm", "alerts", "shipments", "anr", "analyze"].includes(t)) t = "shopify";
     $("tab-fbm").hidden = t !== "fbm";
     $("tab-alerts").hidden = t !== "alerts";
     $("tab-po").hidden = t !== "po";
@@ -27,6 +27,7 @@
     $("tab-shipments").hidden = t !== "shipments";
     $("tab-anr").hidden = t !== "anr";
     $("tab-prep").hidden = t !== "prep";
+    $("tab-analyze").hidden = t !== "analyze";
     $("tab-invoices").hidden = t !== "invoices";
     $("tab-amzmatch").hidden = t !== "amzmatch";
     $("tab-psales").hidden = t !== "psales";
@@ -37,7 +38,7 @@
     document.querySelectorAll(".tabs button[data-tab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
     navSync(t);
     try { history.replaceState(null, "", "#" + t); } catch (_) {}
-    if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else if (t === "invoices") { if (window.invShow) window.invShow(); } else if (t === "amzmatch") { if (window.amShow) window.amShow(); } else if (t === "costs") { if (window.pcShow) window.pcShow(); } else if (t === "fba") { if (window.fbaShow) window.fbaShow(); } else if (t === "prep") { if (window.prepShow) window.prepShow(); } else if (t === "po") { if (window.poShow) window.poShow(); } else if (t === "fbm") { if (window.fbmShow) window.fbmShow(); } else if (t === "alerts") { if (window.alertsShow) window.alertsShow(); } else if (t === "shipments") { if (window.shipShow) window.shipShow(); } else if (t === "anr") { if (window.anrShow) window.anrShow(); } else window.dispatchEvent(new Event("resize"));
+    if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else if (t === "invoices") { if (window.invShow) window.invShow(); } else if (t === "amzmatch") { if (window.amShow) window.amShow(); } else if (t === "costs") { if (window.pcShow) window.pcShow(); } else if (t === "fba") { if (window.fbaShow) window.fbaShow(); } else if (t === "prep") { if (window.prepShow) window.prepShow(); } else if (t === "analyze") { if (window.anShow) window.anShow(); } else if (t === "po") { if (window.poShow) window.poShow(); } else if (t === "fbm") { if (window.fbmShow) window.fbmShow(); } else if (t === "alerts") { if (window.alertsShow) window.alertsShow(); } else if (t === "shipments") { if (window.shipShow) window.shipShow(); } else if (t === "anr") { if (window.anrShow) window.anrShow(); } else window.dispatchEvent(new Event("resize"));
   }
   document.querySelectorAll(".tabs button[data-tab]").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
   // two-row nav: sections on top (Sales, Inventory, Buying, Shipping, Setup), the open section's pages below;

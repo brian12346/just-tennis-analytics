@@ -221,7 +221,24 @@
     const item = listed(body.variant_id, body.amazon_sku, body.dest), o = item && item.order;
     return { item, where: o ? `the ${o.vendor ? esc(o.vendor) + " " : ""}draft PO (${esc(orderTitle(o))})` : "On The List" };
   }
-  window.JTPrep = { load, totals, listed, addToList, get data() { return cache; } };
+  // A new placeholder shipment with these lines (Shopify units), opened in the editor on the Prep page — used by
+  // Prep center › Analyze. lines: [{vid, asku, qty, title, sku, vendor, cost}]
+  async function startShipment({ lines, note: nt, dest }) {
+    const b = document.querySelector('.tabs button[data-tab="prep"]'); if (b) b.click();
+    await load(false); render();
+    const keys = [], qty = {}, info = {}, rk = [];
+    for (const l of lines) {
+      const vid = String(l.vid), asku = l.asku || "", exact = cache.rows.find(r => r.vid === vid && r.asku === asku && r.qty > 0);
+      const loose = !exact && asku && cache.rows.find(r => r.vid === vid && r.asku === "" && r.qty > 0);
+      const k = vid + "|" + (loose ? "" : asku);             // not-earmarked stock: picked up, then earmarked for the listing on Save
+      if (!keys.includes(k)) keys.push(k); qty[k] = String((Number(qty[k]) || 0) + l.qty); info[k] = { ...l, vid, asku: loose ? "" : asku };
+      if (loose) rk.push([k, asku]);
+    }
+    P.modal = { kind: "ship", id: null, status: "open", shipment: "", dest: dest || "FBA", note: nt || "", lines: keys, qty, info, add: "", confirm: false, fromRow: null };
+    for (const [k, sku] of rk) rekeyLine(P.modal, k, sku);
+    renderModal();
+  }
+  window.JTPrep = { load, totals, listed, addToList, startShipment, get data() { return cache; } };
 
   // ---------- catalog for the product picker ----------
   let cat = null;
@@ -365,7 +382,9 @@
     if (s.id && !lines.length && !s.lines.some(l => l.invalid)) out.push({ lvl: "warn", kind: "empty", title: "No products in this shipment", text: "Add what's going in the box by ASIN, Amazon SKU or Shopify SKU.", fixes: [{ label: "Add a product", fix: "focus", arg: "pm-add" }] });
     for (const l of s.lines) if (l.invalid) out.push({ lvl: "bad", kind: "bad", title: `${esc(l.title)}: "${esc(l.raw)}" isn't a quantity`, text: "Enter a whole number of units.", fixes: [{ label: "Fix the quantity", fix: "focusk", k: l.key }] });
     for (const l of lines) {
-      const have = onHand(l.vid, l.asku), others = Math.max(0, (cache.alloc.get(l.key) || 0) - savedQty(l.key)), free = Math.max(0, have - others);
+      // a line moved from "any listing" in the open editor: its not-earmarked stock is earmarked for it on Save
+      const loose = P.modal && P.modal.kind === "ship" && String(P.modal.id || "") === String(s.id || "") && P.modal.rekey && P.modal.rekey[l.key] === "" ? onHand(l.vid, "") : 0;
+      const have = onHand(l.vid, l.asku) + loose, others = Math.max(0, (cache.alloc.get(l.key) || 0) - savedQty(l.key)), free = Math.max(0, have - others);
       const who = othersWith(l.key), whoTxt = who.map(x => `${shipTitle(x)} (${STATUS[x.status][0].toLowerCase()})`).join(", ");
       const name = esc(l.title) + (l.asku ? ` <span class="mono">${esc(l.asku)}</span>` : "");
       const inc = cache.incoming && cache.incoming.get(l.key), coming = inc ? inc.coming : 0;
@@ -1295,7 +1314,9 @@
   const rowOf = (k) => cache && (cache.rows.find(r => keyOf(r) === k) || (cache.incoming && cache.incoming.get(k)) || null);
   const comingOf = (k) => (cache && cache.incoming && cache.incoming.get(k) || {}).coming || 0;
   // a shipment line: the prep row when it still has stock, else what the shipment saved
-  const lineOf = (k) => { const r = rowOf(k); if (r) return r; const i = P.modal && P.modal.info[k]; if (!i) return null; return { vid: i.vid, asku: i.asku, qty: 0, title: i.title, sku: i.sku, vendor: i.vendor, cost: i.cost, listings: [], target: null }; };
+  const lineOf = (k) => { const r = rowOf(k); if (r) return r; const i = P.modal && P.modal.info[k]; if (!i) return null;
+    const loose = P.modal.rekey && P.modal.rekey[k] === "" ? (rowOf(i.vid + "|") || {}).qty || 0 : 0;     // picked up from not-earmarked stock
+    return { vid: i.vid, asku: i.asku, qty: loose, title: i.title, sku: i.sku, vendor: i.vendor, cost: i.cost, listings: [], target: null }; };
   const asinsOf = (r) => [...new Set([r.target && r.target.asin, ...(r.asku ? [] : r.listings.map(l => l.asin))].filter(Boolean))];
   // Prep center rows matching what was typed: exact ASIN / Amazon SKU / Shopify SKU first, then partial matches.
   function findRows(text, exclude) {

@@ -40,6 +40,7 @@
     <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
     <button role="tab" data-tab="prep" data-group="prep" aria-selected="false" hidden>Prep</button>
+    <button role="tab" data-tab="analyze" data-group="prep" aria-selected="false" hidden>Analyze</button>
     <button role="tab" data-tab="shipments" data-group="prep" aria-selected="false" hidden>Shipments</button>
     <button role="tab" data-tab="po" data-group="buying" aria-selected="false" hidden>Purchase orders</button>
     <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" hidden>Invoices</button>
@@ -281,6 +282,39 @@
       <div class="tbl-wrap tall"><table id="anr-days"></table></div>
     </section>
   </div>
+  <div id="tab-analyze" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Prep center · stock Amazon is running low on, from the prep center and the Shopify store</span>
+        <h1>Analyze</h1>
+      </div>
+      <div class="controls">
+        <label class="small muted" for="an-target">Days of cover</label><input id="an-target" class="inp num sm" inputmode="numeric" style="width:64px" title="Send enough to cover this many days of Amazon sales">
+        <label class="small muted" for="an-keep">Keep in store</label><input id="an-keep" class="inp num sm" inputmode="numeric" style="width:56px" title="Units of each product to leave in the Shopify store">
+        <button class="btn primary" id="an-run">Find items to send</button>
+      </div>
+    </header>
+    <div class="status" id="an-status" aria-live="polite"></div>
+    <div id="an-note" hidden></div>
+    <section class="kpis" id="an-kpis" aria-label="Send finder totals"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <div class="seg" id="an-view" role="group" aria-label="Which listings">
+          <button data-v="send" aria-pressed="true">Can send <span class="cnt">0</span></button><button data-v="short" aria-pressed="false">Low, nothing on hand <span class="cnt">0</span></button><button data-v="ignored" aria-pressed="false">Ignored <span class="cnt">0</span></button>
+        </div>
+        <div class="filters">
+          <label for="an-vendor">Vendor <select id="an-vendor" class="inp sm"><option value="all">All vendors</option></select></label>
+          <label for="an-q">Search <input id="an-q" class="inp" type="search" placeholder="Product, SKU or ASIN"></label>
+        </div>
+      </div>
+      <div class="cmbar" id="an-bar" hidden>
+        <span class="muted small">Tick listings, then start one shipment with them (or ignore them for 30 days). Send is in Amazon units.</span>
+        <span class="dbtns right"><button class="btn" id="an-ign-sel" disabled>Ignore selected</button><button class="btn primary" id="an-ship-sel" disabled>Start a shipment with selected</button></span>
+      </div>
+      <div class="tbl-wrap tall"><table id="an-table" class="sht"></table></div>
+    </section>
+  </div>
+
   <div id="tab-shipments" hidden>
     <header class="top">
       <div class="title">
@@ -804,6 +838,9 @@
 </script>
 <script>
 <!-- @inline js/shipments.js -->
+</script>
+<script>
+<!-- @inline js/analyze.js -->
 </script>
 <script>
 <!-- @inline js/acenrally.js -->
