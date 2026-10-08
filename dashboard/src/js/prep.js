@@ -726,12 +726,15 @@
     const lanes = P.shipView === "open";
     el.classList.toggle("shipgrid", !lanes); el.classList.toggle("shiplanes", lanes);
     if (lanes) {
-      // In progress = lanes, left to right: Analyze (products set aside to look at before shipping) · Open · Started
-      const ana = anaCards(), open = list.filter(x => x.status !== "started"), started = list.filter(x => x.status === "started");
+      // In progress = lanes, left to right: Analyze (products set aside to look at before shipping) · Open · Started ·
+      // Ready to label (linked to a Seller Central shipment, not shipped yet)
+      const linked = (x) => (x.amz || []).length > 0;
+      const ana = anaCards(), open = list.filter(x => !linked(x) && x.status !== "started"), started = list.filter(x => !linked(x) && x.status === "started"), label = list.filter(linked);
       const lane = (title, hint, n, body) => `<div class="lane"><div class="lane-h"><b>${title}</b> <span class="cnt">${n}</span><span class="dim small">${hint}</span></div><div class="lane-b">${body}</div></div>`;
       el.innerHTML = lane("Analyze", "look at before shipping", ana.length, ana.map(anaCard).join("") || '<div class="muted small lane-empty">Nothing set aside. Use <b>Analyze</b> on a product in Incoming shipments.</div>')
         + lane("Open", "placeholders", open.length, `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">A placeholder for the ASINs you're sending</span></button>` + open.map(card).join(""))
-        + lane("Started", "being packed", started.length, started.map(card).join("") || '<div class="muted small lane-empty">None started.</div>');
+        + lane("Started", "being packed", started.length, started.map(card).join("") || '<div class="muted small lane-empty">None started.</div>')
+        + lane("Ready to label", "linked in Seller Central", label.length, label.map(card).join("") || '<div class="muted small lane-empty">Shipments move here once they\'re linked to a Seller Central shipment.</div>');
       return;
     }
     const empty = { open: "", amazon: '<div class="muted small">Nothing at Amazon waiting to be received.</div>', exc: '<div class="muted small">No exceptions.</div>', closed: '<div class="muted small">No shipments closed in the last 90 days.</div>' }[P.shipView];
