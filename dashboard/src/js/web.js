@@ -52,6 +52,29 @@
       $("login-pass").value = "";
       signedIn(data.session);
     });
+    // change password: check the current one by signing in with it, then set the new one
+    const pwdClose = () => { $("pwd").hidden = true; $("pwd-form").reset(); $("pwd-msg").textContent = ""; };
+    $("chpass").addEventListener("click", () => { $("pwd").hidden = false; $("pwd-msg").textContent = ""; setTimeout(() => $("pwd-cur").focus(), 0); });
+    $("pwd-cancel").addEventListener("click", pwdClose);
+    $("pwd").addEventListener("keydown", (e) => { if (e.key === "Escape") pwdClose(); });
+    $("pwd-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (!sb) return;
+      const cur = $("pwd-cur").value, nw = $("pwd-new").value, msg = $("pwd-msg");
+      if (nw.length < 8) { msg.textContent = "Use at least 8 characters."; return; }
+      if (nw !== $("pwd-new2").value) { msg.textContent = "The new passwords don't match."; return; }
+      if (nw === cur) { msg.textContent = "Pick a password different from the current one."; return; }
+      const btn = $("pwd-go"); btn.disabled = true; msg.textContent = "Changing…";
+      try {
+        const email = $("whoami").textContent.trim();
+        const chk = await sb.auth.signInWithPassword({ email, password: cur });
+        if (chk.error) { msg.textContent = /invalid/i.test(chk.error.message) ? "The current password is wrong." : chk.error.message; return; }
+        const { error } = await sb.auth.updateUser({ password: nw });
+        if (error) { msg.textContent = error.message; return; }
+        msg.textContent = "Password changed."; setTimeout(pwdClose, 1200);
+      } catch (e) { msg.textContent = (e && e.message) || String(e); }
+      finally { btn.disabled = false; }
+    });
     $("signout").addEventListener("click", async () => { cache.clear(); if (window.JTCache) window.JTCache.clear(); if (sb) await sb.auth.signOut(); location.reload(); });
     boot();
   });

@@ -16,12 +16,22 @@
     <p id="login-msg" class="muted small" role="status"></p>
   </form>
 </div>
+<div id="pwd" class="login" hidden role="dialog" aria-modal="true" aria-labelledby="pwd-title">
+  <form id="pwd-form" class="login-card">
+    <span class="eyebrow" id="pwd-title">Change your password</span>
+    <label>Current password<input type="password" id="pwd-cur" autocomplete="current-password" required></label>
+    <label>New password<input type="password" id="pwd-new" autocomplete="new-password" minlength="8" required></label>
+    <label>New password again<input type="password" id="pwd-new2" autocomplete="new-password" minlength="8" required></label>
+    <span class="dbtns"><button class="btn primary" id="pwd-go" type="submit">Change password</button><button class="btn" id="pwd-cancel" type="button">Cancel</button></span>
+    <p id="pwd-msg" class="muted small" role="status"></p>
+  </form>
+</div>
 <header class="appbar">
  <div class="appbar-in">
   <div class="brandrow">
     <span class="lockup" aria-label="Seller Sage Pro — Just Tennis"><svg class="mark" width="32" height="32" viewBox="0 0 48 48" aria-hidden="true"><rect x="0.75" y="0.75" width="46.5" height="46.5" rx="11.5" fill="var(--header-raised)" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="1.5"/><path d="M14 32 L34 32 L24 15 Z" fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="2.5" stroke-linejoin="round"/><circle cx="14" cy="32" r="5" fill="#FFFFFF"/><circle cx="34" cy="32" r="5" fill="#FFFFFF"/><circle cx="24" cy="15" r="5.5" fill="#FDB515"/></svg><span class="word">Seller Sage</span><span class="pro">PRO</span></span>
     <span class="ws">Just Tennis</span>
-    <span class="bar-right"><span id="acct" class="acct" hidden><span id="whoami"></span><button class="mini" id="signout" type="button">Sign out</button></span><span class="ver" title="Version __VERSION__ · build __BUILD__">v__VERSION__<span class="sha"> · __BUILD__</span></span></span>
+    <span class="bar-right"><span id="acct" class="acct" hidden><span id="whoami"></span><button class="mini" id="chpass" type="button" title="Change your password">Password</button><button class="mini" id="signout" type="button">Sign out</button></span><span class="ver" title="Version __VERSION__ · build __BUILD__">v__VERSION__<span class="sha"> · __BUILD__</span></span></span>
   </div>
   <nav class="tabs groups" aria-label="Dashboard sections">
     <button type="button" class="grp" data-group="sales" aria-current="false">Sales</button>
