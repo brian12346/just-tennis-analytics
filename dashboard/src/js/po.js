@@ -2164,7 +2164,9 @@
     }).catch(() => {});
     refresh(true).catch(() => {});
   });
-  window.poShow = () => { S.mode = "po"; S.invOpen = false; if (!S.shown) { S.shown = true; refresh(false); catalog().catch(() => {}); } render(); };
+  // saved on another tab (received from the Prep center, …): reload the list when this tab is opened next
+  window.addEventListener("jt:changed", () => { if ($("tab-po").hidden && $("tab-invoices").hidden) S.stale = true; });
+  window.poShow = () => { S.mode = "po"; S.invOpen = false; if (!S.shown) { S.shown = true; refresh(false); catalog().catch(() => {}); } else if (S.stale && !S.ed) { S.stale = false; refresh(true); } render(); };
   window.invShow = () => {
     S.mode = "inv";
     if (!S.invShown) { S.invShown = true; catalog().catch(() => {}); if (!S.orders) loadOrders(false).catch(() => {}); }

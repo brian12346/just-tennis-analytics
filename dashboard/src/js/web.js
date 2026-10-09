@@ -111,7 +111,7 @@
     return v;
   }
   const clearAll = () => { cache.clear(); if (PC()) PC().clear("q:"); };
-  async function write(fn, args) { const v = await rpc(fn, args); clearAll(); return v; }
+  async function write(fn, args) { try { return await rpc(fn, args); } finally { clearAll(); window.dispatchEvent(new CustomEvent("jt:changed")); } }
   // a Supabase edge function (e.g. qbo); its JSON answer, also when it answers with an error status
   async function fn(name, body) {
     await ready;

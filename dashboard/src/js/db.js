@@ -112,8 +112,18 @@
     }
     throw { code: "server_unavailable", message: "Amazon took too long to answer.", retryable: true };
   }
+  // Any save (here or through the web version's write) tells every tab its copy is stale ("jt:changed"): reads skip
+  // the caches for a minute, and tabs that aren't open reload when they're opened next (e.g. receiving a PO shows on
+  // the Prep center right away).
+  window.addEventListener("jt:changed", () => { freshUntil = Math.max(freshUntil, Date.now() + 60000); });
+  const dataChanged = () => window.dispatchEvent(new CustomEvent("jt:changed"));
   async function run(sql, refresh, ttl) {
     refresh = refresh || Date.now() < freshUntil;
+    const w = isWrite(sql);
+    if (w) { try { const out = await run0(sql, refresh, ttl); dataChanged(); return out; } catch (e) { dataChanged(); throw e; } }
+    return run0(sql, refresh, ttl);
+  }
+  async function run0(sql, refresh, ttl) {
     if (WEB) {
       await acquire(isWrite(sql));
       try { return await WEB.sql(sql, refresh, ttl); }

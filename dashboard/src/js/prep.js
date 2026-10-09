@@ -1826,7 +1826,9 @@
   bind();
   bindList();
   window.addEventListener("jt:catalog", () => { cat = null; if (!$("tab-prep").hidden) refresh(true); else P.shown = false; });
-  window.prepShow = () => { if (!P.shown) { P.shown = true; refresh(false); } else render(); };
+  // saved somewhere else (a PO received, an invoice, a count): reload when the Prep page is opened next
+  window.addEventListener("jt:changed", () => { if ($("tab-prep").hidden) P.stale = true; });
+  window.prepShow = () => { if (!P.shown || P.stale) { P.shown = true; P.stale = false; refresh(true); } else render(); };
   window.JTPrepTab = { _state: P,
     // from the Purchase orders tab: an Amazon Outgoing shipment made from a received order
     async shipFromOrder(id) { const b = document.querySelector('.tabs button[data-tab="prep"]'); if (b) b.click(); await load(true); P.shown = true; render();
