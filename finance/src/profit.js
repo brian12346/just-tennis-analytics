@@ -82,7 +82,7 @@
     const cur = today().slice(0, 8) + "01";
     const sel = rows.filter(r => inPeriod(r.month));
     const full = sel.filter(r => r.month < cur);
-    cards(sel, full, groups); chart(rows.filter(r => inPeriod(r.month)).slice().reverse(), cur); table(sel, groups, cur); accounts();
+    cards(sel, full, groups); chart(rows.filter(r => inPeriod(r.month)).slice().reverse(), cur); statement(sel, groups, cur); accounts();
   }
   function cards(sel, full, groups) {
     const card = (cls, k, v, s) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`;
@@ -123,32 +123,65 @@
     $("pf-chart").innerHTML = `<svg class="cf-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Overall profit by month">${g}</svg>
       <div class="cf-legend"><span><i style="background:var(--green2);opacity:.3"></i>Dashboard profit</span><span><i style="background:var(--amber);opacity:.45"></i>Costs</span><span><i style="background:var(--green)"></i>Overall profit</span><span><i style="background:var(--red)"></i>Overall loss</span>${rows.some(r => r.month === cur) ? "<span>* month to date</span>" : ""}</div>`;
   }
-  function table(sel, groups, cur) {
-    if (!sel.length) { $("pf-table").innerHTML = `<div class="empty">No months in this period.</div>`; return; }
-    const many = groups.length > 1;
-    const head = `<tr><th>Month</th><th class="n">Net sales</th><th class="n">Dashboard profit</th>${groups.map(g => `<th class="n">${esc(g)}</th>`).join("")}${many ? '<th class="n">Costs</th>' : ""}<th class="n">Overall profit</th><th class="n">Margin</th></tr>`;
-    const line = (r, label, cls, attrs) => `<tr class="${cls}" ${attrs || ""}><td>${label}</td><td class="n">${money(r.net_sales)}</td><td class="n">${money(r.base)}</td>${groups.map(g => `<td class="n">${r.groups[g] ? money(r.groups[g]) : "—"}</td>`).join("")}${many ? `<td class="n">${money(r.exp)}</td>` : ""}<td class="n ${r.overall < 0 ? "negt" : ""}"><b>${money(r.overall)}</b></td><td class="n ${r.overall < 0 ? "negt" : ""}">${pct(r.overall, r.net_sales)}</td></tr>`;
-    const tot = (rs) => { const t = { net_sales: 0, base: 0, exp: 0, overall: 0, groups: {} }; for (const r of rs) { for (const k of ["net_sales", "base", "exp", "overall"]) t[k] += r[k]; for (const g in r.groups) t.groups[g] = (t.groups[g] || 0) + r.groups[g]; } return t; };
-    let body = "", year = null;
-    const years = [...new Set(sel.map(r => r.month.slice(0, 4)))];
-    for (const r of sel) {
-      const yr = r.month.slice(0, 4);
-      if (yr !== year && years.length > 1) { year = yr; body += line(tot(sel.filter(x => x.month.slice(0, 4) === yr)), `<b>${yr}</b>${yr === cur.slice(0, 4) ? " <span class=\"m\">to date</span>" : ""}`, "yr"); }
-      body += line(r, `${mLabel(r.month)}${r.month === cur ? ' <span class="pill open">to date</span>' : ""}`, "row", `data-m="${r.month}"`);
-      if (S.open.has(r.month)) body += `<tr class="detail"><td colspan="${groups.length + (many ? 6 : 5)}">${detail(r)}</td></tr>`;
+  // statement layout: months across (oldest → newest, a total column per full year when the period spans years, then
+  // the period's total); income on top, costs below (in parentheses), overall profit at the bottom. A cost row opens to
+  // its QuickBooks accounts.
+  const CH = [["amazon", "Amazon"], ["justtennis", "Just Tennis"], ["acenrally", "Ace n Rally"]];
+  function columns(sel, cur) {
+    const ms = sel.slice().sort((a, b) => a.month.localeCompare(b.month));
+    const years = [...new Set(ms.map(r => r.month.slice(0, 4)))];
+    const cols = [];
+    for (const y of years) {
+      const inY = ms.filter(r => r.month.slice(0, 4) === y);
+      for (const r of inY) cols.push({ key: r.month, label: new Date(r.month + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }), rows: [r], partial: r.month === cur });
+      if (years.length > 1) cols.push({ key: "y" + y, label: y + (y === cur.slice(0, 4) ? " YTD" : ""), rows: inY, sum: true });
     }
-    $("pf-table").innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody><tfoot>${line(tot(sel), "<b>Total</b>", "tot")}</tfoot></table>`;
+    cols.push({ key: "total", label: "Total", rows: ms, sum: true, total: true });
+    return cols;
   }
-  function detail(r) {
-    const ch = Object.entries(r.ch).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<tr><td>${esc({ justtennis: "Just Tennis", acenrally: "Ace n Rally", amazon: "Amazon" }[c] || c)}</td><td class="n">${money(v)}</td></tr>`).join("");
-    const by = new Map(); for (const a of r.accts) { if (!by.has(a.grp)) by.set(a.grp, []); by.get(a.grp).push(a); }
-    const ex = [...by.entries()].sort((a, b) => sumBy(b[1], x => x.amount) - sumBy(a[1], x => x.amount)).map(([g, xs]) =>
-      `<tr><td colspan="2"><b>${esc(g)}</b> <span class="m">${money(sumBy(xs, x => x.amount))}</span></td></tr>` +
-      xs.sort((a, b) => b.amount - a.amount).map(x => `<tr><td>${esc(x.name)}${x.parent ? ` <span class="m">${esc(x.parent)}</span>` : ""}</td><td class="n">${money(x.amount)}</td></tr>`).join("")).join("");
-    return `<div class="det"><div><h3>Costs · ${esc(mLabel(r.month, true))}</h3><table>${ex || '<tr><td class="m">None in QuickBooks yet for this month.</td></tr>'}</table></div>
-      <div><h3>Dashboard profit by channel</h3><table>${ch}<tr><td><b>Total</b></td><td class="n"><b>${money(r.base)}</b></td></tr></table>
-      <p class="m">${r.ad_back ? `Includes ${money(r.ad_back)} of ad spend the dashboard took off, added back so ads are counted once if you add them as a cost. ` : ""}</p></div></div>`;
+  function statement(sel, groups, cur) {
+    const cols = columns(sel, cur);
+    const add = (rs, f) => rs.reduce((a, r) => a + (f(r) || 0), 0);
+    const acctRows = (g) => {   // account → amount per month for one cost group
+      const m = new Map();
+      for (const r of sel) for (const a of r.accts) if (a.grp === g) {
+        const k = a.name + "|" + a.parent; if (!m.has(k)) m.set(k, { name: a.name, parent: a.parent, by: {} });
+        m.get(k).by[r.month] = (m.get(k).by[r.month] || 0) + a.amount;
+      }
+      return [...m.values()].sort((a, b) => add(Object.values(b.by), x => x) - add(Object.values(a.by), x => x));
+    };
+    const cell = (c, f, kind) => {
+      const v = add(c.rows, f);
+      const txt = kind === "pct" ? v : !v && kind !== "strong" ? "—" : kind === "cost" ? `(${money(Math.abs(v)).replace("−", "")})` : money(v);
+      return `<td class="n${c.sum ? " sum" : ""}${c.partial ? " part" : ""}">${txt}</td>`;
+    };
+    const tr = (cls, label, f, kind, attrs) => `<tr class="${cls}" ${attrs || ""}><th scope="row">${label}</th>${cols.map(c => kind === "pct"
+      ? `<td class="n${c.sum ? " sum" : ""}${c.partial ? " part" : ""}">${pct(add(c.rows, r => r.overall), add(c.rows, r => r.net_sales))}</td>` : cell(c, f, kind)).join("")}</tr>`;
+    const band = (cls, label, note) => `<tr class="band ${cls}"><th scope="row">${label}${note ? ` <span>${note}</span>` : ""}</th><td colspan="${cols.length}"></td></tr>`;
+
+    let b = "";
+    b += band("inc", "Income", "dashboard profit by channel");
+    b += tr("memo", "Net sales <span class=\"m\">for reference</span>", r => r.net_sales, "plain");
+    for (const [k, l] of CH) if (sel.some(r => r.ch[k])) b += tr("line", l, r => r.ch[k], "plain");
+    b += tr("subtot inc", "Total income", r => r.base, "strong");
+    b += band("exp", "Costs", "taken off profit");
+    for (const g of groups) {
+      const open = S.open.has(g), acc = acctRows(g);
+      b += tr("line cost grp", `<button type="button" class="tog" data-grp="${esc(g)}" aria-expanded="${open}">${open ? "▾" : "▸"}</button>${esc(g)} <span class="m">${acc.length} account${acc.length === 1 ? "" : "s"}</span>`, r => r.groups[g], "cost", `data-grp="${esc(g)}"`);
+      if (open) for (const a of acc) b += tr("acct", `${esc(a.name)}${a.parent ? ` <span class="m">${esc(a.parent)}</span>` : ""}`, r => a.by[r.month], "cost");
+    }
+    if (!groups.length) b += `<tr class="line"><th scope="row" class="m">No costs counted yet</th><td colspan="${cols.length}"></td></tr>`;
+    b += tr("subtot exp", "Total costs", r => r.exp, "cost");
+    b += tr("net", "Overall profit", r => r.overall, "strong");
+    b += tr("memo", "Margin", null, "pct");
+    const head = `<tr><th scope="col"></th>${cols.map(c => `<th scope="col" class="n${c.sum ? " sum" : ""}${c.partial ? " part" : ""}"${c.partial ? ' title="Month to date"' : ""}>${esc(c.label)}${c.partial ? "*" : ""}</th>`).join("")}</tr>`;
+    const box = $("pf-table");
+    box.innerHTML = sel.length ? `<table class="stmt"><thead>${head}</thead><tbody>${b}</tbody></table>${cols.some(c => c.partial) ? '<div class="hint stmt-note">* month to date — its payroll may not be in QuickBooks yet</div>' : ""}` : `<div class="empty">No months in this period.</div>`;
+    box.scrollLeft = box.scrollWidth;   // newest months in view
+    // net row colours
+    box.querySelectorAll("tr.net td").forEach(td => { if (td.textContent.trim().startsWith("−")) td.classList.add("negt"); });
   }
+
   function accounts() {
     const q = S.acctQ;
     const groups = [...new Set([...GROUP_ORDER, ...S.accts.map(a => a.grp)])].filter(g => g !== "In dashboard profit");
@@ -191,10 +224,18 @@
   }
   function exportCsv() {
     const { rows, groups } = model();
-    const sel = rows.filter(r => inPeriod(r.month)).slice().reverse();
+    const sel = rows.filter(r => inPeriod(r.month));
+    const cols = columns(sel, today().slice(0, 8) + "01");
     const q = (v) => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v;
-    const lines = [["month", "net_sales", "dashboard_profit", ...groups, "costs", "overall_profit"],
-      ...sel.map(r => [r.month.slice(0, 7), r.net_sales.toFixed(2), r.base.toFixed(2), ...groups.map(g => (r.groups[g] || 0).toFixed(2)), r.exp.toFixed(2), r.overall.toFixed(2)])];
+    const sum = (c, f) => c.rows.reduce((a, r) => a + (f(r) || 0), 0).toFixed(2);
+    const line = (label, f) => [label, ...cols.map(c => sum(c, f))];
+    const lines = [["", ...cols.map(c => c.key.startsWith("y") ? c.label : c.key === "total" ? "Total" : c.key.slice(0, 7))],
+      line("Net sales", r => r.net_sales),
+      ...CH.filter(([k]) => sel.some(r => r.ch[k])).map(([k, l]) => line(`Income: ${l}`, r => r.ch[k])),
+      line("Total income (dashboard profit)", r => r.base),
+      ...groups.map(g => line(`Cost: ${g}`, r => r.groups[g])),
+      line("Total costs", r => r.exp),
+      line("Overall profit", r => r.overall)];
     FIN.download(`overall-profit-${today()}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
   }
 
@@ -203,8 +244,8 @@
     main.addEventListener("click", (ev) => {
       const rs = ev.target.closest("[data-reset]");
       if (rs) { setRule(rs.dataset.reset, null, null); return; }
-      const r = ev.target.closest("tr[data-m]");
-      if (r) { const m = r.dataset.m; S.open.has(m) ? S.open.delete(m) : S.open.add(m); render(); }
+      const t = ev.target.closest("tr[data-grp]");
+      if (t) { const g = t.dataset.grp; S.open.has(g) ? S.open.delete(g) : S.open.add(g); const { rows, groups } = model(); statement(rows.filter(r => inPeriod(r.month)), groups, today().slice(0, 8) + "01"); }
     });
     main.addEventListener("change", (ev) => {
       const s = ev.target.closest("select[data-acct]");

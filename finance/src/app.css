@@ -227,3 +227,31 @@ button.card.on{outline:2px solid var(--green);outline-offset:-1px}
 .pf-add summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--green);padding:4px 0}
 .pf-add[open] summary{margin-bottom:8px}
 .pf-add > div{margin-top:8px}
+/* statement: months across, income above costs */
+#pf-table{max-height:none;overflow-x:auto}
+table.stmt{width:auto;min-width:100%;border-collapse:separate;border-spacing:0}
+table.stmt th,table.stmt td{padding:7px 10px;border-bottom:1px solid var(--rule2);white-space:nowrap;font-size:13px}
+table.stmt thead th{position:sticky;top:0;z-index:1;cursor:default;text-align:right}
+table.stmt tbody th{position:sticky;left:0;z-index:1;background:var(--card);text-align:left;font:500 13px var(--sans);color:var(--ink);text-transform:none;letter-spacing:0;cursor:default;min-width:190px;border-right:1px solid var(--rule)}
+table.stmt thead th:first-child{left:0;z-index:2;border-right:1px solid var(--rule)}
+table.stmt td.sum,table.stmt th.sum{background:var(--rule2);font-weight:600}
+table.stmt th.part,table.stmt td.part{color:var(--muted)}
+table.stmt tr.band th{font:700 11px var(--sans);letter-spacing:.08em;text-transform:uppercase;padding-top:14px}
+table.stmt tr.band th span{font-weight:500;letter-spacing:0;text-transform:none;color:var(--muted);margin-left:6px}
+table.stmt tr.band.inc th,table.stmt tr.band.inc td{background:var(--green-bg);color:var(--green);box-shadow:inset 0 2px 0 var(--green)}
+table.stmt tr.band.exp th,table.stmt tr.band.exp td{background:var(--amber-bg);color:var(--amber);box-shadow:inset 0 2px 0 var(--amber)}
+table.stmt tr.band td{padding:0}
+table.stmt tr.band th,table.stmt tr.band td{border-bottom:0}
+table.stmt tr.inc.subtot th,table.stmt tr.inc.subtot td{border-left:0;font-weight:600}
+table.stmt tr.line.cost td,table.stmt tr.acct td,table.stmt tr.exp.subtot td{color:var(--amber)}
+table.stmt tr.subtot th,table.stmt tr.subtot td{font-weight:700;border-top:1px solid var(--ink2)}
+table.stmt tr.acct th{padding-left:34px;font-weight:400;font-size:12px}
+table.stmt tr.acct td{font-size:12px}
+table.stmt tr.memo th,table.stmt tr.memo td{color:var(--muted);font-style:italic;font-size:12px}
+table.stmt tr.net th,table.stmt tr.net td{font:700 14px var(--sans);border-top:2px solid var(--ink);border-bottom:3px double var(--ink);color:var(--green)}
+table.stmt tr.net td.negt{color:var(--red)}
+table.stmt tr.grp{cursor:pointer}
+table.stmt tr.grp:hover th,table.stmt tr.grp:hover td{background:var(--rule2)}
+table.stmt .tog{background:none;border:0;color:var(--ink2);cursor:pointer;padding:0 6px 0 0;font-size:11px}
+table.stmt th .m{font-size:11px;color:var(--muted);font-weight:400}
+.stmt-note{padding:8px 0 0}
