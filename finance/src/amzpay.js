@@ -382,7 +382,8 @@
       const data = rows.slice(1).map(r => ({ sku: (r[iS] || "").trim(), cost: (r[iC] || "").trim(), name: iN >= 0 ? (r[iN] || "").trim() : "" })).filter(r => r.sku);
       if (!data.some(r => r.cost)) throw new Error("no costs in the file — every cost is blank (is it the empty A2X template?)");
       st.textContent = `Saving ${data.length} SKUs…`;
-      for (let i = 0; i < data.length; i += 2000) await FIN.write("fin_a2x_costs_save", { p: { file: file.name, rows: data.slice(i, i + 2000) } });
+      const batch = Date.now();   // one upload = one batch, however many calls it takes
+      for (let i = 0; i < data.length; i += 1000) await FIN.write("fin_a2x_costs_save", { p: { file: file.name, batch, rows: data.slice(i, i + 1000) } });
       st.textContent = ""; note("", `Loaded A2X costs for ${data.filter(r => r.cost).length} SKUs from ${esc(file.name)}.`);
       await loadSku(true);
     } catch (e) { st.textContent = ""; note("bad", "Couldn't read the file: " + esc(e.message || e)); }

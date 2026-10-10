@@ -81,3 +81,13 @@ def test_a2x_compare(conn):
     assert rows["Amazon Seller Fees and Charges"] == (0.0, 10.0, 10.0)
     cur.execute("select public.fin_amz_a2x_todo()")
     assert "555000111" not in cur.fetchone()[0]
+
+
+def test_a2x_cost_upload_in_parts(conn):
+    cur = conn.cursor()
+    cur.execute("insert into fin.users (user_id, email) values ('11111111-1111-1111-1111-111111111111', 'b@x.com') on conflict do nothing")
+    cur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": "11111111-1111-1111-1111-111111111111", "email": "b@x.com"}),))
+    for rows in ([{"sku": "A", "cost": "1.5"}], [{"sku": "B", "cost": "$2.00"}]):   # one file, two calls
+        cur.execute("select public.fin_a2x_costs_save(%s::jsonb)", (json.dumps({"file": "f.csv", "batch": 42, "rows": rows}),))
+    cur.execute("select sku, cost from fin.v_a2x_costs order by sku")
+    assert [(s, float(c)) for s, c in cur.fetchall()] == [("A", 1.5), ("B", 2.0)]
