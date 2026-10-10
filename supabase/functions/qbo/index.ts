@@ -9,8 +9,10 @@
 // POST {action: "payables_sync", full?} -> vendors, bills, bill payments, vendor credits and bank/card balances -> schema fin (the finance
 //   dashboard). Only what changed since the last pass, or everything with full (also once a week by itself, which
 //   catches bills deleted in QuickBooks).
+// POST {action: "pl_sync", start?} -> the Profit and Loss report by month (from Jan 2025, or start) -> fin.qbo_pl (the finance
+//   Profit page). Daily by pg_cron and from the page's refresh button.
 // Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.qbo_call (x-jt-key). Accounts on
-// the finance list only (fin.users) may run status and payables_sync, nothing else.
+// the finance list only (fin.users) may run status, payables_sync and pl_sync, nothing else.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-jt-key", "Access-Control-Allow-Methods": "POST, OPTIONS" };
@@ -241,6 +243,52 @@ async function createBill(c: Creds, p: any, by: string) {
   return { ok: true, created: true, bill_id: bill.Id, doc: bill.DocNumber, total: bill.TotalAmt, vendor: vend.DisplayName, message: `Bill ${bill.DocNumber} entered in QuickBooks for ${vend.DisplayName} (${Number(bill.TotalAmt).toFixed(2)}).${att}` };
 }
 
+// ---- profit and loss by month for the finance Profit page
+const SECTIONS = new Set(["Income", "COGS", "Expenses", "OtherIncome", "OtherExpenses"]);
+async function plSync(c: Creds, start?: string) {
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(start || "")) ? String(start) : "2025-01-01";
+  const to = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+  const r = await api(c, `reports/ProfitAndLoss?start_date=${from}&end_date=${to}&summarize_column_by=Month&accounting_method=Accrual`);
+  const cols = (r?.Columns?.Column || []).map((col: any) => {
+    const md = Object.fromEntries((col.MetaData || []).map((m: any) => [m.Name, m.Value]));
+    return md.StartDate && md.ColKey !== "total" ? String(md.StartDate) : null;
+  });
+  const rows: any[] = [];
+  const n = cols.length;
+  const add = (section: string, a: any, parents: string[], vals: number[]) => {
+    vals.forEach((v, i) => {
+      const m = cols[i];
+      if (i > 0 && m && Math.abs(v) >= 0.005) rows.push({ section, key: a.id || a.value, account: a.value || "", parent: parents.join(" › "), month: m, amount: Math.round(v * 100) / 100 });
+    });
+  };
+  const nums = (cds: any[]) => Array.from({ length: n }, (_, i) => Number(cds?.[i]?.value || 0) || 0);
+  // walks a list of rows; returns what they add up to per column. A parent account's own postings are its total
+  // ("Total for …") less what its children add up to.
+  const walk = (list: any[], section: string, parents: string[]): number[] => {
+    const sum = new Array(n).fill(0);
+    for (const row of list || []) {
+      if (row.type === "Section" || row.Rows) {
+        const sec = section || (SECTIONS.has(row.group) ? row.group : "");
+        if (!sec) continue;                                          // Gross profit, Net income … (totals only)
+        const head = row.Header?.ColData?.[0];
+        const kids = walk(row.Rows?.Row || [], sec, section && head?.value ? [...parents, head.value] : parents);
+        const total = row.Summary?.ColData ? nums(row.Summary.ColData) : kids;
+        if (section && head?.value) add(sec, head, parents, total.map((t, i) => t - kids[i]));
+        total.forEach((t, i) => (sum[i] += t));
+      } else if (section && row.ColData) {
+        const v = nums(row.ColData);
+        add(section, row.ColData[0] || {}, parents, v);
+        v.forEach((t, i) => (sum[i] += t));
+      }
+    }
+    return sum;
+  };
+  walk(r?.Rows?.Row || [], "", []);
+  const { data, error } = await admin.rpc("fin_qbo_pl_save", { p: { start: from, end: to, rows } });
+  if (error) throw new Error("saving the P&L: " + error.message);
+  return { ok: true, start: from, end: to, rows: rows.length, saved: data, months: cols.filter(Boolean).length };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
@@ -249,8 +297,9 @@ Deno.serve(async (req) => {
     if (!by) return json({ ok: false, error: "not allowed" }, 403);
     for (const k of ["qbo_client_id", "qbo_client_secret", "qbo_refresh_token", "qbo_realm_id"]) if (!c[k]) return json({ ok: false, error: `${k} is missing from Vault` }, 400);
     const p = await req.json().catch(() => ({}));
-    if (by.startsWith("finance:") && !["status", "payables_sync"].includes(p.action)) return json({ ok: false, error: "not allowed" }, 403);
+    if (by.startsWith("finance:") && !["status", "payables_sync", "pl_sync"].includes(p.action)) return json({ ok: false, error: "not allowed" }, 403);
     if (p.action === "payables_sync") return json(await payablesSync(c, !!p.full));
+    if (p.action === "pl_sync") return json(await plSync(c, p.start));
     if (p.action === "status") {
       const ci = (await api(c, `companyinfo/${c.qbo_realm_id}`)).CompanyInfo || {};
       const acc = ((await query(c, "select Id, Name, FullyQualifiedName, AccountType, AccountSubType, Active from Account maxresults 1000")).QueryResponse?.Account || [])

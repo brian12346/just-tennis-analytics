@@ -42,7 +42,7 @@
       <a href="#payables" data-page="payables" class="on" aria-current="page"><span class="ico">⇄</span>Payables</a>
       <a href="#cash" data-page="cash"><span class="ico">◎</span>Cash flow</a>
       <a href="#fba" data-page="fba"><span class="ico">▤</span>FBA forecast</a>
-      <span class="soon" title="Coming next"><span class="ico">≡</span>P&amp;L <i>soon</i></span>
+      <a href="#profit" data-page="profit"><span class="ico">≡</span>Profit</a>
     </nav>
     <div class="side-foot">
       <a class="xlink" href="https://dashboard.andersenlifestyle.com" target="_blank" rel="noopener">Sales dashboard ↗</a>
@@ -161,6 +161,38 @@
       <div class="foot" id="fb-foot"></div>
     </section>
   </main>
+  <main class="main" id="profit" hidden>
+    <header class="head">
+      <div>
+        <div class="eyebrow">Since January 2025 · by month</div>
+        <h1>Overall profit</h1>
+        <div class="sub" id="pf-sub">Loading…</div>
+      </div>
+      <div class="head-actions cf-start">
+        <label>Period<select id="pf-period"><option value="all">Since Jan 2025</option><option value="12">Last 12 full months</option><option value="2026">2026</option><option value="2025">2025</option></select></label>
+        <button class="btn" type="button" id="pf-refresh">Refresh from QuickBooks</button>
+      </div>
+    </header>
+    <div id="pf-note" class="note" hidden></div>
+    <section class="cards" id="pf-cards" aria-label="Profit summary"></section>
+    <section class="panel">
+      <div class="panel-h"><h2>Month by month</h2><span class="hint">Overall profit = dashboard profit (sales − cost of goods − labels − Amazon &amp; payment fees) − business expenses from QuickBooks</span></div>
+      <div id="pf-chart"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Months</h2>
+        <div class="filters"><span class="hint">Click a month for its expenses by account</span><button class="btn small" type="button" id="pf-csv">Export CSV</button></div>
+      </div>
+      <div class="tbl" id="pf-table"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>QuickBooks accounts</h2>
+        <div class="filters"><input id="pf-q" type="search" placeholder="Search accounts" aria-label="Search accounts"></div>
+      </div>
+      <div class="hint">What each QuickBooks P&amp;L account counts as. Income and cost of goods sold stay out by default — the dashboard's profit already has them — so nothing is counted twice. Move an account in or out, or to another group; the change is saved for everyone.</div>
+      <div class="tbl" id="pf-accts"></div>
+    </section>
+  </main>
 </div>
 
 <script>
@@ -174,6 +206,9 @@
 </script>
 <script>
 <!-- @inline fba.js -->
+</script>
+<script>
+<!-- @inline profit.js -->
 </script>
 </body>
 </html>

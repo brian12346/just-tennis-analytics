@@ -208,3 +208,15 @@ button.card.on{outline:2px solid var(--green);outline-offset:-1px}
 #fb-table td:first-child{min-width:260px;max-width:380px}
 #fb-table td:first-child b{font-weight:600}
 #fb-table td:first-child b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* overall profit */
+#pf-table{max-height:none}
+#pf-table tr.yr td{background:var(--rule2);border-top:1px solid var(--rule)}
+#pf-table tfoot td{border-top:2px solid var(--rule);background:var(--card)}
+#pf-table td:first-child{white-space:nowrap}
+#pf-table td.m,#pf-table th:last-child{color:var(--muted)}
+#pf-accts{max-height:560px}
+#pf-accts tr.yr td{background:var(--rule2);font-size:13px}
+#pf-accts select{padding:4px 6px;font-size:13px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink);max-width:220px}
+#pf-accts td{padding:6px 10px;vertical-align:middle}
+#profit .det table td{padding:3px 8px 3px 0}
+#profit .det .m{font-size:12px;color:var(--muted)}
