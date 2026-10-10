@@ -11,14 +11,14 @@
   const QBO_JE = (id) => `https://qbo.intuit.com/app/journal?txnId=${encodeURIComponent(id)}`;
   const FLAG = { US: "US", CA: "Canada", MX: "Mexico" };
 
-  const S = { loaded: false, loading: false, err: null, rows: [], groups: [], map: [], seen: [], coa: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, filter: "todo", mapQ: "",
+  const S = { loaded: false, loading: false, err: null, rows: [], groups: [], map: [], seen: [], coa: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, mapQ: "", sum: {}, postedShown: 12,
     cmp: null, cmpLoading: false, cmpErr: null, cmpOpen: null, cmpAcct: null, cmpLines: null,
-    sku: null, skuFit: [], skuInfo: null, skuErr: null, skuQ: "", skuF: "diff", skuShown: 150 };
+    sku: null, skuErr: null, skuQ: "", skuF: "all", skuShown: 150 };
 
   async function load(refresh) {
     S.loading = true; render();
     try {
-      const [rows, groups, map, seen, coa, cfg] = await Promise.all([
+      const [rows, groups, map, seen, coa, cfg, sums] = await Promise.all([
         FIN.sql(`select settlement_id, market, currency, start_at, end_at, deposit_date, total, fx, converted_usd, units, rows, a2x_docs, checked_at, posted, transfer_status, synced_at
                  from fin.v_amz_settlements order by end_at desc`, refresh),
         FIN.sql("select group_id, status, currency, start_at, original from fin.amz_event_groups where status = 'Open' and currency in ('USD', 'CAD', 'MXN') and start_at > now() - interval '30 days' order by (currency = 'USD') desc, original desc", refresh),
@@ -29,7 +29,9 @@
                  where x.amount <> 0 group by 1, 2, 3, 7, 8, 9 order by abs(sum(x.amount)) desc`, refresh),
         FIN.sql("select name, type from fin.qbo_coa where active order by name", refresh),
         FIN.sql("select value from fin.settings where key = 'amz_post'", refresh),
+        FIN.sql("select * from fin.v_amz_settlement_summary", refresh),
       ]);
+      S.sum = Object.fromEntries(sums.map(x => [x.settlement_id, Object.fromEntries(Object.entries(x).map(([k, v]) => [k, k === "settlement_id" ? v : +v]))]));
       S.rows = rows.map(r => ({ ...r, total: +r.total, fx: r.fx == null ? null : +r.fx, a2x_docs: r.a2x_docs || [], posted: r.posted || {} }));
       S.groups = groups; S.map = map; S.seen = seen.map(x => ({ ...x, amount: +x.amount })); S.coa = coa; S.cfg = (cfg[0] && cfg[0].value) || {};
       S.err = null; S.loaded = true;
@@ -59,34 +61,49 @@
     cards(); table(); mapping(); compare(); skuCheck();
   }
   function cards() {
-    const card = (cls, k, v, s, f) => `<button type="button" class="card ${cls}${S.filter === f ? " on" : ""}" data-filter="${f}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></button>`;
-    const by = (k) => S.rows.filter(r => status(r)[0] === k);
+    const card = (cls, k, v, s2) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s2}</span></div>`;
+    const todo = S.rows.filter(r => !isPosted(r)), done = S.rows.filter(isPosted);
     const sumUsd = (rs) => rs.reduce((a, r) => a + (usd(r) || 0), 0);
-    const todo = [...by("ready"), ...by("new")];
+    const cogs = (rs) => rs.reduce((a, r) => a + (S.sum[r.settlement_id]?.cogs || 0), 0);
     const open = S.groups[0];
     $("az-cards").innerHTML = [
-      card(todo.length ? "amber" : "green", "To post", String(todo.length), todo.length ? `${short(sumUsd(todo))} in payouts` : "All caught up", "todo"),
-      card("green", "In QuickBooks", String(by("posted").length), `posted from here · ${short(sumUsd(by("posted")))}`, "posted"),
-      card("", "Posted by A2X", String(by("a2x").length), "before the switch", "a2x"),
-      card("", "All settlements", String(S.rows.length), "the last 90 days", "all"),
+      card(todo.length ? "amber" : "green", "To post", String(todo.length), todo.length ? `${short(sumUsd(todo))} in payouts` : "All caught up"),
+      card("", "Cost of goods to post", short(cogs(todo)), todo.length ? "at Seller Sage's costs" : "—"),
+      card("green", "Posted", String(done.length), `${short(sumUsd(done))} · the last 90 days`),
       `<div class="card"><span class="k">Next payout</span><span class="v">${open ? fmt(open.original, open.currency).replace(/\.\d\d/, "") : "—"}</span><span class="s">${open ? `${FLAG[{ USD: "US", CAD: "CA", MXN: "MX" }[open.currency]] || open.currency} · building since ${day(open.start_at)}` : "none open"}</span></div>`,
     ].join("");
   }
-  function table() {
-    const f = S.filter;
-    const rows = S.rows.filter(r => { const s = status(r)[0]; return f === "all" ? true : f === "todo" ? s === "ready" || s === "new" : s === f; });
-    if (!rows.length) { $("az-table").innerHTML = `<div class="empty">${f === "todo" ? "Nothing waiting to be posted." : "No settlements here."}</div>`; return; }
-    let h = `<table><thead><tr><th>Marketplace</th><th>Settlement period</th><th>Paid</th><th class="n">Payout</th><th class="n">In USD</th><th class="n">Units</th><th>Status</th></tr></thead><tbody>`;
+  const isPosted = (r) => r.a2x_docs.length > 0 || Object.keys(r.posted).length > 0;
+  // one payout: what's in it (its own currency) and its cost of goods (USD, Seller Sage's costs)
+  const SYM = { USD: "$", MXN: "MX$", CAD: "CA$" };
+  const f0 = (v, cur) => { const n = Math.round(Number(v) || 0); return (n < 0 ? "−" : "") + (SYM[cur] || "$") + Math.abs(n).toLocaleString("en-US"); };
+  const f2 = (v, cur) => { const n = Number(v) || 0; return (n < 0 ? "−" : "") + (SYM[cur] || "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+  function payoutRows(rows, posted) {
+    const head = `<tr><th>Payout</th><th class="n">Sales</th><th class="n">Refunds, promos</th><th class="n">Reim&shy;bursed</th><th class="n">Amazon fees</th><th class="n">Ads, other</th><th class="n">Payout</th><th class="n">Cost of goods</th><th class="n">After COGS</th><th>${posted ? "Posted" : "Status"}</th></tr>`;
+    let h = `<table class="az-pay"><thead>${head}</thead><tbody>`;
+    const tot = { usd: 0, cogs: 0 };
     for (const r of rows) {
-      const [k, label] = status(r);
-      const u = usd(r);
-      h += `<tr class="row${S.open === r.settlement_id ? " sel" : ""}" data-sid="${esc(r.settlement_id)}"><td><b>${esc(FLAG[r.market] || r.market)}</b><div class="m">#${esc(r.settlement_id)}</div></td>
-        <td>${day(r.start_at)} – ${day(r.end_at, true)}</td><td>${day(r.deposit_date)}</td>
-        <td class="n">${fmt(r.total, r.currency)}</td><td class="n">${u == null ? "—" : fmt(u)}</td><td class="n">${Number(r.units || 0).toLocaleString()}</td>
-        <td><span class="pill ${k === "posted" ? "paid" : k === "ready" ? "soon" : k === "a2x" ? "open" : "est"}">${esc(label)}</span>${k === "a2x" ? `<div class="m">${esc(r.a2x_docs[0])}${r.a2x_docs.length > 1 ? " +" + (r.a2x_docs.length - 1) : ""}</div>` : ""}</td></tr>`;
-      if (S.open === r.settlement_id) h += `<tr class="detail"><td colspan="7">${detail(r)}</td></tr>`;
+      const [k, label] = status(r), m = S.sum[r.settlement_id] || {}, cur = r.currency, u = usd(r);
+      const after = u == null ? null : u - (m.cogs || 0);
+      tot.usd += u || 0; tot.cogs += m.cogs || 0;
+      const cell = (v) => `<td class="n">${Math.abs(v || 0) >= 0.5 ? f0(v, cur) : "—"}</td>`;
+      const st = k === "a2x" ? `<span class="pill open" title="${esc(r.a2x_docs.join(", "))}">A2X</span>`
+        : k === "posted" ? `<span class="pill paid" title="${esc(Object.keys(r.posted).join(", "))}">Seller Sage</span>`
+        : `<span class="pill ${k === "ready" ? "soon" : "est"}">${esc(label)}</span>`;
+      h += `<tr class="row${S.open === r.settlement_id ? " sel" : ""}" data-sid="${esc(r.settlement_id)}"><td><b>${esc(FLAG[r.market] || r.market)}</b> ${day(r.start_at)} – ${day(r.end_at)}<div class="m">paid ${day(r.deposit_date, true)} · #${esc(r.settlement_id)}</div></td>${cell(m.sales)}${cell(m.refunds)}${cell(m.reimbursements)}${cell(m.fees)}${cell((m.ads || 0) + (m.tax || 0) + (m.other || 0))}
+        <td class="n"><b>${f2(r.total, cur)}</b>${cur !== "USD" && u != null ? `<div class="m">${f2(u)}</div>` : ""}</td>
+        <td class="n">${f0(m.cogs || 0)}<div class="m">${(m.units || 0).toLocaleString()} units${m.units_no_cost ? ` · <span class="negt">${m.units_no_cost} no cost</span>` : ""}</div></td>
+        <td class="n ${after != null && after < 0 ? "negt" : ""}">${after == null ? "—" : f0(after)}</td><td>${st}</td></tr>`;
+      if (S.open === r.settlement_id) h += `<tr class="detail"><td colspan="10">${detail(r)}</td></tr>`;
     }
-    $("az-table").innerHTML = h + "</tbody></table>";
+    h += `</tbody><tfoot><tr><td colspan="6"><b>${rows.length} payout${rows.length === 1 ? "" : "s"}</b> <span class="m">(USD)</span></td><td class="n"><b>${fmt(tot.usd)}</b></td><td class="n"><b>${fmt(tot.cogs)}</b></td><td class="n"><b>${fmt(tot.usd - tot.cogs)}</b></td><td></td></tr></tfoot></table>`;
+    return h;
+  }
+  function table() {
+    const todo = S.rows.filter(r => !isPosted(r)), done = S.rows.filter(isPosted);
+    $("az-table").innerHTML = todo.length ? payoutRows(todo, false) : `<div class="empty">Nothing waiting to be posted.</div>`;
+    const shown = done.slice(0, S.postedShown);
+    $("az-posted").innerHTML = done.length ? payoutRows(shown, true) + (done.length > shown.length ? `<div class="foot"><span>${done.length - shown.length} more</span><button class="btn small" type="button" data-postedmore>Show all</button></div>` : "") : `<div class="empty">Nothing posted yet.</div>`;
   }
 
   // ---------- one settlement's entries
@@ -172,7 +189,7 @@
     S.cmpLoading = true; compare();
     try {
       const rows = await FIN.sql("select settlement_id, kind, account, a2x, ours, diff, a2x_lines, our_lines from fin.v_amz_compare", refresh);
-      S.cmp = rows.map(r => ({ ...r, a2x: +r.a2x, ours: +r.ours, diff: +r.diff })); S.cmpErr = null;
+      S.cmp = rows.filter(r => r.kind === "main").map(r => ({ ...r, a2x: +r.a2x, ours: +r.ours, diff: +r.diff })); S.cmpErr = null;   // cost of goods: Seller Sage's costs are used, not compared
     } catch (e) { S.cmpErr = e; }
     S.cmpLoading = false; compare();
   }
@@ -180,10 +197,9 @@
   function cmpBySettlement() {
     const m = new Map();
     for (const r of S.cmp || []) {
-      if (!m.has(r.settlement_id)) m.set(r.settlement_id, { sid: r.settlement_id, rows: [], off: 0, offAmt: 0, a2xCogs: 0, ourCogs: 0 });
+      if (!m.has(r.settlement_id)) m.set(r.settlement_id, { sid: r.settlement_id, rows: [], off: 0, offAmt: 0 });
       const x = m.get(r.settlement_id); x.rows.push(r);
-      if (r.kind === "cogs") { if (r.a2x > 0) x.a2xCogs += r.a2x; if (r.ours > 0) x.ourCogs += r.ours; }
-      else if (!near0(r.diff)) { x.off++; x.offAmt += Math.abs(r.diff); }
+      if (!near0(r.diff)) { x.off++; x.offAmt += Math.abs(r.diff); }
     }
     const info = new Map(S.rows.map(r => [r.settlement_id, r]));
     return [...m.values()].map(x => ({ ...x, s: info.get(x.sid) || {} })).sort((a, b) => String(b.s.end_at).localeCompare(String(a.s.end_at)));
@@ -196,24 +212,22 @@
     const list = cmpBySettlement();
     if (!list.length) { box.innerHTML = `<div class="empty">No A2X entries read yet${todo ? ` — use “Read A2X entries” (${todo} settlement${todo > 1 ? "s" : ""} A2X posted)` : ""}.</div>`; return; }
     const matched = list.filter(x => !x.off).length;
-    const a2xC = list.reduce((a, x) => a + x.a2xCogs, 0), ourC = list.reduce((a, x) => a + x.ourCogs, 0);
     const worst = list.reduce((a, x) => x.offAmt > a.offAmt ? x : a, { offAmt: 0 });
     const card = (cls, k, v, s2) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s2}</span></div>`;
     let h = `<section class="cards">${[
       card("", "Settlements compared", String(list.length), `of ${todo} A2X posted`),
       card(matched === list.length ? "green" : "amber", "Payout entries match", `${matched} / ${list.length}`, "every account to the cent"),
       card(worst.offAmt ? "amber" : "", "Biggest difference", worst.offAmt ? fmt(worst.offAmt, worst.s?.currency) : "none", worst.offAmt ? `${esc(FLAG[worst.s.market] || "")} ${day(worst.s.start_at)} – ${day(worst.s.end_at)}` : "payout lines"),
-      card(Math.abs(ourC - a2xC) > 1 ? "amber" : "", "Cost of goods", short(ourC - a2xC), `Seller Sage ${short(ourC)} vs A2X ${short(a2xC)} (${a2xC ? ((ourC / a2xC - 1) * 100).toFixed(1) : "0"}%)`),
     ].join("")}</section>`;
     // by settlement
-    h += `<table class="cmp"><thead><tr><th>Settlement</th><th class="n">Payout</th><th>Payout entry</th><th class="n">COGS · A2X</th><th class="n">COGS · Seller Sage</th><th class="n">Difference</th></tr></thead><tbody>`;
+    h += `<table class="cmp"><thead><tr><th>Settlement</th><th class="n">Payout</th><th>Payout entry</th></tr></thead><tbody>`;
     for (const x of list) {
-      const s = x.s, dc = x.ourCogs - x.a2xCogs;
+      const s = x.s;
       h += `<tr class="row${S.cmpOpen === x.sid ? " sel" : ""}" data-cmp="${esc(x.sid)}"><td><b>${esc(FLAG[s.market] || s.market || "")}</b> ${day(s.start_at)} – ${day(s.end_at, true)}<div class="m">#${esc(x.sid)}</div></td>
         <td class="n">${s.total != null ? fmt(s.total, s.currency) : ""}</td>
         <td>${x.off ? `<span class="pill soon">${x.off} account${x.off > 1 ? "s" : ""} off · ${fmt(x.offAmt, s.currency)}</span>` : '<span class="pill paid">matches</span>'}</td>
-        <td class="n">${fmt(x.a2xCogs)}${perUnit(x.a2xCogs, s.units)}</td><td class="n">${fmt(x.ourCogs)}${perUnit(x.ourCogs, s.units)}</td><td class="n ${Math.abs(dc) > 1 ? "negt" : ""}">${fmt(dc)}${x.a2xCogs ? `<div class="m">${((x.ourCogs / x.a2xCogs - 1) * 100).toFixed(1)}%</div>` : ""}</td></tr>`;
-      if (S.cmpOpen === x.sid) h += `<tr class="detail"><td colspan="6">${cmpDetail(x)}</td></tr>`;
+</tr>`;
+      if (S.cmpOpen === x.sid) h += `<tr class="detail"><td colspan="3">${cmpDetail(x)}</td></tr>`;
     }
     h += `</tbody></table>`;
     // by account, all settlements (payout entries; amounts in each settlement's own currency are converted to USD at its rate)
@@ -224,14 +238,13 @@
       const a = acc.get(k) || { k, a2x: 0, ours: 0, off: 0 };
       a.a2x += r.a2x * fx; a.ours += r.ours * fx; if (!near0(r.diff)) a.off++; acc.set(k, a);
     }
-    h += `<h3 class="cmp-h">All ${list.length} settlements by account <span class="m">(in USD; Mexico and Canada at each payout's rate)</span></h3><table class="cmp"><thead><tr><th>Account</th><th class="n">A2X</th><th class="n">Seller Sage</th><th class="n">Difference</th><th class="n">Settlements off</th></tr></thead><tbody>`;
+    h += `<h3 class="cmp-h">All ${list.length} payouts by account <span class="m">(in USD; Mexico and Canada at each payout's rate)</span></h3><table class="cmp"><thead><tr><th>Account</th><th class="n">A2X</th><th class="n">Seller Sage</th><th class="n">Difference</th><th class="n">Settlements off</th></tr></thead><tbody>`;
     for (const a of [...acc.values()].sort((a, b) => a.k.localeCompare(b.k))) {
       const d = a.ours - a.a2x;
       h += `<tr><td>${esc(a.k)}</td><td class="n">${fmt(a.a2x)}</td><td class="n">${fmt(a.ours)}</td><td class="n ${near0(d) ? "" : "negt"}">${near0(d) ? "—" : fmt(d)}</td><td class="n">${a.off || "—"}</td></tr>`;
     }
     box.innerHTML = h + `</tbody></table>`;
   }
-  const perUnit = (v, u) => +u ? `<div class="m">${fmt(v / +u)} a unit · ${(+u).toLocaleString()} units</div>` : "";
   function cmpDetail(x) {
     const cur = x.s.currency;
     const rows = x.rows.slice().sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "cogs" ? 1 : -1) || Math.abs(b.diff) - Math.abs(a.diff) || a.account.localeCompare(b.account));
@@ -283,20 +296,12 @@
     FIN.download(`a2x-vs-seller-sage-${new Date().toISOString().slice(0, 10)}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
   }
 
-  // ---------- per-SKU cost check: A2X's cost per SKU (its COGS export, uploaded here) against the cost Seller Sage uses,
-  // weighted by units sold in the settlements A2X posted (fin.v_amz_sku_check); the file is checked by rebuilding A2X's
-  // posted cost of goods from it (fin.v_amz_a2x_cost_fit)
+  // ---------- product costs: Seller Sage's cost (the Amazon mapping) for every SKU sold in the payouts on the page — what
+  // each payout's cost of goods is made of (fin.v_amz_sku_costs)
   async function loadSku(refresh) {
     try {
-      const [rows, fit, info] = await Promise.all([
-        FIN.sql("select sku, units, settlements, fulfillment, a2x_cost, in_a2x, a2x_name, our_cost, map_units, our_name, shopify_unit_cost, diff_per_unit, impact from fin.v_amz_sku_check", refresh),
-        FIN.sql("select settlement_id, market, start_at, end_at, a2x_posted, from_file, seller_sage from fin.v_amz_a2x_cost_fit order by end_at desc", refresh),
-        FIN.sql("select count(*) as n, count(cost) as costed, max(uploaded_at) as at, max(file) as file, max(uploaded_by) as by from fin.v_a2x_costs", refresh),
-      ]);
-      const n = (v) => v == null ? null : +v;
-      S.sku = rows.map(r => ({ ...r, units: +r.units, a2x_cost: n(r.a2x_cost), our_cost: n(r.our_cost), diff_per_unit: n(r.diff_per_unit), impact: +r.impact }));
-      S.skuFit = fit.map(r => ({ ...r, a2x_posted: +r.a2x_posted, from_file: +r.from_file, seller_sage: +r.seller_sage }));
-      S.skuInfo = info[0] && +info[0].n ? info[0] : null; S.skuErr = null;
+      const rows = await FIN.sql("select sku, units, settlements, markets, fulfillment, cost, map_units, name, shopify_unit_cost, cogs from fin.v_amz_sku_costs", refresh);
+      S.sku = rows.map(r => ({ ...r, units: +r.units, cost: r.cost == null ? null : +r.cost, cogs: r.cogs == null ? null : +r.cogs })); S.skuErr = null;
     } catch (e) { S.skuErr = e; }
     skuCheck();
   }
@@ -304,97 +309,36 @@
     const box = $("az-sku"); if (!box) return;
     if (S.skuErr) { box.innerHTML = `<div class="note bad">Couldn't load: ${esc(S.skuErr.message || S.skuErr)}</div>`; return; }
     if (!S.sku) { box.innerHTML = `<div class="m">Loading…</div>`; return; }
-    const I = S.skuInfo, rows = S.sku;
+    const rows = S.sku, none = rows.filter(r => r.cost == null);
     const card = (cls, k, v, s2) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s2}</span></div>`;
-    let h = "";
-    if (!I) {
-      h += `<div class="note">Upload A2X's cost file to compare SKU by SKU: in A2X, export Cost of Goods Sold (the CSV with <code>sku, cost, name, fnsku, last-seen</code>) and drop it into “Upload A2X costs”. Until then the table shows Seller Sage's cost for every SKU sold in the settlements A2X posted.</div>`;
-    } else {
-      const posted = S.skuFit.reduce((a, r) => a + r.a2x_posted, 0), file = S.skuFit.reduce((a, r) => a + r.from_file, 0), ours = S.skuFit.reduce((a, r) => a + r.seller_sage, 0);
-      const fitPct = posted ? (file / posted - 1) * 100 : 0;
-      const differ = rows.filter(r => r.a2x_cost != null && r.our_cost != null && Math.abs(r.diff_per_unit) >= 0.01);
-      const missing = rows.filter(r => r.a2x_cost == null);
-      const top = rows.slice().sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact))[0];
-      h += `<section class="cards">${[
-        card("", "A2X costs loaded", Number(I.costed).toLocaleString(), `of ${Number(I.n).toLocaleString()} SKUs in ${esc(I.file || "the file")} · ${day(I.at, true)}`),
-        card(Math.abs(fitPct) < 1 ? "green" : "amber", "File vs A2X's postings", (fitPct >= 0 ? "+" : "−") + Math.abs(fitPct).toFixed(1) + "%", `units × these costs ${short(file)} vs A2X posted ${short(posted)}${Math.abs(fitPct) < 1 ? " — it's the cost list A2X used" : " — A2X may have used other costs then"}`),
-        card(differ.length ? "amber" : "green", "SKUs that differ", String(differ.length), `${missing.length} sold SKU${missing.length === 1 ? "" : "s"} with no A2X cost`),
-        card("", "Seller Sage vs this file", short(ours - file), top ? `biggest: ${esc(top.sku)} ${short(top.impact)}` : ""),
-      ].join("")}</section>`;
-    }
-    // filters
+    const units = rows.reduce((a, r) => a + r.units, 0), cogs = rows.reduce((a, r) => a + (r.cogs || 0), 0);
+    let h = `<section class="cards">${[
+      card("", "SKUs sold", rows.length.toLocaleString(), `${units.toLocaleString()} units in ${S.rows.length} payouts`),
+      card("", "Cost of goods", short(cogs), `${units ? fmt(cogs / units) : "—"} a unit on average`),
+      card(none.length ? "red" : "green", "SKUs with no cost", String(none.length), none.length ? `${none.reduce((a, r) => a + r.units, 0).toLocaleString()} units left out of cost of goods — set them in the Amazon mapping` : "every SKU sold has a cost"),
+    ].join("")}</section>`;
     const q = S.skuQ;
-    const keep = (r) => {
-      if (q && !`${r.sku} ${r.our_name || ""} ${r.a2x_name || ""}`.toLowerCase().includes(q)) return false;
-      if (!I || S.skuF === "all") return true;
-      if (S.skuF === "diff") return r.a2x_cost == null || r.our_cost == null || Math.abs(r.diff_per_unit) >= 0.01;
-      if (S.skuF === "missing") return r.a2x_cost == null;
-      if (S.skuF === "higher") return r.diff_per_unit >= 0.01;
-      if (S.skuF === "lower") return r.diff_per_unit <= -0.01;
-      return true;
-    };
-    const list = rows.filter(keep).sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact) || b.units - a.units);
-    const tabs = [["diff", "Different"], ["higher", "Seller Sage higher"], ["lower", "Seller Sage lower"], ["missing", "Not in A2X"], ["all", "All"]];
-    h += `<div class="filters az-sku-f">${I ? `<div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" data-skuf="${k}" aria-selected="${S.skuF === k}">${l}</button>`).join("")}</div>` : ""}
+    const list = rows.filter(r => (S.skuF !== "none" || r.cost == null) && (!q || `${r.sku} ${r.name || ""}`.toLowerCase().includes(q)))
+      .sort((a, b) => (b.cogs || 0) - (a.cogs || 0) || b.units - a.units);
+    h += `<div class="filters az-sku-f"><div class="tabs" role="tablist">${[["all", "All"], ["none", `No cost (${none.length})`]].map(([k, l]) => `<button role="tab" data-skuf="${k}" aria-selected="${S.skuF === k}">${l}</button>`).join("")}</div>
       <input id="az-sku-q" type="search" placeholder="Search SKU or product" value="${esc(S.skuQ)}"></div>`;
-    h += `<table class="cmp"><thead><tr><th>SKU</th><th>Product</th><th class="n">Units sold</th><th class="n">A2X cost</th><th class="n">Seller Sage cost</th><th class="n">Difference a unit</th><th class="n">Difference × units</th></tr></thead><tbody>`;
+    h += `<table class="cmp"><thead><tr><th>SKU</th><th>Product</th><th class="n">Units sold</th><th class="n">Cost a unit</th><th class="n">Cost of goods</th></tr></thead><tbody>`;
     for (const r of list.slice(0, S.skuShown)) {
-      const d = r.diff_per_unit;
-      h += `<tr><td><b>${esc(r.sku)}</b><div class="m">${esc(r.fulfillment || "")}${+r.map_units > 1 ? ` · ${+r.map_units}-pack` : ""}</div></td>
-        <td>${esc(r.our_name || r.a2x_name || "")}${r.our_name && r.a2x_name && r.a2x_name !== r.our_name ? `<div class="m">A2X: ${esc(r.a2x_name)}</div>` : ""}</td>
-        <td class="n">${r.units.toLocaleString()}</td>
-        <td class="n">${!I ? "—" : r.a2x_cost == null ? (r.in_a2x ? '<span class="pill soon">no cost</span>' : '<span class="pill soon">not in A2X</span>') : fmt(r.a2x_cost)}</td>
-        <td class="n">${r.our_cost == null ? '<span class="pill over">no cost</span>' : fmt(r.our_cost)}${+r.map_units > 1 && r.shopify_unit_cost != null ? `<div class="m">${+r.map_units} × ${fmt(r.shopify_unit_cost)}</div>` : ""}</td>
-        <td class="n ${d > 0.005 ? "negt" : ""}">${d == null ? "—" : Math.abs(d) < 0.01 ? "same" : fmt(d)}${d != null && r.a2x_cost ? `<div class="m">${((d / r.a2x_cost) * 100).toFixed(0)}%</div>` : ""}</td>
-        <td class="n ${r.impact > 0.5 ? "negt" : ""}">${I ? (Math.abs(r.impact) < 0.5 ? "—" : fmt(r.impact)) : "—"}</td></tr>`;
+      h += `<tr><td><b>${esc(r.sku)}</b><div class="m">${esc(r.markets || "")} · ${esc(r.fulfillment || "")}${+r.map_units && +r.map_units !== 1 ? ` · ${+r.map_units} × Shopify unit` : ""}</div></td>
+        <td>${esc(r.name || "")}</td><td class="n">${r.units.toLocaleString()}</td>
+        <td class="n">${r.cost == null ? '<span class="pill over">no cost</span>' : fmt(r.cost)}${+r.map_units && +r.map_units !== 1 && r.shopify_unit_cost != null ? `<div class="m">${+r.map_units} × ${fmt(r.shopify_unit_cost)}</div>` : ""}</td>
+        <td class="n">${r.cogs == null ? "—" : fmt(r.cogs)}</td></tr>`;
     }
     h += `</tbody></table>`;
     if (list.length > S.skuShown) h += `<div class="foot"><span>${list.length - S.skuShown} more</span><button class="btn small" type="button" data-skumore>Show more</button></div>`;
-    if (I && S.skuFit.length) {
-      h += `<h3 class="cmp-h">Does the file match what A2X posted? <span class="m">units sold × the file's costs, per settlement</span></h3><table class="cmp"><thead><tr><th>Settlement</th><th class="n">A2X posted</th><th class="n">From the file</th><th class="n">Off by</th><th class="n">Seller Sage</th></tr></thead><tbody>`;
-      for (const r of S.skuFit) {
-        const off = r.from_file - r.a2x_posted;
-        h += `<tr><td>${esc(FLAG[r.market] || r.market)} ${day(r.start_at)} – ${day(r.end_at, true)}</td><td class="n">${fmt(r.a2x_posted)}</td><td class="n">${fmt(r.from_file)}</td>
-          <td class="n ${Math.abs(off) > 1 ? "negt" : ""}">${Math.abs(off) < 0.5 ? "—" : fmt(off)}${r.a2x_posted ? `<div class="m">${((off / r.a2x_posted) * 100).toFixed(1)}%</div>` : ""}</td><td class="n">${fmt(r.seller_sage)}</td></tr>`;
-      }
-      h += `</tbody></table>`;
-    }
     box.innerHTML = h;
-  }
-  function parseCsv(text) {
-    const rows = []; let row = [], f = "", q = false;
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; continue; }
-      if (c === '"') q = true; else if (c === ",") { row.push(f); f = ""; } else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(f); rows.push(row); row = []; f = ""; } else f += c;
-    }
-    if (f !== "" || row.length) { row.push(f); rows.push(row); }
-    return rows.filter(r => r.some(x => x.trim() !== ""));
-  }
-  async function uploadA2x(file) {
-    const st = $("az-sku-st");
-    try {
-      const rows = parseCsv((await file.text()).replace(/^﻿/, ""));
-      const H = rows[0].map(h => h.trim().toLowerCase());
-      const ix = (...ns) => H.findIndex(h => ns.includes(h));
-      const iS = ix("sku", "seller-sku", "seller sku", "msku"), iC = ix("cost", "unit cost", "cogs", "cost per unit"), iN = ix("name", "title", "product");
-      if (iS < 0 || iC < 0) throw new Error("the file needs sku and cost columns");
-      const data = rows.slice(1).map(r => ({ sku: (r[iS] || "").trim(), cost: (r[iC] || "").trim(), name: iN >= 0 ? (r[iN] || "").trim() : "" })).filter(r => r.sku);
-      if (!data.some(r => r.cost)) throw new Error("no costs in the file — every cost is blank (is it the empty A2X template?)");
-      st.textContent = `Saving ${data.length} SKUs…`;
-      const batch = Date.now();   // one upload = one batch, however many calls it takes
-      for (let i = 0; i < data.length; i += 1000) await FIN.write("fin_a2x_costs_save", { p: { file: file.name, batch, rows: data.slice(i, i + 1000) } });
-      st.textContent = ""; note("", `Loaded A2X costs for ${data.filter(r => r.cost).length} SKUs from ${esc(file.name)}.`);
-      await loadSku(true);
-    } catch (e) { st.textContent = ""; note("bad", "Couldn't read the file: " + esc(e.message || e)); }
   }
   function exportSku() {
     if (!S.sku) return;
     const q = (v) => /[",\n]/.test(String(v ?? "")) ? `"${String(v).replace(/"/g, '""')}"` : (v ?? "");
-    const lines = [["sku", "product", "units_sold", "a2x_cost", "seller_sage_cost", "map_units", "difference_per_unit", "difference_x_units"]];
-    for (const r of S.sku.slice().sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact)))
-      lines.push([r.sku, r.our_name || r.a2x_name || "", r.units, r.a2x_cost ?? "", r.our_cost ?? "", r.map_units ?? "", r.diff_per_unit == null ? "" : r.diff_per_unit.toFixed(2), r.impact.toFixed(2)]);
-    FIN.download(`amazon-sku-costs-a2x-vs-seller-sage-${new Date().toISOString().slice(0, 10)}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
+    const lines = [["sku", "product", "markets", "fulfillment", "units_sold", "cost_per_unit", "map_units", "cost_of_goods"]];
+    for (const r of S.sku.slice().sort((a, b) => (b.cogs || 0) - (a.cogs || 0))) lines.push([r.sku, r.name || "", r.markets || "", r.fulfillment || "", r.units, r.cost ?? "", r.map_units ?? "", r.cogs ?? ""]);
+    FIN.download(`amazon-product-costs-${new Date().toISOString().slice(0, 10)}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
   }
 
   // ---------- actions
@@ -435,7 +379,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const main = $("amz");
     main.addEventListener("click", (ev) => {
-      const f = ev.target.closest("[data-filter]"); if (f) { S.filter = f.dataset.filter; render(); return; }
+      if (ev.target.closest("[data-postedmore]")) { S.postedShown = 1e9; table(); return; }
       const a = ev.target.closest("[data-ask]"); if (a) { S.confirm = a.dataset.ask; table(); return; }
       if (ev.target.closest("[data-cancel]")) { S.confirm = null; table(); return; }
       const p = ev.target.closest("[data-post]"); if (p) { postIt(p.dataset.post); return; }
@@ -449,7 +393,6 @@
       const r = ev.target.closest("tr[data-sid]"); if (r) openEntry(r.dataset.sid);
     });
     main.addEventListener("input", (ev) => { if (ev.target.id === "az-sku-q") { S.skuQ = ev.target.value.trim().toLowerCase(); const pos = ev.target.selectionStart; skuCheck(); const el = $("az-sku-q"); el.focus(); el.setSelectionRange(pos, pos); } });
-    $("az-sku-file").addEventListener("change", (ev) => { const f = ev.target.files[0]; if (f) uploadA2x(f); ev.target.value = ""; });
     $("az-sku-csv").addEventListener("click", exportSku);
     main.addEventListener("change", (ev) => { const s = ev.target.closest("select[data-map]"); if (s) setMap(JSON.parse(s.dataset.map), s.value); });
     $("az-q").addEventListener("input", (ev) => { S.mapQ = ev.target.value.trim().toLowerCase(); mapping(); });

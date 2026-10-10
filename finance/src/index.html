@@ -212,21 +212,25 @@
     <div id="az-note" class="note" hidden></div>
     <section class="cards" id="az-cards" aria-label="Amazon payouts summary"></section>
     <section class="panel">
-      <div class="panel-h wrap"><h2>Settlements</h2><span class="hint">Click one to see the journal entries it becomes · one entry per month it covers, plus cost of goods</span></div>
+      <div class="panel-h wrap"><h2>To post</h2><span class="hint">Payouts not in QuickBooks yet · click one for the journal entries it becomes (one per month it covers, plus cost of goods) and Send to QuickBooks</span></div>
       <div class="tbl" id="az-table"></div>
     </section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Posted</h2><span class="hint">Payouts already in QuickBooks — by Seller Sage, or by A2X before the switch · click one to see its entries</span></div>
+      <div class="tbl" id="az-posted"></div>
+    </section>
     <section class="panel" id="az-cmp-panel">
-      <div class="panel-h wrap"><h2>A2X vs Seller Sage</h2>
+      <div class="panel-h wrap"><h2>A2X vs Seller Sage · payout entries</h2>
         <div class="filters"><button class="btn small" type="button" id="az-cmp-read">Read A2X entries</button><button class="btn small" type="button" id="az-cmp-csv">Export CSV</button></div>
       </div>
-      <div class="hint">For settlements A2X posted: A2X's journal entries from QuickBooks against the entries Seller Sage builds for the same settlement — by account, and line by line when you click an account.</div>
+      <div class="hint">For payouts A2X posted: A2X's payout entries in QuickBooks against the ones Seller Sage builds for the same payout — by account, and line by line when you click an account. (Cost of goods uses Seller Sage's costs; see Product costs.)</div>
       <div id="az-cmp"></div>
     </section>
     <section class="panel" id="az-sku-panel">
-      <div class="panel-h wrap"><h2>Per-SKU cost check</h2>
-        <div class="filters"><span class="m" id="az-sku-st"></span><label class="btn small az-up">Upload A2X costs<input id="az-sku-file" type="file" accept=".csv,text/csv" hidden></label><button class="btn small" type="button" id="az-sku-csv">Export CSV</button></div>
+      <div class="panel-h wrap"><h2>Product costs</h2>
+        <div class="filters"><button class="btn small" type="button" id="az-sku-csv">Export CSV</button></div>
       </div>
-      <div class="hint">A2X's cost for each SKU against the cost Seller Sage uses (the Amazon mapping), for the units sold in the settlements A2X posted — biggest dollar difference first.</div>
+      <div class="hint">Seller Sage's cost for every SKU sold in the payouts above (from the Amazon mapping) — what each payout's cost of goods is made of, biggest first.</div>
       <div id="az-sku"></div>
     </section>
     <section class="panel" id="az-map-panel">

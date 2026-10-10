@@ -290,3 +290,11 @@ tr.rev td{background:var(--amber-bg)}
 .az-sku-f{justify-content:space-between;align-items:center;margin:4px 0 8px}
 .az-sku-f input{font:13px var(--sans);padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink);min-width:220px}
 label.az-up{display:inline-flex;align-items:center;cursor:pointer}
+#az-table,#az-posted{max-height:none}
+table.az-pay td,table.az-pay th{padding:8px 9px;font-size:13px}
+table.az-pay td .m{font-size:11px;color:var(--muted)}
+table.az-pay tr.sel td{background:var(--rule2)}
+table.az-pay tfoot td{border-top:2px solid var(--rule)}
+table.az-pay th{font-size:10px;letter-spacing:.04em;white-space:normal;vertical-align:bottom}
+table.az-pay td:first-child{white-space:nowrap}
+table.az-pay td.n{white-space:nowrap}
