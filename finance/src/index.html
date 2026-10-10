@@ -43,6 +43,7 @@
       <a href="#cash" data-page="cash"><span class="ico">◎</span>Cash flow</a>
       <a href="#fba" data-page="fba"><span class="ico">▤</span>FBA forecast</a>
       <a href="#profit" data-page="profit"><span class="ico">≡</span>Profit</a>
+      <a href="#amz" data-page="amz"><span class="ico">a</span>Amazon payouts</a>
     </nav>
     <div class="side-foot">
       <a class="xlink" href="https://dashboard.andersenlifestyle.com" target="_blank" rel="noopener">Sales dashboard ↗</a>
@@ -196,6 +197,32 @@
       </details>
     </section>
   </main>
+  <main class="main" id="amz" hidden>
+    <header class="head">
+      <div>
+        <div class="eyebrow">Amazon settlements → QuickBooks journal entries</div>
+        <h1>Amazon payouts</h1>
+        <div class="sub" id="az-sub">Loading…</div>
+      </div>
+      <div class="head-actions cf-start">
+        <button class="btn" type="button" id="az-check">Check QuickBooks</button>
+        <button class="btn" type="button" id="az-refresh">Refresh from Amazon</button>
+      </div>
+    </header>
+    <div id="az-note" class="note" hidden></div>
+    <section class="cards" id="az-cards" aria-label="Amazon payouts summary"></section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Settlements</h2><span class="hint">Click one to see the journal entries it becomes · one entry per month it covers, plus cost of goods</span></div>
+      <div class="tbl" id="az-table"></div>
+    </section>
+    <section class="panel" id="az-map-panel">
+      <div class="panel-h wrap"><h2>Mapping</h2>
+        <div class="filters"><input id="az-q" type="search" placeholder="Search amounts or accounts" aria-label="Search mapping"></div>
+      </div>
+      <div class="hint">Every kind of amount in the settlements and the QuickBooks account it goes to (set up the way A2X posted them). Change an account and settlements not yet posted use it.</div>
+      <div class="tbl" id="az-map"></div>
+    </section>
+  </main>
 </div>
 
 <script>
@@ -212,6 +239,9 @@
 </script>
 <script>
 <!-- @inline profit.js -->
+</script>
+<script>
+<!-- @inline amzpay.js -->
 </script>
 </body>
 </html>

@@ -79,9 +79,9 @@
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   }
   async function write(fn, args) { const v = await rpc(fn, args); cache.clear(); return v; }
-  window.FIN = { ready, sql, fn, write, download, clear: () => cache.clear() };
-  // pages: #payables (default), #cash, #fba, #profit
-  const PAGES = ["payables", "cash", "fba", "profit"];
+  window.FIN = { ready, sql, fn, write, rpc, download, clear: () => cache.clear() };
+  // pages: #payables (default), #cash, #fba, #profit, #amz
+  const PAGES = ["payables", "cash", "fba", "profit", "amz"];
   function route() {
     const h = (location.hash || "#payables").slice(1), page = PAGES.includes(h) ? h : "payables";
     for (const id of PAGES) document.getElementById(id).hidden = id !== page;
