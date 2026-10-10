@@ -274,3 +274,11 @@ tr.rev td{background:var(--amber-bg)}
 #az-map select{padding:4px 6px;font-size:13px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink);max-width:280px}
 #az-map td{vertical-align:middle}
 #amz .note + .note{margin-top:-8px}
+#az-cmp table.cmp td,#az-cmp table.cmp th{padding:7px 10px}
+#az-cmp table.cmp tr.sel td{background:var(--rule2)}
+#az-cmp .cards{margin-bottom:12px}
+#az-cmp .cmp-h{font:600 13px var(--sans);margin:18px 0 6px}
+#az-cmp .cmp-h .m{font-weight:400;font-size:12px;color:var(--muted)}
+#az-cmp td .m{font-size:12px;color:var(--muted)}
+#az-cmp table.az-lines tr.row{cursor:pointer}
+#az-cmp .det table td{padding:3px 8px 3px 0;font-size:12px}

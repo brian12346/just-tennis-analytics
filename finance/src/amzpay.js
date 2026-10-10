@@ -11,7 +11,8 @@
   const QBO_JE = (id) => `https://qbo.intuit.com/app/journal?txnId=${encodeURIComponent(id)}`;
   const FLAG = { US: "US", CA: "Canada", MX: "Mexico" };
 
-  const S = { loaded: false, loading: false, err: null, rows: [], groups: [], map: [], seen: [], coa: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, filter: "todo", mapQ: "" };
+  const S = { loaded: false, loading: false, err: null, rows: [], groups: [], map: [], seen: [], coa: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, filter: "todo", mapQ: "",
+    cmp: null, cmpLoading: false, cmpErr: null, cmpOpen: null, cmpAcct: null, cmpLines: null };
 
   async function load(refresh) {
     S.loading = true; render();
@@ -54,7 +55,7 @@
     if (!S.loaded) { $("az-sub").textContent = S.loading ? "Loading…" : ""; return; }
     const last = S.rows.reduce((a, r) => r.synced_at > a ? r.synced_at : a, "");
     $("az-sub").textContent = last ? `Settlements from Amazon as of ${new Date(last).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · updates every morning` : "No settlements yet — use Refresh from Amazon";
-    cards(); table(); mapping();
+    cards(); table(); mapping(); compare();
   }
   function cards() {
     const card = (cls, k, v, s, f) => `<button type="button" class="card ${cls}${S.filter === f ? " on" : ""}" data-filter="${f}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></button>`;
@@ -164,6 +165,123 @@
     S.busy = ""; mapping();
   }
 
+  // ---------- A2X vs Seller Sage: A2X's entries (read from QuickBooks into fin.amz_a2x_lines) against the entries Seller
+  // Sage builds for the same settlements, by account (fin.v_amz_compare) and, for one account, line by line
+  async function loadCompare(refresh) {
+    S.cmpLoading = true; compare();
+    try {
+      const rows = await FIN.sql("select settlement_id, kind, account, a2x, ours, diff, a2x_lines, our_lines from fin.v_amz_compare", refresh);
+      S.cmp = rows.map(r => ({ ...r, a2x: +r.a2x, ours: +r.ours, diff: +r.diff })); S.cmpErr = null;
+    } catch (e) { S.cmpErr = e; }
+    S.cmpLoading = false; compare();
+  }
+  const near0 = (v) => Math.abs(v) < 0.005;
+  function cmpBySettlement() {
+    const m = new Map();
+    for (const r of S.cmp || []) {
+      if (!m.has(r.settlement_id)) m.set(r.settlement_id, { sid: r.settlement_id, rows: [], off: 0, offAmt: 0, a2xCogs: 0, ourCogs: 0 });
+      const x = m.get(r.settlement_id); x.rows.push(r);
+      if (r.kind === "cogs") { if (r.a2x > 0) x.a2xCogs += r.a2x; if (r.ours > 0) x.ourCogs += r.ours; }
+      else if (!near0(r.diff)) { x.off++; x.offAmt += Math.abs(r.diff); }
+    }
+    const info = new Map(S.rows.map(r => [r.settlement_id, r]));
+    return [...m.values()].map(x => ({ ...x, s: info.get(x.sid) || {} })).sort((a, b) => String(b.s.end_at).localeCompare(String(a.s.end_at)));
+  }
+  function compare() {
+    const box = $("az-cmp"); if (!box) return;
+    const todo = S.rows.filter(r => r.a2x_docs.length).length;
+    if (S.cmpErr) { box.innerHTML = `<div class="note bad">Couldn't load the comparison: ${esc(S.cmpErr.message || S.cmpErr)}</div>`; return; }
+    if (!S.cmp) { box.innerHTML = `<div class="m">${S.cmpLoading ? "Comparing…" : ""}</div>`; return; }
+    const list = cmpBySettlement();
+    if (!list.length) { box.innerHTML = `<div class="empty">No A2X entries read yet${todo ? ` — use “Read A2X entries” (${todo} settlement${todo > 1 ? "s" : ""} A2X posted)` : ""}.</div>`; return; }
+    const matched = list.filter(x => !x.off).length;
+    const a2xC = list.reduce((a, x) => a + x.a2xCogs, 0), ourC = list.reduce((a, x) => a + x.ourCogs, 0);
+    const worst = list.reduce((a, x) => x.offAmt > a.offAmt ? x : a, { offAmt: 0 });
+    const card = (cls, k, v, s2) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s2}</span></div>`;
+    let h = `<section class="cards">${[
+      card("", "Settlements compared", String(list.length), `of ${todo} A2X posted`),
+      card(matched === list.length ? "green" : "amber", "Payout entries match", `${matched} / ${list.length}`, "every account to the cent"),
+      card(worst.offAmt ? "amber" : "", "Biggest difference", worst.offAmt ? fmt(worst.offAmt, worst.s?.currency) : "none", worst.offAmt ? `${esc(FLAG[worst.s.market] || "")} ${day(worst.s.start_at)} – ${day(worst.s.end_at)}` : "payout lines"),
+      card(Math.abs(ourC - a2xC) > 1 ? "amber" : "", "Cost of goods", short(ourC - a2xC), `Seller Sage ${short(ourC)} vs A2X ${short(a2xC)} (${a2xC ? ((ourC / a2xC - 1) * 100).toFixed(1) : "0"}%)`),
+    ].join("")}</section>`;
+    // by settlement
+    h += `<table class="cmp"><thead><tr><th>Settlement</th><th class="n">Payout</th><th>Payout entry</th><th class="n">COGS · A2X</th><th class="n">COGS · Seller Sage</th><th class="n">Difference</th></tr></thead><tbody>`;
+    for (const x of list) {
+      const s = x.s, dc = x.ourCogs - x.a2xCogs;
+      h += `<tr class="row${S.cmpOpen === x.sid ? " sel" : ""}" data-cmp="${esc(x.sid)}"><td><b>${esc(FLAG[s.market] || s.market || "")}</b> ${day(s.start_at)} – ${day(s.end_at, true)}<div class="m">#${esc(x.sid)}</div></td>
+        <td class="n">${s.total != null ? fmt(s.total, s.currency) : ""}</td>
+        <td>${x.off ? `<span class="pill soon">${x.off} account${x.off > 1 ? "s" : ""} off · ${fmt(x.offAmt, s.currency)}</span>` : '<span class="pill paid">matches</span>'}</td>
+        <td class="n">${fmt(x.a2xCogs)}${perUnit(x.a2xCogs, s.units)}</td><td class="n">${fmt(x.ourCogs)}${perUnit(x.ourCogs, s.units)}</td><td class="n ${Math.abs(dc) > 1 ? "negt" : ""}">${fmt(dc)}${x.a2xCogs ? `<div class="m">${((x.ourCogs / x.a2xCogs - 1) * 100).toFixed(1)}%</div>` : ""}</td></tr>`;
+      if (S.cmpOpen === x.sid) h += `<tr class="detail"><td colspan="6">${cmpDetail(x)}</td></tr>`;
+    }
+    h += `</tbody></table>`;
+    // by account, all settlements (payout entries; amounts in each settlement's own currency are converted to USD at its rate)
+    const acc = new Map(), info = new Map(S.rows.map(r => [r.settlement_id, r]));
+    for (const r of S.cmp) {
+      const fx = r.kind === "cogs" ? 1 : (info.get(r.settlement_id)?.fx || 1);
+      const k = (r.kind === "cogs" ? "Cost of goods · " : "") + r.account;
+      const a = acc.get(k) || { k, a2x: 0, ours: 0, off: 0 };
+      a.a2x += r.a2x * fx; a.ours += r.ours * fx; if (!near0(r.diff)) a.off++; acc.set(k, a);
+    }
+    h += `<h3 class="cmp-h">All ${list.length} settlements by account <span class="m">(in USD; Mexico and Canada at each payout's rate)</span></h3><table class="cmp"><thead><tr><th>Account</th><th class="n">A2X</th><th class="n">Seller Sage</th><th class="n">Difference</th><th class="n">Settlements off</th></tr></thead><tbody>`;
+    for (const a of [...acc.values()].sort((a, b) => a.k.localeCompare(b.k))) {
+      const d = a.ours - a.a2x;
+      h += `<tr><td>${esc(a.k)}</td><td class="n">${fmt(a.a2x)}</td><td class="n">${fmt(a.ours)}</td><td class="n ${near0(d) ? "" : "negt"}">${near0(d) ? "—" : fmt(d)}</td><td class="n">${a.off || "—"}</td></tr>`;
+    }
+    box.innerHTML = h + `</tbody></table>`;
+  }
+  const perUnit = (v, u) => +u ? `<div class="m">${fmt(v / +u)} a unit · ${(+u).toLocaleString()} units</div>` : "";
+  function cmpDetail(x) {
+    const cur = x.s.currency;
+    const rows = x.rows.slice().sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "cogs" ? 1 : -1) || Math.abs(b.diff) - Math.abs(a.diff) || a.account.localeCompare(b.account));
+    let h = `<table class="az-lines"><thead><tr><th>Entry</th><th>Account</th><th class="n">A2X</th><th class="n">Seller Sage</th><th class="n">Difference</th><th class="n">Lines (A2X / SS)</th></tr></thead><tbody>`;
+    for (const r of rows) {
+      const c = r.kind === "cogs" ? "USD" : cur, k = r.kind + "|" + r.account, open = S.cmpAcct === k;
+      h += `<tr class="row${near0(r.diff) ? "" : " rev"}" data-acct="${esc(k)}"><td class="m">${r.kind === "cogs" ? "cost of goods" : "payout"}</td><td>${open ? "▾" : "▸"} ${esc(r.account)}</td>
+        <td class="n">${fmt(r.a2x, c)}</td><td class="n">${fmt(r.ours, c)}</td><td class="n">${near0(r.diff) ? "—" : fmt(r.diff, c)}</td><td class="n m">${r.a2x_lines} / ${r.our_lines}</td></tr>`;
+      if (open) h += `<tr class="detail"><td colspan="6">${cmpLinesHtml(c)}</td></tr>`;
+    }
+    return h + `</tbody></table><div class="m">Amounts are debits (+) and credits (−). Click an account to see both sets of lines.</div>`;
+  }
+  function cmpLinesHtml(cur) {
+    const L = S.cmpLines;
+    if (!L) return `<div class="m">Loading lines…</div>`;
+    const col = (title, ls) => `<div><h3>${title}</h3><table>${ls.length ? ls.map(l => `<tr><td class="m">${esc(l.description || "—")}${l.doc ? `<div class="m">${esc(l.doc)}</div>` : ""}</td><td class="n">${fmt(l.amount, cur)}</td></tr>`).join("") : '<tr><td class="m">none</td></tr>'}</table></div>`;
+    return `<div class="det">${col("A2X", L.a2x)}${col("Seller Sage", L.ours)}</div>`;
+  }
+  async function openCmpAcct(k) {
+    if (S.cmpAcct === k) { S.cmpAcct = null; compare(); return; }
+    S.cmpAcct = k; S.cmpLines = null; compare();
+    const [kind, account] = [k.slice(0, k.indexOf("|")), k.slice(k.indexOf("|") + 1)];
+    const q = (v) => "'" + String(v).replace(/'/g, "''") + "'";
+    try {
+      const [a2x, ours] = await Promise.all([
+        FIN.sql(`select doc, description, amount from fin.amz_a2x_lines where settlement_id = ${q(S.cmpOpen)} and kind = ${q(kind)} and account = ${q(account)} and amount <> 0 order by abs(amount) desc`),
+        FIN.sql(`select doc, description, amount from fin.v_amz_ours_lines where settlement_id = ${q(S.cmpOpen)} and kind = ${q(kind)} and account = ${q(account)} order by abs(amount) desc`),
+      ]);
+      if (S.cmpAcct === k) S.cmpLines = { a2x: a2x.map(l => ({ ...l, amount: +l.amount })), ours: ours.map(l => ({ ...l, amount: +l.amount })) };
+    } catch (e) { S.cmpLines = { a2x: [], ours: [] }; note("bad", "Couldn't load the lines: " + esc(e.message || e)); }
+    compare();
+  }
+  async function readA2x() {
+    const b = $("az-cmp-read"); b.disabled = true; b.textContent = "Reading from QuickBooks…";
+    try {
+      let more = true, n = 0;
+      for (let i = 0; more && i < 6; i++) { const r = await call({ action: "a2x_lines" }, "QuickBooks"); n += r.read.length; more = r.more && r.read.length > 0; }
+      note("", `Read A2X's entries for ${n} settlement${n === 1 ? "" : "s"}.`);
+    } catch (e) { note("bad", "Couldn't read A2X's entries: " + esc(e.message || e)); }
+    b.disabled = false; b.textContent = "Read A2X entries";
+    FIN.clear(); await load(true); loadCompare(true);
+  }
+  function exportCmp() {
+    if (!S.cmp) return;
+    const info = new Map(S.rows.map(r => [r.settlement_id, r]));
+    const q = (v) => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v;
+    const lines = [["settlement_id", "market", "start", "end", "entry", "currency", "account", "a2x", "seller_sage", "difference"]];
+    for (const r of S.cmp) { const s = info.get(r.settlement_id) || {}; lines.push([r.settlement_id, s.market, String(s.start_at || "").slice(0, 10), String(s.end_at || "").slice(0, 10), r.kind, r.kind === "cogs" ? "USD" : s.currency, r.account, r.a2x.toFixed(2), r.ours.toFixed(2), r.diff.toFixed(2)]); }
+    FIN.download(`a2x-vs-seller-sage-${new Date().toISOString().slice(0, 10)}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
+  }
+
   // ---------- actions
   async function call(body, what) {
     const r = await FIN.fn("amzpay", body);
@@ -207,14 +325,19 @@
       if (ev.target.closest("[data-cancel]")) { S.confirm = null; table(); return; }
       const p = ev.target.closest("[data-post]"); if (p) { postIt(p.dataset.post); return; }
       const c = ev.target.closest("[data-csv]"); if (c) { exportCsv(c.dataset.csv); return; }
-      if (ev.target.closest("a, select, button, tr.detail")) return;
+      if (ev.target.closest("a, select, button")) return;
+      if (ev.target.closest("tr.detail") && !ev.target.closest("tr[data-acct]")) return;
+      const ca = ev.target.closest("tr[data-acct]"); if (ca) { openCmpAcct(ca.dataset.acct); return; }
+      const cr = ev.target.closest("tr[data-cmp]"); if (cr) { S.cmpOpen = S.cmpOpen === cr.dataset.cmp ? null : cr.dataset.cmp; S.cmpAcct = null; compare(); return; }
       const r = ev.target.closest("tr[data-sid]"); if (r) openEntry(r.dataset.sid);
     });
     main.addEventListener("change", (ev) => { const s = ev.target.closest("select[data-map]"); if (s) setMap(JSON.parse(s.dataset.map), s.value); });
     $("az-q").addEventListener("input", (ev) => { S.mapQ = ev.target.value.trim().toLowerCase(); mapping(); });
     $("az-refresh").addEventListener("click", refresh);
+    $("az-cmp-read").addEventListener("click", readA2x);
+    $("az-cmp-csv").addEventListener("click", exportCmp);
     $("az-check").addEventListener("click", check);
-    if (!$("amz").hidden) FIN.ready.then(() => load(false));
-    window.addEventListener("fin:page", (e) => { if (e.detail === "amz") { if (!S.loaded && !S.loading) FIN.ready.then(() => load(false)); else render(); } });
+    if (!$("amz").hidden) FIN.ready.then(() => { load(false); loadCompare(false); });
+    window.addEventListener("fin:page", (e) => { if (e.detail === "amz") { if (!S.loaded && !S.loading) FIN.ready.then(() => { load(false); loadCompare(false); }); else render(); } });
   });
 })();

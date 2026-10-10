@@ -10,6 +10,8 @@
 //                                        + cost of goods) as QuickBooks journal entries, once each (an entry with the same
 //                                        number already in QuickBooks is linked, not posted again). Refuses a settlement
 //                                        A2X already posted.
+// POST {action: "a2x_lines", ids?}   -> reads A2X's journal entries for settlements it posted (fin.amz_a2x_lines), for the
+//                                        A2X vs Seller Sage comparison (check and post save them too)
 // POST {action: "peek", settlement_id | report_id, lines?} -> the first lines of a settlement report (troubleshooting)
 // Callers: accounts on the finance list (Authorization: Bearer <user JWT>), or SQL via jt.amzpay_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -176,13 +178,21 @@ async function coa(c: Creds) {
 
 // the A2X entries for a settlement: A2X numbers them A2X{US|CA|MX}-{start}-{end}-nnn (and …C nnn for cost of goods),
 // dated the day each month's part starts
+// (their lines are saved for the A2X vs Seller Sage comparison)
 async function a2xDocs(c: Creds, e: any): Promise<string[]> {
-  const out: string[] = [];
+  const out: string[] = [], entries: any[] = [];
   for (const p of e.parts.filter((x: any) => x.kind === "main")) {
     const tag = "A2X" + e.settlement.market + "-" + p.doc.slice(p.doc.indexOf("-") + 1, p.doc.lastIndexOf("-"));
-    const r = (await query(c, `select Id, DocNumber from JournalEntry where TxnDate = ${qq(p.date)} maxresults 1000`)).JournalEntry || [];
-    for (const j of r) if (String(j.DocNumber || "").startsWith(tag)) out.push(j.DocNumber);
+    const r = (await query(c, `select * from JournalEntry where TxnDate = ${qq(p.date)} maxresults 1000`)).JournalEntry || [];
+    for (const j of r) if (String(j.DocNumber || "").startsWith(tag)) {
+      out.push(j.DocNumber);
+      entries.push({ doc: j.DocNumber, id: j.Id, date: j.TxnDate, currency: j.CurrencyRef?.value || "USD", fx: j.ExchangeRate ?? 1,
+        lines: (j.Line || []).filter((l: any) => l.JournalEntryLineDetail).map((l: any) => ({
+          account: l.JournalEntryLineDetail.AccountRef?.name || "", description: l.Description || "",
+          amount: (l.JournalEntryLineDetail.PostingType === "Debit" ? 1 : -1) * Number(l.Amount || 0) })) });
+    }
   }
+  if (entries.length) await rpc("fin_amz_a2x_save", { p: { settlement_id: e.settlement.settlement_id, entries } });
   return out;
 }
 
@@ -260,6 +270,19 @@ Deno.serve(async (req) => {
         out.push({ settlement_id: sid, a2x });
       }
       return json({ ok: true, checked: out });
+    }
+    if (p.action === "a2x_lines") {   // A2X's entries for settlements it posted, for the comparison
+      const ids: string[] = Array.isArray(p.ids) ? p.ids.map(String) : (await rpc("fin_amz_a2x_todo")) || [];
+      const out: any[] = [];
+      for (const sid of ids) {
+        if (Date.now() - t0 > 100_000) break;
+        const e = await rpc("fin_amz_entry", { sid });
+        if (!e) continue;
+        const a2x = await a2xDocs(c, e);
+        await rpc("fin_amz_posted", { p: { settlement_id: sid, a2x, checked: true } });
+        out.push({ settlement_id: sid, a2x });
+      }
+      return json({ ok: true, read: out, more: out.length < ids.length });
     }
     if (p.action === "post") {
       if (!p.settlement_id) return json({ ok: false, error: "settlement_id is required" }, 400);
