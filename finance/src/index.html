@@ -176,21 +176,24 @@
     <div id="pf-note" class="note" hidden></div>
     <section class="cards" id="pf-cards" aria-label="Profit summary"></section>
     <section class="panel">
-      <div class="panel-h"><h2>Month by month</h2><span class="hint">Overall profit = dashboard profit (sales − cost of goods − labels − Amazon &amp; payment fees) − business expenses from QuickBooks</span></div>
+      <div class="panel-h"><h2>Month by month</h2><span class="hint">Overall profit = dashboard profit (sales − cost of goods − labels − Amazon &amp; payment fees) − the costs below</span></div>
       <div id="pf-chart"></div>
     </section>
     <section class="panel">
       <div class="panel-h wrap"><h2>Months</h2>
-        <div class="filters"><span class="hint">Click a month for its expenses by account</span><button class="btn small" type="button" id="pf-csv">Export CSV</button></div>
+        <div class="filters"><span class="hint">Click a month to see its costs</span><button class="btn small" type="button" id="pf-csv">Export CSV</button></div>
       </div>
       <div class="tbl" id="pf-table"></div>
     </section>
     <section class="panel">
-      <div class="panel-h wrap"><h2>QuickBooks accounts</h2>
+      <div class="panel-h"><h2>Costs counted</h2><span class="hint">From QuickBooks, by month · saved for everyone</span></div>
+      <div class="tbl" id="pf-costs"></div>
+      <details class="pf-add">
+        <summary>Add a cost from QuickBooks</summary>
         <div class="filters"><input id="pf-q" type="search" placeholder="Search accounts" aria-label="Search accounts"></div>
-      </div>
-      <div class="hint">What each QuickBooks P&amp;L account counts as. Income and cost of goods sold stay out by default — the dashboard's profit already has them — so nothing is counted twice. Move an account in or out, or to another group; the change is saved for everyone.</div>
-      <div class="tbl" id="pf-accts"></div>
+        <div class="hint">Pick a cost item for an account to take it off profit (or "New cost item…" to name one).</div>
+        <div class="tbl" id="pf-accts"></div>
+      </details>
     </section>
   </main>
 </div>

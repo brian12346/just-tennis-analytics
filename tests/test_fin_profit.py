@@ -26,9 +26,10 @@ def test_pl_save_defaults_rules(conn):
     assert save(cur, rows) == 8
     cur.execute("select account_key, include, grp from fin.pl_account_class order by account_key")
     assert cur.fetchall() == [("1", False, "In dashboard profit"), ("2", False, "In dashboard profit"), ("3", False, "In dashboard profit"),
-                              ("4", True, "Payroll & staff"), ("5", True, "Advertising"), ("6", True, "Rent & facilities"), ("7", True, "Other income")]
+                              ("4", True, "Payroll"), ("5", False, "Advertising"), ("6", False, "Rent & facilities"), ("7", False, "Other income")]
+    # only payroll is counted until other costs are switched on
     cur.execute("select month::text, sum(amount) from fin.v_pl_expenses group by 1 order by 1")
-    assert [(m, float(v)) for m, v in cur.fetchall()] == [("2025-01-01", 495.0), ("2025-02-01", 310.0)]
+    assert [(m, float(v)) for m, v in cur.fetchall()] == [("2025-01-01", 300.0), ("2025-02-01", 310.0)]
 
     # a rule from the page: tariffs count as an expense
     cur.execute("insert into fin.users (user_id, email) values (%s, 'b@x.com')", (BRIAN,))

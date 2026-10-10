@@ -220,3 +220,10 @@ button.card.on{outline:2px solid var(--green);outline-offset:-1px}
 #pf-accts td{padding:6px 10px;vertical-align:middle}
 #profit .det table td{padding:3px 8px 3px 0}
 #profit .det .m{font-size:12px;color:var(--muted)}
+#pf-costs{max-height:none}
+#pf-costs td{padding:6px 10px;vertical-align:middle}
+#pf-costs select{padding:4px 6px;font-size:13px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink);max-width:220px}
+.pf-add{display:flex;flex-direction:column;gap:10px}
+.pf-add summary{cursor:pointer;font-weight:600;font-size:13px;color:var(--green);padding:4px 0}
+.pf-add[open] summary{margin-bottom:8px}
+.pf-add > div{margin-top:8px}
