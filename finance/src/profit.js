@@ -1,6 +1,6 @@
 // Profit page: overall profit by month since Jan 2025 = the sales dashboard's profit (net sales − cost of goods −
 // shipping labels − Amazon and payment fees, all channels; any ad spend it already took off is added back) − the costs
-// Brian picks. Costs are QuickBooks accounts by month (fin.qbo_pl, refreshed daily); only payroll (the "Payroll expenses"
+// Brian picks. The statement shows income before cost of goods, with cost of goods as the first cost. Costs are QuickBooks accounts by month (fin.qbo_pl, refreshed daily); only payroll (the "Payroll expenses"
 // accounts: wages and payroll taxes) is counted to start. Other accounts are switched on, or grouped, under "Add a cost"
 // (fin.pl_rules).
 (() => {
@@ -41,10 +41,11 @@
   function model() {
     const cls = new Map(S.accts.map(a => [key(a.section, a.account_key), a]));
     const months = new Map();
-    const M = (m) => { if (!months.has(m)) months.set(m, { month: m, net_sales: 0, dash: 0, ad_back: 0, ch: {}, groups: {}, accts: [], exp: 0 }); return months.get(m); };
+    const M = (m) => { if (!months.has(m)) months.set(m, { month: m, net_sales: 0, dash: 0, ad_back: 0, cogs: 0, ch: {}, chc: {}, groups: {}, accts: [], exp: 0 }); return months.get(m); };
     for (const d of S.dash) {
       const r = M(d.month); r.net_sales += d.net_sales; r.dash += d.profit; r.ad_back += d.ad_spend;
-      r.ch[d.channel] = (r.ch[d.channel] || 0) + d.profit + d.ad_spend;
+      r.ch[d.channel] = (r.ch[d.channel] || 0) + d.profit + d.ad_spend + d.cogs;    // income before cost of goods
+      r.chc[d.channel] = (r.chc[d.channel] || 0) + d.cogs; r.cogs += d.cogs;
     }
     for (const p of S.pl) {
       if (p.month < START) continue;
@@ -56,7 +57,8 @@
       r.accts.push({ grp: c.grp, name: c.account, parent: c.parent, amount: amt });
     }
     const rows = [...months.values()].sort((a, b) => b.month.localeCompare(a.month));
-    for (const r of rows) { r.base = r.dash + r.ad_back; r.overall = r.base - r.exp; }
+    // income = dashboard profit before cost of goods; costs = cost of goods (dashboard) + the QuickBooks costs picked
+    for (const r of rows) { r.base = r.dash + r.ad_back; r.overall = r.base - r.exp; r.income = r.base + r.cogs; r.costs = r.exp + r.cogs; }
     const used = new Set(); for (const r of rows) for (const g in r.groups) if (Math.abs(r.groups[g]) >= 0.5) used.add(g);
     const groups = [...used].sort((a, b) => (GROUP_ORDER.indexOf(a) + 1 || 99) - (GROUP_ORDER.indexOf(b) + 1 || 99) || a.localeCompare(b));
     return { rows, groups };
@@ -86,22 +88,22 @@
   }
   function cards(sel, full, groups) {
     const card = (cls, k, v, s) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`;
-    const ns = sumBy(sel, r => r.net_sales), base = sumBy(sel, r => r.base), exp = sumBy(sel, r => r.exp), ov = base - exp;
+    const ns = sumBy(sel, r => r.net_sales), inc = sumBy(sel, r => r.income), cogs = sumBy(sel, r => r.cogs), exp = sumBy(sel, r => r.exp), ov = sumBy(sel, r => r.overall);
     const avg = full.length ? sumBy(full, r => r.overall) / full.length : null;
     const items = groups.map(g => [g, sumBy(sel, r => r.groups[g] || 0)]);
-    const costLabel = groups.length === 1 ? esc(groups[0]) : "Costs";
+    const label = groups.length === 1 ? esc(groups[0]) : "Other costs";
     $("pf-cards").innerHTML = [
       card(ov < 0 ? "red" : "green", "Overall profit", short(ov), `${pct(ov, ns)} of ${short(ns)} net sales`),
-      card("", "Dashboard profit", short(base), `${pct(base, ns)} of net sales`),
-      card("", costLabel, short(exp), groups.length > 1 ? items.map(([g, v]) => `${esc(g)} ${short(v)}`).join(" · ") : groups.length ? `${pct(exp, ns)} of net sales` : "No costs counted yet"),
-      card("", `${costLabel} share`, pct(exp, base), "of dashboard profit"),
+      card("", "Income", short(inc), "dashboard profit before cost of goods"),
+      card("", "Cost of goods", short(cogs), `${pct(cogs, inc)} of income`),
+      card("", label, short(exp), groups.length > 1 ? items.map(([g, v]) => `${esc(g)} ${short(v)}`).join(" · ") : groups.length ? `${pct(exp, inc)} of income` : "None counted yet"),
       card(avg != null && avg < 0 ? "red" : "", "Average month", avg == null ? "—" : short(avg), `overall profit · ${full.length} full month${full.length === 1 ? "" : "s"}`),
     ].join("");
   }
   function chart(rows, cur) {
     if (!rows.length) { $("pf-chart").innerHTML = `<div class="empty">No months in this period.</div>`; return; }
     const W = 1000, H = 260, L = 56, R = 10, T = 14, B = 34;
-    const vals = rows.flatMap(r => [r.base, r.overall, -r.exp]);
+    const vals = rows.flatMap(r => [r.income, r.overall, -r.costs]);
     const hi = Math.max(0, ...vals), lo = Math.min(0, ...vals), span = hi - lo || 1;
     const y = (v) => T + (hi - v) / span * (H - T - B);
     const bw = (W - L - R) / rows.length, w = Math.min(34, bw * 0.36);
@@ -112,8 +114,8 @@
     rows.forEach((r, i) => {
       const x = L + i * bw + bw / 2;
       const bar = (v, dx, c, t, op = 1) => `<rect x="${x + dx - w / 2}" y="${Math.min(y(v), y(0))}" width="${w}" height="${Math.max(1, Math.abs(y(v) - y(0)))}" rx="2" fill="${c}" fill-opacity="${op}"><title>${esc(t)}</title></rect>`;
-      g += bar(r.base, -w / 2 - 1, "var(--green2)", `${mLabel(r.month)} · dashboard profit ${money(r.base)}`, .3);
-      g += bar(-r.exp, -w / 2 - 1, "var(--amber)", `${mLabel(r.month)} · costs ${money(r.exp)}`, .45);
+      g += bar(r.income, -w / 2 - 1, "var(--green2)", `${mLabel(r.month)} · income ${money(r.income)}`, .3);
+      g += bar(-r.costs, -w / 2 - 1, "var(--amber)", `${mLabel(r.month)} · costs ${money(r.costs)}`, .45);
       g += bar(r.overall, w / 2 + 1, r.overall < 0 ? "var(--red)" : "var(--green)", `${mLabel(r.month)} · overall profit ${money(r.overall)}`);
       if (rows.length <= 24 && (rows.length <= 12 || i % 2 === 0 || i === rows.length - 1)) {
         const lab = new Date(r.month + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }) + (r.month.slice(5, 7) === "01" || i === 0 ? " " + r.month.slice(2, 4) : "") + (r.month === cur ? "*" : "");
@@ -121,7 +123,7 @@
       }
     });
     $("pf-chart").innerHTML = `<svg class="cf-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Overall profit by month">${g}</svg>
-      <div class="cf-legend"><span><i style="background:var(--green2);opacity:.3"></i>Dashboard profit</span><span><i style="background:var(--amber);opacity:.45"></i>Costs</span><span><i style="background:var(--green)"></i>Overall profit</span><span><i style="background:var(--red)"></i>Overall loss</span>${rows.some(r => r.month === cur) ? "<span>* month to date</span>" : ""}</div>`;
+      <div class="cf-legend"><span><i style="background:var(--green2);opacity:.3"></i>Income</span><span><i style="background:var(--amber);opacity:.45"></i>Costs</span><span><i style="background:var(--green)"></i>Overall profit</span><span><i style="background:var(--red)"></i>Overall loss</span>${rows.some(r => r.month === cur) ? "<span>* month to date</span>" : ""}</div>`;
   }
   // statement layout: months across (oldest → newest, a total column per full year when the period spans years, then
   // the period's total); income on top, costs below (in parentheses), overall profit at the bottom. A cost row opens to
@@ -160,18 +162,22 @@
     const band = (cls, label, note) => `<tr class="band ${cls}"><th scope="row">${label}${note ? ` <span>${note}</span>` : ""}</th><td colspan="${cols.length}"></td></tr>`;
 
     let b = "";
-    b += band("inc", "Income", "dashboard profit by channel");
+    b += band("inc", "Income", "dashboard profit before cost of goods, by channel");
     b += tr("memo", "Net sales <span class=\"m\">for reference</span>", r => r.net_sales, "plain");
     for (const [k, l] of CH) if (sel.some(r => r.ch[k])) b += tr("line", l, r => r.ch[k], "plain");
-    b += tr("subtot inc", "Total income", r => r.base, "strong");
-    b += band("exp", "Costs", "taken off profit");
+    b += tr("subtot inc", "Total income", r => r.income, "strong");
+    b += band("exp", "Costs", "taken off income");
+    {
+      const open = S.open.has("__cogs");
+      b += tr("line cost grp", `<button type="button" class="tog" aria-expanded="${open}">${open ? "▾" : "▸"}</button>Cost of goods <span class="m">by channel</span>`, r => r.cogs, "cost", `data-grp="__cogs"`);
+      if (open) for (const [k, l] of CH) if (sel.some(r => r.chc[k])) b += tr("acct", l, r => r.chc[k], "cost");
+    }
     for (const g of groups) {
       const open = S.open.has(g), acc = acctRows(g);
       b += tr("line cost grp", `<button type="button" class="tog" data-grp="${esc(g)}" aria-expanded="${open}">${open ? "▾" : "▸"}</button>${esc(g)} <span class="m">${acc.length} account${acc.length === 1 ? "" : "s"}</span>`, r => r.groups[g], "cost", `data-grp="${esc(g)}"`);
       if (open) for (const a of acc) b += tr("acct", `${esc(a.name)}${a.parent ? ` <span class="m">${esc(a.parent)}</span>` : ""}`, r => a.by[r.month], "cost");
     }
-    if (!groups.length) b += `<tr class="line"><th scope="row" class="m">No costs counted yet</th><td colspan="${cols.length}"></td></tr>`;
-    b += tr("subtot exp", "Total costs", r => r.exp, "cost");
+    b += tr("subtot exp", "Total costs", r => r.costs, "cost");
     b += tr("net", "Overall profit", r => r.overall, "strong");
     b += tr("memo", "Margin", null, "pct");
     const head = `<tr><th scope="col"></th>${cols.map(c => `<th scope="col" class="n${c.sum ? " sum" : ""}${c.partial ? " part" : ""}"${c.partial ? ' title="Month to date"' : ""}>${esc(c.label)}${c.partial ? "*" : ""}</th>`).join("")}</tr>`;
@@ -232,9 +238,10 @@
     const lines = [["", ...cols.map(c => c.key.startsWith("y") ? c.label : c.key === "total" ? "Total" : c.key.slice(0, 7))],
       line("Net sales", r => r.net_sales),
       ...CH.filter(([k]) => sel.some(r => r.ch[k])).map(([k, l]) => line(`Income: ${l}`, r => r.ch[k])),
-      line("Total income (dashboard profit)", r => r.base),
+      line("Total income", r => r.income),
+      line("Cost: Cost of goods", r => r.cogs),
       ...groups.map(g => line(`Cost: ${g}`, r => r.groups[g])),
-      line("Total costs", r => r.exp),
+      line("Total costs", r => r.costs),
       line("Overall profit", r => r.overall)];
     FIN.download(`overall-profit-${today()}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
   }
