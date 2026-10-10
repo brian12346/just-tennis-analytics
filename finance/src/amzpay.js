@@ -12,7 +12,8 @@
   const FLAG = { US: "US", CA: "Canada", MX: "Mexico" };
 
   const S = { loaded: false, loading: false, err: null, rows: [], groups: [], map: [], seen: [], coa: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, filter: "todo", mapQ: "",
-    cmp: null, cmpLoading: false, cmpErr: null, cmpOpen: null, cmpAcct: null, cmpLines: null };
+    cmp: null, cmpLoading: false, cmpErr: null, cmpOpen: null, cmpAcct: null, cmpLines: null,
+    sku: null, skuFit: [], skuInfo: null, skuErr: null, skuQ: "", skuF: "diff", skuShown: 150 };
 
   async function load(refresh) {
     S.loading = true; render();
@@ -55,7 +56,7 @@
     if (!S.loaded) { $("az-sub").textContent = S.loading ? "Loading…" : ""; return; }
     const last = S.rows.reduce((a, r) => r.synced_at > a ? r.synced_at : a, "");
     $("az-sub").textContent = last ? `Settlements from Amazon as of ${new Date(last).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · updates every morning` : "No settlements yet — use Refresh from Amazon";
-    cards(); table(); mapping(); compare();
+    cards(); table(); mapping(); compare(); skuCheck();
   }
   function cards() {
     const card = (cls, k, v, s, f) => `<button type="button" class="card ${cls}${S.filter === f ? " on" : ""}" data-filter="${f}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></button>`;
@@ -282,6 +283,119 @@
     FIN.download(`a2x-vs-seller-sage-${new Date().toISOString().slice(0, 10)}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
   }
 
+  // ---------- per-SKU cost check: A2X's cost per SKU (its COGS export, uploaded here) against the cost Seller Sage uses,
+  // weighted by units sold in the settlements A2X posted (fin.v_amz_sku_check); the file is checked by rebuilding A2X's
+  // posted cost of goods from it (fin.v_amz_a2x_cost_fit)
+  async function loadSku(refresh) {
+    try {
+      const [rows, fit, info] = await Promise.all([
+        FIN.sql("select sku, units, settlements, fulfillment, a2x_cost, in_a2x, a2x_name, our_cost, map_units, our_name, shopify_unit_cost, diff_per_unit, impact from fin.v_amz_sku_check", refresh),
+        FIN.sql("select settlement_id, market, start_at, end_at, a2x_posted, from_file, seller_sage from fin.v_amz_a2x_cost_fit order by end_at desc", refresh),
+        FIN.sql("select count(*) as n, count(cost) as costed, max(uploaded_at) as at, max(file) as file, max(uploaded_by) as by from fin.v_a2x_costs", refresh),
+      ]);
+      const n = (v) => v == null ? null : +v;
+      S.sku = rows.map(r => ({ ...r, units: +r.units, a2x_cost: n(r.a2x_cost), our_cost: n(r.our_cost), diff_per_unit: n(r.diff_per_unit), impact: +r.impact }));
+      S.skuFit = fit.map(r => ({ ...r, a2x_posted: +r.a2x_posted, from_file: +r.from_file, seller_sage: +r.seller_sage }));
+      S.skuInfo = info[0] && +info[0].n ? info[0] : null; S.skuErr = null;
+    } catch (e) { S.skuErr = e; }
+    skuCheck();
+  }
+  function skuCheck() {
+    const box = $("az-sku"); if (!box) return;
+    if (S.skuErr) { box.innerHTML = `<div class="note bad">Couldn't load: ${esc(S.skuErr.message || S.skuErr)}</div>`; return; }
+    if (!S.sku) { box.innerHTML = `<div class="m">Loading…</div>`; return; }
+    const I = S.skuInfo, rows = S.sku;
+    const card = (cls, k, v, s2) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s2}</span></div>`;
+    let h = "";
+    if (!I) {
+      h += `<div class="note">Upload A2X's cost file to compare SKU by SKU: in A2X, export Cost of Goods Sold (the CSV with <code>sku, cost, name, fnsku, last-seen</code>) and drop it into “Upload A2X costs”. Until then the table shows Seller Sage's cost for every SKU sold in the settlements A2X posted.</div>`;
+    } else {
+      const posted = S.skuFit.reduce((a, r) => a + r.a2x_posted, 0), file = S.skuFit.reduce((a, r) => a + r.from_file, 0), ours = S.skuFit.reduce((a, r) => a + r.seller_sage, 0);
+      const fitPct = posted ? (file / posted - 1) * 100 : 0;
+      const differ = rows.filter(r => r.a2x_cost != null && r.our_cost != null && Math.abs(r.diff_per_unit) >= 0.01);
+      const missing = rows.filter(r => r.a2x_cost == null);
+      const top = rows.slice().sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact))[0];
+      h += `<section class="cards">${[
+        card("", "A2X costs loaded", Number(I.costed).toLocaleString(), `of ${Number(I.n).toLocaleString()} SKUs in ${esc(I.file || "the file")} · ${day(I.at, true)}`),
+        card(Math.abs(fitPct) < 1 ? "green" : "amber", "File vs A2X's postings", (fitPct >= 0 ? "+" : "−") + Math.abs(fitPct).toFixed(1) + "%", `units × these costs ${short(file)} vs A2X posted ${short(posted)}${Math.abs(fitPct) < 1 ? " — it's the cost list A2X used" : " — A2X may have used other costs then"}`),
+        card(differ.length ? "amber" : "green", "SKUs that differ", String(differ.length), `${missing.length} sold SKU${missing.length === 1 ? "" : "s"} with no A2X cost`),
+        card("", "Seller Sage vs this file", short(ours - file), top ? `biggest: ${esc(top.sku)} ${short(top.impact)}` : ""),
+      ].join("")}</section>`;
+    }
+    // filters
+    const q = S.skuQ;
+    const keep = (r) => {
+      if (q && !`${r.sku} ${r.our_name || ""} ${r.a2x_name || ""}`.toLowerCase().includes(q)) return false;
+      if (!I || S.skuF === "all") return true;
+      if (S.skuF === "diff") return r.a2x_cost == null || r.our_cost == null || Math.abs(r.diff_per_unit) >= 0.01;
+      if (S.skuF === "missing") return r.a2x_cost == null;
+      if (S.skuF === "higher") return r.diff_per_unit >= 0.01;
+      if (S.skuF === "lower") return r.diff_per_unit <= -0.01;
+      return true;
+    };
+    const list = rows.filter(keep).sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact) || b.units - a.units);
+    const tabs = [["diff", "Different"], ["higher", "Seller Sage higher"], ["lower", "Seller Sage lower"], ["missing", "Not in A2X"], ["all", "All"]];
+    h += `<div class="filters az-sku-f">${I ? `<div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" data-skuf="${k}" aria-selected="${S.skuF === k}">${l}</button>`).join("")}</div>` : ""}
+      <input id="az-sku-q" type="search" placeholder="Search SKU or product" value="${esc(S.skuQ)}"></div>`;
+    h += `<table class="cmp"><thead><tr><th>SKU</th><th>Product</th><th class="n">Units sold</th><th class="n">A2X cost</th><th class="n">Seller Sage cost</th><th class="n">Difference a unit</th><th class="n">Difference × units</th></tr></thead><tbody>`;
+    for (const r of list.slice(0, S.skuShown)) {
+      const d = r.diff_per_unit;
+      h += `<tr><td><b>${esc(r.sku)}</b><div class="m">${esc(r.fulfillment || "")}${+r.map_units > 1 ? ` · ${+r.map_units}-pack` : ""}</div></td>
+        <td>${esc(r.our_name || r.a2x_name || "")}${r.our_name && r.a2x_name && r.a2x_name !== r.our_name ? `<div class="m">A2X: ${esc(r.a2x_name)}</div>` : ""}</td>
+        <td class="n">${r.units.toLocaleString()}</td>
+        <td class="n">${!I ? "—" : r.a2x_cost == null ? (r.in_a2x ? '<span class="pill soon">no cost</span>' : '<span class="pill soon">not in A2X</span>') : fmt(r.a2x_cost)}</td>
+        <td class="n">${r.our_cost == null ? '<span class="pill over">no cost</span>' : fmt(r.our_cost)}${+r.map_units > 1 && r.shopify_unit_cost != null ? `<div class="m">${+r.map_units} × ${fmt(r.shopify_unit_cost)}</div>` : ""}</td>
+        <td class="n ${d > 0.005 ? "negt" : ""}">${d == null ? "—" : Math.abs(d) < 0.01 ? "same" : fmt(d)}${d != null && r.a2x_cost ? `<div class="m">${((d / r.a2x_cost) * 100).toFixed(0)}%</div>` : ""}</td>
+        <td class="n ${r.impact > 0.5 ? "negt" : ""}">${I ? (Math.abs(r.impact) < 0.5 ? "—" : fmt(r.impact)) : "—"}</td></tr>`;
+    }
+    h += `</tbody></table>`;
+    if (list.length > S.skuShown) h += `<div class="foot"><span>${list.length - S.skuShown} more</span><button class="btn small" type="button" data-skumore>Show more</button></div>`;
+    if (I && S.skuFit.length) {
+      h += `<h3 class="cmp-h">Does the file match what A2X posted? <span class="m">units sold × the file's costs, per settlement</span></h3><table class="cmp"><thead><tr><th>Settlement</th><th class="n">A2X posted</th><th class="n">From the file</th><th class="n">Off by</th><th class="n">Seller Sage</th></tr></thead><tbody>`;
+      for (const r of S.skuFit) {
+        const off = r.from_file - r.a2x_posted;
+        h += `<tr><td>${esc(FLAG[r.market] || r.market)} ${day(r.start_at)} – ${day(r.end_at, true)}</td><td class="n">${fmt(r.a2x_posted)}</td><td class="n">${fmt(r.from_file)}</td>
+          <td class="n ${Math.abs(off) > 1 ? "negt" : ""}">${Math.abs(off) < 0.5 ? "—" : fmt(off)}${r.a2x_posted ? `<div class="m">${((off / r.a2x_posted) * 100).toFixed(1)}%</div>` : ""}</td><td class="n">${fmt(r.seller_sage)}</td></tr>`;
+      }
+      h += `</tbody></table>`;
+    }
+    box.innerHTML = h;
+  }
+  function parseCsv(text) {
+    const rows = []; let row = [], f = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; continue; }
+      if (c === '"') q = true; else if (c === ",") { row.push(f); f = ""; } else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(f); rows.push(row); row = []; f = ""; } else f += c;
+    }
+    if (f !== "" || row.length) { row.push(f); rows.push(row); }
+    return rows.filter(r => r.some(x => x.trim() !== ""));
+  }
+  async function uploadA2x(file) {
+    const st = $("az-sku-st");
+    try {
+      const rows = parseCsv((await file.text()).replace(/^﻿/, ""));
+      const H = rows[0].map(h => h.trim().toLowerCase());
+      const ix = (...ns) => H.findIndex(h => ns.includes(h));
+      const iS = ix("sku", "seller-sku", "seller sku", "msku"), iC = ix("cost", "unit cost", "cogs", "cost per unit"), iN = ix("name", "title", "product");
+      if (iS < 0 || iC < 0) throw new Error("the file needs sku and cost columns");
+      const data = rows.slice(1).map(r => ({ sku: (r[iS] || "").trim(), cost: (r[iC] || "").trim(), name: iN >= 0 ? (r[iN] || "").trim() : "" })).filter(r => r.sku);
+      if (!data.some(r => r.cost)) throw new Error("no costs in the file — every cost is blank (is it the empty A2X template?)");
+      st.textContent = `Saving ${data.length} SKUs…`;
+      for (let i = 0; i < data.length; i += 2000) await FIN.write("fin_a2x_costs_save", { p: { file: file.name, rows: data.slice(i, i + 2000) } });
+      st.textContent = ""; note("", `Loaded A2X costs for ${data.filter(r => r.cost).length} SKUs from ${esc(file.name)}.`);
+      await loadSku(true);
+    } catch (e) { st.textContent = ""; note("bad", "Couldn't read the file: " + esc(e.message || e)); }
+  }
+  function exportSku() {
+    if (!S.sku) return;
+    const q = (v) => /[",\n]/.test(String(v ?? "")) ? `"${String(v).replace(/"/g, '""')}"` : (v ?? "");
+    const lines = [["sku", "product", "units_sold", "a2x_cost", "seller_sage_cost", "map_units", "difference_per_unit", "difference_x_units"]];
+    for (const r of S.sku.slice().sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact)))
+      lines.push([r.sku, r.our_name || r.a2x_name || "", r.units, r.a2x_cost ?? "", r.our_cost ?? "", r.map_units ?? "", r.diff_per_unit == null ? "" : r.diff_per_unit.toFixed(2), r.impact.toFixed(2)]);
+    FIN.download(`amazon-sku-costs-a2x-vs-seller-sage-${new Date().toISOString().slice(0, 10)}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
+  }
+
   // ---------- actions
   async function call(body, what) {
     const r = await FIN.fn("amzpay", body);
@@ -327,17 +441,22 @@
       const c = ev.target.closest("[data-csv]"); if (c) { exportCsv(c.dataset.csv); return; }
       if (ev.target.closest("a, select, button")) return;
       if (ev.target.closest("tr.detail") && !ev.target.closest("tr[data-acct]")) return;
+      const sf = ev.target.closest("[data-skuf]"); if (sf) { S.skuF = sf.dataset.skuf; S.skuShown = 150; skuCheck(); return; }
+      if (ev.target.closest("[data-skumore]")) { S.skuShown += 300; skuCheck(); return; }
       const ca = ev.target.closest("tr[data-acct]"); if (ca) { openCmpAcct(ca.dataset.acct); return; }
       const cr = ev.target.closest("tr[data-cmp]"); if (cr) { S.cmpOpen = S.cmpOpen === cr.dataset.cmp ? null : cr.dataset.cmp; S.cmpAcct = null; compare(); return; }
       const r = ev.target.closest("tr[data-sid]"); if (r) openEntry(r.dataset.sid);
     });
+    main.addEventListener("input", (ev) => { if (ev.target.id === "az-sku-q") { S.skuQ = ev.target.value.trim().toLowerCase(); const pos = ev.target.selectionStart; skuCheck(); const el = $("az-sku-q"); el.focus(); el.setSelectionRange(pos, pos); } });
+    $("az-sku-file").addEventListener("change", (ev) => { const f = ev.target.files[0]; if (f) uploadA2x(f); ev.target.value = ""; });
+    $("az-sku-csv").addEventListener("click", exportSku);
     main.addEventListener("change", (ev) => { const s = ev.target.closest("select[data-map]"); if (s) setMap(JSON.parse(s.dataset.map), s.value); });
     $("az-q").addEventListener("input", (ev) => { S.mapQ = ev.target.value.trim().toLowerCase(); mapping(); });
     $("az-refresh").addEventListener("click", refresh);
     $("az-cmp-read").addEventListener("click", readA2x);
     $("az-cmp-csv").addEventListener("click", exportCmp);
     $("az-check").addEventListener("click", check);
-    if (!$("amz").hidden) FIN.ready.then(() => { load(false); loadCompare(false); });
-    window.addEventListener("fin:page", (e) => { if (e.detail === "amz") { if (!S.loaded && !S.loading) FIN.ready.then(() => { load(false); loadCompare(false); }); else render(); } });
+    if (!$("amz").hidden) FIN.ready.then(() => { load(false); loadCompare(false); loadSku(false); });
+    window.addEventListener("fin:page", (e) => { if (e.detail === "amz") { if (!S.loaded && !S.loading) FIN.ready.then(() => { load(false); loadCompare(false); loadSku(false); }); else render(); } });
   });
 })();
