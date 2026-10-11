@@ -111,6 +111,8 @@ def main(argv: list[str] | None = None) -> None:
         # Shopify Payments payouts for the finance dashboard's cash flow page (needs read_shopify_payments_payouts)
         from . import shopify as sh5
         run("shopify_payouts", lambda: sh5.sync_shopify_payouts(shopify(), conn))
+        if os.environ.get("ACENRALLY_SHOP"):
+            run("acenrally_payouts", lambda: sh5.sync_shopify_payouts(sh5.Shopify("ACENRALLY"), conn, store="acenrally"))
 
     if a.job in ("hourly", "nightly", "shopify-fees"):
         # Shopify Payments processing fees for All sales (migration 094), both stores
@@ -123,6 +125,8 @@ def main(argv: list[str] | None = None) -> None:
         # payments outside Shopify Payments (manual, cash, PayPal …) and what orders still owe, for Finance (migration 120)
         from . import shopify as sh7
         run("shopify_order_payments", lambda: sh7.sync_order_payments(shopify(), conn, "justtennis"))
+        if os.environ.get("ACENRALLY_SHOP"):
+            run("acenrally_order_payments", lambda: sh7.sync_order_payments(sh7.Shopify("ACENRALLY"), conn, "acenrally"))
 
     if a.job in ("hourly", "nightly", "location-stock"):
         # stock at the FBM location, for the FBM tab's listings panel (the page's refresh button starts location-stock)

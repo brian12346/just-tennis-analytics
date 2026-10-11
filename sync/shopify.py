@@ -666,8 +666,8 @@ PAYOUTS_Q = """query($after: String) { shopifyPaymentsAccount { payouts(first: 1
   nodes { id issuedAt status net { amount currencyCode } } pageInfo { hasNextPage endCursor } } } }"""
 
 
-def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int | dict:
-    """Shopify Payments payouts from the last `months` months -> fin.shopify_payouts."""
+def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15, store: str = "justtennis") -> int | dict:
+    """Shopify Payments payouts from the last `months` months -> fin.shopify_payouts (store = justtennis | acenrally)."""
     cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=31 * months)).isoformat()
     rows, after = [], None
     while True:
@@ -682,17 +682,17 @@ def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int | dict:
         nodes = po.get("nodes") or []
         for n in nodes:
             net = n.get("net") or {}
-            rows.append((n["id"].split("/")[-1], n.get("issuedAt"), n.get("status") or "", float(net.get("amount") or 0), net.get("currencyCode") or "USD"))
+            rows.append((n["id"].split("/")[-1], n.get("issuedAt"), n.get("status") or "", float(net.get("amount") or 0), net.get("currencyCode") or "USD", store))
         page = po.get("pageInfo") or {}
         if not page.get("hasNextPage") or not nodes or (nodes[-1].get("issuedAt") or "") < cutoff:
             break
         after = page["endCursor"]
     if rows:
         with conn.cursor() as cur:
-            cur.executemany("""insert into fin.shopify_payouts (id, issued_at, status, amount, currency, synced_at)
-                               values (%s, %s, %s, %s, %s, now())
+            cur.executemany("""insert into fin.shopify_payouts (id, issued_at, status, amount, currency, store, synced_at)
+                               values (%s, %s, %s, %s, %s, %s, now())
                                on conflict (id) do update set issued_at = excluded.issued_at, status = excluded.status,
-                                 amount = excluded.amount, currency = excluded.currency, synced_at = now()""", rows)
+                                 amount = excluded.amount, currency = excluded.currency, store = excluded.store, synced_at = now()""", rows)
         conn.commit()
     if not rows:
         return {"variants": 0, "note": "Shopify returned no payouts"}
@@ -791,6 +791,19 @@ def order_pay_rows(store: str, nodes: list[dict]) -> tuple[list[tuple], list[tup
 
 
 def sync_order_payments(shop: "Shopify", conn, store: str = "justtennis", since: "dt.datetime | None" = None) -> int:
+    key = "shop_post" if store == "justtennis" else f"shop_post_{store}"
+    with conn.cursor() as cur:   # the store's admin handle, for links to its orders (once)
+        cur.execute("select coalesce(value->>'admin_store', '') from fin.settings where key = %s", (key,))
+        row = cur.fetchone()
+    if row is not None and not row[0]:
+        try:
+            dom = ((shop.graphql("{ shop { myshopifyDomain } }") or {}).get("shop") or {}).get("myshopifyDomain") or ""
+            if dom:
+                with conn.cursor() as cur:
+                    cur.execute("update fin.settings set value = value || jsonb_build_object('admin_store', %s) where key = %s", (dom.split(".")[0], key))
+                conn.commit()
+        except RuntimeError:
+            pass
     with conn.cursor() as cur:
         cur.execute("select max(synced_at) from jt.shopify_order_due where store = %s", (store,))
         last = cur.fetchone()[0]

@@ -13,14 +13,15 @@
 // POST {action: "a2x_lines", ids?}   -> reads A2X's journal entries for settlements it posted (fin.amz_a2x_lines), for the
 //                                        A2X vs Seller Sage comparison (check and post save them too)
 // POST {action: "peek", settlement_id | report_id, lines?} -> the first lines of a settlement report (troubleshooting)
-// Shopify (Just Tennis's Shopify Payments payouts, fin.shop_entry — one simple entry per payout + cost of goods):
+// Shopify (Just Tennis's and Ace n Rally's Shopify Payments payouts, fin.shop_entry — one simple entry per payout + cost of goods):
 // POST {action: "shop_check", ids?}  -> looks in QuickBooks for each payout: A2X's entry (an A2XSH entry whose BofA (0364)
 //                                        line is the payout, dated up to three weeks before it — not posted again) and ours.
 // POST {action: "shop_post", payout_id, force?} -> posts the payout's entries once each; refuses one A2X posted.
 // POST {action: "shop_clearing", days?} -> QuickBooks deposits, transfers, purchases and journal entries on the Shopify clearing
 //                                        accounts (manual, cash, PayPal …) for the last `days` (default 60), and their
 //                                        balances (fin_qbo_clearing_save). Also links weekly entries already in QuickBooks.
-// POST {action: "shop_pay_post", week_end} -> posts the week's other-payments entry (fin.shop_pay_entry) once.
+// POST {action: "shop_pay_post", week_end, store?} -> posts a store's week of other payments (fin.shop_pay_entry) once
+//                                        (store: justtennis — the default — or acenrally).
 // POST {action: "paypal_post", week_end} -> posts the week's PayPal fees entry (fin.paypal_fee_entry) once.
 // Callers: accounts on the finance list (Authorization: Bearer <user JWT>), or SQL via jt.amzpay_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -290,7 +291,7 @@ async function shopPost(c: Creds, pid: string, by: string, force: boolean) {
   const a2x = shopA2x(await jesBetween(c, isoDay(new Date(day - 24 * 86400e3)), isoDay(new Date(day + 3 * 86400e3))), e);
   await rpc("fin_shop_posted", { p: { payout_id: pid, a2x, checked: true } });
   if (a2x.length && !force) return { ok: false, a2x, error: `A2X already posted this payout (${a2x.join(", ")}) — not posting it again.` };
-  return postParts(c, e, by, `Shopify payout ${pid} (Just Tennis)`, (doc, id, how) => rpc("fin_shop_posted", { p: { payout_id: pid, doc, id, by, how } }));
+  return postParts(c, e, by, `Shopify payout ${pid} (${e.payout.store === "acenrally" ? "Ace n Rally" : "Just Tennis"})`, (doc, id, how) => rpc("fin_shop_posted", { p: { payout_id: pid, doc, id, by, how } }));
 }
 
 // ---- Shopify payments outside Shopify Payments: QuickBooks activity on the clearing accounts, and the weekly entries
@@ -338,15 +339,17 @@ async function shopClearing(c: Creds, days: number) {
   let linked = 0;
   for (const j of jes) {
     const d = String(j.DocNumber || "");   // dated the week's last day
-    if (/^SSPSH-\d\d[A-Za-z]{3}(-|C)PAY$/.test(d)) { await rpc("fin_shop_week_posted", { p: { week_end: j.TxnDate, doc: d, id: j.Id, how: "linked" } }); linked++; }
+    const wk = d.match(/^SSP(SH|AR)-\d\d[A-Za-z]{3}(-|C)PAY$/);
+    if (wk) { await rpc("fin_shop_week_posted", { p: { store: wk[1] === "AR" ? "acenrally" : "justtennis", week_end: j.TxnDate, doc: d, id: j.Id, how: "linked" } }); linked++; }
     else if (/^SSPPP-\d\d[A-Za-z]{3}-FEE$/.test(d)) { await rpc("fin_paypal_week_posted", { p: { week_end: j.TxnDate, doc: d, id: j.Id, how: "linked" } }); linked++; }
   }
   return { saved: n, accounts: accts.map((a) => a.name), balances, linked };
 }
-async function shopPayPost(c: Creds, we: string, by: string) {
-  const e = await rpc("fin_shop_pay_entry", { we });
+async function shopPayPost(c: Creds, we: string, by: string, st: string) {
+  const e = await rpc("fin_shop_pay_entry", { we, st });
   if (!e) return { ok: false, error: "no payments that week" };
-  return postParts(c, e, by, `Shopify payments outside Shopify Payments, week ending ${we} (Just Tennis)`, (doc, id, how) => rpc("fin_shop_week_posted", { p: { week_end: we, doc, id, by, how } }));
+  const label = st === "acenrally" ? "Ace n Rally" : "Just Tennis";
+  return postParts(c, e, by, `Shopify payments outside Shopify Payments, week ending ${we} (${label})`, (doc, id, how) => rpc("fin_shop_week_posted", { p: { store: st, week_end: we, doc, id, by, how } }));
 }
 async function paypalPost(c: Creds, we: string, by: string) {
   const e = await rpc("fin_paypal_fee_entry", { we });
@@ -425,7 +428,7 @@ Deno.serve(async (req) => {
     if (p.action === "shop_clearing") return json({ ok: true, ...(await shopClearing(c, Math.min(Number(p.days) || 60, 400))) });
     if (p.action === "shop_pay_post") {
       if (!p.week_end) return json({ ok: false, error: "week_end is required" }, 400);
-      return json(await shopPayPost(c, String(p.week_end), by));
+      return json(await shopPayPost(c, String(p.week_end), by, p.store === "acenrally" ? "acenrally" : "justtennis"));
     }
     if (p.action === "paypal_post") {
       if (!p.week_end) return json({ ok: false, error: "week_end is required" }, 400);

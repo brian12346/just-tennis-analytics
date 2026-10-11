@@ -80,13 +80,17 @@
   }
   async function write(fn, args) { const v = await rpc(fn, args); cache.clear(); return v; }
   window.FIN = { ready, sql, fn, write, rpc, download, clear: () => cache.clear() };
-  // pages: #payables (default), #cash, #fba, #profit, #amz
-  const PAGES = ["payables", "cash", "fba", "profit", "amz", "shop"];
+  // pages: #payables (default), #cash, #fba, #profit, #amz, #shop (Just Tennis's Shopify), #anr (Ace n Rally's Shopify —
+  // the same page as #shop, for the other store: FIN.store says which)
+  const PAGES = ["payables", "cash", "fba", "profit", "amz", "shop", "anr"];
+  const MAIN = { anr: "shop" };
+  window.FIN.store = "justtennis";
   function route() {
-    const h = (location.hash || "#payables").slice(1), page = PAGES.includes(h) ? h : "payables";
-    for (const id of PAGES) document.getElementById(id).hidden = id !== page;
+    const h = (location.hash || "#payables").slice(1), page = PAGES.includes(h) ? h : "payables", main = MAIN[page] || page;
+    if (main === "shop") window.FIN.store = page === "anr" ? "acenrally" : "justtennis";
+    for (const id of PAGES) { const el = document.getElementById(id); if (el) el.hidden = id !== main; }
     document.querySelectorAll(".nav a[data-page]").forEach(a => { const on = a.dataset.page === page; a.classList.toggle("on", on); if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
-    window.dispatchEvent(new CustomEvent("fin:page", { detail: page }));
+    window.dispatchEvent(new CustomEvent("fin:page", { detail: main }));
   }
   window.addEventListener("hashchange", route);
   document.addEventListener("DOMContentLoaded", route);

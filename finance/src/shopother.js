@@ -3,6 +3,7 @@
 //  · Clearing accounts: those payments against the deposits categorized to the same account in QuickBooks — what's left
 //    open (paid in Shopify, not deposited yet, or the other way round)
 //  · Waiting for payment: orders that still owe money (Shopify's outstanding amount)
+// Other payments and Waiting for payment are the store's (FIN.store); the clearing accounts are shared by both stores.
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -15,21 +16,26 @@
   const num = (r, ks) => { for (const k of ks) r[k] = +r[k] || 0; return r; };
 
   const S = { loaded: false, loading: false, err: null, weeks: [], clr: [], due: [], open: null, entry: null, entryErr: null, confirm: null, busy: "",
-    acct: null, acctRows: null, dueShown: 25, closed: [], store: "", closeAsk: null };
+    acct: null, acctRows: null, dueShown: 25, closed: [], admin: "", st: "", closeAsk: null };
+  const KEY = { justtennis: "shop_post", acenrally: "shop_post_acenrally" };
+  const ST = () => KEY[FIN.store] ? FIN.store : "justtennis";
 
   async function load(refresh) {
+    const st = ST();
+    if (S.st !== st) { S.st = st; S.loaded = false; S.open = null; S.entry = null; S.confirm = null; S.closeAsk = null; S.dueShown = 25; render(); }
     S.loading = true;
     try {
       const [weeks, clr, due, closed, store] = await Promise.all([
         FIN.sql(`select week_end, week_start, posted, complete, payments, orders, amount, sales, shipping, tax, refunds, a2x_pending, cogs, orders_missing_cost, unknown_gateway, by_gateway
-                 from fin.v_shop_pay_weeks order by week_end desc`, refresh),
+                 from fin.v_shop_pay_weeks where store = '${st}' order by week_end desc`, refresh),
         FIN.sql("select account, paid, payments, last_paid, deposited, deposits, last_dep, open_balance, qbo_balance, qbo_synced_at from fin.v_shop_clearing order by account", refresh),
-        FIN.sql("select order_id, name, order_day, source_name, financial_status, total, outstanding, paid, gateways, days_old from fin.v_shop_due order by created_at", refresh),
-        FIN.sql("select order_id, name, total, outstanding, closed_by, closed_at from fin.v_shop_due_closed order by closed_at desc", refresh),
-        FIN.sql("select value->>'admin_store' as store from fin.settings where key = 'shop_post'", refresh),
+        FIN.sql(`select order_id, name, order_day, source_name, financial_status, total, outstanding, paid, gateways, days_old from fin.v_shop_due where store = '${st}' order by created_at`, refresh),
+        FIN.sql(`select order_id, name, total, outstanding, closed_by, closed_at from fin.v_shop_due_closed where store = '${st}' order by closed_at desc`, refresh),
+        FIN.sql(`select value->>'admin_store' as store from fin.settings where key = '${KEY[st]}'`, refresh),
       ]);
+      if (st !== ST()) return;   // switched stores meanwhile
       S.closed = closed.map(r => ({ ...r, total: r.total == null ? null : +r.total, outstanding: +r.outstanding }));
-      S.store = (store[0] && store[0].store) || "";
+      S.admin = (store[0] && store[0].store) || "";
       S.weeks = weeks.map(r => num({ ...r, posted: r.posted || {}, by_gateway: r.by_gateway || {} }, ["payments", "orders", "amount", "sales", "shipping", "tax", "refunds", "a2x_pending", "cogs", "orders_missing_cost", "unknown_gateway"]));
       S.clr = clr.map(r => num({ ...r }, ["paid", "payments", "deposited", "deposits", "open_balance"]));
       S.due = due.map(r => num({ ...r }, ["total", "outstanding", "paid", "days_old"]));
@@ -47,7 +53,7 @@
   function weeks() {
     const box = $("so-weeks"), pbox = $("so-posted"); if (!box) return;
     if (S.err) { box.innerHTML = `<div class="note bad">Couldn't load: ${esc(S.err.message || S.err)}</div>`; return; }
-    if (!S.loaded) { box.innerHTML = `<div class="m">${S.loading ? "Loading…" : ""}</div>`; return; }
+    if (!S.loaded) { box.innerHTML = `<div class="m">${S.loading ? "Loading…" : ""}</div>`; if (pbox) pbox.innerHTML = ""; const d = $("so-due"); if (d) d.innerHTML = ""; return; }
     const todo = S.weeks.filter(w => !Object.keys(w.posted).length), done = S.weeks.filter(w => Object.keys(w.posted).length);
     box.innerHTML = todo.length ? weekTable(todo) : `<div class="empty">${S.weeks.length ? "Nothing waiting to be posted." : "No manual, cash or PayPal payments since the switch yet — they come in with the hourly Shopify sync."}</div>`;
     if (pbox) pbox.innerHTML = done.length ? weekTable(done) : `<div class="empty">No other-payment weeks posted yet.</div>`;
@@ -71,7 +77,7 @@
   async function openWeek(we, keep) {
     if (!keep && S.open === we) { S.open = null; S.entry = null; weeks(); return; }
     S.open = we; S.entry = null; S.entryErr = null; S.confirm = null; weeks();
-    try { S.entry = await FIN.rpc("fin_shop_pay_entry", { we }); } catch (e) { S.entryErr = e; }
+    try { S.entry = await FIN.rpc("fin_shop_pay_entry", { we, st: S.st }); } catch (e) { S.entryErr = e; }
     if (S.open === we) weeks();
   }
   function weekDetail(w) {
@@ -103,7 +109,7 @@
   async function postWeek(we) {
     S.busy = "post"; weeks();
     try {
-      const r = await FIN.fn("amzpay", { action: "shop_pay_post", week_end: we });
+      const r = await FIN.fn("amzpay", { action: "shop_pay_post", week_end: we, store: S.st });
       if (!r || r.ok === false) throw new Error((r && r.error) || "QuickBooks didn't answer");
       const made = r.results.filter(x => x.created).length, linked = r.results.filter(x => x.linked).length;
       note("", `Posted to QuickBooks: ${made} journal entr${made === 1 ? "y" : "ies"}${linked ? `, ${linked} already there (linked)` : ""}.`);
@@ -135,7 +141,7 @@
     const q = (v) => "'" + String(v).replace(/'/g, "''") + "'";
     try {
       const [pays, deps] = await Promise.all([
-        FIN.sql(`select day, order_name, gateway, kind, amount, a2x from fin.v_shop_other_tx where after_switch and account = ${q(a)} order by processed_at desc limit 300`),
+        FIN.sql(`select day, order_name, gateway, kind, amount, a2x, store from fin.v_shop_other_tx where after_switch and account = ${q(a)} order by processed_at desc limit 300`),
         FIN.sql(`select c.txn_date, c.txn_type, c.doc, c.memo, c.amount from fin.qbo_clearing c where c.account = ${q(a)} and c.doc not like 'SSP%'
                  and c.txn_date > (select (value->>'a2x_until')::date from fin.settings where key = 'shop_post') order by c.txn_date desc limit 300`),
       ]);
@@ -147,13 +153,16 @@
     const R = S.acctRows; if (!R) return `<div class="m">Loading…</div>`;
     if (R.err) return `<div class="note bad">${esc(R.err.message || R.err)}</div>`;
     const col = (title, rows, f) => `<div><h3>${title}</h3><table>${rows.length ? rows.map(f).join("") : '<tr><td class="m">none</td></tr>'}</table></div>`;
-    return `<div class="det">${col("Paid in Shopify", R.pays, p => `<tr><td>${day(p.day)} <b>${esc(p.order_name || "")}</b><div class="m">${esc(gwName(p.gateway))}${p.kind === "REFUND" ? " refund" : ""}${p.a2x ? " · A2X booked the sale" : ""}</div></td><td class="n">${fmt(p.amount)}</td></tr>`)}
+    return `<div class="det">${col("Paid in Shopify", R.pays, p => `<tr><td>${day(p.day)} <b>${esc(p.order_name || "")}</b><div class="m">${p.store === "acenrally" ? "Ace n Rally · " : ""}${esc(gwName(p.gateway))}${p.kind === "REFUND" ? " refund" : ""}${p.a2x ? " · A2X booked the sale" : ""}</div></td><td class="n">${fmt(p.amount)}</td></tr>`)}
       ${col("In QuickBooks (deposits and other entries)", R.deps, d => `<tr><td>${day(d.txn_date)} <span class="m">${esc(d.txn_type)}${d.doc ? " " + esc(d.doc) : ""}</span><div class="m">${esc(d.memo || "")}</div></td><td class="n">${fmt(-d.amount)}</td></tr>`)}</div>
       <div class="m">To clear a payment: mark the order paid in Shopify, and categorize the bank deposit to this account in QuickBooks. "Check QuickBooks" at the top reads the deposits.</div>`;
   }
 
   // ---------- orders waiting for payment
-  const ORDER_URL = (id) => `https://admin.shopify.com/store/${encodeURIComponent(S.store || "justtennis-822")}/orders/${encodeURIComponent(id)}`;
+  // the store's Shopify admin handle comes from the settings (the Shopify sync fills it in)
+  const ADMIN = () => S.admin || (S.st === "justtennis" ? "justtennis-822" : "");
+  const ORDER_URL = (id) => `https://admin.shopify.com/store/${encodeURIComponent(ADMIN())}/orders/${encodeURIComponent(id)}`;
+  const orderLink = (id, inner) => ADMIN() ? `<a href="${ORDER_URL(id)}" target="_blank" rel="noopener">${inner} ↗</a>` : inner;
   function dueList() {
     const box = $("so-due"); if (!box || !S.loaded) return;
     let h = "";
@@ -167,7 +176,7 @@
         const act = S.closeAsk === String(r.order_id)
           ? `<div class="so-close"><span>Close out — ${fmt(r.outstanding)} won't be collected?</span><button class="btn small primary" type="button" data-soclose="${esc(r.order_id)}" ${S.busy ? "disabled" : ""}>${S.busy === "close" ? "Saving…" : "Yes, close out"}</button><button class="btn small" type="button" data-soclosecancel>Cancel</button></div>`
           : part ? `<button class="btn small" type="button" data-socloseask="${esc(r.order_id)}" title="Paid in full — the order amount in Shopify was wrong">Close out</button>` : "";
-        h += `<tr><td><a href="${ORDER_URL(r.order_id)}" target="_blank" rel="noopener"><b>${esc(r.name)}</b> ↗</a><div class="m">${esc(r.source_name === "shopify_draft_order" ? "draft / manual order" : r.source_name)}${r.gateways ? " · " + esc(r.gateways) : ""}</div></td>
+        h += `<tr><td>${orderLink(r.order_id, `<b>${esc(r.name)}</b>`)}<div class="m">${esc(r.source_name === "shopify_draft_order" ? "draft / manual order" : r.source_name)}${r.gateways ? " · " + esc(r.gateways) : ""}</div></td>
           <td>${day(r.order_day, true)}<div class="m ${r.days_old > 30 ? "negt" : ""}">${r.days_old} day${r.days_old === 1 ? "" : "s"} ago</div></td>
           <td class="n">${fmt(r.total)}</td><td class="n">${r.paid ? fmt(r.paid) : "—"}</td><td class="n"><b>${fmt(r.outstanding)}</b></td>
           <td><span class="pill ${part ? "soon" : "est"}">${esc(r.financial_status.replace("_", " ").toLowerCase())}</span></td><td>${act}</td></tr>`;
@@ -176,13 +185,13 @@
       if (S.due.length > S.dueShown) h += `<div class="foot"><span>${S.due.length - S.dueShown} more</span><button class="btn small" type="button" data-somore>Show all</button></div>`;
     }
     if (S.closed.length) h += `<details class="pp-miss"><summary>${S.closed.length} closed out (paid in full; ${fmt(S.closed.reduce((a, r) => a + r.outstanding, 0))} Shopify still shows as owed)</summary><table class="az-lines"><thead><tr><th>Order</th><th class="n">Total</th><th class="n">Left in Shopify</th><th>Closed</th><th></th></tr></thead><tbody>
-      ${S.closed.map(c => `<tr><td><a href="${ORDER_URL(c.order_id)}" target="_blank" rel="noopener">${esc(c.name || "#" + c.order_id)} ↗</a></td><td class="n">${c.total == null ? "—" : fmt(c.total)}</td><td class="n">${fmt(c.outstanding)}</td>
+      ${S.closed.map(c => `<tr><td>${orderLink(c.order_id, esc(c.name || "#" + c.order_id))}</td><td class="n">${c.total == null ? "—" : fmt(c.total)}</td><td class="n">${fmt(c.outstanding)}</td>
         <td class="m">${day(String(c.closed_at).slice(0, 10), true)} · ${esc(c.closed_by)}</td><td><button class="btn small" type="button" data-soreopen="${esc(c.order_id)}">Reopen</button></td></tr>`).join("")}</tbody></table></details>`;
     box.innerHTML = h;
   }
   async function closeOut(id, reopen) {
     S.busy = "close"; dueList();
-    try { await FIN.write("fin_shop_due_close", { p: reopen ? { order_id: id, reopen: true } : { order_id: id, note: "Paid in full — the order amount in Shopify was wrong" } }); }
+    try { await FIN.write("fin_shop_due_close", { p: reopen ? { order_id: id, store: S.st, reopen: true } : { order_id: id, store: S.st, note: "Paid in full — the order amount in Shopify was wrong" } }); }
     catch (e) { note("bad", "Couldn't save: " + esc(e.message || e)); }
     S.busy = ""; S.closeAsk = null; FIN.clear(); await load(true);
   }
@@ -205,6 +214,6 @@
     });
     window.addEventListener("fin:shopother", () => { FIN.clear(); load(true); });
     if (!main.hidden) FIN.ready.then(() => load(false));
-    window.addEventListener("fin:page", (e) => { if (e.detail === "shop") { if (!S.loaded && !S.loading) FIN.ready.then(() => load(false)); else render(); } });
+    window.addEventListener("fin:page", (e) => { if (e.detail === "shop") { if (S.st !== ST() || (!S.loaded && !S.loading)) FIN.ready.then(() => load(false)); else render(); } });
   });
 })();

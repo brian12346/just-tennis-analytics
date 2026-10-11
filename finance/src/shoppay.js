@@ -1,4 +1,4 @@
-// Shopify payouts page (Just Tennis): each Shopify Payments payout broken down into one simple QuickBooks journal entry
+// Shopify payouts page (Just Tennis at #shop, Ace n Rally at #anr — FIN.store): each Shopify Payments payout broken down into one simple QuickBooks journal entry
 // (fin.shop_entry: sales, shipping, sales tax, refunds, fees, chargebacks, Shop Cash, tax adjustments and the payout to the
 // bank) plus cost of goods, checked against QuickBooks (A2X's entries before the switch, ours after) and posted with
 // "Send to QuickBooks". Built from Shopify Payments' transactions, each tagged with its payout by the hourly Shopify sync.
@@ -12,16 +12,21 @@
   const QBO_JE = (id) => `https://qbo.intuit.com/app/journal?txnId=${encodeURIComponent(id)}`;
   const NUM = ["amount", "tx", "orders", "sales", "shipping", "tax", "refunds", "fees", "other", "net", "cogs", "orders_missing_cost", "a2x_pending", "a2x_tx"];
 
-  const S = { loaded: false, loading: false, err: null, rows: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, postedShown: 12 };
+  const S = { loaded: false, loading: false, err: null, rows: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, postedShown: 12, store: "" };
+  const STORES = { justtennis: { label: "Just Tennis", key: "shop_post" }, acenrally: { label: "Ace n Rally", key: "shop_post_acenrally" } };
+  const ST = () => STORES[FIN.store] ? FIN.store : "justtennis";
 
   async function load(refresh) {
+    const st = ST();
+    if (S.store !== st) { S.store = st; S.loaded = false; S.rows = []; S.open = null; S.entry = null; S.confirm = null; S.postedShown = 12; note("", ""); }
     S.loading = true; render();
     try {
       const [rows, cfg] = await Promise.all([
         FIN.sql(`select id, payout_date, status, amount, posted, a2x_docs, checked_at, synced_at, tx, orders, sales, shipping, tax, refunds, fees, other, net, cogs, orders_missing_cost, a2x_pending, a2x_tx
-                 from fin.v_shop_payouts where issued_at >= now() - interval '100 days' order by issued_at desc, id desc`, refresh),
-        FIN.sql("select value from fin.settings where key = 'shop_post'", refresh),
+                 from fin.v_shop_payouts where store = '${st}' and issued_at >= now() - interval '100 days' order by issued_at desc, id desc`, refresh),
+        FIN.sql(`select value from fin.settings where key = '${STORES[st].key}'`, refresh),
       ]);
+      if (st !== ST()) return;   // switched stores meanwhile: that load takes over
       S.rows = rows.map(r => { const o = { ...r, posted: r.posted || {}, a2x_docs: r.a2x_docs || [] }; for (const k of NUM) o[k] = +r[k] || 0; return o; });
       S.cfg = (cfg[0] && cfg[0].value) || {};
       S.err = null; S.loaded = true;
@@ -47,8 +52,12 @@
 
   function note(cls, html) { const n = $("sp-note"); n.className = "note " + (cls || ""); n.innerHTML = html; n.hidden = !html; }
   function render() {
+    const lb = STORES[S.store || ST()].label;
+    $("sp-title").textContent = lb;
+    $("sp-eyebrow").textContent = `${lb} · Shopify Payments payouts → QuickBooks journal entries`;
+    const pp = $("pp-panel"); if (pp) pp.hidden = (S.store || ST()) !== "justtennis";   // PayPal is Just Tennis's
     if (S.err) note("bad", "Couldn't load: " + esc(S.err.message || S.err));
-    if (!S.loaded) { $("sp-sub").textContent = S.loading ? "Loading…" : ""; return; }
+    if (!S.loaded) { $("sp-sub").textContent = S.loading ? "Loading…" : ""; for (const id of ["sp-cards", "sp-table", "sp-posted"]) $(id).innerHTML = ""; return; }
     const last = S.rows.reduce((a, r) => r.synced_at > a ? r.synced_at : a, "");
     $("sp-sub").textContent = last ? `Payouts from Shopify as of ${new Date(last).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} · updates hourly` : "No payouts yet";
     cards(); table();
@@ -177,6 +186,6 @@
     });
     $("sp-check").addEventListener("click", check);
     if (!main.hidden) FIN.ready.then(() => load(false));
-    window.addEventListener("fin:page", (e) => { if (e.detail === "shop") { if (!S.loaded && !S.loading) FIN.ready.then(() => load(false)); else render(); } });
+    window.addEventListener("fin:page", (e) => { if (e.detail === "shop") { if (S.store !== ST() || (!S.loaded && !S.loading)) FIN.ready.then(() => load(false)); else render(); } });
   });
 })();

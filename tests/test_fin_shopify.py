@@ -165,3 +165,23 @@ def test_close_out_part_paid(conn):
     cur.execute("select name, outstanding::float, closed_by from fin.v_shop_due_closed"); assert cur.fetchone() == ("#5", 35.10, "b@x.com")
     cur.execute("select public.fin_shop_due_close('{\"order_id\": 5, \"reopen\": true}'::jsonb)")
     cur.execute("select count(*) from fin.v_shop_due"); assert cur.fetchone()[0] == 1
+
+
+def test_ace_n_rally_payout(conn):
+    """Ace n Rally: its own bank, numbering and switch day; its orders and costs from the Ace n Rally tables."""
+    cur = conn.cursor()
+    cur.execute("""insert into jt.anr_orders (order_id, name, created_at, order_day, subtotal, shipping, tax, total)
+                   values (71, '#1071', now(), '2026-09-19', 100, 0, 0, 100), (72, '#1072', now(), '2026-09-25', 200, 0, 0, 200)""")
+    cur.execute("""insert into jt.shopify_payment_tx (store, id, type, processed_at, amount, fee, net, order_id, payout_id)
+                   values ('acenrally', 1, 'CHARGE', '2026-09-26T18:00:00Z', 100, 3, 97, 71, '555'),
+                          ('acenrally', 2, 'CHARGE', '2026-09-26T19:00:00Z', 200, 6, 194, 72, '555')""")
+    cur.execute("insert into fin.shopify_payouts (id, issued_at, status, amount, store) values ('555', '2026-09-29T00:00:00Z', 'PAID', 291, 'acenrally')")
+    e = entry(cur, "555")
+    assert e["problems"] == [] and e["parts"][0]["doc"] == "SSPAR-29Sep-555"
+    acct = {}
+    for l in e["parts"][0]["lines"]:
+        acct[l["account"]] = round(acct.get(l["account"], 0) + float(l["amount"]), 2)
+    # order #1071 (Sep 19) was A2X's; #1072 (Sep 25) is ours — Ace n Rally's switch day is Sep 20
+    assert acct == {"Shopify Sales": -200.0, "Shopify Pending Balances": -100.0, "Cost of goods sold:Shopify Fees": 9.0, "PLAT BUS CHECKING (3355) - 3": 291.0}
+    cur.execute("select store, sales from fin.v_shop_payouts where id = '555'")
+    assert cur.fetchone() == ("acenrally", 200)
