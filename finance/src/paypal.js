@@ -1,6 +1,7 @@
 // Shopify payouts page, part 3 — PayPal. Upload PayPal's activity download (CSV); Seller Sage books PayPal's fees a week at
-// a time (fin.paypal_fee_entry) and checks the Paypal Clearing Account in QuickBooks against PayPal's own balance, split by
+// a time (fin.paypal_fee_entry, monthly) and checks the Paypal Clearing Account in QuickBooks against PayPal's own balance, split by
 // kind (sales, refunds, fees, transfers to the bank, other) with what to do about each gap (fin.v_paypal_check).
+// Fees are booked a calendar month at a time (period end = the month's last day; kept as week_end in the code).
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -16,7 +17,7 @@
     try {
       const [chk, weeks, miss] = await Promise.all([
         FIN.sql("select * from fin.v_paypal_check", refresh),
-        FIN.sql("select week_end, week_start, posted, complete, tx, fees, disputes, sales, refunds, to_bank, other from fin.v_paypal_weeks order by week_end desc", refresh),
+        FIN.sql("select month_end as week_end, month_start as week_start, posted, complete, tx, fees, disputes, sales, refunds, to_bank, other from fin.v_paypal_months order by month_end desc", refresh),
         FIN.sql("select amount, txn_id, paypal_day, name, invoice, shopify_day, order_name, status from fin.v_paypal_match where status <> 'matched' order by coalesce(paypal_day, shopify_day) desc limit 200", refresh),
       ]);
       const c = chk[0] || null;
@@ -54,7 +55,7 @@
         c.paypal_only && `${c.paypal_only} PayPal sale${c.paypal_only > 1 ? "s" : ""} (${fmt(c.paypal_only_amt)}) aren't marked in Shopify — see the list below.`,
         c.shopify_only && `${c.shopify_only} Shopify PayPal payment${c.shopify_only > 1 ? "s" : ""} (${fmt(c.shopify_only_amt)}) aren't in the PayPal download — upload a later download, or check them.`] },
       { k: "Refunds", qb: c.qb_refunds, pp: c.pp_refunds, todo: [`Refunds come from the Other payments weeks; post those.`] },
-      { k: "PayPal fees and chargebacks", qb: c.qb_fees, pp: c.pp_fees, todo: [`Post the PayPal fees weeks below.`] },
+      { k: "PayPal fees and chargebacks", qb: c.qb_fees, pp: c.pp_fees, todo: [`Post the PayPal fees months below.`] },
       { k: "Transfers to the bank", qb: c.qb_to_bank, pp: c.pp_to_bank, todo: [`In the bank feed, categorize each PayPal transfer to ${esc(c.account)}, then Check QuickBooks.`] },
       { k: "Other (holds, purchases, money in)", qb: c.qb_other, pp: c.pp_other, todo: [c.pp_other_n ? `${c.pp_other_n} PayPal transaction${c.pp_other_n > 1 ? "s aren't" : " isn't"} a Shopify sale — record ${c.pp_other_n > 1 ? "them" : "it"} in QuickBooks paid from ${esc(c.account)}.` : `Holds and money moved in from the bank.`] },
     ];
@@ -79,16 +80,16 @@
   }
   const addDays = (d, n) => d ? new Date(new Date(String(d).slice(0, 10) + "T00:00:00Z").getTime() + n * 86400e3).toISOString().slice(0, 10) : d;
 
-  // ---------- fees, a week at a time
+  // ---------- fees, a month at a time
   function weeks() {
     const box = $("pp-weeks"); if (!box || !S.loaded) return;
     if (!S.weeks.length) { box.innerHTML = `<div class="empty">No PayPal activity since the switch uploaded yet.</div>`; return; }
-    let h = `<table class="az-pay"><thead><tr><th>Week</th><th class="n">Sales</th><th class="n">Refunds</th><th class="n">PayPal fees</th><th class="n">Chargebacks</th><th class="n">To the bank</th><th class="n">Other</th><th>Status</th></tr></thead><tbody>`;
+    let h = `<table class="az-pay"><thead><tr><th>Month</th><th class="n">Sales</th><th class="n">Refunds</th><th class="n">PayPal fees</th><th class="n">Chargebacks</th><th class="n">To the bank</th><th class="n">Other</th><th>Status</th></tr></thead><tbody>`;
     for (const w of S.weeks) {
       const posted = Object.keys(w.posted).length, nothing = near0(w.fees) && near0(w.disputes);
-      const st = posted ? '<span class="pill paid">In QuickBooks</span>' : nothing ? '<span class="pill est">No fees</span>' : !w.complete ? '<span class="pill est">Week not over</span>' : '<span class="pill soon">Ready to post</span>';
+      const st = posted ? '<span class="pill paid">In QuickBooks</span>' : nothing ? '<span class="pill est">No fees</span>' : !w.complete ? '<span class="pill est">Month not over</span>' : '<span class="pill soon">Ready to post</span>';
       const cell = (v) => `<td class="n">${near0(v) ? "—" : fmt(v)}</td>`;
-      h += `<tr class="row${S.open === w.week_end ? " sel" : ""}" data-ppweek="${esc(w.week_end)}"><td><b>${day(w.week_start)} – ${day(w.week_end, true)}</b><div class="m">${w.tx} transaction${w.tx === 1 ? "" : "s"}</div></td>
+      h += `<tr class="row${S.open === w.week_end ? " sel" : ""}" data-ppweek="${esc(w.week_end)}"><td><b>${new Date(w.week_end + "T00:00:00Z").toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })}</b><div class="m">${day(w.week_start)} – ${day(w.week_end)}</div><div class="m">${w.tx} transaction${w.tx === 1 ? "" : "s"}</div></td>
         ${cell(w.sales)}${cell(w.refunds)}${cell(-w.fees)}${cell(w.disputes)}${cell(w.to_bank)}${cell(w.other)}<td>${st}</td></tr>`;
       if (S.open === w.week_end) h += `<tr class="detail"><td colspan="8">${weekDetail(w)}</td></tr>`;
     }
@@ -106,14 +107,14 @@
     if (!e || String(e.week?.week_end) !== String(w.week_end)) return `<div class="m">Building the entry…</div>`;
     const probs = e.problems || [], blocking = probs.filter(p => p.kind === "total");
     let h = probs.map(p => `<div class="note ${p.kind === "total" ? "bad" : ""}">${esc(p.message)}</div>`).join("");
-    if (!e.parts.length) return h + `<div class="m">No PayPal fees that week — nothing to post.</div>`;
+    if (!e.parts.length) return h + `<div class="m">No PayPal fees that month — nothing to post.</div>`;
     const p = e.parts[0];
     h += `<div class="az-part"><div class="az-ph"><div><b>${esc(p.doc)}</b> <span class="m">PayPal fees · dated ${day(p.date, true)}</span></div>
       ${p.posted?.id ? `<a class="pill paid" href="${QBO_JE(p.posted.id)}" target="_blank" rel="noopener">In QuickBooks ↗</a>` : ""}</div>
       <table class="az-lines"><thead><tr><th>Account</th><th>Description</th><th class="n">Debit</th><th class="n">Credit</th></tr></thead><tbody>
       ${p.lines.map(l => `<tr><td>${esc(l.account)}</td><td class="m">${esc(l.description)}</td><td class="n">${l.amount > 0 ? fmt(l.amount) : ""}</td><td class="n">${l.amount < 0 ? fmt(-l.amount) : ""}</td></tr>`).join("")}
       </tbody></table></div><div class="az-actions">`;
-    if (p.posted?.id) h += `<span class="m">This week's fees are in QuickBooks.</span>`;
+    if (p.posted?.id) h += `<span class="m">This month's fees are in QuickBooks.</span>`;
     else if (!blocking.length) h += S.confirm === w.week_end
       ? `<span>Post this entry to QuickBooks?</span><button class="btn primary" type="button" data-pppost="${esc(w.week_end)}" ${S.busy ? "disabled" : ""}>${S.busy === "post" ? "Posting…" : "Yes, post"}</button><button class="btn" type="button" data-ppcancel>Cancel</button>`
       : `<button class="btn primary" type="button" data-ppask="${esc(w.week_end)}">Send to QuickBooks</button>`;

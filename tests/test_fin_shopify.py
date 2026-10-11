@@ -133,10 +133,10 @@ def test_paypal_fees_and_check(conn):
             R("H", "2026-10-08", "Authorization", 75, 0, None, "Memo"), R("W", "2026-10-09", "General Withdrawal - Bank Account", -150, 0, 18.04, "Debit")]
     cur.execute("select public.fin_paypal_save(%s::jsonb)", (json.dumps({"file": "pp.csv", "rows": rows}),))
     assert cur.fetchone()[0] == 4
-    cur.execute("select fin.paypal_fee_entry('2026-10-11')")
+    cur.execute("select fin.paypal_fee_entry('2026-10-31')")
     e = cur.fetchone()[0]
     assert {l["account"]: float(l["amount"]) for l in e["parts"][0]["lines"]} == {"Cost of goods sold:PayPal Fees": 6.96, "Paypal Clearing Account": -6.96}
-    assert e["parts"][0]["doc"] == "SSPPP-11Oct-FEE"
+    assert e["parts"][0]["doc"] == "SSPPP-31Oct-FEE" and e["parts"][0]["date"] == "2026-10-31"
     cur.execute("select status, amount from fin.v_paypal_match order by amount")
     assert [(s, float(a)) for s, a in cur.fetchall()] == [("shopify_only", 50.0), ("paypal_only", 75.0), ("matched", 100.0)]
     cur.execute("select public.fin_qbo_clearing_save(%s::jsonb)", (json.dumps({"from": "2026-10-01", "to": "2026-10-11", "rows": [
