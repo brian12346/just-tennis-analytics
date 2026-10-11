@@ -301,3 +301,4 @@ table.az-pay td.n{white-space:nowrap}
 /* PayPal check: unmatched sales list */
 .pp-miss { margin-top: 12px; }
 .pp-miss summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.so-close { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }

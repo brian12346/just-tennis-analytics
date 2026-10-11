@@ -145,3 +145,17 @@ def test_paypal_fees_and_check(conn):
     cur.execute("""select paypal_balance, qbo_balance, difference, qb_sales, pp_sales, sales_unposted, qb_fees, pp_fees, qb_to_bank, pp_to_bank,
                           paypal_only, shopify_only from fin.v_paypal_check""")
     assert tuple(map(float, cur.fetchone())) == (18.04, 25.0, 6.96, 0, 175.0, 150.0, 0, -6.96, -150.0, -150.0, 1, 1)
+
+
+def test_close_out_part_paid(conn):
+    cur = conn.cursor()
+    cur.execute("insert into fin.users (user_id, email) values ('11111111-1111-1111-1111-111111111111', 'b@x.com') on conflict do nothing")
+    cur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": "11111111-1111-1111-1111-111111111111", "email": "b@x.com"}),))
+    cur.execute("""insert into jt.shopify_order_due (store, order_id, name, created_at, financial_status, total, outstanding)
+                   values ('justtennis', 5, '#5', now(), 'PARTIALLY_PAID', 1170, 35.10)""")
+    cur.execute("select count(*) from fin.v_shop_due"); assert cur.fetchone()[0] == 1
+    cur.execute("select public.fin_shop_due_close('{\"order_id\": 5, \"note\": \"paid in full\"}'::jsonb)")
+    cur.execute("select count(*) from fin.v_shop_due"); assert cur.fetchone()[0] == 0
+    cur.execute("select name, outstanding::float, closed_by from fin.v_shop_due_closed"); assert cur.fetchone() == ("#5", 35.10, "b@x.com")
+    cur.execute("select public.fin_shop_due_close('{\"order_id\": 5, \"reopen\": true}'::jsonb)")
+    cur.execute("select count(*) from fin.v_shop_due"); assert cur.fetchone()[0] == 1

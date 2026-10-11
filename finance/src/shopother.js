@@ -15,17 +15,21 @@
   const num = (r, ks) => { for (const k of ks) r[k] = +r[k] || 0; return r; };
 
   const S = { loaded: false, loading: false, err: null, weeks: [], clr: [], due: [], open: null, entry: null, entryErr: null, confirm: null, busy: "",
-    acct: null, acctRows: null, dueShown: 25 };
+    acct: null, acctRows: null, dueShown: 25, closed: [], store: "", closeAsk: null };
 
   async function load(refresh) {
     S.loading = true;
     try {
-      const [weeks, clr, due] = await Promise.all([
+      const [weeks, clr, due, closed, store] = await Promise.all([
         FIN.sql(`select week_end, week_start, posted, complete, payments, orders, amount, sales, shipping, tax, refunds, a2x_pending, cogs, orders_missing_cost, unknown_gateway, by_gateway
                  from fin.v_shop_pay_weeks order by week_end desc`, refresh),
         FIN.sql("select account, paid, payments, last_paid, deposited, deposits, last_dep, open_balance, qbo_balance, qbo_synced_at from fin.v_shop_clearing order by account", refresh),
         FIN.sql("select order_id, name, order_day, source_name, financial_status, total, outstanding, paid, gateways, days_old from fin.v_shop_due order by created_at", refresh),
+        FIN.sql("select order_id, name, total, outstanding, closed_by, closed_at from fin.v_shop_due_closed order by closed_at desc", refresh),
+        FIN.sql("select value->>'admin_store' as store from fin.settings where key = 'shop_post'", refresh),
       ]);
+      S.closed = closed.map(r => ({ ...r, total: r.total == null ? null : +r.total, outstanding: +r.outstanding }));
+      S.store = (store[0] && store[0].store) || "";
       S.weeks = weeks.map(r => num({ ...r, posted: r.posted || {}, by_gateway: r.by_gateway || {} }, ["payments", "orders", "amount", "sales", "shipping", "tax", "refunds", "a2x_pending", "cogs", "orders_missing_cost", "unknown_gateway"]));
       S.clr = clr.map(r => num({ ...r }, ["paid", "payments", "deposited", "deposits", "open_balance"]));
       S.due = due.map(r => num({ ...r }, ["total", "outstanding", "paid", "days_old"]));
@@ -39,13 +43,18 @@
 
   // ---------- other payments, a week at a time
   const weekStatus = (w) => Object.keys(w.posted).length ? ["posted", "In QuickBooks"] : !w.complete ? ["new", "Week not over"] : ["ready", "Ready to post"];
+  // weeks not in QuickBooks go to "Other payments to post"; posted ones sit under Posted
   function weeks() {
-    const box = $("so-weeks"); if (!box) return;
+    const box = $("so-weeks"), pbox = $("so-posted"); if (!box) return;
     if (S.err) { box.innerHTML = `<div class="note bad">Couldn't load: ${esc(S.err.message || S.err)}</div>`; return; }
     if (!S.loaded) { box.innerHTML = `<div class="m">${S.loading ? "Loading…" : ""}</div>`; return; }
-    if (!S.weeks.length) { box.innerHTML = `<div class="empty">No manual, cash or PayPal payments since the switch yet — they come in with the hourly Shopify sync.</div>`; return; }
+    const todo = S.weeks.filter(w => !Object.keys(w.posted).length), done = S.weeks.filter(w => Object.keys(w.posted).length);
+    box.innerHTML = todo.length ? weekTable(todo) : `<div class="empty">${S.weeks.length ? "Nothing waiting to be posted." : "No manual, cash or PayPal payments since the switch yet — they come in with the hourly Shopify sync."}</div>`;
+    if (pbox) pbox.innerHTML = done.length ? weekTable(done) : `<div class="empty">No other-payment weeks posted yet.</div>`;
+  }
+  function weekTable(list) {
     let h = `<table class="az-pay"><thead><tr><th>Week</th><th>Paid by</th><th class="n">Sales</th><th class="n">Shipping</th><th class="n">Sales tax</th><th class="n">Refunds</th><th class="n">Total paid</th><th class="n">Cost of goods</th><th>Status</th></tr></thead><tbody>`;
-    for (const w of S.weeks) {
+    for (const w of list) {
       const [k, label] = weekStatus(w);
       const by = Object.entries(w.by_gateway).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([g, a]) => `${esc(gwName(g))} ${f0(a)}`).join(" · ");
       const cell = (v) => `<td class="n">${Math.abs(v || 0) >= 0.5 ? f0(v) : "—"}</td>`;
@@ -54,10 +63,10 @@
         <td class="n">${Math.abs(w.sales) >= 0.5 ? f0(w.sales) : "—"}${Math.abs(w.a2x_pending) >= 0.5 ? `<div class="m" title="Payments for orders A2X already booked as sales — they clear Shopify Pending Balances">+${f0(w.a2x_pending)} A2X-booked</div>` : ""}</td>
         ${cell(w.shipping)}${cell(w.tax)}${cell(w.refunds)}<td class="n"><b>${fmt(w.amount)}</b></td>
         <td class="n">${f0(w.cogs)}${w.orders_missing_cost ? `<div class="m negt">${w.orders_missing_cost} missing cost</div>` : ""}</td>
-        <td><span class="pill ${k === "posted" ? "paid" : k === "ready" ? "soon" : "est"}">${esc(label)}</span></td></tr>`;
+        <td><span class="pill ${k === "posted" ? "paid" : k === "ready" ? "soon" : "est"}">${esc(k === "posted" ? "Seller Sage" : label)}</span></td></tr>`;
       if (S.open === w.week_end) h += `<tr class="detail"><td colspan="9">${weekDetail(w)}</td></tr>`;
     }
-    box.innerHTML = h + `</tbody></table>`;
+    return h + `</tbody></table>`;
   }
   async function openWeek(we, keep) {
     if (!keep && S.open === we) { S.open = null; S.entry = null; weeks(); return; }
@@ -144,32 +153,53 @@
   }
 
   // ---------- orders waiting for payment
+  const ORDER_URL = (id) => `https://admin.shopify.com/store/${encodeURIComponent(S.store || "justtennis-822")}/orders/${encodeURIComponent(id)}`;
   function dueList() {
     const box = $("so-due"); if (!box || !S.loaded) return;
-    if (!S.due.length) { box.innerHTML = `<div class="empty">No orders waiting for payment.</div>`; return; }
-    const tot = S.due.reduce((a, r) => a + r.outstanding, 0), old = S.due.filter(r => r.days_old > 30);
-    let h = `<div class="m">${S.due.length} order${S.due.length === 1 ? "" : "s"} owe ${fmt(tot)}${old.length ? ` · ${old.length} over 30 days (${fmt(old.reduce((a, r) => a + r.outstanding, 0))})` : ""}</div>`;
-    h += `<table class="az-pay"><thead><tr><th>Order</th><th>Placed</th><th class="n">Total</th><th class="n">Paid</th><th class="n">Still owed</th><th>Status</th></tr></thead><tbody>`;
-    for (const r of S.due.slice(0, S.dueShown)) {
-      h += `<tr><td><b>${esc(r.name)}</b><div class="m">${esc(r.source_name === "shopify_draft_order" ? "draft / manual order" : r.source_name)}${r.gateways ? " · " + esc(r.gateways) : ""}</div></td>
-        <td>${day(r.order_day, true)}<div class="m ${r.days_old > 30 ? "negt" : ""}">${r.days_old} day${r.days_old === 1 ? "" : "s"} ago</div></td>
-        <td class="n">${fmt(r.total)}</td><td class="n">${r.paid ? fmt(r.paid) : "—"}</td><td class="n"><b>${fmt(r.outstanding)}</b></td>
-        <td><span class="pill ${r.financial_status === "PARTIALLY_PAID" ? "soon" : "est"}">${esc(r.financial_status.replace("_", " ").toLowerCase())}</span></td></tr>`;
+    let h = "";
+    if (!S.due.length) h += `<div class="empty">No orders waiting for payment.</div>`;
+    else {
+      const tot = S.due.reduce((a, r) => a + r.outstanding, 0), old = S.due.filter(r => r.days_old > 30);
+      h += `<div class="m">${S.due.length} order${S.due.length === 1 ? "" : "s"} owe ${fmt(tot)}${old.length ? ` · ${old.length} over 30 days (${fmt(old.reduce((a, r) => a + r.outstanding, 0))})` : ""}</div>`;
+      h += `<table class="az-pay"><thead><tr><th>Order</th><th>Placed</th><th class="n">Total</th><th class="n">Paid</th><th class="n">Still owed</th><th>Status</th><th></th></tr></thead><tbody>`;
+      for (const r of S.due.slice(0, S.dueShown)) {
+        const part = r.financial_status === "PARTIALLY_PAID";
+        const act = S.closeAsk === String(r.order_id)
+          ? `<div class="so-close"><span>Close out — ${fmt(r.outstanding)} won't be collected?</span><button class="btn small primary" type="button" data-soclose="${esc(r.order_id)}" ${S.busy ? "disabled" : ""}>${S.busy === "close" ? "Saving…" : "Yes, close out"}</button><button class="btn small" type="button" data-soclosecancel>Cancel</button></div>`
+          : part ? `<button class="btn small" type="button" data-socloseask="${esc(r.order_id)}" title="Paid in full — the order amount in Shopify was wrong">Close out</button>` : "";
+        h += `<tr><td><a href="${ORDER_URL(r.order_id)}" target="_blank" rel="noopener"><b>${esc(r.name)}</b> ↗</a><div class="m">${esc(r.source_name === "shopify_draft_order" ? "draft / manual order" : r.source_name)}${r.gateways ? " · " + esc(r.gateways) : ""}</div></td>
+          <td>${day(r.order_day, true)}<div class="m ${r.days_old > 30 ? "negt" : ""}">${r.days_old} day${r.days_old === 1 ? "" : "s"} ago</div></td>
+          <td class="n">${fmt(r.total)}</td><td class="n">${r.paid ? fmt(r.paid) : "—"}</td><td class="n"><b>${fmt(r.outstanding)}</b></td>
+          <td><span class="pill ${part ? "soon" : "est"}">${esc(r.financial_status.replace("_", " ").toLowerCase())}</span></td><td>${act}</td></tr>`;
+      }
+      h += `</tbody></table>`;
+      if (S.due.length > S.dueShown) h += `<div class="foot"><span>${S.due.length - S.dueShown} more</span><button class="btn small" type="button" data-somore>Show all</button></div>`;
     }
-    h += `</tbody></table>`;
-    if (S.due.length > S.dueShown) h += `<div class="foot"><span>${S.due.length - S.dueShown} more</span><button class="btn small" type="button" data-somore>Show all</button></div>`;
+    if (S.closed.length) h += `<details class="pp-miss"><summary>${S.closed.length} closed out (paid in full; ${fmt(S.closed.reduce((a, r) => a + r.outstanding, 0))} Shopify still shows as owed)</summary><table class="az-lines"><thead><tr><th>Order</th><th class="n">Total</th><th class="n">Left in Shopify</th><th>Closed</th><th></th></tr></thead><tbody>
+      ${S.closed.map(c => `<tr><td><a href="${ORDER_URL(c.order_id)}" target="_blank" rel="noopener">${esc(c.name || "#" + c.order_id)} ↗</a></td><td class="n">${c.total == null ? "—" : fmt(c.total)}</td><td class="n">${fmt(c.outstanding)}</td>
+        <td class="m">${day(String(c.closed_at).slice(0, 10), true)} · ${esc(c.closed_by)}</td><td><button class="btn small" type="button" data-soreopen="${esc(c.order_id)}">Reopen</button></td></tr>`).join("")}</tbody></table></details>`;
     box.innerHTML = h;
+  }
+  async function closeOut(id, reopen) {
+    S.busy = "close"; dueList();
+    try { await FIN.write("fin_shop_due_close", { p: reopen ? { order_id: id, reopen: true } : { order_id: id, note: "Paid in full — the order amount in Shopify was wrong" } }); }
+    catch (e) { note("bad", "Couldn't save: " + esc(e.message || e)); }
+    S.busy = ""; S.closeAsk = null; FIN.clear(); await load(true);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     const main = $("shop");
     main.addEventListener("click", (ev) => {
-      if (!ev.target.closest("#so-weeks, #so-clearing, #so-due")) return;
+      if (!ev.target.closest("#so-weeks, #so-posted, #so-clearing, #so-due")) return;
       if (ev.target.closest("[data-somore]")) { S.dueShown = 1e9; dueList(); return; }
+      const ca = ev.target.closest("[data-socloseask]"); if (ca) { S.closeAsk = ca.dataset.socloseask; dueList(); return; }
+      if (ev.target.closest("[data-soclosecancel]")) { S.closeAsk = null; dueList(); return; }
+      const cl = ev.target.closest("[data-soclose]"); if (cl) { closeOut(cl.dataset.soclose, false); return; }
+      const ro = ev.target.closest("[data-soreopen]"); if (ro) { closeOut(ro.dataset.soreopen, true); return; }
       const a = ev.target.closest("[data-soask]"); if (a) { S.confirm = a.dataset.soask; weeks(); return; }
       if (ev.target.closest("[data-socancel]")) { S.confirm = null; weeks(); return; }
       const p = ev.target.closest("[data-sopost]"); if (p) { postWeek(p.dataset.sopost); return; }
-      if (ev.target.closest("a, button, tr.detail")) return;
+      if (ev.target.closest("a, button, tr.detail, details")) return;
       const w = ev.target.closest("tr[data-week]"); if (w) { openWeek(w.dataset.week); return; }
       const c = ev.target.closest("tr[data-acct]"); if (c) openAcct(c.dataset.acct);
     });
