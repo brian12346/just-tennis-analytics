@@ -800,7 +800,7 @@ def sync_order_payments(shop: "Shopify", conn, store: str = "justtennis", since:
             dom = ((shop.graphql("{ shop { myshopifyDomain } }") or {}).get("shop") or {}).get("myshopifyDomain") or ""
             if dom:
                 with conn.cursor() as cur:
-                    cur.execute("update fin.settings set value = value || jsonb_build_object('admin_store', %s) where key = %s", (dom.split(".")[0], key))
+                    cur.execute("update fin.settings set value = value || jsonb_build_object('admin_store', %s::text) where key = %s", (dom.split(".")[0], key))
                 conn.commit()
         except RuntimeError:
             pass
