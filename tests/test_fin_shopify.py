@@ -116,3 +116,32 @@ def test_other_payments_week(conn):
     assert tuple(map(float, cur.fetchone())) == (1100.0, -1000.0, 100.0, 100.0)
     cur.execute("select name, outstanding from fin.v_shop_due")
     assert [(n, float(a)) for n, a in cur.fetchall()] == [("#23", 120.0)]
+
+
+def test_paypal_fees_and_check(conn):
+    """PayPal's activity download: fees booked a week at a time; the Paypal Clearing Account checked against PayPal's balance."""
+    cur = conn.cursor()
+    cur.execute("insert into fin.users (user_id, email) values ('11111111-1111-1111-1111-111111111111', 'b@x.com') on conflict do nothing")
+    cur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": "11111111-1111-1111-1111-111111111111", "email": "b@x.com"}),))
+    cur.execute("""insert into jt.shopify_orders (order_id, name, created_at, order_day, subtotal, shipping, tax, total)
+                   values (31, '#31', now(), '2026-10-06', 100, 0, 0, 100), (32, '#32', now(), '2026-10-07', 50, 0, 0, 50)""")
+    cur.execute("""insert into jt.shopify_order_payments (store, id, order_id, kind, gateway, amount, processed_at)
+                   values ('justtennis', 1, 31, 'CAPTURE', 'paypal', 100, '2026-10-06T18:00:00Z'), ('justtennis', 2, 32, 'CAPTURE', 'paypal', 50, '2026-10-07T18:00:00Z')""")
+    R = lambda i, day, typ, gross, fee, bal, impact="Credit": {"txn_id": i, "at": day + "T12:00:00-07:00", "day": day, "type": typ, "status": "Completed",
+                                                            "gross": gross, "fee": fee, "net": round(gross + fee, 2), "balance": bal, "impact": impact}
+    rows = [R("A", "2026-10-06", "Express Checkout Payment", 100, -3.98, 96.02), R("B", "2026-10-08", "Express Checkout Payment", 75, -2.98, 168.04),
+            R("H", "2026-10-08", "Authorization", 75, 0, None, "Memo"), R("W", "2026-10-09", "General Withdrawal - Bank Account", -150, 0, 18.04, "Debit")]
+    cur.execute("select public.fin_paypal_save(%s::jsonb)", (json.dumps({"file": "pp.csv", "rows": rows}),))
+    assert cur.fetchone()[0] == 4
+    cur.execute("select fin.paypal_fee_entry('2026-10-11')")
+    e = cur.fetchone()[0]
+    assert {l["account"]: float(l["amount"]) for l in e["parts"][0]["lines"]} == {"Cost of goods sold:PayPal Fees": 6.96, "Paypal Clearing Account": -6.96}
+    assert e["parts"][0]["doc"] == "SSPPP-11Oct-FEE"
+    cur.execute("select status, amount from fin.v_paypal_match order by amount")
+    assert [(s, float(a)) for s, a in cur.fetchall()] == [("shopify_only", 50.0), ("paypal_only", 75.0), ("matched", 100.0)]
+    cur.execute("select public.fin_qbo_clearing_save(%s::jsonb)", (json.dumps({"from": "2026-10-01", "to": "2026-10-11", "rows": [
+        {"txn_type": "Deposit", "txn_id": "7", "line_id": "1", "account": "Paypal Clearing Account", "date": "2026-10-10", "amount": -150}],
+        "balances": [{"account": "Paypal Clearing Account", "balance": 25}]}),))
+    cur.execute("""select paypal_balance, qbo_balance, difference, qb_sales, pp_sales, sales_unposted, qb_fees, pp_fees, qb_to_bank, pp_to_bank,
+                          paypal_only, shopify_only from fin.v_paypal_check""")
+    assert tuple(map(float, cur.fetchone())) == (18.04, 25.0, 6.96, 0, 175.0, 150.0, 0, -6.96, -150.0, -150.0, 1, 1)

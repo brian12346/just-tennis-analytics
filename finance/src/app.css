@@ -298,3 +298,6 @@ table.az-pay tfoot td{border-top:2px solid var(--rule)}
 table.az-pay th{font-size:10px;letter-spacing:.04em;white-space:normal;vertical-align:bottom}
 table.az-pay td:first-child{white-space:nowrap}
 table.az-pay td.n{white-space:nowrap}
+/* PayPal check: unmatched sales list */
+.pp-miss { margin-top: 12px; }
+.pp-miss summary { cursor: pointer; font-weight: 600; padding: 6px 0; }

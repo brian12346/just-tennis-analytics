@@ -17,10 +17,11 @@
 // POST {action: "shop_check", ids?}  -> looks in QuickBooks for each payout: A2X's entry (an A2XSH entry whose BofA (0364)
 //                                        line is the payout, dated up to three weeks before it — not posted again) and ours.
 // POST {action: "shop_post", payout_id, force?} -> posts the payout's entries once each; refuses one A2X posted.
-// POST {action: "shop_clearing", days?} -> QuickBooks deposits, transfers and journal entries on the Shopify clearing
+// POST {action: "shop_clearing", days?} -> QuickBooks deposits, transfers, purchases and journal entries on the Shopify clearing
 //                                        accounts (manual, cash, PayPal …) for the last `days` (default 60), and their
 //                                        balances (fin_qbo_clearing_save). Also links weekly entries already in QuickBooks.
 // POST {action: "shop_pay_post", week_end} -> posts the week's other-payments entry (fin.shop_pay_entry) once.
+// POST {action: "paypal_post", week_end} -> posts the week's PayPal fees entry (fin.paypal_fee_entry) once.
 // Callers: accounts on the finance list (Authorization: Bearer <user JWT>), or SQL via jt.amzpay_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -320,6 +321,10 @@ async function shopClearing(c: Creds, days: number) {
     if (byId.has(t.FromAccountRef?.value)) rows.push({ txn_type: "Transfer", txn_id: t.Id, line_id: "from", account: byId.get(t.FromAccountRef.value), date: t.TxnDate, amount: -Number(t.Amount || 0), doc: "", memo: (t.PrivateNote || "").slice(0, 300) });
     if (byId.has(t.ToAccountRef?.value)) rows.push({ txn_type: "Transfer", txn_id: t.Id, line_id: "to", account: byId.get(t.ToAccountRef.value), date: t.TxnDate, amount: Number(t.Amount || 0), doc: "", memo: (t.PrivateNote || "").slice(0, 300) });
   }
+  for (const pu of await txBetween(c, "Purchase", from, to)) {   // expenses / checks paid from a clearing account (e.g. a purchase paid with PayPal)
+    if (byId.has(pu.AccountRef?.value)) rows.push({ txn_type: "Purchase", txn_id: pu.Id, line_id: "pay", account: byId.get(pu.AccountRef.value), date: pu.TxnDate,
+      amount: (pu.Credit ? 1 : -1) * Number(pu.TotalAmt || 0), doc: pu.DocNumber || "", memo: [pu.EntityRef?.name, pu.PrivateNote].filter(Boolean).join(" · ").slice(0, 300) });
+  }
   const jes = await txBetween(c, "JournalEntry", from, to);
   for (const j of jes) for (const l of j.Line || []) {
     const id = l.JournalEntryLineDetail?.AccountRef?.value;
@@ -332,8 +337,9 @@ async function shopClearing(c: Creds, days: number) {
   // weekly entries already in QuickBooks (posted by hand or earlier): link them
   let linked = 0;
   for (const j of jes) {
-    if (!/^SSPSH-\d\d[A-Za-z]{3}(-|C)PAY$/.test(String(j.DocNumber || ""))) continue;   // dated the week's last day
-    await rpc("fin_shop_week_posted", { p: { week_end: j.TxnDate, doc: j.DocNumber, id: j.Id, how: "linked" } }); linked++;
+    const d = String(j.DocNumber || "");   // dated the week's last day
+    if (/^SSPSH-\d\d[A-Za-z]{3}(-|C)PAY$/.test(d)) { await rpc("fin_shop_week_posted", { p: { week_end: j.TxnDate, doc: d, id: j.Id, how: "linked" } }); linked++; }
+    else if (/^SSPPP-\d\d[A-Za-z]{3}-FEE$/.test(d)) { await rpc("fin_paypal_week_posted", { p: { week_end: j.TxnDate, doc: d, id: j.Id, how: "linked" } }); linked++; }
   }
   return { saved: n, accounts: accts.map((a) => a.name), balances, linked };
 }
@@ -341,6 +347,11 @@ async function shopPayPost(c: Creds, we: string, by: string) {
   const e = await rpc("fin_shop_pay_entry", { we });
   if (!e) return { ok: false, error: "no payments that week" };
   return postParts(c, e, by, `Shopify payments outside Shopify Payments, week ending ${we} (Just Tennis)`, (doc, id, how) => rpc("fin_shop_week_posted", { p: { week_end: we, doc, id, by, how } }));
+}
+async function paypalPost(c: Creds, we: string, by: string) {
+  const e = await rpc("fin_paypal_fee_entry", { we });
+  if (!e || !e.parts.length) return { ok: false, error: "no PayPal fees that week" };
+  return postParts(c, e, by, `PayPal fees, week ending ${we} (Just Tennis)`, (doc, id, how) => rpc("fin_paypal_week_posted", { p: { week_end: we, doc, id, by, how } }));
 }
 
 async function caller(req: Request, c: Creds): Promise<string | null> {
@@ -415,6 +426,10 @@ Deno.serve(async (req) => {
     if (p.action === "shop_pay_post") {
       if (!p.week_end) return json({ ok: false, error: "week_end is required" }, 400);
       return json(await shopPayPost(c, String(p.week_end), by));
+    }
+    if (p.action === "paypal_post") {
+      if (!p.week_end) return json({ ok: false, error: "week_end is required" }, 400);
+      return json(await paypalPost(c, String(p.week_end), by));
     }
     if (p.action === "peek") {
       let rid = String(p.report_id || "");

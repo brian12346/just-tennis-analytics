@@ -271,6 +271,15 @@
       <div class="panel-h wrap"><h2>Clearing accounts</h2><span class="hint">Payments marked in Shopify against deposits categorized to the same account in QuickBooks · what's open is paid but not deposited yet (or deposited but not marked paid) · click an account for both sides</span></div>
       <div class="tbl" id="so-clearing"></div>
     </section>
+    <section class="panel" id="pp-panel">
+      <div class="panel-h wrap"><h2>PayPal</h2>
+        <div class="filters"><button class="btn small" type="button" id="pp-upload-btn">Upload PayPal activity</button><input type="file" id="pp-file" accept=".csv,text/csv" hidden></div>
+      </div>
+      <div class="hint">PayPal keeps its fees and sends the rest to the bank. Upload PayPal's activity download (Activity → Statements → Activity download · Balance affecting · CSV) and Seller Sage books the fees and checks the Paypal Clearing Account against PayPal's balance. Uploading the same dates again is fine.</div>
+      <div id="pp-check"></div>
+      <h3 class="cmp-h">PayPal fees, a week at a time <span class="m">(fees and chargebacks → Cost of goods sold:PayPal Fees, out of Paypal Clearing Account) · click a week for the entry</span></h3>
+      <div class="tbl" id="pp-weeks"></div>
+    </section>
     <section class="panel">
       <div class="panel-h wrap"><h2>Waiting for payment</h2><span class="hint">Orders that still owe money in Shopify (manual and draft orders, part payments) · they drop off once marked paid</span></div>
       <div class="tbl" id="so-due"></div>
@@ -301,6 +310,9 @@
 </script>
 <script>
 <!-- @inline shopother.js -->
+</script>
+<script>
+<!-- @inline paypal.js -->
 </script>
 </body>
 </html>
