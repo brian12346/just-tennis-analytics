@@ -17,6 +17,10 @@
 // POST {action: "shop_check", ids?}  -> looks in QuickBooks for each payout: A2X's entry (an A2XSH entry whose BofA (0364)
 //                                        line is the payout, dated up to three weeks before it — not posted again) and ours.
 // POST {action: "shop_post", payout_id, force?} -> posts the payout's entries once each; refuses one A2X posted.
+// POST {action: "shop_clearing", days?} -> QuickBooks deposits, transfers and journal entries on the Shopify clearing
+//                                        accounts (manual, cash, PayPal …) for the last `days` (default 60), and their
+//                                        balances (fin_qbo_clearing_save). Also links weekly entries already in QuickBooks.
+// POST {action: "shop_pay_post", week_end} -> posts the week's other-payments entry (fin.shop_pay_entry) once.
 // Callers: accounts on the finance list (Authorization: Bearer <user JWT>), or SQL via jt.amzpay_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -288,6 +292,57 @@ async function shopPost(c: Creds, pid: string, by: string, force: boolean) {
   return postParts(c, e, by, `Shopify payout ${pid} (Just Tennis)`, (doc, id, how) => rpc("fin_shop_posted", { p: { payout_id: pid, doc, id, by, how } }));
 }
 
+// ---- Shopify payments outside Shopify Payments: QuickBooks activity on the clearing accounts, and the weekly entries
+async function txBetween(c: Creds, entity: string, from: string, to: string) {
+  const all: any[] = [];
+  for (let s = 1; s < 5000; s += 1000) {
+    const r = (await query(c, `select * from ${entity} where TxnDate >= ${qq(from)} and TxnDate <= ${qq(to)} startposition ${s} maxresults 1000`))[entity] || [];
+    all.push(...r); if (r.length < 1000) break;
+  }
+  return all;
+}
+async function shopClearing(c: Creds, days: number) {
+  const names: string[] = (await rpc("fin_shop_clearing_accounts")) || [];
+  const accts = (await coa(c)).filter((a) => names.some((n) => n.toLowerCase() === a.name.toLowerCase()));
+  const byId = new Map(accts.map((a) => [a.id, a.name]));
+  const to = isoDay(new Date(Date.now() + 86400e3)), from = isoDay(new Date(Date.now() - days * 86400e3));
+  const rows: any[] = [];
+  for (const d of await txBetween(c, "Deposit", from, to)) {
+    for (const l of d.Line || []) {
+      const id = l.DepositLineDetail?.AccountRef?.value;
+      if (id && byId.has(id)) rows.push({ txn_type: "Deposit", txn_id: d.Id, line_id: String(l.Id ?? l.LineNum ?? rows.length), account: byId.get(id), date: d.TxnDate,
+        amount: -Number(l.Amount || 0), doc: d.DocNumber || "", memo: [l.Description, d.PrivateNote, l.DepositLineDetail?.Entity?.name].filter(Boolean).join(" · ").slice(0, 300) });
+    }
+    if (byId.has(d.DepositToAccountRef?.value)) rows.push({ txn_type: "Deposit", txn_id: d.Id, line_id: "to", account: byId.get(d.DepositToAccountRef.value), date: d.TxnDate,
+      amount: Number(d.TotalAmt || 0), doc: d.DocNumber || "", memo: (d.PrivateNote || "").slice(0, 300) });
+  }
+  for (const t of await txBetween(c, "Transfer", from, to)) {
+    if (byId.has(t.FromAccountRef?.value)) rows.push({ txn_type: "Transfer", txn_id: t.Id, line_id: "from", account: byId.get(t.FromAccountRef.value), date: t.TxnDate, amount: -Number(t.Amount || 0), doc: "", memo: (t.PrivateNote || "").slice(0, 300) });
+    if (byId.has(t.ToAccountRef?.value)) rows.push({ txn_type: "Transfer", txn_id: t.Id, line_id: "to", account: byId.get(t.ToAccountRef.value), date: t.TxnDate, amount: Number(t.Amount || 0), doc: "", memo: (t.PrivateNote || "").slice(0, 300) });
+  }
+  const jes = await txBetween(c, "JournalEntry", from, to);
+  for (const j of jes) for (const l of j.Line || []) {
+    const id = l.JournalEntryLineDetail?.AccountRef?.value;
+    if (id && byId.has(id)) rows.push({ txn_type: "JournalEntry", txn_id: j.Id, line_id: String(l.Id ?? rows.length), account: byId.get(id), date: j.TxnDate,
+      amount: (l.JournalEntryLineDetail.PostingType === "Debit" ? 1 : -1) * Number(l.Amount || 0), doc: j.DocNumber || "", memo: (l.Description || "").slice(0, 300) });
+  }
+  const bal = (await query(c, `select FullyQualifiedName, CurrentBalance from Account where Active = true maxresults 1000`)).Account || [];
+  const balances = bal.filter((a: any) => names.some((n) => n.toLowerCase() === String(a.FullyQualifiedName).toLowerCase())).map((a: any) => ({ account: a.FullyQualifiedName, balance: Number(a.CurrentBalance || 0) }));
+  const n = await rpc("fin_qbo_clearing_save", { p: { from, to, rows, balances } });
+  // weekly entries already in QuickBooks (posted by hand or earlier): link them
+  let linked = 0;
+  for (const j of jes) {
+    if (!/^SSPSH-\d\d[A-Za-z]{3}(-|C)PAY$/.test(String(j.DocNumber || ""))) continue;   // dated the week's last day
+    await rpc("fin_shop_week_posted", { p: { week_end: j.TxnDate, doc: j.DocNumber, id: j.Id, how: "linked" } }); linked++;
+  }
+  return { saved: n, accounts: accts.map((a) => a.name), balances, linked };
+}
+async function shopPayPost(c: Creds, we: string, by: string) {
+  const e = await rpc("fin_shop_pay_entry", { we });
+  if (!e) return { ok: false, error: "no payments that week" };
+  return postParts(c, e, by, `Shopify payments outside Shopify Payments, week ending ${we} (Just Tennis)`, (doc, id, how) => rpc("fin_shop_week_posted", { p: { week_end: we, doc, id, by, how } }));
+}
+
 async function caller(req: Request, c: Creds): Promise<string | null> {
   const k = req.headers.get("x-jt-key");
   if (k && c.jt_fn_key && k === c.jt_fn_key) return "scheduler";
@@ -355,6 +410,11 @@ Deno.serve(async (req) => {
     if (p.action === "shop_post") {
       if (!p.payout_id) return json({ ok: false, error: "payout_id is required" }, 400);
       return json(await shopPost(c, String(p.payout_id), by, !!p.force));
+    }
+    if (p.action === "shop_clearing") return json({ ok: true, ...(await shopClearing(c, Math.min(Number(p.days) || 60, 400))) });
+    if (p.action === "shop_pay_post") {
+      if (!p.week_end) return json({ ok: false, error: "week_end is required" }, 400);
+      return json(await shopPayPost(c, String(p.week_end), by));
     }
     if (p.action === "peek") {
       let rid = String(p.report_id || "");

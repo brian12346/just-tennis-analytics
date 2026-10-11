@@ -763,6 +763,62 @@ def sync_payment_fees(shop: "Shopify", conn, store: str = "justtennis", since: "
     return n
 
 
+# ---------------------------------------------------------------- payments outside Shopify Payments (finance, migration 120)
+# Manual / wholesale (check, ACH, wire), cash, PayPal, gift cards …: each successful payment or refund on an order, and
+# what the order still owes. Orders changed since a day before the last run (or since Jun 2026 the first time).
+ORDER_PAY_Q = """query($after: String, $q: String) { orders(first: 100, after: $after, query: $q, sortKey: UPDATED_AT) {
+  pageInfo { hasNextPage endCursor }
+  nodes { id name createdAt sourceName displayFinancialStatus test cancelledAt paymentGatewayNames
+          totalPriceSet { shopMoney { amount } } totalOutstandingSet { shopMoney { amount } }
+          transactions(first: 50) { id kind status gateway test processedAt createdAt amountSet { shopMoney { amount } } } } } }"""
+PAY_KINDS = ("SALE", "CAPTURE", "REFUND")
+
+
+def order_pay_rows(store: str, nodes: list[dict]) -> tuple[list[tuple], list[tuple]]:
+    pays, dues = [], []
+    for o in nodes:
+        oid = gid_num(o["id"])
+        dues.append((store, oid, o.get("name") or "", o.get("createdAt"), o.get("sourceName") or "", o.get("displayFinancialStatus") or "",
+                     _amt(o, "totalPriceSet"), _amt(o, "totalOutstandingSet"), ", ".join(o.get("paymentGatewayNames") or []),
+                     bool(o.get("cancelledAt")), bool(o.get("test"))))
+        for t in o.get("transactions") or []:
+            gw = (t.get("gateway") or "").lower()
+            if t.get("status") != "SUCCESS" or t.get("kind") not in PAY_KINDS or gw == "shopify_payments":
+                continue
+            pays.append((store, gid_num(t["id"]), oid, t["kind"], t.get("gateway") or "", money(((t.get("amountSet") or {}).get("shopMoney") or {}).get("amount")),
+                         t.get("processedAt") or t.get("createdAt"), bool(t.get("test"))))
+    return pays, dues
+
+
+def sync_order_payments(shop: "Shopify", conn, store: str = "justtennis", since: "dt.datetime | None" = None) -> int:
+    with conn.cursor() as cur:
+        cur.execute("select max(synced_at) from jt.shopify_order_due where store = %s", (store,))
+        last = cur.fetchone()[0]
+    start = since or ((last - dt.timedelta(days=1)) if last else dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc))
+    q, after, n = f"updated_at:>='{start.strftime('%Y-%m-%dT%H:%M:%SZ')}'", None, 0
+    while True:
+        page = shop.graphql(ORDER_PAY_Q, {"after": after, "q": q})["orders"]
+        pays, dues = order_pay_rows(store, page["nodes"])
+        with conn.cursor() as cur:
+            if dues:
+                cur.executemany("""insert into jt.shopify_order_due (store, order_id, name, created_at, source_name, financial_status, total, outstanding,
+                                     gateways, cancelled, test, synced_at) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                                   on conflict (store, order_id) do update set name = excluded.name, created_at = excluded.created_at,
+                                     source_name = excluded.source_name, financial_status = excluded.financial_status, total = excluded.total,
+                                     outstanding = excluded.outstanding, gateways = excluded.gateways, cancelled = excluded.cancelled,
+                                     test = excluded.test, synced_at = now()""", dues)
+            if pays:
+                cur.executemany("""insert into jt.shopify_order_payments (store, id, order_id, kind, gateway, amount, processed_at, test, synced_at)
+                                   values (%s, %s, %s, %s, %s, %s, %s, %s, now())
+                                   on conflict (store, id) do update set kind = excluded.kind, gateway = excluded.gateway, amount = excluded.amount,
+                                     processed_at = excluded.processed_at, test = excluded.test, synced_at = now()""", pays)
+        conn.commit()
+        n += len(dues)
+        if not page["pageInfo"]["hasNextPage"] or not page["nodes"]:
+            return n
+        after = page["pageInfo"]["endCursor"]
+
+
 # ---------------------------------------------------------------- Shopify purchase order status
 # Shopify's purchase orders API (inventoryPurchaseOrders, scope read_inventory_purchase_orders) is a preview that
 # live stores can't use yet. Try it: when the store is refused, record why and carry on; when it works, each linked

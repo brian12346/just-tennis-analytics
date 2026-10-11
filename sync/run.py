@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "shopify-pickups", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "shopify-order-payments", "shopify-pickups", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -118,6 +118,11 @@ def main(argv: list[str] | None = None) -> None:
         run("shopify_fees", lambda: sh6.sync_payment_fees(shopify(), conn, "justtennis"))
         if os.environ.get("ACENRALLY_SHOP"):
             run("acenrally_fees", lambda: sh6.sync_payment_fees(sh6.Shopify("ACENRALLY"), conn, "acenrally"))
+
+    if a.job in ("hourly", "nightly", "shopify-order-payments"):
+        # payments outside Shopify Payments (manual, cash, PayPal …) and what orders still owe, for Finance (migration 120)
+        from . import shopify as sh7
+        run("shopify_order_payments", lambda: sh7.sync_order_payments(shopify(), conn, "justtennis"))
 
     if a.job in ("hourly", "nightly", "location-stock"):
         # stock at the FBM location, for the FBM tab's listings panel (the page's refresh button starts location-stock)

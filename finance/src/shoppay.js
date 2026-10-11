@@ -144,10 +144,14 @@
   }
   async function check() {
     const b = $("sp-check"); b.disabled = true; b.textContent = "Checking…";
-    try { const r = await call({ action: "shop_check" }, "QuickBooks"); note("", `Checked ${r.checked.length} payout${r.checked.length === 1 ? "" : "s"} against QuickBooks.`); }
+    try {
+      const r = await call({ action: "shop_check" }, "QuickBooks");
+      const d = await call({ action: "shop_clearing" }, "QuickBooks");
+      note("", `Checked ${r.checked.length} payout${r.checked.length === 1 ? "" : "s"} against QuickBooks, and read ${d.saved} line${d.saved === 1 ? "" : "s"} on the clearing accounts.`);
+    }
     catch (e) { note("bad", "Couldn't check QuickBooks: " + esc(e.message || e)); }
     b.disabled = false; b.textContent = "Check QuickBooks";
-    FIN.clear(); load(true);
+    FIN.clear(); load(true); window.dispatchEvent(new CustomEvent("fin:shopother"));
   }
   async function postIt(pid) {
     S.busy = "post"; table();

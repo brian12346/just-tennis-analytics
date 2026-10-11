@@ -263,7 +263,18 @@
       <div class="panel-h wrap"><h2>Posted</h2><span class="hint">Payouts already in QuickBooks — by Seller Sage, or by A2X before the switch · click one to see the entry Seller Sage would make</span></div>
       <div class="tbl" id="sp-posted"></div>
     </section>
-    <div class="hint">Covers Shopify Payments only. Orders paid with PayPal, cash, or as manual orders aren't in these payouts.</div>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Other payments</h2><span class="hint">Manual / wholesale, cash, PayPal and gift-card payments marked in Shopify, a week per entry · each payment is debited to its clearing account and booked as sales · click a week for the entry</span></div>
+      <div class="tbl" id="so-weeks"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Clearing accounts</h2><span class="hint">Payments marked in Shopify against deposits categorized to the same account in QuickBooks · what's open is paid but not deposited yet (or deposited but not marked paid) · click an account for both sides</span></div>
+      <div class="tbl" id="so-clearing"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Waiting for payment</h2><span class="hint">Orders that still owe money in Shopify (manual and draft orders, part payments) · they drop off once marked paid</span></div>
+      <div class="tbl" id="so-due"></div>
+    </section>
   </main>
 </div>
 
@@ -287,6 +298,9 @@
 </script>
 <script>
 <!-- @inline shoppay.js -->
+</script>
+<script>
+<!-- @inline shopother.js -->
 </script>
 </body>
 </html>

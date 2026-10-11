@@ -66,3 +66,53 @@ def test_a2x_cutover(conn):
     assert acct == {"Shopify Sales": -50.0, "Shopify Pending Balances": round(-118.80 + 10, 2), "Cost of goods sold:Shopify Fees": 5.5, "BofA (0364)": net}
     cur.execute("select orders, sales, a2x_pending, a2x_tx from fin.v_shop_payouts where id = '147136413981'")
     assert tuple(map(float, cur.fetchone())) == (1, 50.0, 108.8, 2)
+
+
+def test_other_payments_week(conn):
+    """Manual / cash / PayPal payments: synced from Shopify, booked a week at a time against each gateway's clearing
+    account; QuickBooks deposits on that account clear it; orders still owing are listed."""
+    cur = conn.cursor()
+    cur.execute("""insert into jt.shopify_orders (order_id, name, created_at, order_day, subtotal, shipping, tax, total)
+                   values (21, '#21', now(), '2026-09-20', 1000, 0, 0, 1000), (22, '#22', now(), '2026-10-06', 90, 0, 9, 99),
+                          (23, '#23', now(), '2026-10-07', 200, 20, 0, 220)""")
+
+    def o(oid, name, status, total, outstanding, txs, gws):
+        return {"id": f"gid://shopify/Order/{oid}", "name": name, "createdAt": "2026-10-06T18:00:00Z", "sourceName": "shopify_draft_order",
+                "displayFinancialStatus": status, "test": False, "cancelledAt": None, "paymentGatewayNames": gws,
+                "totalPriceSet": {"shopMoney": {"amount": str(total)}}, "totalOutstandingSet": {"shopMoney": {"amount": str(outstanding)}},
+                "transactions": [{"id": f"gid://shopify/OrderTransaction/{i}", "kind": k, "status": "SUCCESS", "gateway": g, "test": False,
+                                  "processedAt": when, "amountSet": {"shopMoney": {"amount": str(a)}}} for i, k, g, a, when in txs]}
+    nodes = [
+        o(21, "#21", "PAID", 1000, 0, [(1, "SALE", "manual", 1000, "2026-10-06T20:00:00Z")], ["manual"]),            # A2X booked the order (Sep 20)
+        o(22, "#22", "PAID", 99, 0, [(2, "SALE", "cash", 99, "2026-10-06T21:00:00Z")], ["cash"]),
+        o(23, "#23", "PARTIALLY_PAID", 220, 120, [(3, "SALE", "manual", 100, "2026-10-08T21:00:00Z"),
+                                                  (4, "AUTHORIZATION", "shopify_payments", 5, "2026-10-08T21:00:00Z")], ["manual"]),
+    ]
+
+    class Shop:
+        calls = []
+
+        def graphql(self, q, v=None, **kw):
+            self.calls.append(v)
+            return {"orders": {"nodes": nodes, "pageInfo": {"hasNextPage": False}}}
+    assert shopify.sync_order_payments(Shop(), conn, "justtennis") == 3
+    cur.execute("select count(*) from jt.shopify_order_payments")
+    assert cur.fetchone()[0] == 3                       # the authorization isn't a payment
+    cur.execute("select fin.shop_pay_entry('2026-10-11')")
+    e = cur.fetchone()[0]
+    acct = {}
+    for l in e["parts"][0]["lines"]:
+        acct[l["account"]] = round(acct.get(l["account"], 0) + float(l["amount"]), 2)
+    assert e["parts"][0]["doc"] == "SSPSH-11Oct-PAY"
+    assert acct == {"Manual Clearing Account - Shopify": 1100.0, "Cash:Cash Clearing - Shopify": 99.0, "Shopify Pending Balances": -1000.0,
+                    "Shopify Sales": -180.91,
+                    "Shopify Sales:Shopify Shipping": -9.09, "Shopify Sales Tax Collected": -9.0}
+    assert round(sum(acct.values()), 2) == 0
+    # a deposit categorized to the manual clearing account in QuickBooks clears it
+    cur.execute("select public.fin_qbo_clearing_save(%s::jsonb)", (json.dumps({"from": "2026-09-28", "to": "2026-10-11", "rows": [
+        {"txn_type": "Deposit", "txn_id": "9", "line_id": "1", "account": "Manual Clearing Account - Shopify", "date": "2026-10-09", "amount": -1000, "doc": "", "memo": "check 1182"}],
+        "balances": [{"account": "Manual Clearing Account - Shopify", "balance": 100}]}),))
+    cur.execute("select paid, deposited, open_balance, qbo_balance from fin.v_shop_clearing where account = 'Manual Clearing Account - Shopify'")
+    assert tuple(map(float, cur.fetchone())) == (1100.0, -1000.0, 100.0, 100.0)
+    cur.execute("select name, outstanding from fin.v_shop_due")
+    assert [(n, float(a)) for n, a in cur.fetchall()] == [("#23", 120.0)]
