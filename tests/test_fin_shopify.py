@@ -64,6 +64,12 @@ def test_a2x_cutover(conn):
         acct[l["account"]] = round(acct.get(l["account"], 0) + float(l["amount"]), 2)
     # order 7 (Sep 26) and the Sep 27 refund were A2X's; only order 8 is a sale
     assert acct == {"Shopify Sales": -50.0, "Shopify Pending Balances": round(-118.80 + 10, 2), "Cost of goods sold:Shopify Fees": 5.5, "BofA (0364)": net}
+    # Shop Cash paid back by Shopify clears the clearing account the Shop Cash payment went to, never Pending Balances
+    cur.execute("insert into jt.shopify_payment_tx (store, id, type, processed_at, amount, fee, net, payout_id) values ('justtennis', 99, 'SHOP_CASH_CREDIT', '2026-09-26T18:00:00Z', 20, 0.5, 19.5, '147136413981')")
+    cur.execute("update fin.shopify_payouts set amount = amount + 19.5 where id = '147136413981'")
+    e = entry(cur, "147136413981"); assert e["problems"] == []
+    sc = [l for l in e["parts"][0]["lines"] if "Shop Cash" in l["description"]]
+    assert len(sc) == 1 and sc[0]["account"] == "Manual Clearing Account - Shopify" and float(sc[0]["amount"]) == -20.0
     cur.execute("select orders, sales, a2x_pending, a2x_tx from fin.v_shop_payouts where id = '147136413981'")
     assert tuple(map(float, cur.fetchone())) == (1, 50.0, 108.8, 2)
 
