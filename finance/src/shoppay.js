@@ -10,7 +10,7 @@
   const short = (v) => { const a = Math.abs(v), s = v < 0 ? "−" : ""; return a >= 1e6 ? s + "$" + (a / 1e6).toFixed(2) + "M" : a >= 1e4 ? s + "$" + Math.round(a / 1e3) + "K" : s + "$" + Math.round(a).toLocaleString("en-US"); };
   const day = (s, y) => s ? new Date(String(s).slice(0, 10) + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", ...(y ? { year: "numeric" } : {}), timeZone: "UTC" }) : "—";
   const QBO_JE = (id) => `https://qbo.intuit.com/app/journal?txnId=${encodeURIComponent(id)}`;
-  const NUM = ["amount", "tx", "orders", "sales", "shipping", "tax", "refunds", "fees", "other", "net", "cogs", "orders_missing_cost"];
+  const NUM = ["amount", "tx", "orders", "sales", "shipping", "tax", "refunds", "fees", "other", "net", "cogs", "orders_missing_cost", "a2x_pending", "a2x_tx"];
 
   const S = { loaded: false, loading: false, err: null, rows: [], cfg: {}, open: null, entry: null, entryErr: null, busy: "", confirm: null, postedShown: 12 };
 
@@ -18,7 +18,7 @@
     S.loading = true; render();
     try {
       const [rows, cfg] = await Promise.all([
-        FIN.sql(`select id, payout_date, status, amount, posted, a2x_docs, checked_at, synced_at, tx, orders, sales, shipping, tax, refunds, fees, other, net, cogs, orders_missing_cost
+        FIN.sql(`select id, payout_date, status, amount, posted, a2x_docs, checked_at, synced_at, tx, orders, sales, shipping, tax, refunds, fees, other, net, cogs, orders_missing_cost, a2x_pending, a2x_tx
                  from fin.v_shop_payouts where issued_at >= now() - interval '100 days' order by issued_at desc, id desc`, refresh),
         FIN.sql("select value from fin.settings where key = 'shop_post'", refresh),
       ]);
@@ -77,7 +77,7 @@
         : k === "posted" ? `<span class="pill paid" title="${esc(Object.keys(r.posted).join(", "))}">Seller Sage</span>`
         : `<span class="pill ${k === "ready" ? "soon" : "est"}">${esc(label)}</span>`;
       h += `<tr class="row${S.open === r.id ? " sel" : ""}" data-pid="${esc(r.id)}"><td><b>${day(r.payout_date, true)}</b><div class="m">${r.orders} order${r.orders === 1 ? "" : "s"} · #${esc(r.id)}</div></td>
-        ${cell(r.sales)}${cell(r.shipping)}${cell(r.tax)}${cell(r.refunds)}${cell(r.fees)}${cell(r.other)}
+        <td class="n">${Math.abs(r.sales) >= 0.5 ? f0(r.sales) : "—"}${Math.abs(r.a2x_pending) >= 0.5 ? `<div class="m" title="Payments for orders A2X already booked as sales — they clear Shopify Pending Balances">+${f0(r.a2x_pending)} A2X-booked</div>` : ""}</td>${cell(r.shipping)}${cell(r.tax)}${cell(r.refunds)}${cell(r.fees)}${cell(r.other)}
         <td class="n"><b>${fmt(r.amount)}</b></td>
         <td class="n">${f0(r.cogs)}${r.orders_missing_cost ? `<div class="m negt">${r.orders_missing_cost} missing cost</div>` : ""}</td>
         <td class="n ${r.amount - r.cogs < 0 ? "negt" : ""}">${f0(r.amount - r.cogs)}</td><td>${st}</td></tr>`;
