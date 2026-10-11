@@ -44,6 +44,7 @@
       <a href="#fba" data-page="fba"><span class="ico">▤</span>FBA forecast</a>
       <a href="#profit" data-page="profit"><span class="ico">≡</span>Profit</a>
       <a href="#amz" data-page="amz"><span class="ico">a</span>Amazon payouts</a>
+      <a href="#shop" data-page="shop"><span class="ico">s</span>Shopify payouts</a>
     </nav>
     <div class="side-foot">
       <a class="xlink" href="https://dashboard.andersenlifestyle.com" target="_blank" rel="noopener">Sales dashboard ↗</a>
@@ -241,6 +242,29 @@
       <div class="tbl" id="az-map"></div>
     </section>
   </main>
+  <main class="main" id="shop" hidden>
+    <header class="head">
+      <div>
+        <div class="eyebrow">Just Tennis · Shopify Payments payouts → QuickBooks journal entries</div>
+        <h1>Shopify payouts</h1>
+        <div class="sub" id="sp-sub">Loading…</div>
+      </div>
+      <div class="head-actions cf-start">
+        <button class="btn" type="button" id="sp-check">Check QuickBooks</button>
+      </div>
+    </header>
+    <div id="sp-note" class="note" hidden></div>
+    <section class="cards" id="sp-cards" aria-label="Shopify payouts summary"></section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>To post</h2><span class="hint">Payouts not in QuickBooks yet · click one for its journal entry (one line per kind of money, plus cost of goods) and Send to QuickBooks</span></div>
+      <div class="tbl" id="sp-table"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Posted</h2><span class="hint">Payouts already in QuickBooks — by Seller Sage, or by A2X before the switch · click one to see the entry Seller Sage would make</span></div>
+      <div class="tbl" id="sp-posted"></div>
+    </section>
+    <div class="hint">Covers Shopify Payments only. Orders paid with PayPal, cash, or as manual orders aren't in these payouts.</div>
+  </main>
 </div>
 
 <script>
@@ -260,6 +284,9 @@
 </script>
 <script>
 <!-- @inline amzpay.js -->
+</script>
+<script>
+<!-- @inline shoppay.js -->
 </script>
 </body>
 </html>

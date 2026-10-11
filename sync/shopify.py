@@ -705,7 +705,7 @@ def sync_shopify_payouts(shop: "Shopify", conn, months: int = 15) -> int | dict:
 # skipped and says why in jt.sync_runs.detail.
 FEES_Q = """query($after: String, $q: String) { shopifyPaymentsAccount { balanceTransactions(first: 250, after: $after, query: $q,
   sortKey: PROCESSED_AT, hideTransfers: true) { nodes { id type test transactionDate sourceType amount { amount currencyCode }
-  fee { amount } net { amount } associatedOrder { id name } } pageInfo { hasNextPage endCursor } } } }"""
+  fee { amount } net { amount } associatedOrder { id name } associatedPayout { id } } pageInfo { hasNextPage endCursor } } } }"""
 
 
 def fee_rows(store: str, nodes: list[dict]) -> list[tuple]:
@@ -716,17 +716,22 @@ def fee_rows(store: str, nodes: list[dict]) -> list[tuple]:
         out.append((store, int(n["id"].split("/")[-1]), n.get("type") or "", n.get("sourceType") or "", n["transactionDate"],
                     float(amt.get("amount") or 0), float((n.get("fee") or {}).get("amount") or 0),
                     float((n.get("net") or {}).get("amount") or 0), amt.get("currencyCode") or "USD",
-                    int(oid) if oid.isdigit() else None, order.get("name") or "", bool(n.get("test"))))
+                    int(oid) if oid.isdigit() else None, order.get("name") or "", bool(n.get("test")),
+                    ((n.get("associatedPayout") or {}).get("id") or "").split("/")[-1]))
     return out
 
 
 def sync_payment_fees(shop: "Shopify", conn, store: str = "justtennis", since: "dt.date | None" = None) -> int | dict:
-    """Shopify Payments balance transactions -> jt.shopify_payment_tx. From a week before the newest one we have
-    (late fees and refunds), or from Jan 2025 the first time (or `since`)."""
+    """Shopify Payments balance transactions -> jt.shopify_payment_tx, each with the payout it's paid in. From a week
+    before the newest one we have (late fees and refunds) — or from the oldest one in the last 120 days that isn't in a
+    payout yet, so each gets its payout once Shopify schedules it — or from Jan 2025 the first time (or `since`)."""
     with conn.cursor() as cur:
         cur.execute("select max(processed_at) from jt.shopify_payment_tx where store = %s", (store,))
         last = cur.fetchone()[0]
-    start = since or ((last - dt.timedelta(days=7)).date() if last else dt.date(2025, 1, 1))
+        cur.execute("""select min(processed_at) from jt.shopify_payment_tx
+                       where store = %s and payout_id = '' and not test and processed_at > now() - interval '120 days'""", (store,))
+        unpaid = cur.fetchone()[0]
+    start = since or (min(last - dt.timedelta(days=7), unpaid or last).date() if last else dt.date(2025, 1, 1))
     q, after, n = f"processed_at:>={start.isoformat()}", None, 0
     while True:
         try:
@@ -743,12 +748,12 @@ def sync_payment_fees(shop: "Shopify", conn, store: str = "justtennis", since: "
         if rows:
             with conn.cursor() as cur:
                 cur.executemany("""insert into jt.shopify_payment_tx (store, id, type, source_type, processed_at, amount, fee, net,
-                                     currency, order_id, order_name, test, synced_at)
-                                   values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                                     currency, order_id, order_name, test, payout_id, synced_at)
+                                   values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                                    on conflict (store, id) do update set type = excluded.type, source_type = excluded.source_type,
                                      processed_at = excluded.processed_at, amount = excluded.amount, fee = excluded.fee, net = excluded.net,
                                      currency = excluded.currency, order_id = excluded.order_id, order_name = excluded.order_name,
-                                     test = excluded.test, synced_at = now()""", rows)
+                                     test = excluded.test, payout_id = excluded.payout_id, synced_at = now()""", rows)
             conn.commit()
             n += len(rows)
         page = bt.get("pageInfo") or {}

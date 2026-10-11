@@ -13,6 +13,10 @@
 // POST {action: "a2x_lines", ids?}   -> reads A2X's journal entries for settlements it posted (fin.amz_a2x_lines), for the
 //                                        A2X vs Seller Sage comparison (check and post save them too)
 // POST {action: "peek", settlement_id | report_id, lines?} -> the first lines of a settlement report (troubleshooting)
+// Shopify (Just Tennis's Shopify Payments payouts, fin.shop_entry — one simple entry per payout + cost of goods):
+// POST {action: "shop_check", ids?}  -> looks in QuickBooks for each payout: A2X's entry (an A2XSH entry whose BofA (0364)
+//                                        line is the payout, dated up to three weeks before it — not posted again) and ours.
+// POST {action: "shop_post", payout_id, force?} -> posts the payout's entries once each; refuses one A2X posted.
 // Callers: accounts on the finance list (Authorization: Bearer <user JWT>), or SQL via jt.amzpay_call (x-jt-key).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -67,7 +71,7 @@ function amzDate(s: string): string | null {
 const num = (s: string) => { const v = parseFloat(String(s || "").replace(/,/g, "")); return isNaN(v) ? 0 : v; };
 // the settlement report -> {settlement, sums, units}
 function parseSettlement(text: string, reportId: string) {
-  const rows = text.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  const rows = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim() !== "");
   const H = rows[0].split("\t").map((h) => h.trim().toLowerCase());
   const ix = (n: string) => H.indexOf(n);
   for (const k of ["settlement-id", "transaction-type", "amount-type", "amount-description", "amount"]) if (ix(k) < 0) throw new Error(`the settlement report has no ${k} column`);
@@ -202,6 +206,12 @@ async function post(c: Creds, sid: string, by: string, force: boolean) {
   const a2x = await a2xDocs(c, e);
   await rpc("fin_amz_posted", { p: { settlement_id: sid, a2x, checked: true } });
   if (a2x.length && !force) return { ok: false, a2x, error: `A2X already posted this settlement (${a2x.join(", ")}) — not posting it again.` };
+  return postParts(c, e, by, `Amazon ${e.settlement.market} settlement ${sid}`, (doc, id, how) => rpc("fin_amz_posted", { p: { settlement_id: sid, doc, id, by, how } }));
+}
+
+// posts an entry's parts (from fin.amz_entry or fin.shop_entry) as QuickBooks journal entries, once each: a part already
+// posted is skipped, one already in QuickBooks under the same number is linked
+async function postParts(c: Creds, e: any, by: string, what: string, saved: (doc: string, id: string, how: string) => Promise<unknown>) {
   const totalProb = (e.problems || []).find((x: any) => x.kind === "total" || x.kind === "fx");
   if (totalProb) return { ok: false, error: totalProb.message };
   const accts = await coa(c);
@@ -212,20 +222,70 @@ async function post(c: Creds, sid: string, by: string, force: boolean) {
   for (const p of e.parts) {
     if (p.posted?.id) { results.push({ doc: p.doc, id: p.posted.id, already: true }); continue; }
     const dup = ((await query(c, `select Id, DocNumber from JournalEntry where DocNumber = ${qq(p.doc)}`)).JournalEntry || [])[0];
-    if (dup) { await rpc("fin_amz_posted", { p: { settlement_id: sid, doc: p.doc, id: dup.Id, by, how: "linked" } }); results.push({ doc: p.doc, id: dup.Id, linked: true }); continue; }
+    if (dup) { await saved(p.doc, dup.Id, "linked"); results.push({ doc: p.doc, id: dup.Id, linked: true }); continue; }
     const lines = p.lines.filter((l: any) => Math.round(Number(l.amount) * 100) !== 0).map((l: any) => ({
       DetailType: "JournalEntryLineDetail", Amount: Math.abs(Math.round(Number(l.amount) * 100) / 100), Description: String(l.description || "").slice(0, 4000),
       JournalEntryLineDetail: { PostingType: Number(l.amount) > 0 ? "Debit" : "Credit", AccountRef: { value: byName.get(String(l.account).toLowerCase())!.id } } }));
     const dr = lines.filter((l: any) => l.JournalEntryLineDetail.PostingType === "Debit").reduce((a: number, l: any) => a + l.Amount, 0);
     const cr = lines.filter((l: any) => l.JournalEntryLineDetail.PostingType === "Credit").reduce((a: number, l: any) => a + l.Amount, 0);
     if (Math.abs(dr - cr) >= 0.005) return { ok: false, results, error: `${p.doc} doesn't balance (debits ${dr.toFixed(2)}, credits ${cr.toFixed(2)})` };
-    const body: any = { DocNumber: p.doc, TxnDate: p.date, PrivateNote: `Amazon ${e.settlement.market} settlement ${sid} · ${p.kind === "cogs" ? "cost of goods" : "payout"} · Seller Sage`, Line: lines };
+    const body: any = { DocNumber: p.doc, TxnDate: p.date, PrivateNote: `${what} · ${p.kind === "cogs" ? "cost of goods" : "payout"} · Seller Sage`, Line: lines };
     if (p.currency && p.currency !== "USD") { body.CurrencyRef = { value: p.currency }; body.ExchangeRate = Number(p.fx); }
     const je = (await qb(c, "POST", "journalentry", body)).JournalEntry;
-    await rpc("fin_amz_posted", { p: { settlement_id: sid, doc: p.doc, id: je.Id, by, how: "created" } });
+    await saved(p.doc, je.Id, "created");
     results.push({ doc: p.doc, id: je.Id, created: true });
   }
   return { ok: true, results };
+}
+
+// ---- Shopify payouts: A2X posted each one as an A2XSH entry whose bank line is the payout, dated the start of the
+// period it covers (up to about three weeks before the payout)
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+async function jesBetween(c: Creds, from: string, to: string) {
+  const all: any[] = [];
+  for (let s = 1; s < 5000; s += 1000) {
+    const r = (await query(c, `select * from JournalEntry where TxnDate >= ${qq(from)} and TxnDate <= ${qq(to)} startposition ${s} maxresults 1000`)).JournalEntry || [];
+    all.push(...r); if (r.length < 1000) break;
+  }
+  return all;
+}
+function shopA2x(jes: any[], e: any): string[] {
+  const cfg = e.payout, bank = String(e.parts[0].lines.at(-1).account).toLowerCase(), amt = Math.round(Number(cfg.amount) * 100);
+  const day = new Date(cfg.payout_date + "T00:00:00Z").getTime();
+  return jes.filter((j) => String(j.DocNumber || "").startsWith("A2XSH") && !/C\d{3}$/.test(j.DocNumber)
+    && Math.abs(new Date(j.TxnDate + "T00:00:00Z").getTime() - day) <= 24 * 86400e3
+    && (j.Line || []).some((l: any) => l.JournalEntryLineDetail?.PostingType === "Debit" && String(l.JournalEntryLineDetail?.AccountRef?.name || "").toLowerCase() === bank
+      && Math.round(Number(l.Amount) * 100) === amt)).map((j) => j.DocNumber);
+}
+async function shopCheck(c: Creds, ids: string[], by: string, deadline: number) {
+  const entries: any[] = [];
+  for (const pid of ids) { const e = await rpc("fin_shop_entry", { pid }); if (e) entries.push(e); }
+  if (!entries.length) return [];
+  const days = entries.map((e) => new Date(e.payout.payout_date + "T00:00:00Z").getTime());
+  const jes = await jesBetween(c, isoDay(new Date(Math.min(...days) - 24 * 86400e3)), isoDay(new Date(Math.max(...days) + 3 * 86400e3)));
+  const byDoc = new Map(jes.map((j) => [String(j.DocNumber || ""), j]));
+  const out: any[] = [];
+  for (const e of entries) {
+    if (Date.now() > deadline) break;
+    const pid = e.payout.id, a2x = shopA2x(jes, e);
+    for (const pt of e.parts) {
+      if (pt.posted?.id) continue;
+      const dup = byDoc.get(pt.doc) || ((await query(c, `select Id from JournalEntry where DocNumber = ${qq(pt.doc)}`)).JournalEntry || [])[0];
+      if (dup) await rpc("fin_shop_posted", { p: { payout_id: pid, doc: pt.doc, id: dup.Id, by, how: "linked" } });
+    }
+    await rpc("fin_shop_posted", { p: { payout_id: pid, a2x, checked: true } });
+    out.push({ payout_id: pid, a2x });
+  }
+  return out;
+}
+async function shopPost(c: Creds, pid: string, by: string, force: boolean) {
+  const e = await rpc("fin_shop_entry", { pid });
+  if (!e) return { ok: false, error: "payout not found" };
+  const day = new Date(e.payout.payout_date + "T00:00:00Z").getTime();
+  const a2x = shopA2x(await jesBetween(c, isoDay(new Date(day - 24 * 86400e3)), isoDay(new Date(day + 3 * 86400e3))), e);
+  await rpc("fin_shop_posted", { p: { payout_id: pid, a2x, checked: true } });
+  if (a2x.length && !force) return { ok: false, a2x, error: `A2X already posted this payout (${a2x.join(", ")}) — not posting it again.` };
+  return postParts(c, e, by, `Shopify payout ${pid} (Just Tennis)`, (doc, id, how) => rpc("fin_shop_posted", { p: { payout_id: pid, doc, id, by, how } }));
 }
 
 async function caller(req: Request, c: Creds): Promise<string | null> {
@@ -287,6 +347,14 @@ Deno.serve(async (req) => {
     if (p.action === "post") {
       if (!p.settlement_id) return json({ ok: false, error: "settlement_id is required" }, 400);
       return json(await post(c, String(p.settlement_id), by, !!p.force));
+    }
+    if (p.action === "shop_check") {
+      const ids: string[] = Array.isArray(p.ids) ? p.ids.map(String) : (await rpc("fin_shop_open_ids")) || [];
+      return json({ ok: true, checked: await shopCheck(c, ids, by, t0 + 100_000) });
+    }
+    if (p.action === "shop_post") {
+      if (!p.payout_id) return json({ ok: false, error: "payout_id is required" }, 400);
+      return json(await shopPost(c, String(p.payout_id), by, !!p.force));
     }
     if (p.action === "peek") {
       let rid = String(p.report_id || "");
