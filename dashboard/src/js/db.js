@@ -273,6 +273,12 @@
     showError,
     PROJECT, q, day, int, run, rows, rowsSplit, getMcp, standalone: !!WEB, catalogChanged, checkCatalog,
     qbo: qboCall,
+    // "Sync from Shopify" on the Purchase orders tab: start the shopify-pos sync job now (migration 128) -> {requested_at, already}
+    syncShopifyPos: async () => {
+      if (WEB) return WEB.write("jt_request_shopify_pos", {});
+      await run("select jt.dispatch_sync('shopify-pos')::text as r", true);
+      return { requested_at: null, already: false };
+    },
     amazon: amazonCall,
     // Operational alerts (Alerts tab; migration 060)
     alerts: {

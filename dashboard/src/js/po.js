@@ -1743,6 +1743,31 @@
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't read that PDF: " + esc(JT.message(e))); }
   }
 
+  // "Sync from Shopify": start the sync's shopify-pos job now (migration 128), then reload the list when that run's
+  // last step (shopify_po_receipts) finishes (jt.sync_runs; checked every 15 s, for up to 8 minutes)
+  async function syncShopPos() {
+    if (S.spSync && (S.spSync.state === "starting" || S.spSync.state === "running")) return;
+    S.spSync = { state: "starting" }; render();
+    try {
+      const r = await JT.syncShopifyPos();
+      S.spSync = { state: "running", since: (r && r.requested_at) || new Date().toISOString(), t0: Date.now() }; render();
+      setTimeout(pollShopSync, 20000);
+    } catch (e) { S.spSync = { state: "error", msg: "Couldn't start the sync: " + JT.message(e) }; render(); }
+  }
+  async function pollShopSync() {
+    const y = S.spSync; if (!y || y.state !== "running") return;
+    try {
+      const r = await JT.rows(["finished_at::text", "ok", "detail"], `from jt.sync_runs where job = 'shopify_po_receipts' and started_at >= ${JT.q(y.since)}::timestamptz and finished_at is not null order by id desc limit 1`, true);
+      if (r.length) {
+        await loadShopPos(true);
+        S.spSync = r[0][1] === true || r[0][1] === "true" || r[0][1] === "t" ? { state: "done", at: r[0][0] } : { state: "error", msg: "The sync ran into a problem: " + (r[0][2] || "unknown") };
+        render(); return;
+      }
+    } catch (_) { /* try again */ }
+    if (Date.now() - y.t0 > 8 * 60e3) { S.spSync = { state: "error", msg: "It's taking longer than usual — the list will update with the next sync." }; render(); return; }
+    setTimeout(pollShopSync, 15000);
+  }
+
   // ---------- Shopify POs straight from Shopify (jt.shopify_pos, synced hourly by the sync's shopify-pos job; migration 070) ----------
   async function loadShopPos(refresh) {
     const r = await JT.rowsSplit(["id::text", "name", "status", "supplier", "destination", "total", "lines", "units", "created_at::text", "expected_at::text", "lines_synced is not null", "synced_at::text",
@@ -1815,10 +1840,14 @@
     const list = S.spos.filter(p => fx(p) && (!q || `${p.name} ${p.supplier}`.toLowerCase().includes(q)));
     const last = S.spos.reduce((a, p) => p.synced > a ? p.synced : a, "");
     const cnt = (f) => S.spos.filter(f).length;
+    const Y = S.spSync || {}, running = Y.state === "starting" || Y.state === "running";
+    const syncTxt = Y.state === "running" ? "Reading POs from Shopify — usually under a minute; the list updates when it's done."
+      : Y.state === "done" ? `Synced from Shopify at ${esc((() => { const d = window.JTDate.parseTime(Y.at); return isNaN(d) ? "" : d.toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }); })())}.` : Y.state === "error" ? `<span class="warnt">${esc(Y.msg)}</span>` : "";
     return `<section class="panel" id="po-pickshop"><div class="panel-head"><h2>Shopify POs</h2>
+      <button class="btn sm" type="button" data-ps="sync" ${running ? "disabled" : ""} title="Read new and changed POs (and what's been received) from Shopify now, instead of waiting for the hourly sync">${running ? "Syncing…" : "Sync from Shopify"}</button>${syncTxt ? `<span class="muted small">${syncTxt}</span>` : ""}
       <div class="seg" role="group" aria-label="Which Shopify POs">${FILT.map(([k, l, f]) => `<button data-psf="${k}" aria-pressed="${P.f === k}">${l} <span class="cnt">${cnt(f)}</span></button>`).join("")}</div>
       <div class="filters"><label>Search <input class="inp" type="search" data-ps="q" value="${esc(P.q || "")}" placeholder="PO number or supplier"></label></div></div>
-      <p class="muted small">Shopify POs created since Oct 5, 2026 (and older ones a Seller Sage PO links to), read from Shopify every hour${last ? ` (last change ${esc(when(last))})` : ""}. <b>Create Seller Sage PO</b> brings one in with its vendor, PO number, products, quantities and costs — already checked against Shopify. Received comes from the PO's transfers in Shopify.</p>
+      <p class="muted small">Shopify POs created since Oct 5, 2026 (and older ones a Seller Sage PO links to), read from Shopify every hour (or now, with Sync from Shopify)${last ? ` (last change ${esc(when(last))})` : ""}. <b>Create Seller Sage PO</b> brings one in with its vendor, PO number, products, quantities and costs — already checked against Shopify. Received comes from the PO's transfers in Shopify.</p>
       <div class="tbl-wrap tall"><table class="po-t"><thead><tr><th class="l">Shopify PO</th><th class="l">Supplier</th><th class="l">Created</th><th>Lines</th><th>Units</th><th>Total</th><th class="l">Received in Shopify</th><th class="l">Seller Sage</th></tr></thead><tbody>${
       list.slice(0, P.shown).map(p => { const o = ssOf(p);
         return `<tr><td class="l"><b class="mono">${esc(p.name || "#" + p.id)}</b> <a class="small" href="${esc(shopUrl(p.id))}" target="_blank" rel="noopener" title="Open in Shopify">↗</a>${p.status === "DRAFT" ? ' <span class="pill warn">Draft</span>' : ""}</td><td class="l">${esc(p.supplier || "—")}</td>
@@ -2000,6 +2029,7 @@
       const f = e.target.closest("[data-psf]"); if (f && S.pickShop) { S.pickShop.f = f.dataset.psf; S.pickShop.shown = 100; render(); return; }
       const c = e.target.closest("[data-ps]");
       if (c && c.dataset.ps === "show") { showShop(true); return; }
+      if (c && c.dataset.ps === "sync") { syncShopPos(); return; }
       if (c && c.dataset.ps === "more" && S.pickShop) { S.pickShop.shown += 200; render(); }
     });
     $("po-pickshop-host").addEventListener("input", (e) => { if (e.target.dataset.ps === "q" && S.pickShop) { S.pickShop.q = e.target.value; S.pickShop.shown = 100; render(); } });
