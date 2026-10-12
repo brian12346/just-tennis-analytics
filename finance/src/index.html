@@ -43,9 +43,10 @@
       <a href="#cash" data-page="cash"><span class="ico">◎</span>Cash flow</a>
       <a href="#fba" data-page="fba"><span class="ico">▤</span>FBA forecast</a>
       <a href="#profit" data-page="profit"><span class="ico">≡</span>Profit</a>
-      <a href="#amz" data-page="amz"><span class="ico">a</span>Amazon payouts</a>
-      <a href="#shop" data-page="shop"><span class="ico">J</span>Just Tennis</a>
-      <a href="#anr" data-page="anr"><span class="ico">A</span>Ace n Rally</a>
+      <div class="nav-h" aria-hidden="true">Payouts → QuickBooks</div>
+      <a href="#amz" data-page="amz" title="Amazon settlements → QuickBooks"><span class="ico">a</span><span class="nav-t">Amazon <small>Just Tennis</small></span><b class="nav-n" data-count="amz" hidden></b></a>
+      <a href="#shop" data-page="shop" title="Just Tennis Shopify payouts, other payments and PayPal → QuickBooks"><span class="ico">s</span><span class="nav-t">Shopify <small>Just Tennis</small></span><b class="nav-n" data-count="shop" hidden></b></a>
+      <a href="#anr" data-page="anr" title="Ace n Rally Shopify payouts and other payments → QuickBooks"><span class="ico">s</span><span class="nav-t">Shopify <small>Ace n Rally</small></span><b class="nav-n" data-count="anr" hidden></b></a>
     </nav>
     <div class="side-foot">
       <a class="xlink" href="https://dashboard.andersenlifestyle.com" target="_blank" rel="noopener">Sales dashboard ↗</a>
@@ -307,6 +308,9 @@
 </script>
 <script>
 <!-- @inline amzpay.js -->
+</script>
+<script>
+<!-- @inline navcounts.js -->
 </script>
 <script>
 <!-- @inline shoppay.js -->
