@@ -185,3 +185,15 @@ def test_ace_n_rally_payout(conn):
     assert acct == {"Shopify Sales": -200.0, "Shopify Pending Balances": -100.0, "Cost of goods sold:Shopify Fees": 9.0, "PLAT BUS CHECKING (3355) - 3": 291.0}
     cur.execute("select store, sales from fin.v_shop_payouts where id = '555'")
     assert cur.fetchone() == ("acenrally", 200)
+
+
+def test_cogs_share_basis(conn):
+    """Migration 126: an order's cost is shared over its payments by what the order comes to now (current total +
+    refunds) — an exchange keeps the swapped-out item in Shopify's original total."""
+    cur = conn.cursor()
+    cur.execute("""insert into jt.shopify_orders (order_id, name, created_at, order_day, subtotal, shipping, tax, total, current_total, refunded)
+                   values (21, '#21', now(), '2026-09-30', 305, 0, 59.48, 669.48, 334.74, 0),   -- exchange
+                          (22, '#22', now(), '2026-09-30', 100, 0, 0, 100, 60, 40),            -- part refunded
+                          (23, '#23', now(), '2026-09-30', 50, 0, 0, 50, 0, 0)   -- not synced yet""")
+    cur.execute("select order_id, basis from fin.v_shop_orders where order_id in (21, 22, 23) order by 1")
+    assert [(r[0], float(r[1])) for r in cur.fetchall()] == [(21, 334.74), (22, 100.0), (23, 50.0)]
