@@ -1,5 +1,7 @@
 // Payables page: open bills, aging, what's coming due, vendors and bill payments, from the QuickBooks copy in schema
-// fin (refreshed hourly by the qbo function, or with "Refresh from QuickBooks").
+// fin (refreshed hourly by the qbo function, or with "Refresh from QuickBooks"). Each open bill can be given the bank
+// account or card it will be paid from ("Pays with", fin.bill_pay_method) — one at a time or for every bill shown;
+// fin.v_bill_plan says when its cash goes out (a card's payment date for a card with a close/due day set on Cash flow).
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -12,19 +14,22 @@
   const QBO = "https://qbo.intuit.com/app";
   const AGING = [["current", "Current", "var(--green2)"], ["1-30", "1–30 days", "var(--amber)"], ["31-60", "31–60", "#C9762F"], ["61-90", "61–90", "#B9573A"], ["90+", "90+", "var(--red)"]];
 
-  const S = { bills: [], pays: [], vendors: [], credits: [], sync: null, view: "open", q: "", vendor: "", filter: null, sort: { open: ["due_date", 1], all: ["txn_date", -1], vendors: ["open", -1], payments: ["txn_date", -1] },
+  const S = { bills: [], pays: [], vendors: [], credits: [], plan: new Map(), accts: [], busy: false, sync: null, view: "open", q: "", vendor: "", filter: null, sort: { open: ["due_date", 1], all: ["txn_date", -1], vendors: ["open", -1], payments: ["txn_date", -1] },
     open: new Set(), loading: false, err: null, shown: 200 };
 
   async function load(refresh) {
     S.loading = true; render();
     try {
-      const [b, p, v, c, s] = await Promise.all([
+      const [b, p, v, c, s, pl, ac] = await Promise.all([
         FIN.sql("select id, vendor_id, vendor_name, doc_number, txn_date, due_date, total, balance, memo, lines, status, days_overdue, aging, invoice_id, po_no, po_id from fin.v_bills where balance <> 0 or txn_date >= current_date - 400", refresh),
         FIN.sql("select id, vendor_id, vendor_name, doc_number, txn_date, total, pay_type, account, bills from fin.qbo_bill_payments where txn_date >= current_date - 400", refresh),
         FIN.sql("select id, name, active, balance, terms from fin.qbo_vendors", refresh),
         FIN.sql("select id, vendor_id, vendor_name, doc_number, txn_date, total, balance from fin.qbo_vendor_credits where balance <> 0", refresh),
         FIN.sql("select value, updated_at from fin.sync_state where key = 'qbo_payables'", refresh),
+        FIN.sql("select bill_id, account_id, account_name, account_type, pay_on, cash_on, card_needs_terms from fin.v_bill_plan", refresh).catch(() => []),
+        FIN.sql("select a.id, a.name, a.type, a.subtype, c.close_day is not null as has_terms from fin.qbo_accounts a left join fin.card_terms c on c.account_id = a.id where a.active and (a.type = 'Credit Card' or (a.type = 'Bank' and a.subtype in ('Checking', 'Savings', 'MoneyMarket'))) order by a.type desc, a.name", refresh).catch(() => []),
       ]);
+      S.plan = new Map(pl.map(x => [x.bill_id, x])); S.accts = ac;
       for (const x of b) { x.total = +x.total; x.balance = +x.balance; }
       for (const x of p) x.total = +x.total;
       S.bills = b; S.pays = p; S.vendors = v; S.credits = c; S.sync = s[0] || null; S.err = null;
@@ -69,6 +74,7 @@
     if (f.type === "overdue") return b.balance !== 0 && b.due_date && b.due_date < t;
     if (f.type === "due") return b.balance !== 0 && b.due_date && b.due_date >= t && dnum(b.due_date) - dnum(t) < f.days;
     if (f.type === "aging") return b.balance !== 0 && b.aging === f.key;
+    if (f.type === "method") return b.balance !== 0 && methodOf(b) === f.key;
     if (f.type === "week") {
       if (b.balance === 0) return false;
       if (f.key === "over") return b.due_date && b.due_date < t;
@@ -76,6 +82,19 @@
       return b.due_date && b.due_date >= t && weekOf(b.due_date) === f.key;
     }
     return true;
+  }
+  // ---------- payment method ("Pays with")
+  const methodOf = (b) => (S.plan.get(b.id) || {}).account_id || "";
+  const acctName = (id) => (S.accts.find(a => a.id === id) || {}).name || ([...S.plan.values()].find(p => p.account_id === id) || {}).account_name || "";
+  function methodOptions(sel, blank) {
+    const grp = (type, label) => { const xs = S.accts.filter(a => a.type === type); return xs.length ? `<optgroup label="${label}">${xs.map(a => `<option value="${esc(a.id)}" ${a.id === sel ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</optgroup>` : ""; };
+    return `<option value="">${blank || "Not set"}</option>${grp("Credit Card", "Cards")}${grp("Bank", "Bank accounts")}`;
+  }
+  // open bills grouped by method, for the strip above the table
+  function byMethod() {
+    const m = new Map();
+    for (const b of open()) { const k = methodOf(b); if (!m.has(k)) m.set(k, { k, name: k ? acctName(k) || "Account " + k : "Not set", amt: 0, n: 0 }); const x = m.get(k); x.amt += b.balance; x.n++; }
+    return [...m.values()].sort((a, b) => (a.k === "") - (b.k === "") || b.amt - a.amt);
   }
   const matchQ = (...xs) => !S.q || xs.some(x => String(x ?? "").toLowerCase().includes(S.q));
 
@@ -159,17 +178,18 @@
   function table() {
     const chip = $("ap-filterchip");
     chip.innerHTML = S.filter && (S.view === "open" || S.view === "all") ? `<span class="chip">${esc(S.filter.label || (S.filter.type === "overdue" ? "Overdue" : `Due in ${S.filter.days} days`))}<button type="button" data-clear aria-label="Clear filter">×</button></span>` : "";
+    methodStrip();
     const rows = rowsForView(), shown = rows.slice(0, S.shown), el = $("ap-table");
     let head, body, total = "";
     if (S.view === "open" || S.view === "all") {
-      head = `<tr>${th("vendor_name", "Vendor")}${th("doc_number", "Bill #")}${th("txn_date", "Bill date")}${th("due_date", "Due")}<th>Status</th>${th("total", "Amount", 1)}${th("balance", "Open", 1)}</tr>`;
+      head = `<tr>${th("vendor_name", "Vendor")}${th("doc_number", "Bill #")}${th("txn_date", "Bill date")}${th("due_date", "Due")}<th>Status</th><th>Pays with</th>${th("total", "Amount", 1)}${th("balance", "Open", 1)}</tr>`;
       body = shown.map(b => {
         const [cls, lab] = dueClass(b), paid = (S.paidBy.get(b.id) || []);
-        const det = S.open.has(b.id) ? `<tr class="detail"><td colspan="7"><div class="det"><div><h3>Lines</h3><table>${(b.lines || []).map(l => `<tr><td>${esc(l.account)}</td><td class="m">${esc(l.description)}</td><td class="n">${m2(l.amount)}</td></tr>`).join("") || '<tr><td class="m">No lines</td></tr>'}</table>
+        const det = S.open.has(b.id) ? `<tr class="detail"><td colspan="8"><div class="det"><div><h3>Lines</h3><table>${(b.lines || []).map(l => `<tr><td>${esc(l.account)}</td><td class="m">${esc(l.description)}</td><td class="n">${m2(l.amount)}</td></tr>`).join("") || '<tr><td class="m">No lines</td></tr>'}</table>
             ${b.memo ? `<p class="m">${esc(b.memo)}</p>` : ""}</div>
             <div><h3>Payments</h3>${paid.length ? `<table>${paid.map(p => `<tr><td>${fmtD(p.txn_date, 1)}</td><td class="m">${esc(p.account || p.pay_type)}</td><td class="n">${m2(p.amount)}</td></tr>`).join("")}</table>` : '<p class="m">None yet</p>'}
             <p><a href="${QBO}/bill?txnId=${encodeURIComponent(b.id)}" target="_blank" rel="noopener">Open in QuickBooks ↗</a>${b.po_no || b.po_id ? ` · from Seller Sage PO ${esc(b.po_no || "#" + b.po_id)}` : ""}</p></div></div></td></tr>` : "";
-        return `<tr class="row" data-bill="${esc(b.id)}"><td><b>${esc(b.vendor_name)}</b></td><td>${esc(b.doc_number || "—")}${b.po_no ? `<div class="m">PO ${esc(b.po_no)}</div>` : ""}</td><td>${fmtD(b.txn_date, 1)}</td><td>${fmtD(b.due_date, 1)}</td><td><span class="pill ${cls}">${esc(lab)}</span></td><td class="n">${m2(b.total)}</td><td class="n"><b>${b.balance ? m2(b.balance) : "—"}</b></td></tr>${det}`;
+        return `<tr class="row" data-bill="${esc(b.id)}"><td><b>${esc(b.vendor_name)}</b></td><td>${esc(b.doc_number || "—")}${b.po_no ? `<div class="m">PO ${esc(b.po_no)}</div>` : ""}</td><td>${fmtD(b.txn_date, 1)}</td><td>${fmtD(b.due_date, 1)}</td><td><span class="pill ${cls}">${esc(lab)}</span></td><td>${payCell(b)}</td><td class="n">${m2(b.total)}</td><td class="n"><b>${b.balance ? m2(b.balance) : "—"}</b></td></tr>${det}`;
       }).join("");
       const sb = rows.reduce((a, b) => a + b.balance, 0);
       total = `${rows.length.toLocaleString()} bill${rows.length === 1 ? "" : "s"} · ${m2(sb)} open`;
@@ -187,13 +207,37 @@
     $("ap-foot").innerHTML = `<span>${total}</span>${rows.length > S.shown ? `<button class="btn small" type="button" id="ap-more">Show ${Math.min(200, rows.length - S.shown)} more</button>` : ""}`;
   }
 
+  function payCell(b) {
+    if (!b.balance) { const ps = S.paidBy.get(b.id) || []; return ps.length ? `<span class="m">${esc([...new Set(ps.map(p => p.account || p.pay_type))].join(", "))}</span>` : ""; }
+    const pl = S.plan.get(b.id) || {}, id = pl.account_id || "";
+    let sub = "";
+    if (pl.account_type === "Credit Card") sub = pl.card_needs_terms ? `<div class="m">set this card's due day on Cash flow</div>` : `<div class="m">card paid ${fmtD(pl.cash_on)}</div>`;
+    return `<select class="ap-pm ${id ? "" : "unset"}" data-pm="${esc(b.id)}" aria-label="Pays with" ${S.busy ? "disabled" : ""}>${methodOptions(id)}</select>${sub}`;
+  }
+  function methodStrip() {
+    const el = $("ap-methods"); if (!el) return;
+    if (S.view !== "open" && S.view !== "all") { el.innerHTML = ""; return; }
+    const ms = byMethod(), shownOpen = rowsForView().filter(b => b.balance !== 0);
+    el.innerHTML = `<div class="ap-ms">${ms.map(x => `<button type="button" class="ap-m ${x.k ? "" : "unset"} ${S.filter && S.filter.type === "method" && S.filter.key === x.k ? "on" : ""}" data-f='${esc(JSON.stringify({ type: "method", key: x.k, label: "Pays with: " + x.name }))}'><span>${esc(x.name)}</span><b>${short(x.amt)}</b><small>${x.n} bill${x.n === 1 ? "" : "s"}</small></button>`).join("")}</div>
+      ${shownOpen.length ? `<form class="ap-bulk"><span>Set ${shownOpen.length === open().length ? "all" : "the"} ${shownOpen.length} open bill${shownOpen.length === 1 ? "" : "s"} shown to</span><select name="acct" aria-label="Pays with">${methodOptions("", "Not set (clear)")}</select><button class="btn small" type="submit" ${S.busy ? "disabled" : ""}>Apply</button></form>` : ""}`;
+  }
+  async function setMethod(ids, acct, msg) {
+    S.busy = true; table();
+    try { const n = await FIN.write("fin_bill_method_set", { p: { bill_ids: ids, account_id: acct } }); if (msg) note("", msg.replace("{n}", n)); }
+    catch (e) { note("bad", "Couldn't save: " + esc(e.message || e)); }
+    S.busy = false;
+    const pl = await FIN.sql("select bill_id, account_id, account_name, account_type, pay_on, cash_on, card_needs_terms from fin.v_bill_plan", true).catch(() => null);
+    if (pl) S.plan = new Map(pl.map(x => [x.bill_id, x]));
+    render();
+  }
+
   function exportCsv() {
     const q = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const rows = rowsForView();
     let lines;
     if (S.view === "vendors") lines = [["vendor", "open_bills", "open_balance", "overdue", "next_due", "paid_12_months", "avg_days_to_pay", "paid_on_time_pct", "terms"], ...rows.map(v => [v.name, v.openN, v.open.toFixed(2), v.over.toFixed(2), v.next || "", v.paid12.toFixed(2), v.avgDays == null ? "" : Math.round(v.avgDays), v.onTimePct == null ? "" : Math.round(v.onTimePct * 100), v.terms])];
     else if (S.view === "payments") lines = [["date", "vendor", "paid_from", "method", "amount", "qbo_id"], ...rows.map(p => [p.txn_date, p.vendor_name, p.account, p.pay_type, p.total.toFixed(2), p.id])];
-    else lines = [["vendor", "bill_no", "bill_date", "due_date", "status", "amount", "open", "days_overdue", "po", "qbo_id"], ...rows.map(b => [b.vendor_name, b.doc_number, b.txn_date, b.due_date, dueClass(b)[1], b.total.toFixed(2), b.balance.toFixed(2), b.days_overdue || 0, b.po_no || "", b.id])];
+    else lines = [["vendor", "bill_no", "bill_date", "due_date", "status", "pays_with", "cash_out", "amount", "open", "days_overdue", "po", "qbo_id"], ...rows.map(b => { const pl = S.plan.get(b.id) || {}; return [b.vendor_name, b.doc_number, b.txn_date, b.due_date, dueClass(b)[1], b.balance ? pl.account_name || "" : "", b.balance ? pl.cash_on || "" : "", b.total.toFixed(2), b.balance.toFixed(2), b.days_overdue || 0, b.po_no || "", b.id]; })];
     FIN.download(`payables-${S.view}-${today()}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
   }
 
@@ -217,12 +261,24 @@
       if (ev.target.closest("[data-clear]")) { S.filter = null; render(); return; }
       const h = ev.target.closest("th[data-sort]");
       if (h) { const k = h.dataset.sort, cur = S.sort[S.view]; S.sort[S.view] = cur[0] === k ? [k, -cur[1]] : [k, /date|name|doc|terms|account|pay_type|next/.test(k) ? 1 : -1]; table(); return; }
-      if (ev.target.closest("a")) return;
+      if (ev.target.closest("a, select, form")) return;
       const r = ev.target.closest("tr[data-bill]");
       if (r) { const id = r.dataset.bill; S.open.has(id) ? S.open.delete(id) : S.open.add(id); table(); return; }
       const v = ev.target.closest("tr[data-vendor]");
       if (v) { S.vendor = v.dataset.vendor; S.filter = null; $("ap-vendor").value = S.vendor; setView("open"); render(); return; }
       if (ev.target.id === "ap-more") { S.shown += 200; table(); }
+    });
+    main.addEventListener("change", (ev) => {
+      const s = ev.target.closest("select[data-pm]"); if (!s) return;
+      const b = S.bills.find(x => x.id === s.dataset.pm);
+      setMethod([s.dataset.pm], s.value, s.value ? `${esc(b ? b.vendor_name : "Bill")} ${b && b.doc_number ? "#" + esc(b.doc_number) + " " : ""}will be paid with ${esc(acctName(s.value))}.` : "Payment method cleared.");
+    });
+    main.addEventListener("submit", (ev) => {
+      const f = ev.target.closest("form.ap-bulk"); if (!f) return;
+      ev.preventDefault();
+      const ids = rowsForView().filter(b => b.balance !== 0).map(b => b.id), acct = f.acct.value;
+      if (!ids.length) return;
+      setMethod(ids, acct, acct ? `{n} bill${ids.length === 1 ? "" : "s"} set to ${esc(acctName(acct))}.` : `Cleared the payment method on {n} bill${ids.length === 1 ? "" : "s"}.`);
     });
     $("ap-tabs").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-v]"); if (b) { setView(b.dataset.v); render(); } });
     $("ap-vendor").addEventListener("change", (ev) => { S.vendor = ev.target.value; S.shown = 200; render(); });

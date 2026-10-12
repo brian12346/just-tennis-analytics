@@ -19,12 +19,12 @@
   const WEEKS = 17;
   const parseAmt = (s) => { const v = parseFloat(String(s ?? "").replace(/[$,\s]/g, "")); return isNaN(v) ? null : v; };
 
-  const S = { loaded: false, loading: false, err: null, accts: [], amz: [], shopPay: [], shopDays: [], bills: [], fc: [], cash: {}, shopCfg: { weekday: 1, pct_of_sales: 97 }, amzCfg: { vs_last_year: 100 }, amzSales: new Map(), open: new Set(), busy: false };
+  const S = { loaded: false, loading: false, err: null, accts: [], amz: [], shopPay: [], shopDays: [], bills: [], plan: new Map(), cardRows: [], fc: [], cash: {}, shopCfg: { weekday: 1, pct_of_sales: 97 }, amzCfg: { vs_last_year: 100 }, amzSales: new Map(), open: new Set(), busy: false };
 
   async function load(refresh) {
     S.loading = true; render();
     try {
-      const [amz, sp, sd, bills, fc, st, ac, as] = await Promise.all([
+      const [amz, sp, sd, bills, fc, st, ac, as, pl, cr] = await Promise.all([
         FIN.sql("select id, day, marketplace, currency, amount_local, amount from fin.v_amazon_payouts order by day", refresh),
         FIN.sql("select id, (issued_at at time zone 'America/Los_Angeles')::date as day, status, amount from fin.shopify_payouts where issued_at > now() - interval '200 days' order by issued_at", refresh),
         FIN.sql("select day, total from jt.shopify_daily where day >= current_date - 42 order by day", refresh),
@@ -35,7 +35,12 @@
         // Amazon sales by day: the last 10 weeks (to see what share of sales Amazon pays out) and the same stretch a
         // year back plus the next 4 months a year back (the seasonal base for the estimates)
         FIN.sql("select day, marketplace, sales from jt.v_amazon_api_daily where day >= current_date - 70 or (day >= current_date - 420 and day < current_date - 364 + 133)", refresh),
+        // how each open bill will be paid and when its cash goes out; each card's close / due day (migration 127)
+        FIN.sql("select bill_id, account_id, account_name, account_type, pay_on, cash_on, card_needs_terms from fin.v_bill_plan", refresh).catch(() => []),
+        FIN.sql("select account_id, name, balance, owed, qbo_updated, close_day, due_day, last_close, next_close, balance_due_on, next_due from fin.v_cards order by owed desc, name", refresh).catch(() => []),
       ]);
+      S.plan = new Map(pl.map(x => [x.bill_id, x]));
+      S.cardRows = cr.map(c => ({ ...c, balance: +c.balance, owed: +c.owed }));
       S.amzSales = new Map(as.map(r => [`${r.marketplace}|${r.day}`, +r.sales || 0]));
       S.accts = ac.map(a => ({ ...a, balance: +a.balance }));
       S.amz = amz.map(x => ({ ...x, amount: +x.amount })); S.shopPay = sp.map(x => ({ ...x, amount: +x.amount }));
@@ -171,22 +176,33 @@
       ev.push({ type: f.kind === "other_in" ? "in" : "out", src: "other", id: f.id, label: f.note || (f.kind === "other_in" ? "Other money in" : "Other payment"), day: f.expected_on, amount: f.amount, state: "typed" });
     }
     for (const b of S.bills) {
-      const due = b.due_date || t, d = due < t ? t : due;
+      const due = b.due_date || t, pl = S.plan.get(b.id) || {};
+      // a bill on a card with a close / due day set goes out with that card's payment; otherwise on its due date
+      const onCard = pl.account_type === "Credit Card" && !pl.card_needs_terms && pl.cash_on;
+      const d = onCard ? (pl.cash_on < t ? t : pl.cash_on) : (due < t ? t : due);
       if (d >= end) continue;
-      ev.push({ type: "out", src: "bill", label: b.vendor_name, doc: b.doc_number, day: d, due, amount: b.balance, state: due < t ? "overdue" : "due" });
+      ev.push({ type: "out", src: onCard ? "card" : "bill", label: b.vendor_name, doc: b.doc_number, day: d, due, charge: onCard ? pl.pay_on : null,
+                via: pl.account_name || "", needsTerms: !!pl.card_needs_terms, amount: b.balance, state: due < t ? "overdue" : "due" });
+    }
+    // each card with a close / due day: what's owed now, on the date it's due
+    for (const c of S.cardRows) {
+      if (c.close_day == null || !(c.owed > 0) || !c.balance_due_on) continue;
+      const d = c.balance_due_on < t ? t : c.balance_due_on;
+      if (d >= end) continue;
+      ev.push({ type: "out", src: "card", cardBal: true, label: c.name, via: c.name, day: d, amount: c.owed, state: "card" });
     }
     return { ev, streams, w0, end };
   }
   function weeksOf(ev, w0) {
     const ws = [];
-    for (let i = 0; i < WEEKS; i++) { const k = addDays(w0, 7 * i); ws.push({ k, amazon: 0, shopify: 0, other_in: 0, bills: 0, other_out: 0, items: [] }); }
+    for (let i = 0; i < WEEKS; i++) { const k = addDays(w0, 7 * i); ws.push({ k, amazon: 0, shopify: 0, other_in: 0, bills: 0, cards: 0, other_out: 0, items: [] }); }
     for (const e of ev) {
       const w = ws[Math.floor((dnum(e.day) - dnum(w0)) / 7)]; if (!w) continue;
       w.items.push(e);
-      if (e.type === "in") w[e.src === "other" ? "other_in" : e.src] += e.amount; else w[e.src === "bill" ? "bills" : "other_out"] += e.amount;
+      if (e.type === "in") w[e.src === "other" ? "other_in" : e.src] += e.amount; else w[e.src === "bill" ? "bills" : e.src === "card" ? "cards" : "other_out"] += e.amount;
     }
     const C = cashNow(); let bal = C.balance == null ? null : Number(C.balance);
-    for (const w of ws) { w.in = w.amazon + w.shopify + w.other_in; w.out = w.bills + w.other_out; w.net = w.in - w.out; if (bal != null) { bal += w.net; w.bal = bal; } }
+    for (const w of ws) { w.in = w.amazon + w.shopify + w.other_in; w.out = w.bills + w.cards + w.other_out; w.net = w.in - w.out; if (bal != null) { bal += w.net; w.bal = bal; } }
     return ws;
   }
 
@@ -211,7 +227,7 @@
     $("cf-cards").innerHTML = [
       card("", "Cash now", hasBal ? short(C.balance) : "—", hasBal ? (C.source === "qbo" ? `QuickBooks bank balances · ${C.n} account${C.n === 1 ? "" : "s"}` : `typed, as of ${fmtD(C.as_of)}`) : "Pick bank accounts below, or type a number"),
       card("green", "Coming in, 4 months", short(tin), `Amazon ${short(amzIn)} · Shopify ${short(shIn)}${tin - amzIn - shIn ? ` · other ${short(tin - amzIn - shIn)}` : ""}`),
-      card("red", "Going out, 4 months", short(tout), `${short(ws.reduce((a, w) => a + w.bills, 0))} in bills${ws.reduce((a, w) => a + w.other_out, 0) ? ` · ${short(ws.reduce((a, w) => a + w.other_out, 0))} other` : ""}`),
+      card("red", "Going out, 4 months", short(tout), `${short(ws.reduce((a, w) => a + w.bills, 0))} in bills${ws.reduce((a, w) => a + w.cards, 0) ? ` · ${short(ws.reduce((a, w) => a + w.cards, 0))} cards` : ""}${ws.reduce((a, w) => a + w.other_out, 0) ? ` · ${short(ws.reduce((a, w) => a + w.other_out, 0))} other` : ""}`),
       card(hasBal && ws[ws.length - 1].bal < 0 ? "red" : "", "Cash in 4 months", hasBal ? short(ws[ws.length - 1].bal) : short(tin - tout), hasBal ? `net ${short(tin - tout)}` : "net change (no starting balance yet)"),
       card(low && low.bal < 0 ? "red" : low ? "amber" : "", "Lowest point", low ? short(low.bal) : "—", low ? `week of ${fmtD(low.k)}` : "Needs a starting balance"),
     ].join("");
@@ -230,12 +246,12 @@
       let top = 0;
       for (const [k, c] of [["amazon", "var(--green2)"], ["shopify", "var(--blue)"], ["other_in", "#7FA89A"]]) { if (!w[k]) continue; s += `<rect x="${x}" y="${y(top + w[k])}" width="${bwi}" height="${y(top) - y(top + w[k])}" fill="${c}"><title>${esc(fmtD(w.k))}: ${k.replace("_", " ")} ${money(w[k])}</title></rect>`; top += w[k]; }
       let bot = 0;
-      for (const [k, c] of [["bills", "var(--red)"], ["other_out", "#D49A86"]]) { if (!w[k]) continue; s += `<rect x="${x}" y="${y(bot)}" width="${bwi}" height="${y(bot - w[k]) - y(bot)}" fill="${c}"><title>${esc(fmtD(w.k))}: ${k === "bills" ? "bills" : "other out"} ${money(w[k])}</title></rect>`; bot -= w[k]; }
+      for (const [k, c] of [["bills", "var(--red)"], ["cards", "#9C5B8E"], ["other_out", "#D49A86"]]) { if (!w[k]) continue; s += `<rect x="${x}" y="${y(bot)}" width="${bwi}" height="${y(bot - w[k]) - y(bot)}" fill="${c}"><title>${esc(fmtD(w.k))}: ${k === "bills" ? "bills" : k === "cards" ? "card payments" : "other out"} ${money(w[k])}</title></rect>`; bot -= w[k]; }
       if (i % 2 === 0) s += `<text x="${pad.l + i * bw + bw / 2}" y="${H - 8}" class="ax" text-anchor="middle">${esc(fmtD(w.k))}</text>`;
     });
     if (hasBal) s += `<polyline points="${ws.map((w, i) => `${pad.l + i * bw + bw / 2},${y(w.bal)}`).join(" ")}" class="balline"/>` + ws.map((w, i) => `<circle cx="${pad.l + i * bw + bw / 2}" cy="${y(w.bal)}" r="3" class="baldot ${w.bal < 0 ? "neg" : ""}"><title>Cash after week of ${esc(fmtD(w.k))}: ${money(w.bal)}</title></circle>`).join("");
     s += "</svg>";
-    $("cf-chart").innerHTML = s + `<div class="cf-legend"><span><i style="background:var(--green2)"></i>Amazon</span><span><i style="background:var(--blue)"></i>Shopify</span><span><i style="background:#7FA89A"></i>Other in</span><span><i style="background:var(--red)"></i>Bills</span><span><i style="background:#D49A86"></i>Other out</span>${hasBal ? '<span><i class="ln"></i>Cash balance</span>' : ""}</div>`;
+    $("cf-chart").innerHTML = s + `<div class="cf-legend"><span><i style="background:var(--green2)"></i>Amazon</span><span><i style="background:var(--blue)"></i>Shopify</span><span><i style="background:#7FA89A"></i>Other in</span><span><i style="background:var(--red)"></i>Bills</span><span><i style="background:#9C5B8E"></i>Card payments</span><span><i style="background:#D49A86"></i>Other out</span>${hasBal ? '<span><i class="ln"></i>Cash balance</span>' : ""}</div>`;
   }
 
   function table(ws) {
@@ -243,7 +259,7 @@
     const cell = (v, cls) => `<td class="n ${cls || ""}">${v ? money(v) : '<span class="m">—</span>'}</td>`;
     const rows = ws.map(w => {
       const estAny = w.items.some(e => e.state === "estimate");
-      const head = `<tr class="row" data-week="${w.k}"><td><b>${fmtD(w.k)}</b>${w.k === monday(today()) ? ' <span class="pill soon">this week</span>' : ""}</td>${cell(w.amazon)}${cell(w.shopify)}${cell(w.other_in)}${cell(w.bills, "out")}${cell(w.other_out, "out")}<td class="n"><b class="${w.net < 0 ? "negt" : ""}">${money(w.net)}</b>${estAny ? '<div class="m">incl. estimates</div>' : ""}</td>${hasBal ? `<td class="n"><b class="${w.bal < 0 ? "negt" : ""}">${money(w.bal)}</b></td>` : ""}</tr>`;
+      const head = `<tr class="row" data-week="${w.k}"><td><b>${fmtD(w.k)}</b>${w.k === monday(today()) ? ' <span class="pill soon">this week</span>' : ""}</td>${cell(w.amazon)}${cell(w.shopify)}${cell(w.other_in)}${cell(w.bills, "out")}${cell(w.cards, "out")}${cell(w.other_out, "out")}<td class="n"><b class="${w.net < 0 ? "negt" : ""}">${money(w.net)}</b>${estAny ? '<div class="m">incl. estimates</div>' : ""}</td>${hasBal ? `<td class="n"><b class="${w.bal < 0 ? "negt" : ""}">${money(w.bal)}</b></td>` : ""}</tr>`;
       if (!S.open.has(w.k)) return head;
       const ins = w.items.filter(e => e.type === "in").sort((a, b) => a.day.localeCompare(b.day));
       const outs = w.items.filter(e => e.type === "out").sort((a, b) => a.day.localeCompare(b.day) || b.amount - a.amount);
@@ -254,31 +270,58 @@
           <td class="n"><input class="amt ${e.state === "estimate" ? "estv" : ""}" data-stream="${esc(e.stream)}" data-day="${e.day}" value="${money(e.amount)}" aria-label="${esc(e.label)} payout ${esc(fmtD(e.day))}"></td>
           <td>${e.state === "typed" ? `<button class="link" data-reset="${esc(e.stream)}|${e.day}" title="Back to the estimate (${money(e.est)})">Use estimate</button>` : ""}</td></tr>`;
       };
-      const outRow = (e) => e.src === "bill"
-        ? `<tr><td>${fmtD(e.due)}</td><td>${esc(e.label)}${e.doc ? ` <span class="m">#${esc(e.doc)}</span>` : ""}${e.state === "overdue" ? ' <span class="pill over">overdue</span>' : ""}</td><td class="n">${money(e.amount)}</td><td></td></tr>`
+      const outRow = (e) => e.src === "card" && e.cardBal
+        ? `<tr><td>${fmtD(e.day)}</td><td>${esc(e.label)} <span class="pill card">card balance</span><div class="m">what QuickBooks shows owed now</div></td><td class="n">${money(e.amount)}</td><td></td></tr>`
+        : e.src === "card"
+        ? `<tr><td>${fmtD(e.day)}</td><td>${esc(e.label)}${e.doc ? ` <span class="m">#${esc(e.doc)}</span>` : ""} <span class="pill card">on card</span><div class="m">${esc(e.via)} · charged ${fmtD(e.charge)}, bill due ${fmtD(e.due)}</div></td><td class="n">${money(e.amount)}</td><td></td></tr>`
+        : e.src === "bill"
+        ? `<tr><td>${fmtD(e.due)}</td><td>${esc(e.label)}${e.doc ? ` <span class="m">#${esc(e.doc)}</span>` : ""}${e.state === "overdue" ? ' <span class="pill over">overdue</span>' : ""}${e.via ? `<div class="m">from ${esc(e.via)}${e.needsTerms ? " · set this card's close and due day below to move it to the card's payment date" : ""}</div>` : ""}</td><td class="n">${money(e.amount)}</td><td></td></tr>`
         : `<tr><td>${fmtD(e.day)}</td><td>${esc(e.label)} <span class="pill open">typed</span></td><td class="n">${money(e.amount)}</td><td><button class="link" data-rm="${e.id}">Remove</button></td></tr>`;
       const add = (kind) => `<form class="cf-add" data-kind="${kind}" data-week="${w.k}"><input name="note" placeholder="${kind === "other_in" ? "e.g. Wholesale invoice #123" : "e.g. Payroll, rent, tax"}" aria-label="What"><input name="day" type="date" value="${w.k}" min="${w.k}" max="${addDays(w.k, 6)}" aria-label="Date"><input name="amount" class="amt" placeholder="$0" aria-label="Amount"><button class="btn small" type="submit">Add</button></form>`;
-      return head + `<tr class="detail"><td colspan="${hasBal ? 8 : 7}"><div class="det">
+      return head + `<tr class="detail"><td colspan="${hasBal ? 9 : 8}"><div class="det">
         <div><h3>Coming in · ${money(w.in)}</h3><table>${ins.map(inRow).join("") || '<tr><td class="m">Nothing expected</td></tr>'}</table>${add("other_in")}</div>
         <div><h3>Going out · ${money(w.out)}</h3><table>${outs.map(outRow).join("") || '<tr><td class="m">Nothing due</td></tr>'}</table>${add("other_out")}</div></div></td></tr>`;
     }).join("");
     const tot = (k) => ws.reduce((a, w) => a + w[k], 0);
-    $("cf-table").innerHTML = `<table><thead><tr><th>Week of</th><th class="n">Amazon</th><th class="n">Shopify</th><th class="n">Other in</th><th class="n">Bills due</th><th class="n">Other out</th><th class="n">Net</th>${hasBal ? '<th class="n">Cash after</th>' : ""}</tr></thead>
-      <tbody>${rows}</tbody><tfoot><tr><td><b>4 months</b></td>${cell(tot("amazon"))}${cell(tot("shopify"))}${cell(tot("other_in"))}${cell(tot("bills"), "out")}${cell(tot("other_out"), "out")}<td class="n"><b>${money(tot("net"))}</b></td>${hasBal ? `<td class="n"><b>${money(ws[ws.length - 1].bal)}</b></td>` : ""}</tr></tfoot></table>`;
+    $("cf-table").innerHTML = `<table><thead><tr><th>Week of</th><th class="n">Amazon</th><th class="n">Shopify</th><th class="n">Other in</th><th class="n">Bills due</th><th class="n">Card payments</th><th class="n">Other out</th><th class="n">Net</th>${hasBal ? '<th class="n">Cash after</th>' : ""}</tr></thead>
+      <tbody>${rows}</tbody><tfoot><tr><td><b>4 months</b></td>${cell(tot("amazon"))}${cell(tot("shopify"))}${cell(tot("other_in"))}${cell(tot("bills"), "out")}${cell(tot("cards"), "out")}${cell(tot("other_out"), "out")}<td class="n"><b>${money(tot("net"))}</b></td>${hasBal ? `<td class="n"><b>${money(ws[ws.length - 1].bal)}</b></td>` : ""}</tr></tfoot></table>`;
   }
 
   function bankPanel() {
     const inc = new Set(includedBanks().map(a => a.id)), C = cashNow();
     const upd = (a) => a.qbo_updated ? new Date(a.qbo_updated).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Los_Angeles" }) : "—";
-    const bk = banks(), cd = cards().filter(a => Math.abs(a.balance) >= 1);
+    const bk = banks();
     if (!S.accts.length) { $("cf-bank").innerHTML = '<p class="m">No bank accounts from QuickBooks yet — they come in with the next QuickBooks refresh (hourly, or Refresh on Payables).</p>'; return; }
     $("cf-bank").innerHTML = `<div class="det"><div><h3>Bank accounts${C.source === "qbo" ? " · ticked ones are your starting cash" : ""}</h3><table>
       ${bk.map(a => `<tr><td><input type="checkbox" data-acct="${esc(a.id)}" ${inc.has(a.id) ? "checked" : ""} ${C.source !== "qbo" ? "disabled" : ""} aria-label="Count ${esc(a.name)}"></td><td>${esc(a.name)}<div class="m">${esc(a.subtype)} · updated in QuickBooks ${esc(upd(a))}</div></td><td class="n"><b>${money(a.balance)}</b></td></tr>`).join("")}
       <tr><td></td><td><b>Ticked</b></td><td class="n"><b>${money(bk.filter(a => inc.has(a.id)).reduce((x, a) => x + a.balance, 0))}</b></td></tr></table></div>
-      <div><h3>Credit cards · balance as QuickBooks shows it</h3><table>
-      ${cd.map(a => `<tr><td>${esc(a.name)}<div class="m">updated in QuickBooks ${esc(upd(a))}</div></td><td class="n"><b>${money(a.balance)}</b></td><td><form class="cf-card" data-name="${esc(a.name)}"><input name="day" type="date" value="${addDays(today(), 7)}" aria-label="Payment date"><input name="amount" class="amt" value="${money(Math.abs(a.balance))}" aria-label="Payment amount"><button class="btn small" type="submit">Add payment</button></form></td></tr>`).join("") || '<tr><td class="m">No card balances</td></tr>'}
-      </table><p class="m">Card balances aren't counted in the forecast on their own. "Add payment" puts a card payment in the week you pick (it shows under Other out). Positive and negative signs follow how each card is kept in QuickBooks.</p></div></div>
+      <div>${cardPanel()}</div></div>
       <p class="m">These are QuickBooks' balances for each account — what's been entered or matched there — not a live bank feed. They refresh every hour with the rest of QuickBooks.</p>`;
+  }
+
+  // credit cards: balance owed, statement close day and due day (set here), the next payment and the bills planned on it
+  function cardPanel() {
+    const planned = new Map();   // account_id -> [bills]
+    for (const b of S.bills) { const pl = S.plan.get(b.id); if (pl && pl.account_type === "Credit Card") { if (!planned.has(pl.account_id)) planned.set(pl.account_id, []); planned.get(pl.account_id).push({ ...b, cash_on: pl.cash_on, pay_on: pl.pay_on }); } }
+    const rows = S.cardRows.filter(c => Math.abs(c.balance) >= 1 || c.close_day != null || planned.has(c.account_id));
+    const upd = (c) => c.qbo_updated ? new Date(c.qbo_updated).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/Los_Angeles" }) : "—";
+    const dayIn = (name, v, label) => `<input name="${name}" class="day" type="number" min="1" max="31" inputmode="numeric" value="${v ?? ""}" placeholder="day" aria-label="${label}">`;
+    const body = rows.map(c => {
+      const bills = planned.get(c.account_id) || [], next = bills.filter(b => b.cash_on === c.balance_due_on), later = bills.filter(b => b.cash_on !== c.balance_due_on);
+      const sum = (xs) => xs.reduce((a, b) => a + b.balance, 0);
+      const terms = `<form class="cf-terms" data-acct="${esc(c.account_id)}">Closes ${dayIn("close", c.close_day, "Statement close day")} · due ${dayIn("due", c.due_day, "Payment due day")}<button class="btn small" type="submit">${c.close_day != null ? "Update" : "Save"}</button>${c.close_day != null ? `<button class="link" type="button" data-termsrm="${esc(c.account_id)}">Remove</button>` : ""}</form>`;
+      let plan = "";
+      if (c.close_day != null) {
+        plan = `<div class="cf-cardplan"><b>${fmtD(c.balance_due_on)}</b>: pay ${money(c.owed + sum(next))} <span class="m">(${money(c.owed)} owed now${next.length ? ` + ${money(sum(next))} in ${next.length} bill${next.length === 1 ? "" : "s"}` : ""})</span>`
+          + `<div class="m">statement closes ${fmtD(c.next_close)}${later.length ? ` · ${later.length} more bill${later.length === 1 ? "" : "s"} (${money(sum(later))}) on later statements` : ""}</div></div>`;
+      } else {
+        plan = `<div class="m">${bills.length ? `${bills.length} bill${bills.length === 1 ? "" : "s"} (${money(sum(bills))}) planned on this card stay on their due dates until its close and due day are set.` : "Set the close and due day to put this card's payments in the forecast."}</div>`
+          + `<form class="cf-card" data-name="${esc(c.name)}"><input name="day" type="date" value="${addDays(today(), 7)}" aria-label="Payment date"><input name="amount" class="amt" value="${money(c.owed || Math.abs(c.balance))}" aria-label="Payment amount"><button class="btn small" type="submit">Add one payment</button></form>`;
+      }
+      return `<tr><td><b>${esc(c.name)}</b><div class="m">${c.owed ? money(c.owed) + " owed" : c.balance ? money(c.balance) + " (not owed)" : "no balance"} · QuickBooks ${esc(upd(c))}</div></td><td>${terms}${plan}</td></tr>`;
+    }).join("");
+    return `<h3>Credit cards</h3><table class="cf-cardtbl">${body || '<tr><td class="m">No cards in use</td></tr>'}</table>
+      <p class="m">Each card's statement close day and payment due day put its payments in the forecast (Card payments): what's owed now on the coming due date, and each bill planned on the card (Payables → Pays with) on the due date of the statement it's charged to — the bill's due date, or today if it's late. 31 means the month's last day.</p>`;
   }
 
   function assumptions(streams) {
@@ -305,6 +348,7 @@
     main.addEventListener("click", (ev) => {
       const r = ev.target.closest("tr[data-week]");
       if (r && !ev.target.closest("input,button,select,a")) { const k = r.dataset.week; S.open.has(k) ? S.open.delete(k) : S.open.add(k); render(); return; }
+      const tr = ev.target.closest("[data-termsrm]"); if (tr) { save("fin_card_terms_set", { account_id: tr.dataset.termsrm, close_day: null }, "Removed the card's close and due day."); return; }
       const rm = ev.target.closest("[data-rm]"); if (rm) { save("fin_forecast_set", { op: "remove", id: Number(rm.dataset.rm) }); return; }
       const rs = ev.target.closest("[data-reset]"); if (rs) { const [stream, day] = rs.dataset.reset.split("|"); save("fin_forecast_set", { op: "set", stream, expected_on: day, amount: null }); }
     });
@@ -320,6 +364,15 @@
       else if (t.id === "cf-shoppct") { const v = parseAmt(t.value); if (v != null && v > 0 && v <= 100) save("fin_settings_set", { key: "shopify", value: { pct_of_sales: v } }); }
     });
     main.addEventListener("submit", (ev) => {
+      const ct = ev.target.closest("form.cf-terms");
+      if (ct) {
+        ev.preventDefault();
+        const c = parseInt(ct.close.value, 10), d = parseInt(ct.due.value, 10);
+        if (!(c >= 1 && c <= 31)) { ct.close.focus(); return; }
+        if (!(d >= 1 && d <= 31)) { ct.due.focus(); return; }
+        save("fin_card_terms_set", { account_id: ct.dataset.acct, close_day: c, due_day: d }, "Saved the card's close and due day.");
+        return;
+      }
       const cf = ev.target.closest("form.cf-card");
       if (cf) { ev.preventDefault(); const v = parseAmt(cf.amount.value); if (!v) return; save("fin_forecast_set", { op: "add", kind: "other_out", expected_on: cf.day.value || today(), amount: v, note: "Card payment: " + cf.dataset.name }, `Added a ${money(v)} card payment on ${fmtD(cf.day.value || today())}.`); return; }
       const f = ev.target.closest("form.cf-add"); if (!f) return;
