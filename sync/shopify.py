@@ -1149,11 +1149,20 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
         cur.execute("select shopify_po_url from jt.prep_orders where shopify_po_url ~ '/purchase_orders/[0-9]+'")
         linked = {int(re.search(r"/purchase_orders/(\d+)", u).group(1)) for (u,) in cur.fetchall()}
 
+    # older POs still open in Shopify (ordered, not archived, from the last year) are kept too, so receiving more on
+    # one brings it into Seller Sage (migration 130); fully received ones drop out of the receipt checks once seen
+    open_from = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=365)).date().isoformat()
+
+    def still_open(h: dict, made) -> bool:
+        st = str(h.get("status") or "").upper()
+        return st not in ("", "DRAFT", "CLOSED", "CANCELLED", "CANCELED") and not h.get("archivedAt") \
+            and bool(made) and (_pacific_day(made) or str(made)[:10]) >= open_from
+
     def wanted(h: dict) -> bool:
         if not since or gid_num(h.get("id")) in linked or gid_num(h.get("id")) in have:
             return True
         made = h.get("dateCreated") or h.get("createdAt")
-        return not made or (_pacific_day(made) or str(made)[:10]) >= since
+        return not made or (_pacific_day(made) or str(made)[:10]) >= since or still_open(h, made)
     skipped = sum(1 for h in heads if not wanted(h))
     heads = [h for h in heads if wanted(h)]
     # 2) details (with line items) for new or changed POs, newest first

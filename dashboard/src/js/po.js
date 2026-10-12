@@ -1771,7 +1771,9 @@
   // ---------- Shopify POs straight from Shopify (jt.shopify_pos, synced hourly by the sync's shopify-pos job; migration 070) ----------
   async function loadShopPos(refresh) {
     const r = await JT.rowsSplit(["id::text", "name", "status", "supplier", "destination", "total", "lines", "units", "created_at::text", "expected_at::text", "lines_synced is not null", "synced_at::text",
-      "recv_status", "recv_units"], "from jt.shopify_pos", "id", 2, refresh);
+      "recv_status", "recv_units"],
+      // older POs (read again since migration 130 so receiving more brings them in) only once they matter here
+      "from jt.shopify_pos where (created_at >= '2026-10-05' or ss_imported_at is not null or recv_status = 'partial' or shopify_pos.id::text in (select substring(o.shopify_po_url from '/purchase_orders/([0-9]+)') from jt.prep_orders o))", "id", 2, refresh);
     S.spos = r.map(x => ({ id: x[0], name: x[1] || "", status: x[2] || "", supplier: x[3] || "", dest: x[4] || "", total: x[5] == null ? null : +x[5], lines: +x[6] || 0, units: +x[7] || 0,
       created: x[8] || "", expected: x[9] || "", ready: !!x[10], synced: x[11] || "", recv: x[12] || "", recvUnits: +x[13] || 0 }))
       .sort((a, b) => (b.created || "").localeCompare(a.created || "") || Number(b.id) - Number(a.id));
@@ -1847,7 +1849,7 @@
       <button class="btn sm" type="button" data-ps="sync" ${running ? "disabled" : ""} title="Read new and changed POs (and what's been received) from Shopify now, instead of waiting for the hourly sync">${running ? "Syncing…" : "Sync from Shopify"}</button>${syncTxt ? `<span class="muted small">${syncTxt}</span>` : ""}
       <div class="seg" role="group" aria-label="Which Shopify POs">${FILT.map(([k, l, f]) => `<button data-psf="${k}" aria-pressed="${P.f === k}">${l} <span class="cnt">${cnt(f)}</span></button>`).join("")}</div>
       <div class="filters"><label>Search <input class="inp" type="search" data-ps="q" value="${esc(P.q || "")}" placeholder="PO number or supplier"></label></div></div>
-      <p class="muted small">Shopify POs created since Oct 5, 2026 (and older ones a Seller Sage PO links to), read from Shopify every hour (or now, with Sync from Shopify)${last ? ` (last change ${esc(when(last))})` : ""}. <b>Create Seller Sage PO</b> brings one in with its vendor, PO number, products, quantities and costs — already checked against Shopify. Received comes from the PO's transfers in Shopify.</p>
+      <p class="muted small">Shopify POs created since Oct 5, 2026 (and older ones a Seller Sage PO links to), read from Shopify every hour (or now, with Sync from Shopify)${last ? ` (last change ${esc(when(last))})` : ""}. New POs come into Seller Sage by themselves once they're read (not drafts), with their vendor, PO number, products, quantities and costs — already checked against Shopify; an older PO comes in when more is received on it. <b>Create Seller Sage PO</b> brings one in by hand. Receiving follows Shopify.</p>
       <div class="tbl-wrap tall"><table class="po-t"><thead><tr><th class="l">Shopify PO</th><th class="l">Supplier</th><th class="l">Created</th><th>Lines</th><th>Units</th><th>Total</th><th class="l">Received in Shopify</th><th class="l">Seller Sage</th></tr></thead><tbody>${
       list.slice(0, P.shown).map(p => { const o = ssOf(p);
         return `<tr><td class="l"><b class="mono">${esc(p.name || "#" + p.id)}</b> <a class="small" href="${esc(shopUrl(p.id))}" target="_blank" rel="noopener" title="Open in Shopify">↗</a>${p.status === "DRAFT" ? ' <span class="pill warn">Draft</span>' : ""}</td><td class="l">${esc(p.supplier || "—")}</td>
