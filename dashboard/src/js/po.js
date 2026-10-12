@@ -525,7 +525,9 @@
     if (!S.orders) await loadOrders(false);
     if (orderId) { await openPO(orderId); return attach(pend, S.ed, ""); }
     const inv = pend.inv;
-    const same = inv.po_no && S.orders.find(o => o.status !== "complete" && norm(o.po) === norm(inv.po_no) && (!inv.vendor || !o.vendor || o.vendor.toLowerCase() === inv.vendor.toLowerCase()));
+    // the PO # on the invoice: "1125" is PO1125 (poKey drops a leading "PO")
+    const same = inv.po_no && S.orders.find(o => o.status !== "complete" && (norm(o.po) === norm(inv.po_no) || (poKey(o.po) && poKey(o.po) === poKey(inv.po_no)))
+      && (!inv.vendor || !o.vendor || o.vendor.toLowerCase() === inv.vendor.toLowerCase()));
     if (same) { await openPO(same.id); return attach(pend, S.ed, `Added to <b>${esc(same.vendor)} ${esc(poLabel(same.po))}</b> (the PO # on the invoice). `); }
     choosePO(pend);
   }
@@ -544,8 +546,11 @@
   async function pendGo(how) {
     const pend = S.pend; if (!pend) return;
     if (how === "cancel") { S.pend = null; note("", ""); render(); return; }
+    // the PO picker is inside the note: read it before the note is cleared
+    const pick = how === "pick" ? ($("pe-pendpo") || {}).value : "";
+    if (how === "pick" && !pick) return;
     note("", "");
-    if (how === "pick") { const id = ($("pe-pendpo") || {}).value; if (!id) return; await openPO(id); return attach(pend, S.ed, ""); }
+    if (how === "pick") { await openPO(pick); if (!S.ed) return; return attach(pend, S.ed, ""); }
     S.ed = blankEd(); return attach(pend, S.ed, "A new purchase order starts from this invoice. ");
   }
   // the parsed invoice goes onto ed (a PO), and opens on the Invoices tab

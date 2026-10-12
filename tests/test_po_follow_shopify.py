@@ -128,3 +128,20 @@ def test_shopify_po_links_to_the_seller_sage_po_waiting_for_it(conn):
     assert cur.fetchone() == (32, [], [31])   # only 32 left and it matches exactly: linked
     cur.execute("select count(*) from jt.prep_orders")
     assert cur.fetchone()[0] == 3
+
+
+def test_linking_by_hand_catches_up(conn):
+    """Migration 132: pasting a Shopify PO link on a Seller Sage PO receives what Shopify already has."""
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, inventory_item_id, sku, display_name, inventory_qty, vendor) values (61, 71, 961, 'B1', 'Blade', 0, 'Wilson')")
+    _shop_po(cur, 990, '#PO1125', [(61, 10)])           # older, made in Shopify; nothing waiting, so it's brought in…
+    cur.execute("update jt.shopify_pos set ss_imported_at = null, ss_order_id = null where id = 990")   # …pretend it predates auto-import
+    cur.execute("delete from jt.prep_orders")
+    cur.execute("update jt.shopify_po_lines set qty_received = 7 where po_id = 990")
+    cur.execute("insert into jt.prep_orders (id, vendor, po_no, status, receive_into) values (40, 'Wilson', 'PO1125', 'ordered', 'shopify')")
+    cur.execute("insert into jt.prep_order_lines (order_id, variant_id, amazon_sku, dest, qty_ordered) values (40, 61, '', 'shopify', 10)")
+    cur.execute("update jt.prep_orders set shopify_po_url = 'https://admin.shopify.com/store/x/purchase_orders/990' where id = 40")
+    cur.execute("select qty_received from jt.prep_order_lines where order_id = 40")
+    assert cur.fetchone()[0] == 7
+    cur.execute("select ss_order_id from jt.shopify_pos where id = 990")
+    assert cur.fetchone()[0] == 40
