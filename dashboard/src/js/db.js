@@ -576,6 +576,13 @@
         const out = await run(`select jt.po_apply_costs(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);
         return out[0] && out[0].n;
       },
+      // link a Shopify PO to this PO, or say a suggested one isn't it (migration 131): {order_id, shopify_po_id, action}
+      async shopLink(body) {
+        if (WEB) return await WEB.write("jt_po_shopify_link", { p: body });
+        if (body.action === "link") return run(`select jt.po_link_shopify(${int(body.order_id)}, ${int(body.shopify_po_id)}, 'Claude dashboard')::text as r`, true);
+        return run(`with u as (update jt.shopify_pos set ss_rejected = array_append(array_remove(ss_rejected, ${int(body.order_id)}::bigint), ${int(body.order_id)}::bigint), ss_suggest = array_remove(ss_suggest, ${int(body.order_id)}::bigint) where id = ${int(body.shopify_po_id)} returning id, ss_suggest)
+          select case when cardinality(ss_suggest) = 0 then jt.po_import_shopify(id, true)::text end as r from u`, true);
+      },
       async save(body) {
         if (WEB) return await WEB.write("jt_po_save", { p: body });
         const out = await run(`select jt.po_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);

@@ -774,9 +774,7 @@
         fixes: [{ label: "Mark them backordered", fix: "pbo" }, { label: "Close short", fix: "oshort" }] });
     }
     if (!shopOff(ed)) {
-    if (ed.id && ed.status !== "draft" && !ed.shopifyUrl.trim()) out.push({ lvl: "info", kind: "noshopify", title: "Not linked to a Shopify PO",
-      text: "Create the same PO in Shopify (Products → Purchase orders) and paste its link here, so the two stay in step.",
-      fixes: [{ label: "Paste the link", fix: "focus", arg: "pe-shopify" }, { label: "Shopify purchase orders", href: `${ADMIN}/purchase_orders/new` }] });
+    if (ed.id && !ed.shopifyUrl.trim() && ed.lines.some(l => l.dest === "shopify")) out.push(needsShopIssue(ed));
     if (ed.shopCheck) { const sd = shopDiffs(ed); if (sd.n) out.push({ lvl: "warn", kind: "shopdiff", title: `Doesn't match the Shopify PO · ${sd.n} difference${sd.n === 1 ? "" : "s"}`,
       text: sd.rows.filter(r => r.kinds.length).slice(0, 3).map(r => esc(r.title) + ": " + r.kinds.map(k => SDIFF[k]).join(", ")).join(" · ") + (sd.n > 3 ? " · …" : ""),
       fixes: [{ label: "Show the differences", fix: "focus", arg: "pe-shopcheck" }] }); }
@@ -786,6 +784,35 @@
     const rank = { bad: 0, warn: 1, info: 2 };
     return out.sort((a, b) => rank[a.lvl] - rank[b.lvl]);
   }
+  // A Seller Sage PO with Shopify-store products and no Shopify PO yet (migration 131): made here first, its Shopify PO
+  // is filled in by Claude through Chrome; when that syncs in it links here by itself, or is suggested here when it isn't
+  // clear-cut. Link / Not this one, or link a recent one by hand.
+  function needsShopIssue(ed) {
+    if (!S.spos && !S.sposLoading) { S.sposLoading = true; loadShopPos(false).then(() => render(), () => {}).finally(() => { S.sposLoading = false; }); }
+    const sps = S.spos || [], ssOf = ssIndex(), me = String(ed.id);
+    const sug = sps.filter(p => !p.ssOrder && p.suggest.includes(me));
+    const pick = sps.filter(p => !p.ssOrder && !ssOf(p) && p.status !== "DRAFT" && !sug.includes(p) && (p.created || "") >= addDaysISO(today(), -90)).slice(0, 40);
+    const desc = (p) => `<b>${esc(p.name)}</b> (${esc(p.supplier || "—")} · ${n0(p.units)} unit${p.units === 1 ? "" : "s"}${p.total != null ? " · " + m(p.total) : ""} · made ${esc(shortDate((p.created || "").slice(0, 10)))})`;
+    const picker = pick.length ? ` <span class="po-shoppick">Or link one: <select class="inp sm" data-shoppick aria-label="Shopify PO">${pick.map(p => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.supplier || "")} · ${n0(p.units)} units</option>`).join("")}</select> <button class="mini" data-fix="shoplinkpick">Link</button></span>` : "";
+    if (sug.length) return { lvl: "warn", kind: "noshopify", title: sug.length === 1 ? "Is this its Shopify PO?" : "Which is its Shopify PO?",
+      text: `${sug.map(desc).join(", ")} ${sug.length === 1 ? "looks like" : "look like"} this PO. Link it and receiving follows Shopify; or say it isn't.` + picker,
+      fixes: sug.flatMap(p => [{ label: `Link ${p.name}`, fix: "shoplink", arg: p.id }, { label: `Not ${p.name}`, fix: "shopreject", arg: p.id }]) };
+    return { lvl: "info", kind: "noshopify", title: "Needs a Shopify PO",
+      text: "Make the matching PO in Shopify — ask Claude to fill it in from this PO through Chrome. Once it syncs in (hourly, or Sync from Shopify), it links here by itself and receiving follows Shopify." + picker,
+      fixes: [{ label: "New PO in Shopify", href: `${ADMIN}/purchase_orders/new` }, { label: "Paste a link", fix: "focus", arg: "pe-shopify" }] };
+  }
+  async function shopLink(spo, action) {
+    const ed = S.ed; if (!ed || !ed.id) return;
+    if (ed.dirty) { note("warn", "Save this PO first, then link it."); return; }
+    const p = (S.spos || []).find(x => x.id === String(spo));
+    S.busy = action === "link" ? `Linking ${p ? p.name : "the Shopify PO"}…` : "Saving…"; render();
+    try {
+      await JT.po.shopLink({ order_id: Number(ed.id), shopify_po_id: Number(spo), action });
+      S.busy = ""; await loadShopPos(true); await openPO(ed.id);
+      note("info", action === "link" ? `Linked to Shopify PO <b>${esc(p ? p.name : spo)}</b> — receiving follows Shopify.` : `OK — ${esc(p ? p.name : "that Shopify PO")} isn't this one.`);
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't save: " + esc(JT.message(e))); }
+  }
+
   // one invoice: its lines and its money
   function invIssues(ed, iv) {
     const out = [], c = count(iv);
@@ -815,7 +842,7 @@
     if (["ordered", "invoiced"].includes(o.status) && o.expected && o.expected < today()) f.push(["warn", "late"]);
     if (ORDER.indexOf(o.status) >= 2 && !o.nInv) f.push(["warn", "no invoice"]);
     if (o.status === "draft" && o.kind === "booking" && o.placeBy && o.placeBy < today()) f.push(["warn", "past place-by"]);
-    if (o.status !== "draft" && !o.shopifyUrl && !shopOffO(o)) f.push(["info", "not in Shopify"]);
+    if (o.status !== "complete" && !o.shopifyUrl && !shopOffO(o)) f.push(["info", "needs Shopify PO"]);
     if (o.shopDiffs) f.push(["warn", `Shopify PO differs · ${o.shopDiffs}`]);
     else if (o.shopifyUrl && o.shopDiffs == null && o.status !== "draft" && !shopOffO(o)) f.push(["info", "Shopify PO not checked"]);
     if (o.nBack) f.push([o.backEta && o.backEta < today() ? "warn" : "info", `${o.nBack} backordered${o.backEta ? " · ETA " + shortDate(o.backEta) : ""}`]);
@@ -855,8 +882,10 @@
     if (hadFocus) { const i = ph.querySelector('[data-ps="q"]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
     const all = S.orders || [];
     const isOpen = (o) => o.status !== "complete";
-    const cnt = (st) => all.filter(o => st === "open" ? isOpen(o) : st === "all" ? true : o.status === st).length;
-    $("po-stage").innerHTML = [["open", "Open"], ...STAGES, ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
+    const needsShop = (o) => isOpen(o) && !o.shopifyUrl && !shopOffO(o);
+    const inStage = (o, st) => st === "open" ? isOpen(o) : st === "noshop" ? needsShop(o) : st === "all" ? true : o.status === st;
+    const cnt = (st) => all.filter(o => inStage(o, st)).length;
+    $("po-stage").innerHTML = [["open", "Open"], ...STAGES, ["noshop", "Needs Shopify PO"], ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
     const vs = [...new Set(all.map(o => o.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const vsel = $("po-vendor"); const want = ["all", ...vs].join("|");
     if (vsel.dataset.opts !== want) { vsel.innerHTML = `<option value="all">All vendors</option>` + vs.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join(""); vsel.dataset.opts = want; vsel.value = vs.includes(S.vendor) ? S.vendor : "all"; }
@@ -869,7 +898,7 @@
       { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice" : "nothing flagged" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     const q = S.q.trim().toLowerCase().replace(/^#/, "");
-    const list = all.filter(o => (S.stage === "open" ? isOpen(o) : S.stage === "all" || o.status === S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
+    const list = all.filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
     const t = $("po-table");
@@ -1485,6 +1514,8 @@
     const ed = S.ed; if (!ed) return;
     const f = d.fix, iv = cur(ed);
     if (f === "focus") return focusArg(d.arg);
+    if (f === "shoplink" || f === "shopreject") return shopLink(d.arg, f === "shopreject" ? "reject" : "link");
+    if (f === "shoplinkpick") { const sel = document.querySelector("[data-shoppick]"); if (sel && sel.value) shopLink(sel.value, "link"); return; }
     if (f === "focuskq" || f === "focuskc") { setTimeout(() => { const el = document.querySelector(`#po-edit-view [data-f="${f === "focuskq" ? "qty" : "cost"}"][data-k="${CSS.escape(d.k)}"]`); if (el) { el.focus(); el.select(); } }, 0); return; }
     if (f === "pfilter" && iv) { iv.filter = d.arg; render(); return; }
     if (f === "pconfirmall" && iv) { for (const r of iv.rows) if (needsCheck(r) && r.conf === "high") r.confirmed = true; syncLines(ed); ed.dirty = true; render(); return; }
@@ -1771,11 +1802,12 @@
   // ---------- Shopify POs straight from Shopify (jt.shopify_pos, synced hourly by the sync's shopify-pos job; migration 070) ----------
   async function loadShopPos(refresh) {
     const r = await JT.rowsSplit(["id::text", "name", "status", "supplier", "destination", "total", "lines", "units", "created_at::text", "expected_at::text", "lines_synced is not null", "synced_at::text",
-      "recv_status", "recv_units"],
+      "recv_status", "recv_units", "array_to_string(ss_suggest, ',')", "ss_order_id::text"],
       // older POs (read again since migration 130 so receiving more brings them in) only once they matter here
       "from jt.shopify_pos where (created_at >= '2026-10-05' or ss_imported_at is not null or recv_status = 'partial' or shopify_pos.id::text in (select substring(o.shopify_po_url from '/purchase_orders/([0-9]+)') from jt.prep_orders o))", "id", 2, refresh);
     S.spos = r.map(x => ({ id: x[0], name: x[1] || "", status: x[2] || "", supplier: x[3] || "", dest: x[4] || "", total: x[5] == null ? null : +x[5], lines: +x[6] || 0, units: +x[7] || 0,
-      created: x[8] || "", expected: x[9] || "", ready: !!x[10], synced: x[11] || "", recv: x[12] || "", recvUnits: +x[13] || 0 }))
+      created: x[8] || "", expected: x[9] || "", ready: !!x[10], synced: x[11] || "", recv: x[12] || "", recvUnits: +x[13] || 0,
+      suggest: x[14] ? String(x[14]).split(",") : [], ssOrder: x[15] || "" }))
       .sort((a, b) => (b.created || "").localeCompare(a.created || "") || Number(b.id) - Number(a.id));
     return S.spos;
   }
@@ -1822,7 +1854,7 @@
     return (p) => byShop.get(p.id) || byKey.get(poKey(p.name)) || null;
   }
   const NEW_DAYS = 45;
-  const spNew = (p, ssOf) => !ssOf(p) && p.recv !== "received" && (p.created || "") >= addDaysISO(today(), -NEW_DAYS);
+  const spNew = (p, ssOf) => !ssOf(p) && !p.ssOrder && !p.suggest.length && p.recv !== "received" && (p.created || "") >= addDaysISO(today(), -NEW_DAYS);
   function addDaysISO(d, n) { const x = new Date(d + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); }
   const recvPillSp = (p) => !p.recv ? '<span class="dim small" title="Not read from Shopify yet (the hourly sync reads it)">…</span>'
     : p.recv === "received" ? `<span class="pill ok">Received</span>` : p.recv === "partial" ? `<span class="pill manual">${n0(p.recvUnits)} of ${n0(p.units)} in</span>` : '<span class="pill pos">Not received</span>';
@@ -1834,10 +1866,13 @@
   }
   function pickShopHtml() {
     if (S.listView !== "shop") return shopNewBanner();
-    const P = S.pickShop || (S.pickShop = { q: "", f: "new", shown: 100 });
+    const P = S.pickShop || (S.pickShop = { q: "", f: "open", shown: 100 });
     if (!S.spos) return `<section class="panel" id="po-pickshop"><div class="panel-head"><h2>Shopify POs</h2><span class="muted small">Loading Shopify POs…</span></div></section>`;
     const ssOf = ssIndex(), q = (P.q || "").toLowerCase().trim();
-    const FILT = [["new", "To bring in", (p) => !ssOf(p) && p.recv !== "received"], ["here", "In Seller Sage", (p) => !!ssOf(p)], ["recv", "Received in Shopify", (p) => p.recv === "received"], ["all", "All", () => true]];
+    // Receiving (open in Shopify) · Received · Not in Seller Sage (normally empty: they come in by themselves) · All
+    const FILT = [["open", "Receiving", (p) => p.recv !== "received"], ["recv", "Received", (p) => p.recv === "received"],
+      ["notin", "Not in Seller Sage", (p) => !ssOf(p) && !p.ssOrder], ["all", "All", () => true]];
+    if (!FILT.some(x => x[0] === P.f)) P.f = "open";
     const fx = (FILT.find(x => x[0] === P.f) || FILT[0])[2];
     const list = S.spos.filter(p => fx(p) && (!q || `${p.name} ${p.supplier}`.toLowerCase().includes(q)));
     const last = S.spos.reduce((a, p) => p.synced > a ? p.synced : a, "");
@@ -1856,7 +1891,9 @@
         <td class="l">${esc(shortDate((p.created || "").slice(0, 10)))}</td>
         <td>${p.ready ? n0(p.lines) : '<span class="dim" title="The hourly sync hasn\'t read its lines yet">…</span>'}</td><td>${p.ready ? n0(p.units) : ""}</td><td>${p.total == null ? "—" : m(p.total)}</td>
         <td class="l">${recvPillSp(p)}</td>
-        <td class="l">${o ? `<button class="linkbtn" data-ps-open="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "#" + o.id)} →</button>` : `<button class="btn primary sm" data-ps-take="${esc(p.id)}" ${p.ready ? "" : "disabled"}>Create Seller Sage PO</button>`}</td></tr>`; }).join("")
+        <td class="l">${o ? `<button class="linkbtn" data-ps-open="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "#" + o.id)} →</button>`
+          : p.suggest.length ? `<span class="small muted">Looks like </span>${p.suggest.map(id => { const x = (S.orders || []).find(q => String(q.id) === id); return `<button class="linkbtn" data-ps-open="${esc(id)}" title="Open it to link or say it isn't">${esc(x && x.po ? poLabel(x.po) : "#" + id)} →</button>`; }).join(" ")}`
+          : `<button class="btn primary sm" data-ps-take="${esc(p.id)}" ${p.ready ? "" : "disabled"}>Create Seller Sage PO</button>`}</td></tr>`; }).join("")
       || `<tr><td class="l dim" colspan="8">${S.spos.length ? "Nothing here." : "No Shopify POs yet — the sync reads them from Shopify hourly."}</td></tr>`}</tbody></table></div>
       ${list.length > P.shown ? `<div class="row"><button class="btn" data-ps="more">Show more</button><span class="muted small">${n0(P.shown)} of ${n0(list.length)}</span></div>` : ""}</section>`;
   }

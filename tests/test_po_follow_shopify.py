@@ -85,3 +85,46 @@ def test_older_po_comes_in_when_more_is_received(conn):
     assert ord_ is not None
     cur.execute("select o.status, l.qty_ordered, l.qty_received from jt.prep_orders o join jt.prep_order_lines l on l.order_id = o.id where o.id = %s", (ord_,))
     assert cur.fetchone() == ("partial", 100, 70)
+
+
+def _shop_po(cur, spo, name, lines):
+    cur.execute("set constraints all deferred")   # like the sync: the PO and its lines, then commit
+    cur.execute("""insert into jt.shopify_pos (id, name, status, supplier, created_at, lines, units, lines_synced)
+                   values (%s, %s, 'ORDERED', 'Wilson', now(), %s, %s, now())""", (spo, name, len(lines), sum(q for _, q in lines)))
+    for i, (vid, q) in enumerate(lines):
+        cur.execute("insert into jt.shopify_po_lines (po_id, line_id, variant_id, qty, cost) values (%s, %s, %s, %s, 10)", (spo, str(i), vid, q))
+    cur.execute("set constraints all immediate")
+
+
+def test_shopify_po_links_to_the_seller_sage_po_waiting_for_it(conn):
+    """Migration 131: a PO made in Seller Sage first is linked when its Shopify PO comes in — no second PO."""
+    import json
+    cur = conn.cursor()
+    cur.execute("insert into jt.app_users (user_id, email) values ('11111111-1111-1111-1111-111111111111', 'b@x.com') on conflict do nothing")
+    cur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"email": "b@x.com", "sub": "11111111-1111-1111-1111-111111111111"}),))
+    cur.execute("""insert into jt.variants (variant_id, product_id, inventory_item_id, sku, display_name, inventory_qty, vendor) values
+                   (41, 51, 941, 'R1', 'Racquet 1', 0, 'Wilson'), (42, 52, 942, 'R2', 'Racquet 2', 0, 'Wilson'), (43, 53, 943, 'R3', 'Racquet 3', 0, 'Wilson')""")
+    # Seller Sage PO 30 (from ordering ideas): R1 x6, R2 x4, to the Shopify store, no Shopify link yet
+    cur.execute("insert into jt.prep_orders (id, vendor, po_no, status, receive_into) values (30, 'Wilson', 'Oct racquets', 'ordered', 'shopify')")
+    cur.execute("insert into jt.prep_order_lines (order_id, variant_id, amazon_sku, dest, qty_ordered) values (30, 41, '', 'shopify', 6), (30, 42, '', 'shopify', 4)")
+    # the matching Shopify PO (one quantity differs — the Shopify check shows it)
+    _shop_po(cur, 901, '#PO1250', [(41, 6), (42, 5)])
+    cur.execute("select ss_order_id from jt.shopify_pos where id = 901")
+    assert cur.fetchone()[0] == 30
+    cur.execute("select count(*) from jt.prep_orders")
+    assert cur.fetchone()[0] == 1
+    cur.execute("select shopify_po_url like '%%/purchase_orders/901', shopify_check->>'name' from jt.prep_orders where id = 30")
+    assert cur.fetchone() == (True, "#PO1250")
+
+    # two waiting POs that look alike: suggested, nothing made
+    cur.execute("insert into jt.prep_orders (id, vendor, po_no, status, receive_into) values (31, 'Wilson', 'A', 'ordered', 'shopify'), (32, 'Wilson', 'B', 'ordered', 'shopify')")
+    cur.execute("insert into jt.prep_order_lines (order_id, variant_id, amazon_sku, dest, qty_ordered) values (31, 43, '', 'shopify', 2), (32, 43, '', 'shopify', 3)")
+    _shop_po(cur, 902, '#PO1251', [(43, 2)])
+    cur.execute("select ss_order_id, ss_suggest from jt.shopify_pos where id = 902")
+    assert cur.fetchone() == (None, [31, 32])
+    # "Not this one" on 31, then Link on 32
+    cur.execute("select public.jt_po_shopify_link(%s::jsonb)", (json.dumps({"order_id": 31, "shopify_po_id": 902, "action": "reject"}),))
+    cur.execute("select ss_order_id, ss_suggest, ss_rejected from jt.shopify_pos where id = 902")
+    assert cur.fetchone() == (32, [], [31])   # only 32 left and it matches exactly: linked
+    cur.execute("select count(*) from jt.prep_orders")
+    assert cur.fetchone()[0] == 3
