@@ -69,3 +69,24 @@ def test_bill_methods_and_cards(conn):
     cur.execute("select public.fin_card_terms_set(%s::jsonb)", (json.dumps({"account_id": "10", "close_day": None}),))
     cur.execute("select close_day from fin.v_cards where account_id = '10'")
     assert cur.fetchone()[0] is None
+
+
+def test_bill_submitted(conn):
+    """Payables › Payment submitted (migration 133): mark, re-mark, clear; only finance users."""
+    cur = conn.cursor()
+    cur.execute("insert into fin.users (user_id, email) values (%s, 'b@x.com') on conflict do nothing", (U,))
+    cur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": U, "email": "b@x.com"}),))
+    cur.execute("select public.fin_bill_submitted_set(%s::jsonb)", (json.dumps({"bill_ids": ["b1", "b2"], "note": "check 1043"}),))
+    assert cur.fetchone()[0] == 2
+    cur.execute("select bill_id, note, submitted_by, submitted_on = (now() at time zone 'America/Los_Angeles')::date from fin.bill_submitted order by 1")
+    assert cur.fetchall() == [("b1", "check 1043", "b@x.com", True), ("b2", "check 1043", "b@x.com", True)]
+    cur.execute("select public.fin_bill_submitted_set(%s::jsonb)", (json.dumps({"bill_ids": ["b2"], "submitted_on": "2026-10-01", "note": "ACH"}),))
+    cur.execute("select submitted_on::text, note from fin.bill_submitted where bill_id = 'b2'")
+    assert cur.fetchone() == ("2026-10-01", "ACH")
+    cur.execute("select public.fin_bill_submitted_set(%s::jsonb)", (json.dumps({"bill_ids": ["b1"], "clear": True}),))
+    assert cur.fetchone()[0] == 1
+    cur.execute("select array_agg(bill_id) from fin.bill_submitted")
+    assert cur.fetchone()[0] == ["b2"]
+    cur.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": "22222222-2222-2222-2222-222222222222"}),))
+    with pytest.raises(Exception, match="not allowed"):
+        cur.execute("select public.fin_bill_submitted_set(%s::jsonb)", (json.dumps({"bill_ids": ["b3"]}),))

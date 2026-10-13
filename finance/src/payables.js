@@ -14,13 +14,13 @@
   const QBO = "https://qbo.intuit.com/app";
   const AGING = [["current", "Current", "var(--green2)"], ["1-30", "1–30 days", "var(--amber)"], ["31-60", "31–60", "#C9762F"], ["61-90", "61–90", "#B9573A"], ["90+", "90+", "var(--red)"]];
 
-  const S = { bills: [], pays: [], vendors: [], credits: [], plan: new Map(), accts: [], busy: false, sync: null, view: "open", q: "", vendor: "", filter: null, sort: { open: ["due_date", 1], all: ["txn_date", -1], vendors: ["open", -1], payments: ["txn_date", -1] },
+  const S = { bills: [], pays: [], vendors: [], credits: [], plan: new Map(), accts: [], subm: new Map(), busy: false, sync: null, view: "open", q: "", vendor: "", filter: null, sort: { open: ["due_date", 1], all: ["txn_date", -1], vendors: ["open", -1], payments: ["txn_date", -1] },
     open: new Set(), loading: false, err: null, shown: 200 };
 
   async function load(refresh) {
     S.loading = true; render();
     try {
-      const [b, p, v, c, s, pl, ac] = await Promise.all([
+      const [b, p, v, c, s, pl, ac, sb] = await Promise.all([
         FIN.sql("select id, vendor_id, vendor_name, doc_number, txn_date, due_date, total, balance, memo, lines, status, days_overdue, aging, invoice_id, po_no, po_id from fin.v_bills where balance <> 0 or txn_date >= current_date - 400", refresh),
         FIN.sql("select id, vendor_id, vendor_name, doc_number, txn_date, total, pay_type, account, bills from fin.qbo_bill_payments where txn_date >= current_date - 400", refresh),
         FIN.sql("select id, name, active, balance, terms from fin.qbo_vendors", refresh),
@@ -28,7 +28,10 @@
         FIN.sql("select value, updated_at from fin.sync_state where key = 'qbo_payables'", refresh),
         FIN.sql("select bill_id, account_id, account_name, account_type, pay_on, cash_on, card_needs_terms from fin.v_bill_plan", refresh).catch(() => []),
         FIN.sql("select a.id, a.name, a.type, a.subtype, c.close_day is not null as has_terms from fin.qbo_accounts a left join fin.card_terms c on c.account_id = a.id where a.active and (a.type = 'Credit Card' or (a.type = 'Bank' and a.subtype in ('Checking', 'Savings', 'MoneyMarket'))) order by a.type desc, a.name", refresh).catch(() => []),
+        // payments sent but not paid in QuickBooks yet (migration 133)
+        FIN.sql("select bill_id, submitted_on::text as submitted_on, note, submitted_by from fin.bill_submitted", refresh).catch(() => []),
       ]);
+      S.subm = new Map(sb.map(x => [x.bill_id, x]));
       S.plan = new Map(pl.map(x => [x.bill_id, x])); S.accts = ac;
       for (const x of b) { x.total = +x.total; x.balance = +x.balance; }
       for (const x of p) x.total = +x.total;
@@ -75,6 +78,7 @@
     if (f.type === "due") return b.balance !== 0 && b.due_date && b.due_date >= t && dnum(b.due_date) - dnum(t) < f.days;
     if (f.type === "aging") return b.balance !== 0 && b.aging === f.key;
     if (f.type === "method") return b.balance !== 0 && methodOf(b) === f.key;
+    if (f.type === "submitted") return !!submOf(b) === f.key;
     if (f.type === "week") {
       if (b.balance === 0) return false;
       if (f.key === "over") return b.due_date && b.due_date < t;
@@ -84,6 +88,8 @@
     return true;
   }
   // ---------- payment method ("Pays with")
+  // "Payment submitted": sent, not paid in QuickBooks yet (drops off once the bill is paid there)
+  const submOf = (b) => b.balance !== 0 ? S.subm.get(b.id) || null : null;
   const methodOf = (b) => (S.plan.get(b.id) || {}).account_id || "";
   const acctName = (id) => (S.accts.find(a => a.id === id) || {}).name || ([...S.plan.values()].find(p => p.account_id === id) || {}).account_name || "";
   function methodOptions(sel, blank) {
@@ -188,8 +194,9 @@
         const det = S.open.has(b.id) ? `<tr class="detail"><td colspan="8"><div class="det"><div><h3>Lines</h3><table>${(b.lines || []).map(l => `<tr><td>${esc(l.account)}</td><td class="m">${esc(l.description)}</td><td class="n">${m2(l.amount)}</td></tr>`).join("") || '<tr><td class="m">No lines</td></tr>'}</table>
             ${b.memo ? `<p class="m">${esc(b.memo)}</p>` : ""}</div>
             <div><h3>Payments</h3>${paid.length ? `<table>${paid.map(p => `<tr><td>${fmtD(p.txn_date, 1)}</td><td class="m">${esc(p.account || p.pay_type)}</td><td class="n">${m2(p.amount)}</td></tr>`).join("")}</table>` : '<p class="m">None yet</p>'}
+            ${b.balance ? submBox(b) : ""}
             <p><a href="${QBO}/bill?txnId=${encodeURIComponent(b.id)}" target="_blank" rel="noopener">Open in QuickBooks ↗</a>${b.po_no || b.po_id ? ` · from Seller Sage PO ${esc(b.po_no || "#" + b.po_id)}` : ""}</p></div></div></td></tr>` : "";
-        return `<tr class="row" data-bill="${esc(b.id)}"><td><b>${esc(b.vendor_name)}</b></td><td>${esc(b.doc_number || "—")}${b.po_no ? `<div class="m">PO ${esc(b.po_no)}</div>` : ""}</td><td>${fmtD(b.txn_date, 1)}</td><td>${fmtD(b.due_date, 1)}</td><td><span class="pill ${cls}">${esc(lab)}</span></td><td>${payCell(b)}</td><td class="n">${m2(b.total)}</td><td class="n"><b>${b.balance ? m2(b.balance) : "—"}</b></td></tr>${det}`;
+        return `<tr class="row" data-bill="${esc(b.id)}"><td><b>${esc(b.vendor_name)}</b></td><td>${esc(b.doc_number || "—")}${b.po_no ? `<div class="m">PO ${esc(b.po_no)}</div>` : ""}</td><td>${fmtD(b.txn_date, 1)}</td><td>${fmtD(b.due_date, 1)}</td><td><span class="pill ${cls}">${esc(lab)}</span>${submOf(b) ? `<div><span class="pill subm" title="${esc((submOf(b).note ? submOf(b).note + " · " : "") + (submOf(b).submitted_by || ""))}">Submitted ${fmtD(submOf(b).submitted_on)}</span></div>` : ""}</td><td>${payCell(b)}</td><td class="n">${m2(b.total)}</td><td class="n"><b>${b.balance ? m2(b.balance) : "—"}</b></td></tr>${det}`;
       }).join("");
       const sb = rows.reduce((a, b) => a + b.balance, 0);
       total = `${rows.length.toLocaleString()} bill${rows.length === 1 ? "" : "s"} · ${m2(sb)} open`;
@@ -214,12 +221,27 @@
     if (pl.account_type === "Credit Card") sub = pl.card_needs_terms ? `<div class="m">set this card's due day on Cash flow</div>` : `<div class="m">card paid ${fmtD(pl.cash_on)}</div>`;
     return `<select class="ap-pm ${id ? "" : "unset"}" data-pm="${esc(b.id)}" aria-label="Pays with" ${S.busy ? "disabled" : ""}>${methodOptions(id)}</select>${sub}`;
   }
+  function submBox(b) {
+    const x = submOf(b);
+    if (x) return `<p class="ap-subm"><span class="pill subm">Payment submitted ${fmtD(x.submitted_on, 1)}</span>${x.note ? ` <span class="m">${esc(x.note)}</span>` : ""} <button class="link" type="button" data-subm-clear="${esc(b.id)}" ${S.busy ? "disabled" : ""}>Not submitted</button></p>`;
+    return `<form class="ap-subm" data-subm="${esc(b.id)}"><b>Payment submitted</b> <input name="day" type="date" value="${today()}" aria-label="Submitted on"> <input name="note" placeholder="check #, ACH, card…" aria-label="Note"> <button class="btn small" type="submit" ${S.busy ? "disabled" : ""}>Mark submitted</button></form>`;
+  }
+  async function setSubmitted(ids, body, msg) {
+    S.busy = true; table();
+    try { const n = await FIN.write("fin_bill_submitted_set", { p: { bill_ids: ids, ...body } }); note("", msg.replace("{n}", n)); }
+    catch (e) { note("bad", "Couldn't save: " + esc(e.message || e)); }
+    S.busy = false;
+    const sb = await FIN.sql("select bill_id, submitted_on::text as submitted_on, note, submitted_by from fin.bill_submitted", true).catch(() => null);
+    if (sb) S.subm = new Map(sb.map(x => [x.bill_id, x]));
+    render();
+  }
   function methodStrip() {
     const el = $("ap-methods"); if (!el) return;
     if (S.view !== "open" && S.view !== "all") { el.innerHTML = ""; return; }
     const ms = byMethod(), shownOpen = rowsForView().filter(b => b.balance !== 0);
-    el.innerHTML = `<div class="ap-ms">${ms.map(x => `<button type="button" class="ap-m ${x.k ? "" : "unset"} ${S.filter && S.filter.type === "method" && S.filter.key === x.k ? "on" : ""}" data-f='${esc(JSON.stringify({ type: "method", key: x.k, label: "Pays with: " + x.name }))}'><span>${esc(x.name)}</span><b>${short(x.amt)}</b><small>${x.n} bill${x.n === 1 ? "" : "s"}</small></button>`).join("")}</div>
-      ${shownOpen.length ? `<form class="ap-bulk"><span>Set ${shownOpen.length === open().length ? "all" : "the"} ${shownOpen.length} open bill${shownOpen.length === 1 ? "" : "s"} shown to</span><select name="acct" aria-label="Pays with">${methodOptions("", "Not set (clear)")}</select><button class="btn small" type="submit" ${S.busy ? "disabled" : ""}>Apply</button></form>` : ""}`;
+    const sub = open().filter(b => submOf(b)), subAmt = sub.reduce((a, b) => a + b.balance, 0);
+    el.innerHTML = `<div class="ap-ms">${sub.length ? `<button type="button" class="ap-m subm ${S.filter && S.filter.type === "submitted" ? "on" : ""}" data-f='${esc(JSON.stringify({ type: "submitted", key: true, label: "Payment submitted" }))}'><span>Payment submitted</span><b>${short(subAmt)}</b><small>${sub.length} bill${sub.length === 1 ? "" : "s"}</small></button>` : ""}${ms.map(x => `<button type="button" class="ap-m ${x.k ? "" : "unset"} ${S.filter && S.filter.type === "method" && S.filter.key === x.k ? "on" : ""}" data-f='${esc(JSON.stringify({ type: "method", key: x.k, label: "Pays with: " + x.name }))}'><span>${esc(x.name)}</span><b>${short(x.amt)}</b><small>${x.n} bill${x.n === 1 ? "" : "s"}</small></button>`).join("")}</div>
+      ${shownOpen.length ? `<form class="ap-bulk"><span>Set ${shownOpen.length === open().length ? "all" : "the"} ${shownOpen.length} open bill${shownOpen.length === 1 ? "" : "s"} shown to</span><select name="acct" aria-label="Pays with">${methodOptions("", "Not set (clear)")}</select><button class="btn small" type="submit" ${S.busy ? "disabled" : ""}>Apply</button><span>·</span><button class="btn small" type="button" data-subm-all ${S.busy ? "disabled" : ""} title="Mark every open bill shown as payment submitted today">Mark payment submitted</button></form>` : ""}`;
   }
   async function setMethod(ids, acct, msg) {
     S.busy = true; table();
@@ -237,7 +259,7 @@
     let lines;
     if (S.view === "vendors") lines = [["vendor", "open_bills", "open_balance", "overdue", "next_due", "paid_12_months", "avg_days_to_pay", "paid_on_time_pct", "terms"], ...rows.map(v => [v.name, v.openN, v.open.toFixed(2), v.over.toFixed(2), v.next || "", v.paid12.toFixed(2), v.avgDays == null ? "" : Math.round(v.avgDays), v.onTimePct == null ? "" : Math.round(v.onTimePct * 100), v.terms])];
     else if (S.view === "payments") lines = [["date", "vendor", "paid_from", "method", "amount", "qbo_id"], ...rows.map(p => [p.txn_date, p.vendor_name, p.account, p.pay_type, p.total.toFixed(2), p.id])];
-    else lines = [["vendor", "bill_no", "bill_date", "due_date", "status", "pays_with", "cash_out", "amount", "open", "days_overdue", "po", "qbo_id"], ...rows.map(b => { const pl = S.plan.get(b.id) || {}; return [b.vendor_name, b.doc_number, b.txn_date, b.due_date, dueClass(b)[1], b.balance ? pl.account_name || "" : "", b.balance ? pl.cash_on || "" : "", b.total.toFixed(2), b.balance.toFixed(2), b.days_overdue || 0, b.po_no || "", b.id]; })];
+    else lines = [["vendor", "bill_no", "bill_date", "due_date", "status", "submitted_on", "pays_with", "cash_out", "amount", "open", "days_overdue", "po", "qbo_id"], ...rows.map(b => { const pl = S.plan.get(b.id) || {}; return [b.vendor_name, b.doc_number, b.txn_date, b.due_date, dueClass(b)[1], (submOf(b) || {}).submitted_on || "", b.balance ? pl.account_name || "" : "", b.balance ? pl.cash_on || "" : "", b.total.toFixed(2), b.balance.toFixed(2), b.days_overdue || 0, b.po_no || "", b.id]; })];
     FIN.download(`payables-${S.view}-${today()}.csv`, lines.map(r => r.map(q).join(",")).join("\n"));
   }
 
@@ -261,6 +283,8 @@
       if (ev.target.closest("[data-clear]")) { S.filter = null; render(); return; }
       const h = ev.target.closest("th[data-sort]");
       if (h) { const k = h.dataset.sort, cur = S.sort[S.view]; S.sort[S.view] = cur[0] === k ? [k, -cur[1]] : [k, /date|name|doc|terms|account|pay_type|next/.test(k) ? 1 : -1]; table(); return; }
+      const sc = ev.target.closest("[data-subm-clear]"); if (sc) { setSubmitted([sc.dataset.submClear], { clear: true }, "Cleared — not submitted."); return; }
+      if (ev.target.closest("[data-subm-all]")) { const ids = rowsForView().filter(b => b.balance !== 0).map(b => b.id); if (ids.length) setSubmitted(ids, { submitted_on: today() }, `{n} bill${ids.length === 1 ? "" : "s"} marked payment submitted.`); return; }
       if (ev.target.closest("a, select, form")) return;
       const r = ev.target.closest("tr[data-bill]");
       if (r) { const id = r.dataset.bill; S.open.has(id) ? S.open.delete(id) : S.open.add(id); table(); return; }
@@ -274,6 +298,8 @@
       setMethod([s.dataset.pm], s.value, s.value ? `${esc(b ? b.vendor_name : "Bill")} ${b && b.doc_number ? "#" + esc(b.doc_number) + " " : ""}will be paid with ${esc(acctName(s.value))}.` : "Payment method cleared.");
     });
     main.addEventListener("submit", (ev) => {
+      const sf = ev.target.closest("form.ap-subm[data-subm]");
+      if (sf) { ev.preventDefault(); setSubmitted([sf.dataset.subm], { submitted_on: sf.day.value || today(), note: sf.note.value.trim() }, "Marked payment submitted."); return; }
       const f = ev.target.closest("form.ap-bulk"); if (!f) return;
       ev.preventDefault();
       const ids = rowsForView().filter(b => b.balance !== 0).map(b => b.id), acct = f.acct.value;

@@ -325,3 +325,8 @@ select.ap-pm.unset{color:var(--muted)}
 form.cf-terms{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px;color:var(--ink2)}
 form.cf-terms input.day{width:58px;font:13px var(--sans);padding:4px 6px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink)}
 .cf-cardplan{margin-top:6px}
+/* Payables · payment submitted */
+.pill.subm{background:rgba(59,110,165,.13);color:#2F5F93}
+.ap-m.subm{border-color:#3B6EA5}
+.ap-subm{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:8px 0;font-size:13px}
+.ap-subm input{font:13px var(--sans);padding:4px 6px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink)}
