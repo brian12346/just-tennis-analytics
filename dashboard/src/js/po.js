@@ -405,7 +405,7 @@
       const x = h[0], ed = blankEd();
       ed.noShop = !!x[x.length - 1];
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
-        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
+        stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopUrl0: x[12] || "", shopCheck0: JSON.stringify(x[14] || null), shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
@@ -1402,10 +1402,13 @@
           dest: l ? l.dest : "prep", amazon_sku: l && l.dest === "prep" ? l.asku || "" : "", account: r.account || "inventory" }; }) }));
     const remember = [];
     for (const iv of ed.invoices) for (const r of iv.rows) if (r.src.item_code && r.vid && isSure(r) && r.how !== "sku" && r.how !== "po") remember.push({ item_code: r.src.item_code, variant_id: Number(r.vid) });
-    return { order: { id: ed.id ? Number(ed.id) : null, vendor: ed.vendor.trim(), po_no: ed.po.trim(), kind: ed.kind, place_by: ed.placeBy || "", expected_on: ed.expected || "", note: ed.note, short_ok: !!ed.shortOk, shopify_po_url: shopUrl(ed.shopifyUrl), no_shopify_po: !!ed.noShop, receive_into: ed.dest === "both" ? "both" : ed.dest,
-      shopify_check: ed.shopCheck ? { ...ed.shopCheck, lines: ed.shopCheck.lines.map(({ alts, ...x }) => x), diffs: shopDiffs(ed).n } : null },
+    return { order: { id: ed.id ? Number(ed.id) : null, vendor: ed.vendor.trim(), po_no: ed.po.trim(), kind: ed.kind, place_by: ed.placeBy || "", expected_on: ed.expected || "", note: ed.note, short_ok: !!ed.shortOk, ...(shopLinkChanged(ed) ? { shopify_po_url: shopUrl(ed.shopifyUrl) } : {}), no_shopify_po: !!ed.noShop, receive_into: ed.dest === "both" ? "both" : ed.dest,
+      ...(shopLinkChanged(ed) || JSON.stringify(ed.shopCheck) !== ed.shopCheck0 ? { shopify_check: ed.shopCheck ? { ...ed.shopCheck, lines: ed.shopCheck.lines.map(({ alts, ...x }) => x), diffs: shopDiffs(ed).n } : null } : {}) },
       lines, invoices, remove_invoices: ed.removed.map(Number), remember };
   }
+  // the Shopify link and check are only sent when changed here, so a page opened before the sync linked a Shopify PO
+  // (or before someone else linked one) doesn't wipe the link when it's saved
+  function shopLinkChanged(ed) { return !ed.id || ed.shopUrl0 == null || shopUrl(ed.shopifyUrl) !== shopUrl(ed.shopUrl0); }
   function problems(ed) {
     const bad = ed.lines.find(l => l.qty !== "" && !(Number.isInteger(Number(l.qty)) && Number(l.qty) >= 0) || l.cost !== "" && !(Number(l.cost) >= 0));
     if (bad) return `Check the quantity and cost for ${esc((variant(bad.vid) || {}).title || "a product")} — quantities are whole numbers.`;
