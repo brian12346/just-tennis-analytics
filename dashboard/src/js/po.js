@@ -889,7 +889,10 @@
     const isOpen = (o) => o.status !== "complete";
     const needsShop = (o) => isOpen(o) && !o.shopifyUrl && !shopOffO(o);
     const inStage = (o, st) => st === "open" ? isOpen(o) : st === "noshop" ? needsShop(o) : st === "all" ? true : o.status === st;
-    const cnt = (st) => all.filter(o => inStage(o, st)).length;
+    // a PO linked to a Shopify PO lives on the Shopify POs view (Brian, Oct 13); a search still finds it here
+    const q = S.q.trim().toLowerCase().replace(/^#/, "");
+    const onShop = (o) => !!(o.shopifyUrl || "").trim(), ssAll = all.filter(o => !onShop(o)), nShop = all.length - ssAll.length;
+    const cnt = (st) => ssAll.filter(o => inStage(o, st)).length;
     $("po-stage").innerHTML = [["open", "Open"], ...STAGES, ["noshop", "Needs Shopify PO"], ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
     const vs = [...new Set(all.map(o => o.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const vsel = $("po-vendor"); const want = ["all", ...vs].join("|");
@@ -902,8 +905,7 @@
       { l: "Backordered", v: n0(all.reduce((a, o) => a + o.nBack, 0)), s: "products still to come on open POs" },
       { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice" : "nothing flagged" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
-    const q = S.q.trim().toLowerCase().replace(/^#/, "");
-    const list = all.filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
+    const list = (q ? all : ssAll).filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
     const t = $("po-table");
@@ -919,7 +921,7 @@
           <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null ? `<div class="meta">${m(o.invTotal)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
           <td class="l small">${dates}</td>
           <td class="l">${fl.map(f => `<span class="pill ${f[0] === "info" ? "pos" : "miss"}">${esc(f[1])}</span>`).join("")}</td></tr>`;
-      }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open purchase orders. Start one with New PO, then add the vendor's invoices to it." : "No purchase orders match."}</td></tr>`}</tbody>`;
+      }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open purchase orders. Start one with New PO, then add the vendor's invoices to it." : "No purchase orders match."}</td></tr>`}</tbody>${nShop && !q ? `<tfoot><tr><td class="l muted small" colspan="11">${n0(nShop)} PO${nShop === 1 ? " is" : "s are"} linked to a Shopify PO — ${nShop === 1 ? "it's" : "they're"} under <button class="linkbtn" data-lv-go="shop">Shopify POs</button>. A search here still finds ${nShop === 1 ? "it" : "them"}.</td></tr></tfoot>` : ""}`;
   }
 
   // ---------- rendering: editor ----------
@@ -1185,13 +1187,15 @@
     const t = invTot(iv), others = ed.invoices.length - 1;
     const poName = ed.id ? `${esc(ed.vendor || "Vendor")} · ${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}` : `New PO · ${esc(ed.vendor || "vendor")}${ed.po ? " " + esc(poLabel(ed.po)) : ""}`;
     const canMove = ed.id && iv.id && !iv.isNew && !ro && !(t.g > 0);
+    // name the PO right here when the invoice starts a new one (or its PO has no name yet); stays a field while typing
+    const nameIn = !ed.id || !ed.po || ed.nameIn; if (nameIn) ed.nameIn = true;
     box.innerHTML = `
       <div class="po-top">
         <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right"><button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
         <div class="po-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2></div>
         ${invStepsHtml(ed, iv)}
-        <div class="po-sum"><span>Purchase order <b>${poName}</b>${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
+        <div class="po-sum"><span>Purchase order ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b> <label class="po-name">PO name <input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off" style="width:180px"></label>` : `<b>${poName}</b>`}${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
           <span class="dbtns">${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ""}
@@ -1899,7 +1903,7 @@
         <td class="l">${esc(shortDate((p.created || "").slice(0, 10)))}</td>
         <td>${p.ready ? n0(p.lines) : '<span class="dim" title="The hourly sync hasn\'t read its lines yet">…</span>'}</td><td>${p.ready ? n0(p.units) : ""}</td><td>${p.total == null ? "—" : m(p.total)}</td>
         <td class="l">${recvPillSp(p)}</td>
-        <td class="l">${o ? `<button class="linkbtn" data-ps-open="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "#" + o.id)} →</button>`
+        <td class="l">${o ? `<button class="linkbtn" data-ps-open="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "#" + o.id)} →</button> <span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span>${listFlags(o).filter(f => f[0] !== "info").map(f => ` <span class="pill miss">${esc(f[1])}</span>`).join("")}`
           : p.suggest.length ? `<span class="small muted">Looks like </span>${p.suggest.map(id => { const x = (S.orders || []).find(q => String(q.id) === id); return `<button class="linkbtn" data-ps-open="${esc(id)}" title="Open it to link or say it isn't">${esc(x && x.po ? poLabel(x.po) : "#" + id)} →</button>`; }).join(" ")}`
           : `<button class="btn primary sm" data-ps-take="${esc(p.id)}" ${p.ready ? "" : "disabled"}>Create Seller Sage PO</button>`}</td></tr>`; }).join("")
       || `<tr><td class="l dim" colspan="8">${S.spos.length ? "Nothing here." : "No Shopify POs yet — the sync reads them from Shopify hourly."}</td></tr>`}</tbody></table></div>
@@ -2088,7 +2092,7 @@
     $("po-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderList, 150); });
     $("po-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; renderList(); });
     $("po-stage").addEventListener("click", (e) => { const b = e.target.closest("button[data-st]"); if (b) { S.stage = b.dataset.st; renderList(); } });
-    tab.addEventListener("click", (e) => { const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openPO(o.dataset.poOpen); } });
+    tab.addEventListener("click", (e) => { if (e.target.closest("[data-lv-go]")) { showShop(true); return; } const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openPO(o.dataset.poOpen); } });
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     // a PDF dropped anywhere on the tab
     const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
