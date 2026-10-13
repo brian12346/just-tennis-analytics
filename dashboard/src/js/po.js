@@ -1802,7 +1802,8 @@
     try {
       const r = await JT.rows(["finished_at::text", "ok", "detail"], `from jt.sync_runs where job = 'shopify_po_receipts' and started_at >= ${JT.q(y.since)}::timestamptz and finished_at is not null order by id desc limit 1`, true);
       if (r.length) {
-        await loadShopPos(true);
+        // the sync may have brought in or linked Seller Sage POs, and received on them: reload those too
+        await Promise.all([loadShopPos(true), loadOrders(true).catch(() => {})]);
         S.spSync = r[0][1] === true || r[0][1] === "true" || r[0][1] === "t" ? { state: "done", at: r[0][0] } : { state: "error", msg: "The sync ran into a problem: " + (r[0][2] || "unknown") };
         render(); return;
       }
