@@ -23,7 +23,7 @@
     try {
       const [dash, pl, ac, st] = await Promise.all([
         FIN.sql(`select to_char(date_trunc('month', day), 'YYYY-MM-DD') as month, channel, sum(net_sales) as net_sales, sum(cogs) as cogs, sum(profit) as profit, sum(ad_spend) as ad_spend
-                 from jt.v_sales_channels_daily where day >= '${START}' group by 1, 2`, refresh),
+                 from jt.mv_sales_channels_daily where day >= '${START}' group by 1, 2`, refresh),
         FIN.sql("select section, account_key, to_char(month, 'YYYY-MM-DD') as month, amount from fin.qbo_pl where amount <> 0", refresh),
         FIN.sql("select section, account_key, account, parent, total, months, include, grp, default_include, default_grp, rule_by from fin.pl_account_class", refresh),
         FIN.sql("select value, updated_at from fin.sync_state where key = 'qbo_pl'", refresh),

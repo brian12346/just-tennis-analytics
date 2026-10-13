@@ -2,7 +2,7 @@
   // ===================== Product sales: all sales in one place =====================
   // Just Tennis (Shopify), Ace n Rally (Shopify, costed at Just Tennis cost) and Amazon (US + MX, by order date,
   // after Amazon fees) side by side: totals, a channel table, sales by day and products across all three.
-  // Data: jt.v_sales_channels_daily and jt.v_sales_products_daily (migration 092). Cost watch sits below.
+  // Data: jt.mv_sales_channels_daily (stored copy of jt.v_sales_channels_daily, refreshed every 5 min, migration 139) and jt.v_sales_products_daily (migration 092). Cost watch sits below.
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
@@ -28,12 +28,13 @@
     const W = `where day between ${JT.day(P.start)} and ${JT.day(P.end)}`;
     try {
       const [days, prods] = await Promise.all([
-        JT.rows(["day::text", "channel", "orders", "units", "net_sales", "cogs", "gross_profit", "sales_no_cost", "ship_charged", "labels", "amz_fees", "fba_fees", "other_fees", "profit", "pay_fees", "ad_spend"],
-          `from jt.v_sales_channels_daily ${W} order by day`, refresh),
+        JT.rows(["day::text", "channel", "orders", "units", "net_sales", "cogs", "gross_profit", "sales_no_cost", "ship_charged", "labels", "amz_fees", "fba_fees", "other_fees", "profit", "pay_fees", "ad_spend", "as_of::text"],
+          `from jt.mv_sales_channels_daily ${W} order by day`, refresh),
         JT.rowsSplit(["coalesce(product_id::text, '')", "max(title)", "max(vendor)", "channel", "sum(units)", "sum(net_sales)", "sum(cogs)", "sum(gross_profit)", "sum(amz_fees)"],
           `from jt.v_sales_products_daily ${W} group by coalesce(product_id::text, title), coalesce(product_id::text, ''), channel`, "coalesce(product_id::text, title)", 2, refresh),
       ]);
       if (id !== P.reqId) return;
+      P.asOf = days.reduce((a, x) => x[16] && x[16] > a ? x[16] : a, "");
       P.days = days.map(x => ({ day: x[0], ch: x[1], orders: +x[2] || 0, units: +x[3] || 0, net: +x[4] || 0, cogs: +x[5] || 0, gp: +x[6] || 0, nocost: +x[7] || 0,
         shipIn: +x[8] || 0, labels: +x[9] || 0, refFees: +x[10] || 0, fbaFees: +x[11] || 0, other: +x[12] || 0, profit: +x[13] || 0, payFees: +x[14] || 0, ads: +x[15] || 0 }));
       const pm = new Map();
@@ -153,7 +154,7 @@
     if (P.err) { st.textContent = ""; note.hidden = false; note.innerHTML = `<div class="note bad">${esc(window.JT.message(P.err))}</div>`; return; }
     note.hidden = true;
     if (!P.days) { st.textContent = "Loading sales…"; return; }
-    st.textContent = `${window.JTRange.label(P.start, P.end)} · Amazon by order date, after Amazon fees (unshipped orders estimated) · Ace n Rally at Just Tennis cost${P.loading ? " · refreshing…" : ""}`;
+    st.textContent = `${window.JTRange.label(P.start, P.end)} · Amazon by order date, after Amazon fees (unshipped orders estimated) · Ace n Rally at Just Tennis cost${P.asOf ? ` · totals as of ${(() => { const d = window.JTDate.parseTime(P.asOf); return isNaN(d) ? "" : d.toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit" }); })()} (updated every 5 min)` : ""}${P.loading ? " · refreshing…" : ""}`;
     const T = totals();
     renderKpis(T); renderChannels(T); renderChart(); renderDays(); renderProducts();
   }
