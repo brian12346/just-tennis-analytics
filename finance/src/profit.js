@@ -1,4 +1,4 @@
-// Profit page: overall profit by month since Jan 2025 = the sales dashboard's profit (net sales − cost of goods −
+// Profit page: overall profit by month since Oct 2024 = the sales dashboard's profit (net sales − cost of goods −
 // shipping labels − Amazon and payment fees, all channels; any ad spend it already took off is added back) − the costs
 // Brian picks. The statement shows income before cost of goods, with cost of goods as the first cost. Costs are QuickBooks accounts by month (fin.qbo_pl, refreshed daily); only payroll (the "Payroll expenses"
 // accounts: wages and payroll taxes) is counted to start. Other accounts are switched on, or grouped, under "Add a cost"
@@ -11,7 +11,7 @@
   const pct = (a, b) => { if (!b) return "—"; const v = (a / b * 100).toFixed(1); return (v === "-0.0" ? "0.0" : v.replace("-", "−")) + "%"; };
   const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
   const mLabel = (m, long) => new Date(m + "T12:00:00Z").toLocaleDateString("en-US", { month: long ? "long" : "short", year: "numeric", timeZone: "UTC" });
-  const START = "2025-01-01";
+  const START = "2024-10-01";   // history starts Oct 1, 2024 (Shopify, Amazon and the QuickBooks P&L, Oct 13)
   const OUT = "— Not counted";
   const GROUP_ORDER = ["Payroll", "Staff costs", "Rent & facilities", "Advertising", "Software & subscriptions", "Meals & travel", "Insurance", "Bank fees & interest", "Professional fees", "Taxes", "Other expenses", "Other income"];
   const SEC = { Income: "Income", COGS: "Cost of goods sold", Expenses: "Expenses", OtherIncome: "Other income", OtherExpenses: "Other expenses" };
@@ -76,7 +76,7 @@
   function render() {
     if (S.err) { note("bad", "Couldn't load: " + esc(S.err.message || S.err)); }
     const sub = $("pf-sub");
-    if (S.loading && !S.loaded) { sub.textContent = "Loading… (adding up sales since January 2025 takes a few seconds)"; return; }
+    if (S.loading && !S.loaded) { sub.textContent = "Loading… (adding up sales since October 2024 takes a few seconds)"; return; }
     if (!S.loaded) return;
     const at = S.sync?.updated_at ? new Date(S.sync.updated_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
     sub.textContent = at ? `Costs from QuickBooks as of ${at} · updates every morning` : "QuickBooks costs not loaded yet — use Refresh from QuickBooks";
@@ -198,7 +198,7 @@
         <td><select data-acct="${esc(a.section + "|" + a.account_key)}" ${S.busy ? "disabled" : ""}>${opts(a)}</select></td>
         <td>${changed ? `<span class="m">changed${a.rule_by ? " by " + esc(a.rule_by) : ""}</span> <button class="link" type="button" data-reset="${esc(a.account_key)}">undo</button>` : ""}</td></tr>`;
     };
-    const head = `<thead><tr><th>QuickBooks account</th><th class="n">Since Jan 2025</th><th>Counted as</th><th></th></tr></thead>`;
+    const head = `<thead><tr><th>QuickBooks account</th><th class="n">Since Oct 2024</th><th>Counted as</th><th></th></tr></thead>`;
     const on = S.accts.filter(a => a.include).sort((a, b) => a.grp.localeCompare(b.grp) || b.total - a.total);
     $("pf-costs").innerHTML = on.length ? `<table>${head}<tbody>${on.map(row).join("")}</tbody></table>` : `<div class="empty">${S.accts.length ? "No costs counted — add one below." : "No QuickBooks data yet — use Refresh from QuickBooks."}</div>`;
     const rest = S.accts.filter(a => !a.include && Math.abs(a.total) >= 0.5 && (!q || (a.account + " " + a.parent).toLowerCase().includes(q)))
@@ -221,7 +221,7 @@
   async function refresh() {
     const b = $("pf-refresh"); b.disabled = true; b.textContent = "Refreshing…";
     try {
-      const r = await FIN.fn("qbo", { action: "pl_sync" });
+      const r = await FIN.fn("qbo", { action: "pl_sync", start: START });
       if (!r || r.ok === false) throw new Error((r && r.error) || "QuickBooks didn't answer");
       note("", `Updated from QuickBooks: ${r.months} months.`);
     } catch (e) { note("bad", "Couldn't refresh from QuickBooks: " + esc(e.message || e)); }
