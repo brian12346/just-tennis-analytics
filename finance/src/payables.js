@@ -194,9 +194,8 @@
         const det = S.open.has(b.id) ? `<tr class="detail"><td colspan="8"><div class="det"><div><h3>Lines</h3><table>${(b.lines || []).map(l => `<tr><td>${esc(l.account)}</td><td class="m">${esc(l.description)}</td><td class="n">${m2(l.amount)}</td></tr>`).join("") || '<tr><td class="m">No lines</td></tr>'}</table>
             ${b.memo ? `<p class="m">${esc(b.memo)}</p>` : ""}</div>
             <div><h3>Payments</h3>${paid.length ? `<table>${paid.map(p => `<tr><td>${fmtD(p.txn_date, 1)}</td><td class="m">${esc(p.account || p.pay_type)}</td><td class="n">${m2(p.amount)}</td></tr>`).join("")}</table>` : '<p class="m">None yet</p>'}
-            ${b.balance ? submBox(b) : ""}
             <p><a href="${QBO}/bill?txnId=${encodeURIComponent(b.id)}" target="_blank" rel="noopener">Open in QuickBooks ↗</a>${b.po_no || b.po_id ? ` · from Seller Sage PO ${esc(b.po_no || "#" + b.po_id)}` : ""}</p></div></div></td></tr>` : "";
-        return `<tr class="row" data-bill="${esc(b.id)}"><td><b>${esc(b.vendor_name)}</b></td><td>${esc(b.doc_number || "—")}${b.po_no ? `<div class="m">PO ${esc(b.po_no)}</div>` : ""}</td><td>${fmtD(b.txn_date, 1)}</td><td>${fmtD(b.due_date, 1)}</td><td><span class="pill ${cls}">${esc(lab)}</span>${submOf(b) ? `<div><span class="pill subm" title="${esc((submOf(b).note ? submOf(b).note + " · " : "") + (submOf(b).submitted_by || ""))}">Submitted ${fmtD(submOf(b).submitted_on)}</span></div>` : ""}</td><td>${payCell(b)}</td><td class="n">${m2(b.total)}</td><td class="n"><b>${b.balance ? m2(b.balance) : "—"}</b></td></tr>${det}`;
+        return `<tr class="row" data-bill="${esc(b.id)}"><td><b>${esc(b.vendor_name)}</b></td><td>${esc(b.doc_number || "—")}${b.po_no ? `<div class="m">PO ${esc(b.po_no)}</div>` : ""}</td><td>${fmtD(b.txn_date, 1)}</td><td>${fmtD(b.due_date, 1)}</td><td><span class="pill ${cls}">${esc(lab)}</span>${b.balance ? submBtn(b) : ""}</td><td>${payCell(b)}</td><td class="n">${m2(b.total)}</td><td class="n"><b>${b.balance ? m2(b.balance) : "—"}</b></td></tr>${det}`;
       }).join("");
       const sb = rows.reduce((a, b) => a + b.balance, 0);
       total = `${rows.length.toLocaleString()} bill${rows.length === 1 ? "" : "s"} · ${m2(sb)} open`;
@@ -221,10 +220,11 @@
     if (pl.account_type === "Credit Card") sub = pl.card_needs_terms ? `<div class="m">set this card's due day on Cash flow</div>` : `<div class="m">card paid ${fmtD(pl.cash_on)}</div>`;
     return `<select class="ap-pm ${id ? "" : "unset"}" data-pm="${esc(b.id)}" aria-label="Pays with" ${S.busy ? "disabled" : ""}>${methodOptions(id)}</select>${sub}`;
   }
-  function submBox(b) {
+  // one button: "Submitted" marks it today; once marked it shows the date, click again to undo
+  function submBtn(b) {
     const x = submOf(b);
-    if (x) return `<p class="ap-subm"><span class="pill subm">Payment submitted ${fmtD(x.submitted_on, 1)}</span>${x.note ? ` <span class="m">${esc(x.note)}</span>` : ""} <button class="link" type="button" data-subm-clear="${esc(b.id)}" ${S.busy ? "disabled" : ""}>Not submitted</button></p>`;
-    return `<form class="ap-subm" data-subm="${esc(b.id)}"><b>Payment submitted</b> <input name="day" type="date" value="${today()}" aria-label="Submitted on"> <input name="note" placeholder="check #, ACH, card…" aria-label="Note"> <button class="btn small" type="submit" ${S.busy ? "disabled" : ""}>Mark submitted</button></form>`;
+    return x ? `<div><button type="button" class="pill subm sb" data-subm-clear="${esc(b.id)}" ${S.busy ? "disabled" : ""} title="Payment submitted${x.submitted_by ? " by " + esc(x.submitted_by) : ""} — click to undo">Submitted ${fmtD(x.submitted_on)}</button></div>`
+             : `<div><button type="button" class="sb-add" data-subm-add="${esc(b.id)}" ${S.busy ? "disabled" : ""} title="I've sent this payment">Submitted?</button></div>`;
   }
   async function setSubmitted(ids, body, msg) {
     S.busy = true; table();
@@ -241,7 +241,7 @@
     const ms = byMethod(), shownOpen = rowsForView().filter(b => b.balance !== 0);
     const sub = open().filter(b => submOf(b)), subAmt = sub.reduce((a, b) => a + b.balance, 0);
     el.innerHTML = `<div class="ap-ms">${sub.length ? `<button type="button" class="ap-m subm ${S.filter && S.filter.type === "submitted" ? "on" : ""}" data-f='${esc(JSON.stringify({ type: "submitted", key: true, label: "Payment submitted" }))}'><span>Payment submitted</span><b>${short(subAmt)}</b><small>${sub.length} bill${sub.length === 1 ? "" : "s"}</small></button>` : ""}${ms.map(x => `<button type="button" class="ap-m ${x.k ? "" : "unset"} ${S.filter && S.filter.type === "method" && S.filter.key === x.k ? "on" : ""}" data-f='${esc(JSON.stringify({ type: "method", key: x.k, label: "Pays with: " + x.name }))}'><span>${esc(x.name)}</span><b>${short(x.amt)}</b><small>${x.n} bill${x.n === 1 ? "" : "s"}</small></button>`).join("")}</div>
-      ${shownOpen.length ? `<form class="ap-bulk"><span>Set ${shownOpen.length === open().length ? "all" : "the"} ${shownOpen.length} open bill${shownOpen.length === 1 ? "" : "s"} shown to</span><select name="acct" aria-label="Pays with">${methodOptions("", "Not set (clear)")}</select><button class="btn small" type="submit" ${S.busy ? "disabled" : ""}>Apply</button><span>·</span><button class="btn small" type="button" data-subm-all ${S.busy ? "disabled" : ""} title="Mark every open bill shown as payment submitted today">Mark payment submitted</button></form>` : ""}`;
+      ${shownOpen.length ? `<form class="ap-bulk"><span>Set ${shownOpen.length === open().length ? "all" : "the"} ${shownOpen.length} open bill${shownOpen.length === 1 ? "" : "s"} shown to</span><select name="acct" aria-label="Pays with">${methodOptions("", "Not set (clear)")}</select><button class="btn small" type="submit" ${S.busy ? "disabled" : ""}>Apply</button></form>` : ""}`;
   }
   async function setMethod(ids, acct, msg) {
     S.busy = true; table();
@@ -283,8 +283,8 @@
       if (ev.target.closest("[data-clear]")) { S.filter = null; render(); return; }
       const h = ev.target.closest("th[data-sort]");
       if (h) { const k = h.dataset.sort, cur = S.sort[S.view]; S.sort[S.view] = cur[0] === k ? [k, -cur[1]] : [k, /date|name|doc|terms|account|pay_type|next/.test(k) ? 1 : -1]; table(); return; }
-      const sc = ev.target.closest("[data-subm-clear]"); if (sc) { setSubmitted([sc.dataset.submClear], { clear: true }, "Cleared — not submitted."); return; }
-      if (ev.target.closest("[data-subm-all]")) { const ids = rowsForView().filter(b => b.balance !== 0).map(b => b.id); if (ids.length) setSubmitted(ids, { submitted_on: today() }, `{n} bill${ids.length === 1 ? "" : "s"} marked payment submitted.`); return; }
+      const sc = ev.target.closest("[data-subm-clear]"); if (sc) { setSubmitted([sc.dataset.submClear], { clear: true }, "Undone — not submitted."); return; }
+      const sa = ev.target.closest("[data-subm-add]"); if (sa) { setSubmitted([sa.dataset.submAdd], { submitted_on: today() }, "Marked payment submitted."); return; }
       if (ev.target.closest("a, select, form")) return;
       const r = ev.target.closest("tr[data-bill]");
       if (r) { const id = r.dataset.bill; S.open.has(id) ? S.open.delete(id) : S.open.add(id); table(); return; }
@@ -298,8 +298,6 @@
       setMethod([s.dataset.pm], s.value, s.value ? `${esc(b ? b.vendor_name : "Bill")} ${b && b.doc_number ? "#" + esc(b.doc_number) + " " : ""}will be paid with ${esc(acctName(s.value))}.` : "Payment method cleared.");
     });
     main.addEventListener("submit", (ev) => {
-      const sf = ev.target.closest("form.ap-subm[data-subm]");
-      if (sf) { ev.preventDefault(); setSubmitted([sf.dataset.subm], { submitted_on: sf.day.value || today(), note: sf.note.value.trim() }, "Marked payment submitted."); return; }
       const f = ev.target.closest("form.ap-bulk"); if (!f) return;
       ev.preventDefault();
       const ids = rowsForView().filter(b => b.balance !== 0).map(b => b.id), acct = f.acct.value;

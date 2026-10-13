@@ -328,5 +328,7 @@ form.cf-terms input.day{width:58px;font:13px var(--sans);padding:4px 6px;border:
 /* Payables · payment submitted */
 .pill.subm{background:rgba(59,110,165,.13);color:#2F5F93}
 .ap-m.subm{border-color:#3B6EA5}
-.ap-subm{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:8px 0;font-size:13px}
-.ap-subm input{font:13px var(--sans);padding:4px 6px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink)}
+button.pill.subm.sb{border:0;cursor:pointer;font:inherit;font-size:11px}
+button.pill.subm.sb:hover{text-decoration:line-through}
+.sb-add{margin-top:4px;padding:1px 8px;border:1px dashed var(--rule);border-radius:999px;background:none;color:var(--muted,#777);font:600 11px var(--sans);cursor:pointer}
+.sb-add:hover{border-color:#3B6EA5;color:#2F5F93}
