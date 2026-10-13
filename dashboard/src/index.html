@@ -54,6 +54,7 @@
     <button role="tab" data-tab="shipments" data-group="prep" aria-selected="false" hidden>Shipments</button>
     <button role="tab" data-tab="po" data-group="buying" aria-selected="false" hidden>Purchase orders</button>
     <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" hidden>Invoices</button>
+    <button role="tab" data-tab="amzres" data-group="buying" aria-selected="false" hidden>Amazon Research</button>
     <button role="tab" data-tab="costmap" data-group="setup" aria-selected="false" hidden>Shopify cost mapping</button>
     <button role="tab" data-tab="amzmap" data-group="setup" aria-selected="false" hidden>Amazon mapping</button>
     <button role="tab" data-tab="amzmatch" data-group="setup" aria-selected="false" hidden>Amazon matching</button>
@@ -748,6 +749,35 @@
     </div>
     <div id="po-edit-host"><div id="po-edit-view" hidden></div></div>
   </div>
+  <div id="tab-amzres" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Amazon · SKUs sent to FBA and AWD · Pacific time</span>
+        <h1>Amazon Research</h1>
+      </div>
+      <div class="controls">
+        <div class="seg" id="ar-rangeseg" role="group" aria-label="Date range"></div>
+        <div class="dates">
+          <input type="date" id="ar-start" aria-label="Start date">
+          <span>–</span>
+          <input type="date" id="ar-end" aria-label="End date">
+        </div>
+        <button class="btn primary" id="ar-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="ar-status" aria-live="polite"></div>
+    <section class="kpis" id="ar-kpis" aria-label="Shipped to Amazon totals"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>SKUs shipped to Amazon</h2>
+        <div class="seg" id="ar-kind" role="group" aria-label="Which shipments"><button data-k="all" aria-pressed="true">FBA + AWD</button><button data-k="FBA" aria-pressed="false">FBA</button><button data-k="AWD" aria-pressed="false">AWD</button></div>
+        <div class="filters"><label for="ar-q">Search <input id="ar-q" class="inp" type="search" placeholder="SKU, ASIN or product"></label></div>
+      </div>
+      <p class="muted small" id="ar-help"></p>
+      <div class="tbl-wrap tall"><table class="prept" id="ar-table"></table></div>
+      <div class="row"><button class="btn" id="ar-more" hidden>Show more</button><span class="muted small" id="ar-count"></span></div>
+    </section>
+  </div>
   <div id="tab-invoices" hidden>
     <header class="top">
       <div class="title">
@@ -885,6 +915,9 @@
 </script>
 <script>
 <!-- @inline js/po.js -->
+</script>
+<script>
+<!-- @inline js/amz-research.js -->
 </script>
 <script>
 <!-- @inline js/move.js -->
