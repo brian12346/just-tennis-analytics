@@ -986,3 +986,10 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .shipcard.anacard textarea{width:100%;resize:vertical;font:inherit;font-size:12px}
 @media (max-width:1100px){.shiplanes{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:640px){.shiplanes{grid-template-columns:1fr}}
+/* Amazon Research: column groups */
+#ar-table .bl{border-left:1px solid var(--line)}
+#ar-table tr.grp th{text-align:center;font-size:11px;letter-spacing:.06em;color:var(--muted);border-bottom:0;padding-bottom:0}
+#ar-table tr.grp th.l{text-align:left}
+#ar-table td, #ar-table th{white-space:nowrap}
+#ar-table td.l:nth-child(2){white-space:normal;min-width:220px}
+#ar-table tbody td:first-child, #ar-table thead tr:last-child th:first-child{position:sticky;left:0;z-index:1;background:var(--panel)}
