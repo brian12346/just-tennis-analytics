@@ -304,9 +304,40 @@
   const vendorDate = (ed) => { const d = ed.stageAt && ed.stageAt.ordered ? new Date(ed.stageAt.ordered) : new Date(); return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); };
   function vendorBar(ed) {
     if (!ed.lines.length) return "";
+    const shopBtn = `<button class="btn" data-pact="shopcsv" title="CSV in Shopify's import format. In Shopify: create the purchase order, click the Import icon next to 'Search products to add', and add this file — every product, quantity and cost goes in at once.">Shopify import CSV</button>`;
     return `<div class="vbar2"><span class="seg sm" role="group" aria-label="View"><button data-pact="vview-off" aria-pressed="${!S.vview}">Working view</button><button data-pact="vview-on" aria-pressed="${!!S.vview}" title="What the vendor needs: SKU, UPC, product, size and quantity">Vendor view</button></span>
       ${S.vview ? `<span class="seg sm" role="group" aria-label="Cost"><button data-pact="vcost-on" aria-pressed="${!S.vnocost}">Show cost</button><button data-pact="vcost-off" aria-pressed="${!!S.vnocost}">Hide cost</button></span>
-      <span class="dbtns right"><button class="btn" data-pact="vcsv" title="Spreadsheet for the vendor (opens in Excel)">Download CSV</button><button class="btn primary" data-pact="vpdf" title="PDF to email the vendor">Download PDF</button></span>` : ""}</div>`;
+      <span class="dbtns right">${shopBtn}<button class="btn" data-pact="vcsv" title="Spreadsheet for the vendor (opens in Excel)">Download CSV</button><button class="btn primary" data-pact="vpdf" title="PDF to email the vendor">Download PDF</button></span>` : `<span class="dbtns right">${shopBtn}</span>`}</div>`;
+  }
+  // ---------- Shopify import CSV (Brian, Oct 13) ----------
+  // Shopify's PO page imports products from a CSV (Import icon by 'Search products to add'): SKU, Barcode, Quantity, Cost,
+  // matched by SKU or barcode. We can't write POs through the API, so this is the quick way in. One row per product
+  // (split parts added up); the whole PO, or only the Shopify-store lines when the Shopify check says that's what the
+  // Shopify PO covers. Cost is this PO's unit cost (Shopify's cost when the line has none). The barcode only goes in when
+  // there's no SKU, so a stale barcode can't stop a line matching.
+  function shopifyCsvRows(ed) {
+    const onlyShop = ed.shopCheck && ed.shopCheck.scope === "shopify";
+    const by = new Map();
+    for (const l of ed.lines) {
+      if (onlyShop && l.dest !== "shopify") continue;
+      const q = Number(l.qty) || 0; if (q <= 0) continue;
+      const v = variant(l.vid), unit = l.cost === "" ? (v && v.cost) || 0 : Number(l.cost) || 0;
+      const r = by.get(l.vid) || by.set(l.vid, { sku: v ? v.sku || "" : "", upc: v ? v.barcode || "" : "", title: v ? v.title || v.product || "" : "variant " + l.vid, qty: 0, ext: 0 }).get(l.vid);
+      r.qty += q; r.ext += q * unit;
+    }
+    return [...by.values()].map(r => ({ ...r, unit: r.qty ? r.ext / r.qty : 0 }));
+  }
+  async function shopifyCsv(ed) {
+    const rows = shopifyCsvRows(ed), q = (x) => /[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : String(x);
+    if (!rows.length) { note("warn", "Nothing to export — no products with a quantity."); return; }
+    const bad = rows.filter(r => !r.sku && !r.upc);
+    const lines = ["SKU,Barcode,Quantity,Cost", ...rows.filter(r => r.sku || r.upc).map(r => [r.sku, r.sku ? "" : r.upc, r.qty, r.unit.toFixed(2)].map(q).join(","))];
+    await saveFile(fileBase(ed) + "_shopify-import.csv", lines.join("\n") + "\n", "text/csv");
+    const u = rows.reduce((a, r) => a + r.qty, 0), t = rows.reduce((a, r) => a + r.ext, 0);
+    note(bad.length ? "warn" : "info", `Shopify import CSV: ${n0(rows.length - bad.length)} product${rows.length - bad.length === 1 ? "" : "s"}, ${n0(u)} units, ${m(t)}.`
+      + (bad.length ? ` Left out (no SKU or barcode in Shopify): ${bad.map(r => esc(r.title)).join(", ")} — add those by hand.` : "")
+      + (ed.shopCheck && ed.shopCheck.scope === "shopify" ? " Shopify-store lines only." : "")
+      + " In Shopify, products already on the PO are skipped on import.");
   }
   function vendorHtml(ed) {
     const rows = vendorRows(ed), cost = !S.vnocost, u = rows.reduce((a, r) => a + r.qty, 0), t = rows.reduce((a, r) => a + r.ext, 0);
@@ -803,7 +834,7 @@
       text: `${sug.map(desc).join(", ")} ${sug.length === 1 ? "looks like" : "look like"} this PO. Link it and receiving follows Shopify; or say it isn't.` + picker,
       fixes: sug.flatMap(p => [{ label: `Link ${p.name}`, fix: "shoplink", arg: p.id }, { label: `Not ${p.name}`, fix: "shopreject", arg: p.id }]) };
     return { lvl: "info", kind: "noshopify", title: "Needs a Shopify PO",
-      text: "Make the matching PO in Shopify — ask Claude to fill it in from this PO through Chrome. Once it syncs in (hourly, or Sync from Shopify), it links here by itself and receiving follows Shopify." + picker,
+      text: "Make the matching PO in Shopify: download the Shopify import CSV (button above the products), then in Shopify create the PO and use the Import icon next to “Search products to add”. Once it syncs in (hourly, or Sync from Shopify), it links here by itself and receiving follows Shopify." + picker,
       fixes: [{ label: "New PO in Shopify", href: `${ADMIN}/purchase_orders/new` }, { label: "Paste a link", fix: "focus", arg: "pe-shopify" }] };
   }
   async function shopLink(spo, action) {
@@ -1548,6 +1579,7 @@
     if (a === "vview-on" || a === "vview-off") { S.vview = a === "vview-on"; render(); return; }
     if (a === "vcost-on" || a === "vcost-off") { S.vnocost = a === "vcost-off"; render(); return; }
     if (a === "vcsv") return vendorCsv(ed);
+    if (a === "shopcsv") return shopifyCsv(ed);
     if (a === "vpdf") return vendorPdf(ed);
     if (a === "back-list") return leave();
     if (a === "inv-list") return leave();
