@@ -280,6 +280,28 @@
       return { requested_at: null, already: false };
     },
     amazon: amazonCall,
+    // To do list (home; migration 143): save -> id, done(id, yes), remove(id), autoclose() -> how many Seller Sage ticked off
+    todo: {
+      async save(body) {
+        if (WEB) return Number(await WEB.write("jt_todo_save", { p: body }));
+        const out = await run(`select jt.todo_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
+        return Number(out[0] && out[0].id);
+      },
+      async done(id, yes) {
+        const body = { id: Number(id), done: yes !== false };
+        if (WEB) return WEB.write("jt_todo_done", { p: body });
+        return run(`select jt.todo_done(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as ok`, true);
+      },
+      async remove(id) {
+        if (WEB) return WEB.write("jt_todo_delete", { p: { id: Number(id) } });
+        return run(`select jt.todo_delete(${q(JSON.stringify({ id: Number(id) }))}::jsonb) as ok`, true);
+      },
+      async autoclose() {
+        if (WEB) return Number(await WEB.write("jt_todo_autoclose", {}));
+        const out = await run("select jt.todo_autoclose() as n", true);
+        return Number(out[0] && out[0].n) || 0;
+      },
+    },
     // Operational alerts (Alerts tab; migration 060)
     alerts: {
       list: (refresh) => rowsSplit(["id", "rule", "key", "title", "detail", "severity", "link", "data", "status", "owner",
