@@ -81,23 +81,26 @@ def test_finances_build_a_day_like_the_transaction_report(conn):
         fl("s1", "ServiceFee", -141.41, description="FBAPostInboundTransportation"),
         fl("s2", "ServiceFee", -12.6, description="AWDProcessingFee"),
         fl("t1", "Transfer", 178915.8, description="Disbursement"),
-        fl("mx", "Shipment", 50, {"ProductCharges/OurPricePrincipal": 60}, marketplace="A1AM78C64UM0Y8", order_id="701-1", sku="C", qty=1),
+        # Amazon.com.mx: in the totals (converted at jt.settings amazon_fx, MXN 0.054) and also shown on its own as mx_*
+        fl("mx", "Shipment", 50, {"ProductCharges/OurPricePrincipal": 60}, marketplace="A1AM78C64UM0Y8", currency="MXN",
+           order_id="701-1", sku="C", qty=1),
     ])
     cur.execute("select public.jt_amazon_fin_build('{\"first\": \"2026-09-15\", \"last\": \"2026-09-22\", \"target\": \"amzdays_api\"}')")
     assert cur.fetchone()[0] == 1          # only Sep 15 has anything (the release copy on Sep 22 doesn't count)
     cur.execute("select data from jt.docs where collection = 'amzdays_api' and id = '2026-09-15'")
     d = cur.fetchone()[0]
     t = d["totals"]
-    assert (t["orders"], t["units"]) == (2, 2)
-    assert D(str(t["sales"])) == D("319.99") and D(str(t["orders_net"])) == D("241.69")
+    assert (t["orders"], t["units"]) == (3, 3)
+    assert D(str(t["sales"])) == D("323.23") and D(str(t["orders_net"])) == D("244.39")
+    assert (t["mx_orders"], D(str(t["mx_sales"])), D(str(t["mx_net"]))) == (1, D("3.24"), D("2.70"))
     assert D(str(t["sellfees"])) == D("-48.00") and D(str(t["fbafees"])) == D("-30.30")
     assert D(str(t["ship"])) == D("1.50") and D(str(t["promo"])) == D("-1.50")
     assert D(str(t["refunds_net"])) == D("-8.79") and D(str(t["refund_sales"])) == D("-9.99")
     assert {k: D(str(v)) for k, v in d["other"].items()} == {"fbaother": D("-154.01")}
-    assert d["skus"] == ["A", "B"] and d["orders"][0][1] == "111-1" and d["refunds"][0][2] == 0
+    assert d["skus"] == ["A", "B", "C"] and [o[1] for o in d["orders"]] == ["701-1", "111-1", "113-2"] and d["refunds"][0][2] == 0
     cur.execute("select data->'skus', data->'totals'->>'sales' from jt.docs where collection = 'amzmonths_api' and id = '2026-09'")
     skus, sales = cur.fetchone()
-    assert skus["B"][0] == 1 and D(sales) == D("319.99")
+    assert skus["B"][0] == 1 and D(sales) == D("323.23")
 
 
 def test_listings_save_chunks_and_guard(conn):

@@ -22,6 +22,10 @@ def conn(db_url, monkeypatch):
     """Fresh jt schema with all migrations applied, dropped again afterwards."""
     with psycopg.connect(db_url, autocommit=True) as c:
         c.execute("drop schema if exists jt cascade")
+        # Migrations look up pg_cron's job table (cron.job), which a plain Postgres doesn't have.
+        if not c.execute("select 1 from pg_extension where extname = 'pg_cron'").fetchone():
+            c.execute("create schema if not exists cron")
+            c.execute("create table if not exists cron.job (jobid bigserial primary key, jobname text)")
     monkeypatch.setenv("DATABASE_URL", db_url)
     from sync import migrate
     migrate.main()

@@ -34,7 +34,8 @@ def test_bill_methods_and_cards(conn):
     cur.execute("""insert into fin.qbo_accounts (id, name, type, subtype, balance) values
                    ('10', 'JT - Amex Platinum', 'Credit Card', 'CreditCard', -5000), ('20', 'BofA (0140)', 'Bank', 'Checking', 90000),
                    ('30', 'Chase Charge Card (4715)', 'Credit Card', 'CreditCard', -100), ('40', 'Inventory', 'Other Current Asset', '', 0)""")
-    today = dt.date.today()
+    cur.execute("select (now() at time zone 'America/Los_Angeles')::date")   # the views' "today" is Pacific, not the runner's
+    today = cur.fetchone()[0]
     later = today + dt.timedelta(days=20)
     cur.execute("""insert into fin.qbo_bills (id, vendor_name, due_date, total, balance) values
                    ('b1', 'Wilson', %s, 500, 500), ('b2', 'Babolat', %s, 300, 300), ('b3', 'Yonex', %s, 200, 200), ('b4', 'Head', null, 50, 50)""",

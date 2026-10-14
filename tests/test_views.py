@@ -111,7 +111,8 @@ def test_amazon_cost_uses_mapping(conn):
 def test_current_cost_views_recost_past_sales(conn):
     cur = conn.cursor()
     cur.execute("insert into jt.variants (variant_id, product_id, sku, product_title, unit_cost) values (21, 9, 'AC102-3W', 'Super Grap', 4.00), (22, 9, 'X', 'No cost yet', null)")
-    add_daily(cur, "2026-03-02", 100, 9.02 + 5, 20)
+    # Shopify's gross profit leaves out sales with no cost: 100 - 20 no-cost - 14.02 cost = 65.98 (migration 071)
+    add_daily(cur, "2026-03-02", 100, 9.02 + 5, 20, gp=100 - 20 - (9.02 + 5))
     cur.execute(f"insert into jt.shopify_sales ({SALES_COLS}) values "
                 "('2026-03-02', 1, '#1', 21, 'Super Grap', 2, 16, 9.02, 0),"      # recorded at the old $4.51
                 "('2026-03-02', 2, '#2', 21, 'Super Grap', 1, 8, 0, 8),"          # sold before it had a cost
@@ -120,7 +121,7 @@ def test_current_cost_views_recost_past_sales(conn):
     cur.execute("select order_id, cogs, net_no_cost from jt.v_shopify_sales_costed order by order_id")
     assert cur.fetchall() == [(1, D("8.00"), D("0")), (2, D("4.00"), D("0")), (3, D("0.00"), D("12.00")), (4, D("5.00"), D("0.00"))]
     cur.execute("select cogs, gross_profit, net_no_cost from jt.v_shopify_daily_costed where day = '2026-03-02'")
-    assert cur.fetchone() == (D("17.00"), D("83.00"), D("12.00"))      # 14.02 + 2.98; 20 - 8 no-cost now costed
+    assert cur.fetchone() == (D("17.00"), D("71.00"), D("12.00"))      # 14.02 + 2.98; 65.98 - 2.98 + 8 now costed; 20 - 8
     cur.execute("select sum(cogs), sum(net_no_cost) from jt.v_product_sales_daily_costed where day = '2026-03-02'")
     assert cur.fetchone() == (D("17.00"), D("12.00"))
 
