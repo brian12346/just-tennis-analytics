@@ -106,7 +106,8 @@ def test_sales_daily_orders_and_catalog(conn):
     assert cur.fetchall() == [(7788625494301, "#21677")]
 
     first = sh.sync_catalog(shop, conn, dt.date(2026, 9, 24))
-    assert first == {"variants": 2, "changes": 0, "baseline": True, "no_cost": 1, "removed": 0, "restored": 0, "logged": 0}
+    assert first == {"variants": 2, "changes": 0, "baseline": True, "no_cost": 1, "removed": 0, "restored": 0, "logged": 0,
+                     "po_lines": {"lines": 0, "imported": 0}}
     changed = [dict(VARIANTS[0], inventoryItem={"unitCost": {"amount": "6.83"}}), VARIANTS[1]]
     second = sh.sync_catalog(FakeShopify(changed), conn, dt.date(2026, 9, 25))
     assert second["changes"] == 1
@@ -177,6 +178,26 @@ def test_catalog_marks_removed_variants(conn):
     assert out["removed"] == 0
     cur.execute("select count(*) from jt.variants where removed_at is not null")
     assert cur.fetchone()[0] == 1
+
+
+def test_catalog_resolves_new_products_on_shopify_pos(conn):
+    # a Shopify PO saved while its product was new to Seller Sage: no variant, skipped by the auto-import (#PO1255)
+    cur = conn.cursor()
+    cur.execute("""insert into jt.shopify_pos (id, name, status, supplier, created_at, lines_synced, raw)
+                   values (4242, '#PO4242', 'ORDERED', 'Solinco', now(), now(), '{}')""")
+    cur.execute("""insert into jt.shopify_po_lines (po_id, line_id, variant_id, sku, title, qty, qty_received, cost, raw)
+                   values (4242, 'l1', null, 'HG17', 'Hyper G Set', 12, 0, 6.5,
+                           '{"inventoryItem": {"id": "gid://shopify/InventoryItem/705"}}')""")
+    conn.commit()
+    cur.execute("select ss_order_id from jt.shopify_pos where id = 4242")
+    assert cur.fetchone()[0] is None                                  # nothing it knows: not brought in
+    out = sh.sync_catalog(FakeShopify(), conn, dt.date(2026, 10, 14))   # the product is in the catalog now
+    assert out["po_lines"] == {"lines": 1, "imported": 1}
+    cur.execute("select variant_id from jt.shopify_po_lines where po_id = 4242")
+    assert cur.fetchone()[0] == 5
+    cur.execute("""select o.po_no, o.vendor, o.status, l.variant_id, l.qty_ordered from jt.shopify_pos p
+                   join jt.prep_orders o on o.id = p.ss_order_id join jt.prep_order_lines l on l.order_id = o.id where p.id = 4242""")
+    assert cur.fetchall() == [("PO4242", "Solinco", "ordered", 5, 12)]
 
 
 def test_invoice_apply_queues_cost_and_price(conn):

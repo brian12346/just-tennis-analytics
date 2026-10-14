@@ -14,7 +14,7 @@ import time
 
 import requests
 
-from .common import env, gid_num, money, store_day
+from .common import env, gid_num, money, store_day, store_today
 
 API_VERSION = "2026-07"
 
@@ -350,8 +350,16 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
             if log:
                 cur.executemany("insert into jt.catalog_changes (synced_at, variant_id, kind, old, new) values (%s, %s, %s, %s, %s)", log)
             cur.execute("delete from jt.catalog_changes where synced_at < now() - interval '120 days'")
+        # Shopify PO lines saved before their product was in the catalog get it now, and POs skipped for having
+        # no known products are brought in (migration 140)
+        po = None
+        cur.execute("select to_regprocedure('jt.po_lines_resolve()') is not null")
+        if cur.fetchone()[0]:
+            cur.execute("select jt.po_lines_resolve()")
+            po = cur.fetchone()[0]
     return {"variants": len(rows), "changes": len(changes), "baseline": baseline,
-            "no_cost": sum(1 for r in rows if r[10] is None), "removed": removed, "restored": restored, "logged": len(log)}
+            "no_cost": sum(1 for r in rows if r[10] is None), "removed": removed, "restored": restored, "logged": len(log),
+            "po_lines": po}
 
 
 def _txt(v):
@@ -1171,6 +1179,7 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
     todo.sort(key=lambda h: gid_num(h.get("id")) or 0, reverse=True)
     detail_t = sc.select(po_t, 1, conns=True)
     saved, lines_n, errs = 0, 0, []
+    refreshed, catalog_note = False, ""
     for h in todo[:cap]:
         d = None
         for size in (100, 50, 25):
@@ -1190,6 +1199,21 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
             errs.append(f"{d.get('name')}: more lines: {str(e)[:150]}")
             d["_lines_incomplete"] = True
         rows = [_po_line_row(i, n, by_item) for i, n in enumerate(_po_lines(d))]
+        # a product Seller Sage doesn't know yet (created in Shopify today): read the catalog first (once a run),
+        # so the lines get their products and the auto-import sees them (Brian, Oct 14; migration 140)
+        if not refreshed and any(not r["variant_id"] and gid_num((r["raw"].get("inventoryItem") or {}).get("id")) for r in rows):
+            refreshed = True
+            try:
+                cat = sync_catalog(shop, conn, store_today())
+                conn.commit()
+                with conn.cursor() as cur:
+                    cur.execute("select inventory_item_id, variant_id from jt.variants where inventory_item_id is not null and removed_at is null")
+                    by_item = {int(a): int(b) for a, b in cur.fetchall()}
+                catalog_note = f"catalog refreshed for {d.get('name')}: {cat.get('variants')} variants"
+                rows = [_po_line_row(i, n, by_item) for i, n in enumerate(_po_lines(d))]
+            except Exception as e:  # noqa: BLE001 - save the PO anyway; the nightly catalog sync resolves its lines
+                conn.rollback()
+                errs.append(f"catalog refresh: {str(e)[:150]}")
         total = _first(d, r"total", lambda v: _money(v) is not None)
         if total is None and rows:   # no PO total in 2026-10: add up the lines
             lt = [_money(_first(r["raw"], r"total.?cost|subtotal", lambda v: _money(v) is not None)) for r in rows]
@@ -1226,7 +1250,7 @@ def sync_pos(shop: Shopify, conn, cap: int = PO_DETAIL_CAP) -> dict:
                             (str(h.get("status") or ""), pid, str(h.get("status") or "")))
     conn.commit()
     return {"variants": saved, "pos": len(heads), "details": saved, "lines": lines_n, "left": max(0, len(todo) - cap),
-            "before_cutoff": skipped, "errors": errs[:3]}
+            "before_cutoff": skipped, "errors": errs[:3], "catalog": catalog_note}
 
 
 # ---------------------------------------------------------------- Ace n Rally (second store, sales only)
