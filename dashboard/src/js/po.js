@@ -132,8 +132,8 @@
     return S.catP;
   }
   async function refresh(force) {
-    S.loading = true; setStatus("Loading purchase orders…"); renderList();
-    try { await loadOrders(force); setStatus(`${S.orders.length.toLocaleString()} purchase order${S.orders.length === 1 ? "" : "s"}`); }
+    S.loading = true; setStatus("Loading orders…"); renderList();
+    try { await loadOrders(force); }
     catch (e) { setStatus(""); note("bad", esc(JT.message(e))); }
     finally { S.loading = false; renderList(); }
   }
@@ -1021,29 +1021,30 @@
   const laneOfO = (o) => o.status === "draft" ? (o.approvedAt ? "submit" : "approve") : o.status === "ordered" ? "ordered"
     : o.status === "invoiced" ? "invoiced" : o.status === "partial" ? (o.nInv ? "invoiced" : "ordered")
     : o.nInv > 0 && o.nQB >= o.nInv ? "recorded" : "received";
+  // a card is two short lines (vendor · cost / PO · what's next) so ten fit in a lane without scrolling (Brian, Oct 14)
+  const OLANE_CARDS = 10;
   function oCard(o, k) {
-    const name = esc(o.po ? poLabel(o.po) : "#" + o.id), units = `${n0(o.units)} unit${o.units === 1 ? "" : "s"}`;
-    const hint = k === "approve" ? `<span class="dim">${n0(o.nLines)} product${o.nLines === 1 ? "" : "s"} · ${units}</span><span class="il-acts"><button class="mini primary" type="button" data-po-approve="${esc(o.id)}">Approve</button></span>`
-      : k === "submit" ? `<span class="dim">approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""}</span><span class="il-acts"><button class="mini" type="button" data-po-mark="${esc(o.id)}" title="It's been given to the vendor">Mark ordered</button></span>`
-      : k === "ordered" ? `<span class="dim">${units}${o.expected ? " · expected " + esc(shortDate(o.expected)) : o.stageAt.ordered ? " · ordered " + esc(when(o.stageAt.ordered)) : ""}</span>`
-      : k === "invoiced" ? (o.received > 0 ? `<span class="pill manual">${n0(o.received)} of ${n0(o.units)} in</span>` : `<span class="dim">${o.nInv} invoice${o.nInv === 1 ? "" : "s"} · ${units} to come</span>`)
-      : k === "received" ? `<span class="dim">received ${esc(when(o.stageAt.received || o.updated))}</span> ${o.nInv ? `<span class="pill warn">${o.nInv - o.nQB} bill${o.nInv - o.nQB === 1 ? "" : "s"} for QuickBooks</span>` : '<span class="pill pos">no invoice</span>'}`
-      : `<span class="dim">received ${esc(when(o.stageAt.received || o.updated))}</span>`;
-    return `<div class="il-card" role="button" tabindex="0" data-po-open="${esc(o.id)}" title="Open ${name}">
+    const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received);
+    const hint = k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
+      : k === "submit" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
+      : k === "ordered" ? `<span class="dim">${o.expected ? "exp " + esc(shortDate(o.expected)) : n0(o.units) + " units"}</span>`
+      : k === "invoiced" ? (o.received > 0 ? `<span class="pill manual">${n0(o.received)}/${n0(o.units)} in</span>` : `<span class="dim">${n0(left)} to come</span>`)
+      : k === "received" ? (o.nInv ? `<span class="pill warn" title="Bills to enter in QuickBooks">${o.nInv - o.nQB} for QB</span>` : '<span class="pill pos">no invoice</span>')
+      : `<span class="dim">${esc(when(o.stageAt.received || o.updated))}</span>`;
+    return `<div class="il-card oc" role="button" tabindex="0" data-po-open="${esc(o.id)}" title="Open ${esc(o.vendor || "")} ${name}${o.shopifyUrl ? " (linked to a Shopify PO)" : ""}">
       <span class="il-top"><b>${esc(o.vendor || "—")}</b><span class="il-amt">${m0(o.cost)}</span></span>
-      <span class="il-no"><span class="mono">${name}</span>${o.shopifyUrl ? ' · <span title="Linked to a Shopify PO">Shopify</span>' : ""}</span>
-      <span class="il-hint">${hint}</span></div>`;
+      <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${hint}</span></span></div>`;
   }
   function renderOLanes(all) {
     const by = new Map(OLANES.map(([k]) => [k, []]));
     for (const o of all) by.get(laneOfO(o)).push(o);
     for (const k of ["approve", "submit", "ordered", "invoiced"]) by.get(k).sort((a, b) => String(a.created).localeCompare(String(b.created)));   // oldest waiting first
     $("po-lanes").innerHTML = OLANES.map(([k, n, sub]) => {
-      const os = by.get(k), tot = os.reduce((a, o) => a + (o.cost || 0), 0), more = os.length - LANE_CARDS;
+      const os = by.get(k), tot = os.reduce((a, o) => a + (o.cost || 0), 0), more = os.length - OLANE_CARDS;
       return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}">
-        <button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="Show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>
-        <div class="il-sub">${os.length ? `${m0(tot)} · ${sub}` : sub}</div>
-        <div class="il-cards">${os.slice(0, LANE_CARDS).map(o => oCard(o, k)).join("") || '<div class="il-empty">Nothing here</div>'}</div>
+        <div class="ol-headrow"><button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="${esc(sub)} — show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>${k === "approve" ? '<button class="ol-add" type="button" data-po-start title="Start an order: pick the vendor and see what to reorder" aria-label="Start an order">+</button>' : ""}</div>
+        <div class="ol-sum" title="Total of the ${n0(os.length)} order${os.length === 1 ? "" : "s"} here, at cost">${m0(tot)}</div>
+        <div class="il-cards">${os.slice(0, OLANE_CARDS).map(o => oCard(o, k)).join("") || (k === "approve" ? '<button class="il-empty ol-start" type="button" data-po-start>+ Start an order</button>' : '<div class="il-empty">Nothing here</div>')}</div>
         ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-olane="${k}">+ ${n0(more)} more in the table</button>` : ""}</div>`;
     }).join("");
   }
@@ -1067,7 +1068,7 @@
     if (!S.spos && !S.sposLoading) { S.sposLoading = true; loadShopPos(false).then(() => render(), () => {}).finally(() => { S.sposLoading = false; }); }
     const shopView = S.listView === "shop";
     document.querySelectorAll("#po-listview button").forEach(b => b.setAttribute("aria-pressed", String((b.dataset.lv === "shop") === shopView)));
-    $("po-kpis").style.display = shopView ? "none" : ""; $("po-sslist").style.display = shopView ? "none" : ""; $("po-lanes").style.display = shopView ? "none" : "";
+    $("po-sslist").style.display = shopView ? "none" : ""; $("po-lanes").style.display = shopView ? "none" : "";
     const ph = $("po-pickshop-host"), hadFocus = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ps === "q";
     ph.innerHTML = pickShopHtml();
     if (hadFocus) { const i = ph.querySelector('[data-ps="q"]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
@@ -1081,18 +1082,15 @@
     const onShop = (o) => !!(o.shopifyUrl || "").trim(), ssAll = all.filter(o => !onShop(o)), nShop = all.length - ssAll.length;
     const cnt = (st) => (isLane(st) ? all : ssAll).filter(o => inStage(o, st)).length;
     if (S.orders) renderOLanes(all); else $("po-lanes").innerHTML = "";
+    renderStart();
     $("po-stage").innerHTML = [["open", "Open"], ...OLANES.map(([k, n]) => [k, n]), ["noshop", "Needs Shopify PO"], ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
     const vs = [...new Set(all.map(o => o.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const vsel = $("po-vendor"); const want = ["all", ...vs].join("|");
     if (vsel.dataset.opts !== want) { vsel.innerHTML = `<option value="all">All vendors</option>` + vs.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join(""); vsel.dataset.opts = want; vsel.value = vs.includes(S.vendor) ? S.vendor : "all"; }
     const open = all.filter(isOpen), out = all.filter(o => ["ordered", "invoiced", "partial"].includes(o.status));
     const flagged = open.filter(o => listFlags(o).some(f => f[0] !== "info"));
-    $("po-kpis").innerHTML = [
-      { l: "Open POs", v: n0(open.length), s: `${all.filter(o => o.status === "draft").length} draft · ${out.length} placed, not all received` },
-      { c: "cost", l: "On order", v: m0(out.reduce((a, o) => a + o.cost * (o.units ? Math.max(0, o.units - o.received) / o.units : 1), 0)), s: `${n0(out.reduce((a, o) => a + Math.max(0, o.units - o.received), 0))} units to come, at cost` },
-      { l: "Backordered", v: n0(all.reduce((a, o) => a + o.nBack, 0)), s: "products still to come on open POs" },
-      { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice" : "nothing flagged" },
-    ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
+    const toCome = out.reduce((a, o) => a + o.cost * (o.units ? Math.max(0, o.units - o.received) / o.units : 1), 0), nBack = all.reduce((a, o) => a + o.nBack, 0);
+    if (S.orders) $("po-status").innerHTML = `${n0(open.length)} open · <b>${m0(toCome)}</b> on order (${n0(out.reduce((a, o) => a + Math.max(0, o.units - o.received), 0))} units to come)${nBack ? ` · ${n0(nBack)} backordered` : ""}${flagged.length ? ` · <button class="linkbtn" type="button" data-st-go="open" title="Late, unmatched lines, guesses, no invoice">${n0(flagged.length)} need attention</button>` : ""}`;
     const list = (q || isLane(S.stage) ? all : ssAll).filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
@@ -2085,7 +2083,7 @@
   function shopNewBanner() {
     if (!S.spos || S.listView === "shop") return "";
     const ssOf = ssIndex(), n = S.spos.filter(p => spNew(p, ssOf)).length;
-    return n ? `<div class="note info">${n} Shopify PO${n === 1 ? " isn't" : "s aren't"} in Seller Sage yet. <span class="dbtns"><button class="mini primary" data-ps="show">Show ${n === 1 ? "it" : "them"}</button></span></div>` : "";
+    return n ? `<div class="po-slim">${n} Shopify PO${n === 1 ? " isn't" : "s aren't"} in Seller Sage yet · <button class="linkbtn" type="button" data-ps="show">show ${n === 1 ? "it" : "them"}</button></div>` : "";
   }
   function pickShopHtml() {
     if (S.listView !== "shop") return shopNewBanner();
@@ -2275,6 +2273,131 @@
     setTimeout(() => { const i = document.querySelector(`#po-edit-view [data-f="qty"][data-k="${l.id}"]`); if (i) i.focus(); }, 0);
   }
 
+
+  // ---------- Start an order (Brian, Oct 14: "a plus button on Ready to approve to start an order — a smooth way to
+  // start the ordering process") ----------
+  // Pick the vendor: its active products with what sold in the last 90 days (Just Tennis, Ace n Rally, Amazon), what's
+  // on hand (store, prep center, Amazon) and already on open orders (jt.reorder_plan, migration 145). Below the days of
+  // stock to hold (3 months by default) a product gets a quantity, rounded up to the vendor's case pack. Tick, adjust,
+  // and "Create the draft" opens it as a new order, ready to save and approve. Or start empty / from a Shopify PO / PDF.
+  const START_KEY = "jt-start-order";
+  const startPrefs = () => { try { return JSON.parse(localStorage.getItem(START_KEY) || "{}") || {}; } catch (_) { return {}; } };
+  const keepStart = (f) => { try { const p = startPrefs(); f(p); localStorage.setItem(START_KEY, JSON.stringify(p)); } catch (_) {} };
+  const monthTag = () => new Date().toLocaleDateString("en-US", { month: "short", timeZone: TZ });
+  function openStart(vendor) {
+    if (S.ed && S.ed.dirty) return leave();
+    if (S.ed) S.ed = null;
+    S.listView = "ss"; note("", "");
+    const pr = startPrefs();
+    S.start = { vendor: vendor || pr.vendor || "", days: pr.days || 90, pack: 1, name: "", rows: null, loading: false, err: null, all: false, qty: new Map(), sel: new Set(), focus: true };
+    if (S.start.vendor) S.start.pack = (pr.packs || {})[S.start.vendor.toLowerCase()] || 1;
+    render(); catalog().then(() => { if (S.start) renderStart(); }).catch(() => {});
+    if (S.start.vendor) loadPlan();
+  }
+  async function loadPlan() {
+    const st = S.start; if (!st || !st.vendor.trim()) return;
+    st.loading = true; st.err = null; st.rows = null; renderStart();
+    try {
+      const r = await JT.rows(["variant_id::text", "product_id::text", "title", "sku", "unit_cost", "shop90 + anr90 + amz90", "shop30 + anr30 + amz30", "shop90", "anr90", "amz90", "greatest(store, 0)", "prep", "amazon", "on_order"],
+        `from jt.reorder_plan(${JT.q(st.vendor.trim())})`, true);
+      if (S.start !== st) return;
+      st.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2] || "", sku: x[3] || "", cost: x[4] == null ? null : +x[4], s90: +x[5] || 0, s30: +x[6] || 0, shop: +x[7] || 0, anr: +x[8] || 0, amz: +x[9] || 0,
+        store: +x[10] || 0, prep: +x[11] || 0, amazon: +x[12] || 0, onOrder: +x[13] || 0 }));
+      planQty(st);
+    } catch (e) { if (S.start === st) st.err = e; }
+    if (S.start === st) { st.loading = false; renderStart(); }
+  }
+  // per row: pace (units a day, last 90 days), on hand, days of stock left (with what's on order), suggested quantity
+  function planRow(st, r) {
+    const rate = r.s90 / 90, have = r.store + r.prep + r.amazon, pack = Math.max(1, Math.round(st.pack) || 1);
+    const need = rate * st.days - have - r.onOrder;
+    return { rate, have, left: rate > 0 ? (have + r.onOrder) / rate : Infinity, sugg: need > 0.5 ? Math.ceil(need / pack) * pack : 0, hot: r.s30 / 30 > rate * 1.5 && r.s30 >= 3 };
+  }
+  function planQty(st) {
+    st.qty = new Map(); st.sel = new Set();
+    for (const r of st.rows || []) { const p = planRow(st, r); if (p.sugg > 0) { st.qty.set(r.vid, String(p.sugg)); st.sel.add(r.vid); } }
+  }
+  function renderStart() {
+    const host = $("po-start-host"); if (!host) return;
+    const st = S.start; if (!st || S.listView === "shop") { host.innerHTML = ""; return; }
+    const keep = document.activeElement && host.contains(document.activeElement) ? { id: document.activeElement.id, s: document.activeElement.selectionStart } : null;
+    const rows = (st.rows || []).map(r => ({ r, p: planRow(st, r) }));
+    const want = rows.filter(x => x.p.sugg > 0 || st.sel.has(x.r.vid));
+    const shown = (st.all ? rows : want).sort((a, b) => a.p.left - b.p.left || b.r.s90 - a.r.s90).slice(0, st.all ? 400 : 200);
+    const picked = rows.filter(x => st.sel.has(x.r.vid) && +(st.qty.get(x.r.vid) || 0) > 0);
+    const units = picked.reduce((a, x) => a + +(st.qty.get(x.r.vid) || 0), 0), cost = picked.reduce((a, x) => a + (+(st.qty.get(x.r.vid) || 0)) * (x.r.cost || 0), 0);
+    const dl = (x) => x.p.left === Infinity ? '<span class="dim">no sales</span>' : x.p.left < 1 ? '<span class="neg">out</span>' : `<span class="${x.p.left < 30 ? "neg" : x.p.left < st.days ? "warnt" : ""}">${n0(x.p.left)} d</span>`;
+    host.innerHTML = `<section class="panel po-start">
+      <div class="ps-row">
+        <b class="ps-title">Start an order</b>
+        <label class="ps-f">Vendor <input id="ps-vendor" class="inp" list="ps-vendors" value="${esc(st.vendor)}" placeholder="Vendor" autocomplete="off" style="width:170px"><datalist id="ps-vendors">${(S.vendors || []).map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>
+        <label class="ps-f" title="Days of stock to hold (90 = 3 months)">Hold <input id="ps-days" class="inp num" value="${esc(st.days)}" inputmode="numeric" style="width:56px"> days</label>
+        <label class="ps-f" title="Quantities round up to this (e.g. Head racquets ship 20 to a case); remembered for this vendor">Case pack <input id="ps-pack" class="inp num" value="${esc(st.pack)}" inputmode="numeric" style="width:52px"></label>
+        <button class="btn primary sm" type="button" data-ps-go ${st.loading ? "disabled" : ""}>${st.loading ? "Looking…" : st.rows ? "Recalculate" : "What to reorder"}</button>
+        <span class="ps-or">or <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <button class="linkbtn" type="button" data-lv-go>from a Shopify PO</button> · <label class="linkbtn" for="po-shopnew">from a PDF</label></span>
+        <button class="mini ps-x" type="button" data-ps-close title="Close" aria-label="Close">✕</button>
+      </div>
+      ${st.err ? `<div class="note bad">Couldn't work out the reorder list: ${esc(JT.message(st.err))}</div>` : ""}
+      ${st.rows ? `<div class="ps-row small">
+          <span><b>${n0(want.length)}</b> of ${n0(rows.length)} ${esc(st.vendor)} products below ${n0(st.days)} days of stock${rows.length && !want.length ? " — nothing to reorder" : ""}</span>
+          <button class="linkbtn" type="button" data-ps-all>${st.all ? "Show just those" : `Show all ${n0(rows.length)}`}</button>
+          <span class="muted">sold = last 90 days, Just Tennis + Ace n Rally + Amazon · on hand = store + prep + Amazon</span></div>
+        ${shown.length ? `<div class="tbl-wrap ps-tbl"><table class="prept po-t"><thead><tr><th><input type="checkbox" data-ps-allsel aria-label="Select all" ${picked.length && picked.length === shown.filter(x => +(st.qty.get(x.r.vid) || 0) > 0).length ? "checked" : ""}></th><th class="l">Product</th><th title="Last 90 days (last 30)">Sold 90d</th><th>On hand</th><th>On order</th><th title="On hand + on order, at the 90-day pace">Days left</th><th>Order</th><th>Cost</th><th>Total</th></tr></thead><tbody>${shown.map(x => { const r = x.r, q = st.qty.get(r.vid) || "";
+          return `<tr class="${st.sel.has(r.vid) ? "picked" : ""}"><td><input type="checkbox" data-ps-sel="${esc(r.vid)}" ${st.sel.has(r.vid) ? "checked" : ""} aria-label="Order ${esc(r.title)}"></td>
+            <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a> <span class="mono dim small">${esc(r.sku)}</span></td>
+            <td title="Just Tennis ${n0(r.shop)} · Ace n Rally ${n0(r.anr)} · Amazon ${n0(r.amz)} · last 30 days ${n0(r.s30)}">${n0(r.s90)}${x.p.hot ? ' <span class="pill warn" title="Selling faster in the last 30 days">↑</span>' : ""}</td>
+            <td title="Store ${n0(r.store)} · prep ${n0(r.prep)} · Amazon ${n0(r.amazon)}">${n0(x.p.have)}</td><td>${r.onOrder ? n0(r.onOrder) : '<span class="dim">—</span>'}</td><td>${dl(x)}</td>
+            <td><input class="inp num sm" data-ps-qty="${esc(r.vid)}" value="${esc(q)}" inputmode="numeric" style="width:60px"></td><td>${r.cost == null ? '<span class="dim">—</span>' : m(r.cost)}</td><td>${q && r.cost != null ? m(+q * r.cost) : ""}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
+        <div class="ps-row">
+          <label class="ps-f">PO name <input id="ps-name" class="inp mono" value="${esc(st.name || `${monthTag()} ${st.vendor}`)}" style="width:190px"></label>
+          <button class="btn primary" type="button" data-ps-create ${picked.length ? "" : "disabled"}>Create the draft · ${n0(picked.length)} product${picked.length === 1 ? "" : "s"} · ${n0(units)} units · ${m0(cost)}</button>
+          <span class="muted small">It opens as a new order to check, save and approve.</span></div>` : st.loading ? '<div class="muted small">Looking at sales, stock and open orders…</div>' : ""}
+    </section>`;
+    if (st.focus) { st.focus = false; const i = $(st.vendor ? "ps-days" : "ps-vendor"); if (i && !st.vendor) i.focus(); }
+    else if (keep && keep.id) { const el = $(keep.id); if (el) { el.focus(); try { el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
+  }
+  function readStart() {
+    const st = S.start; if (!st) return;
+    const v = $("ps-vendor"), d = $("ps-days"), k = $("ps-pack"), nm = $("ps-name");
+    if (v) { const want = (S.vendors || []).find(x => x.toLowerCase() === v.value.trim().toLowerCase()); st.vendor = want || v.value.trim(); }
+    if (d) st.days = Math.max(1, Math.round(+d.value) || 90);
+    if (k) st.pack = Math.max(1, Math.round(+k.value) || 1);
+    if (nm) st.name = nm.value;
+  }
+  function createFromStart() {
+    readStart(); const st = S.start; if (!st || !st.rows) return;
+    const lines = st.rows.filter(r => st.sel.has(r.vid) && +(st.qty.get(r.vid) || 0) > 0).map(r => ({ id: newId(), vid: r.vid, asku: "", dest: "shopify", qty: String(+st.qty.get(r.vid)), cost: fmtCost(r.cost),
+      received: 0, backorder: false, eta: "", auto: false, upd: false, costApplied: null, costAppliedAt: "" }));
+    if (!lines.length) return;
+    keepStart(p => { p.vendor = st.vendor; p.days = st.days; p.packs = p.packs || {}; p.packs[st.vendor.toLowerCase()] = st.pack; });
+    const name = (st.name || `${monthTag()} ${st.vendor}`).trim();
+    S.start = null;
+    openPO(null, { vendor: st.vendor, po: name, lines, dirty: true, note: `Started from the reorder list: ${st.days} days of stock${st.pack > 1 ? `, case pack ${st.pack}` : ""}.` });
+    note("info", `${lines.length} product${lines.length === 1 ? "" : "s"} from the reorder list. Check the quantities, then <b>Save &amp; approve</b>.`);
+  }
+  function bindStart(showShop) {
+    const host = $("po-start-host");
+    host.addEventListener("click", (e) => {
+      const st = S.start; if (!st) return; const t = e.target;
+      if (t.closest("[data-ps-close]")) { S.start = null; renderStart(); return; }
+      if (t.closest("[data-ps-go]")) { readStart(); const pr = startPrefs(); if (!st.packTouched) st.pack = (pr.packs || {})[st.vendor.toLowerCase()] || st.pack; keepStart(p => { p.vendor = st.vendor; p.days = st.days; }); loadPlan(); return; }
+      if (t.closest("[data-ps-empty]")) { readStart(); const v = st.vendor; S.start = null; openPO(null, v ? { vendor: v } : {}); return; }
+      if (t.closest("[data-ps-all]")) { readStart(); st.all = !st.all; renderStart(); return; }
+      if (t.closest("[data-ps-create]")) { createFromStart(); return; }
+      const cb = t.closest("[data-ps-sel]"); if (cb) { readStart(); const id = cb.dataset.psSel; if (cb.checked) { st.sel.add(id); if (!(+(st.qty.get(id) || 0) > 0)) { const r = st.rows.find(x => x.vid === id); st.qty.set(id, String(Math.max(st.pack, planRow(st, r).sugg || st.pack))); } } else st.sel.delete(id); renderStart(); return; }
+      const all = t.closest("[data-ps-allsel]"); if (all) { readStart(); for (const r of st.rows || []) { if (all.checked && +(st.qty.get(r.vid) || 0) > 0) st.sel.add(r.vid); else if (!all.checked) st.sel.delete(r.vid); } renderStart(); }
+    });
+    host.addEventListener("input", (e) => {
+      const st = S.start; if (!st) return; const t = e.target;
+      if (t.dataset.psQty) { const id = t.dataset.psQty; st.qty.set(id, t.value.replace(/[^\d]/g, "")); if (+st.qty.get(id) > 0) st.sel.add(id); else st.sel.delete(id); clearTimeout(t._t); t._t = setTimeout(() => { readStart(); renderStart(); }, 400); return; }
+      if (t.id === "ps-pack") st.packTouched = true;
+    });
+    host.addEventListener("keydown", (e) => { if (e.key === "Enter" && ["ps-vendor", "ps-days", "ps-pack"].includes(e.target.id)) { e.preventDefault(); host.querySelector("[data-ps-go]").click(); }
+      if (e.key === "Escape") { S.start = null; renderStart(); } });
+    host.addEventListener("change", (e) => { const st = S.start; if (!st) return;
+      if (e.target.id === "ps-pack" || e.target.id === "ps-days") { readStart(); if (st.rows) { planQty(st); renderStart(); } } });
+  }
+
   function bind() {
     const tab = $("tab-po"), box = $("po-edit-view");
     const showShop = (on) => {
@@ -2283,7 +2406,6 @@
       S.listView = on ? "shop" : "ss"; render();
       if (on) { loadShopPos(true).then(render, (e) => note("bad", "Couldn't load the Shopify POs: " + esc(JT.message(e)))); if (!S.orders) loadOrders(false).then(render).catch(() => {}); }
     };
-    $("po-shopapi").addEventListener("click", () => showShop(true));
     $("po-listview").addEventListener("click", (e) => { const b = e.target.closest("button[data-lv]"); if (b) showShop(b.dataset.lv === "shop"); });
     $("po-pickshop-host").addEventListener("click", (e) => {
       const t = e.target.closest("[data-ps-take]"); if (t) { newFromApi(t.dataset.psTake); return; }
@@ -2295,7 +2417,8 @@
       if (c && c.dataset.ps === "more" && S.pickShop) { S.pickShop.shown += 200; render(); }
     });
     $("po-pickshop-host").addEventListener("input", (e) => { if (e.target.dataset.ps === "q" && S.pickShop) { S.pickShop.q = e.target.value; S.pickShop.shown = 100; render(); } });
-    $("po-new").addEventListener("click", () => { if (S.ed && S.ed.dirty) return leave(); note("", ""); openPO(null); });
+    $("po-new").addEventListener("click", () => openStart());
+    bindStart(showShop);
     $("po-shopnew").addEventListener("change", (ev) => { const f = ev.target.files[0]; ev.target.value = "";
       if (S.ed && S.ed.dirty) { note("warn", "Save or leave the PO you're working on first, then upload the Shopify PO."); return; }
       S.ed = null; note("", ""); newFromShopPdf(f); });
@@ -2304,6 +2427,8 @@
     $("po-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; renderList(); });
     $("po-stage").addEventListener("click", (e) => { const b = e.target.closest("button[data-st]"); if (b) { S.stage = b.dataset.st; renderList(); } });
     tab.addEventListener("click", (e) => { if (e.target.closest("[data-lv-go]")) { showShop(true); return; }
+      if (e.target.closest("[data-po-start]")) { openStart(); return; }
+      const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); return; }
       const ap = e.target.closest("[data-po-approve]"); if (ap) { e.stopPropagation(); approveOrder(ap.dataset.poApprove); return; }
       const mk = e.target.closest("[data-po-mark]"); if (mk) { e.stopPropagation(); markOrdered(mk.dataset.poMark); return; }
       const ln = e.target.closest("[data-olane]"); if (ln) { S.stage = S.stage === ln.dataset.olane && !ln.classList.contains("il-more") ? "open" : ln.dataset.olane; renderList();

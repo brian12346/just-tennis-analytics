@@ -736,26 +736,23 @@
     </section>
   </div>
   <div id="tab-po" hidden>
-    <header class="top">
+    <header class="top po-hdr">
       <div class="title">
-        <span class="eyebrow">Vendor purchase orders · approve, order, invoice, receive, record</span>
         <h1>Orders</h1>
+        <span class="status" id="po-status" aria-live="polite">Loading orders…</span>
       </div>
       <div class="controls">
-        <button class="btn" id="po-refresh">Refresh</button>
-        <button class="btn" id="po-shopapi" title="Your Shopify POs: create a Seller Sage PO from one, with every product, quantity and cost, already checked">From Shopify PO</button>
-        <label class="btn" for="po-shopnew" title="Download the PO from Shopify as a PDF and upload it: the PO is filled in from it and checked against it">From PDF</label>
+        <div class="seg sm" id="po-listview" role="group" aria-label="Which purchase orders"><button data-lv="ss" aria-pressed="true">Seller Sage</button><button data-lv="shop" aria-pressed="false">Shopify POs</button></div>
+        <button class="btn icon" id="po-refresh" title="Refresh" aria-label="Refresh">↻</button>
+        <button class="btn primary" id="po-new" title="Start an order: pick the vendor and see what to reorder">+ New order</button>
         <input type="file" id="po-shopnew" accept=".pdf,application/pdf" hidden>
-        <button class="btn primary" id="po-new">New PO</button>
       </div>
     </header>
-    <div class="status" id="po-status" aria-live="polite">Loading orders…</div>
     <div id="po-notes-host"><div class="note info" id="po-busy" hidden aria-live="polite"></div>
     <div id="po-note" hidden></div></div>
     <div id="po-list-view">
-      <div class="seg" id="po-listview" role="group" aria-label="Which purchase orders"><button data-lv="ss" aria-pressed="true">Seller Sage POs</button><button data-lv="shop" aria-pressed="false">Shopify POs</button></div>
       <div id="po-pickshop-host"></div>
-      <section class="kpis" id="po-kpis" aria-label="Order totals"></section>
+      <div id="po-start-host"></div>
       <section class="il-lanes po-lanes" id="po-lanes" aria-label="Orders by status"></section>
       <section class="panel" id="po-sslist">
         <div class="panel-head">

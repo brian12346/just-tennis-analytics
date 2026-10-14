@@ -1100,3 +1100,47 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 @media (max-width:640px){ #tab-invoices .pmgrid.inv-fields{grid-template-columns:repeat(2,minmax(0,1fr))} .inv-pq .qb{grid-template-columns:1fr} }
 .td-from{color:var(--sales);font-weight:600}
 #td-as[hidden]{display:none}
+
+/* ---------- Orders: compact page, ten cards a lane on one screen (v0.15.0) ---------- */
+#tab-po{gap:10px}
+#tab-po > header.po-hdr{align-items:center;gap:8px 16px}
+#tab-po > header.po-hdr .title{flex-direction:row;align-items:baseline;gap:14px;flex-wrap:wrap}
+#tab-po > header.po-hdr .status{font-size:13px;min-height:0}
+#tab-po > header.po-hdr .status b{color:var(--ink)}
+.btn.icon{padding:6px 10px;font-size:16px;line-height:1}
+.btn.sm{padding:5px 10px;font-size:13px}
+.po-slim{font-size:13px;color:var(--muted);padding:4px 2px}
+.il-lanes.po-lanes{margin:0;gap:8px}
+.po-lanes .il-lane{padding:6px;gap:4px;border-radius:10px}
+.ol-headrow{display:flex;align-items:center;gap:6px;padding:2px 2px 0}
+.ol-headrow .il-head{flex:1;min-width:0;align-items:center;justify-content:flex-start;gap:6px}
+.ol-headrow .il-head .il-cnt{margin-left:auto}
+.ol-headrow .il-head b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ol-sum{font-weight:700;font-size:16px;line-height:20px;padding:0 2px 2px;font-variant-numeric:tabular-nums;color:var(--ink);letter-spacing:-0.01em}
+#po-pickshop-host:empty,#po-start-host:empty{display:none}
+#po-notes-host:not(:has(> :not([hidden]))){display:none}
+#po-list-view{gap:10px}
+.ol-add{flex:none;width:24px;height:24px;border-radius:50%;border:1px solid var(--primary);background:var(--primary);color:#fff;font-size:17px;line-height:20px;padding:0;cursor:pointer;font-weight:600}
+.ol-add:hover{filter:brightness(1.15)}
+.po-lanes .il-cards{gap:4px}
+.il-card.oc{padding:4px 8px;gap:0;border-radius:8px;font-size:12.5px;line-height:1.35}
+.il-card.oc .il-top b{font-size:12.5px}
+.il-card.oc .il-amt{font-size:12.5px;font-weight:600}
+.oc-2{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;font-size:11.5px;color:var(--muted)}
+.oc-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.oc-h{flex:none}
+.oc-h .mini{padding:0 6px;font-size:11px;line-height:17px}
+.oc-h .pill{font-size:10.5px;padding:0 6px}
+button.il-empty.ol-start{border:1px dashed var(--line);border-radius:8px;background:transparent;cursor:pointer;color:var(--sales);font:inherit;font-size:12px;padding:8px;text-align:center}
+button.il-empty.ol-start:hover{border-color:var(--sales);background:var(--sales-soft)}
+.po-start{padding:10px 12px;gap:8px}
+.ps-row{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center}
+.ps-title{font-size:15px}
+.ps-f{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.ps-or{font-size:13px;color:var(--muted)}
+.ps-x{margin-left:auto}
+.ps-tbl{max-height:min(420px,50vh);overflow:auto}
+.ps-tbl td,.ps-tbl th{padding:4px 8px}
+.ps-tbl td.l{white-space:normal;min-width:240px}
+#po-sslist{padding:10px 12px;gap:8px}
+@media (max-width:640px){ #tab-po > header.po-hdr .controls{display:flex;flex-wrap:wrap} }
