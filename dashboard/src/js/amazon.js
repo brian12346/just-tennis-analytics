@@ -39,6 +39,7 @@
     $("tab-amzmap").hidden = t !== "amzmap";
     document.querySelectorAll(".tabs button[data-tab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
     navSync(t);
+    { const h = document.querySelector(".appbar .ws.home"); if (h) h.setAttribute("aria-current", t === "todo" ? "page" : "false"); }
     try { history.replaceState(null, "", "#" + t); } catch (_) {}
     if (t === "amzmap") render(); else if (t === "amazon") renderSales(); else if (t === "psales") { if (window.psRender) window.psRender(); } else if (t === "costmap") { if (window.cmRender) window.cmRender(); } else if (t === "invoices") { if (window.invShow) window.invShow(); } else if (t === "amzmatch") { if (window.amShow) window.amShow(); } else if (t === "costs") { if (window.pcShow) window.pcShow(); } else if (t === "fba") { if (window.fbaShow) window.fbaShow(); } else if (t === "prep") { if (window.prepShow) window.prepShow(); } else if (t === "analyze") { if (window.anShow) window.anShow(); } else if (t === "po") { if (window.poShow) window.poShow(); } else if (t === "fbm") { if (window.fbmShow) window.fbmShow(); } else if (t === "alerts") { if (window.alertsShow) window.alertsShow(); } else if (t === "shipments") { if (window.shipShow) window.shipShow(); } else if (t === "anr") { if (window.anrShow) window.anrShow(); } else if (t === "amzres") { if (window.arShow) window.arShow(); } else if (t === "todo") { if (window.todoShow) window.todoShow(); } else window.dispatchEvent(new Event("resize"));
   }
@@ -54,7 +55,7 @@
     if (g) { const l = navLast(); l[g] = t; try { localStorage.setItem("jt-nav-last", JSON.stringify(l)); } catch (_) {} }
   }
   // the Seller Sage logo goes home (the To do list)
-  const home = document.querySelector(".appbar .lockup"); if (home) home.addEventListener("click", (e) => { e.preventDefault(); showTab("todo"); });
+  document.querySelectorAll(".appbar .lockup, .appbar .ws.home").forEach(a => a.addEventListener("click", (e) => { e.preventDefault(); showTab("todo"); }));
   document.querySelectorAll(".groups .grp").forEach(b => b.addEventListener("click", () => {
     const g = b.dataset.group, first = document.querySelector(`.subtabs button[data-group="${g}"]`);
     const last = navLast()[g], ok = last && document.querySelector(`.subtabs button[data-group="${g}"][data-tab="${last}"]`);

@@ -1033,8 +1033,10 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 @media (max-width:480px){.il-lanes.po-lanes{grid-template-columns:1fr}}
 
 /* ---------- To do list (home) ---------- */
-.tabs .todobtn{font-weight:600;display:inline-flex;align-items:center;gap:6px}
-.tabs .todobtn[aria-selected="true"]{color:#002676;background:#FFFFFF}
+/* "Just Tennis" (the business name) is home: the to do list */
+.appbar a.ws.home{display:inline-flex;align-items:center;gap:6px;color:var(--header-muted);text-decoration:none;cursor:pointer;border-radius:0 8px 8px 0;padding:3px 8px 3px 10px}
+.appbar a.ws.home:hover{color:var(--header-ink);background:var(--header-raised)}
+.appbar a.ws.home[aria-current="page"]{color:var(--header-ink);font-weight:600}
 .td-badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:#FDB515;color:#002676;font-size:11.5px;font-weight:700;line-height:18px;text-align:center}
 .appbar a.lockup{cursor:pointer}
 #tab-todo .seg .cnt{opacity:.6;font-size:.85em;margin-left:2px}
@@ -1096,3 +1098,5 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .inv-pq .qb-t th,.inv-pq .qb-t td{padding:3px 8px}
 @media (max-width:1100px){ #tab-invoices .pmgrid.inv-fields{grid-template-columns:repeat(3,minmax(0,1fr))} .inv-pq{grid-template-columns:1fr} }
 @media (max-width:640px){ #tab-invoices .pmgrid.inv-fields{grid-template-columns:repeat(2,minmax(0,1fr))} .inv-pq .qb{grid-template-columns:1fr} }
+.td-from{color:var(--sales);font-weight:600}
+#td-as[hidden]{display:none}

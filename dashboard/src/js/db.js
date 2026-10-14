@@ -284,13 +284,13 @@
     todo: {
       async save(body) {
         if (WEB) return Number(await WEB.write("jt_todo_save", { p: body }));
-        const out = await run(`select jt.todo_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as id`, true);
+        const out = await run(`select jt.todo_save(${q(JSON.stringify({ ...body, by: body.by || "Claude dashboard" }))}::jsonb) as id`, true);
         return Number(out[0] && out[0].id);
       },
-      async done(id, yes) {
+      async done(id, yes, by) {
         const body = { id: Number(id), done: yes !== false };
         if (WEB) return WEB.write("jt_todo_done", { p: body });
-        return run(`select jt.todo_done(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as ok`, true);
+        return run(`select jt.todo_done(${q(JSON.stringify({ ...body, by: by || "Claude dashboard" }))}::jsonb) as ok`, true);
       },
       async remove(id) {
         if (WEB) return WEB.write("jt_todo_delete", { p: { id: Number(id) } });
