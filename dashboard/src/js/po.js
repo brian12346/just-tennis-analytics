@@ -90,13 +90,15 @@
       "(select coalesce(sum(l.qty_ordered), 0) from jt.prep_order_lines l where l.order_id = o.id and l.dest = 'prep')", "o.receive_into",
       "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status",
       "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)", "o.no_shopify_po",
-      "o.approved_at::text", "o.approved_by", `(select count(*) ${IV} and ii.qbo_bill_id is not null)`],
+      "o.approved_at::text", "o.approved_by", `(select count(*) ${IV} and ii.qbo_bill_id is not null)`,
+      `(select string_agg(ii.id || ':' || (ii.received_at is not null)::int || (ii.qbo_bill_id is not null)::int || ':' || coalesce(nullif(ii.invoice_no, ''), '#' || ii.id), '|' order by ii.id) ${IV})`],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
       invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "", costsReady: +x[36] || 0, noShop: !!x[37],
-      approvedAt: x[38] || "", approvedBy: x[39] || "", nQB: +x[40] || 0 }))
+      approvedAt: x[38] || "", approvedBy: x[39] || "", nQB: +x[40] || 0,
+      invs: (x[41] || "").split("|").filter(Boolean).map(t => { const [id, f, ...no] = t.split(":"); return { id, recv: f[0] === "1", qb: f[1] === "1", no: no.join(":") }; }) }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
   }
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
@@ -1031,8 +1033,12 @@
       : k === "invoiced" ? (o.received > 0 ? `<span class="pill manual">${n0(o.received)}/${n0(o.units)} in</span>` : `<span class="dim">${n0(left)} to come</span>`)
       : k === "received" ? (o.nInv ? `<span class="pill warn" title="Bills to enter in QuickBooks">${o.nInv - o.nQB} for QB</span>` : '<span class="pill pos">no invoice</span>')
       : `<span class="dim">${esc(when(o.stageAt.received || o.updated))}</span>`;
+    // the invoice, one click away (Brian, Oct 14): the next one that needs something — to receive, then to enter in QuickBooks
+    const iv = ["invoiced", "received", "recorded"].includes(k) && o.invs && o.invs.length
+      ? (k === "invoiced" ? o.invs.find(v => !v.recv) : k === "received" ? o.invs.find(v => !v.qb) : null) || o.invs[o.invs.length - 1] : null;
+    const ivChip = iv ? `<button class="oc-inv" type="button" data-inv-open="${esc(iv.id)}" title="Open invoice ${esc(iv.no)}${o.invs.length > 1 ? ` (${o.invs.length} invoices on this order)` : ""}">${o.invs.length > 1 ? `${o.invs.length} inv` : "Inv"} ${esc(String(iv.no).replace(/^#/, "").slice(-6))} →</button>` : "";
     return `<div class="il-card oc" role="button" tabindex="0" data-po-open="${esc(o.id)}" title="Open ${esc(o.vendor || "")} ${name}${o.shopifyUrl ? " (linked to a Shopify PO)" : ""}">
-      <span class="il-top"><b>${esc(o.vendor || "—")}</b><span class="il-amt">${m0(o.cost)}</span></span>
+      <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span><span class="il-amt">${m0(o.cost)}</span></span>
       <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${hint}</span></span></div>`;
   }
   function renderOLanes(all) {
@@ -2432,6 +2438,7 @@
     $("po-stage").addEventListener("click", (e) => { const b = e.target.closest("button[data-st]"); if (b) { S.stage = b.dataset.st; renderList(); } });
     tab.addEventListener("click", (e) => { if (e.target.closest("[data-lv-go]")) { showShop(true); return; }
       if (e.target.closest("[data-po-start]")) { openStart(); return; }
+      const ivo = e.target.closest("[data-inv-open]"); if (ivo) { e.stopPropagation(); if (S.ed && S.ed.dirty) return leave(); note("", ""); window.JTInvoices.open(ivo.dataset.invOpen); return; }
       const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); return; }
       const ap = e.target.closest("[data-po-approve]"); if (ap) { e.stopPropagation(); approveOrder(ap.dataset.poApprove); return; }
       const mk = e.target.closest("[data-po-mark]"); if (mk) { e.stopPropagation(); markOrdered(mk.dataset.poMark); return; }

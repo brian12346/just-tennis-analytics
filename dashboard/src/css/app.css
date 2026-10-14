@@ -1168,3 +1168,7 @@ button.il-empty.ol-start:hover{border-color:var(--sales);background:var(--sales-
 .dc-chg summary{cursor:pointer}
 .dc-small{max-height:260px;overflow:auto;margin-top:6px}
 .dc-hist{max-height:320px;overflow:auto}
+.oc-h{display:inline-flex;align-items:center;gap:4px}
+.oc-inv{border:1px solid var(--sales);background:var(--sales-soft);color:var(--sales);border-radius:999px;font:inherit;font-size:10.5px;font-weight:600;line-height:16px;padding:0 6px;cursor:pointer;white-space:nowrap}
+.oc-inv:hover{background:var(--sales);color:#fff}
+.oc-v{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden}.oc-v b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
