@@ -739,7 +739,10 @@ def sync_payment_fees(shop: "Shopify", conn, store: str = "justtennis", since: "
         cur.execute("""select min(processed_at) from jt.shopify_payment_tx
                        where store = %s and payout_id = '' and not test and processed_at > now() - interval '120 days'""", (store,))
         unpaid = cur.fetchone()[0]
-    start = since or (min(last - dt.timedelta(days=7), unpaid or last).date() if last else dt.date(2025, 1, 1))
+    # a day early: Shopify reads processed_at:>=<date> in the shop's time zone (Pacific), so a transaction from the
+    # evening before (Pacific) that is already the next day in UTC was never read again and never got its payout
+    # (Oct 14, 2026: order #22447's $233.30 charge left the Oct 13 payout short)
+    start = since or ((min(last - dt.timedelta(days=7), unpaid or last) - dt.timedelta(days=1)).date() if last else dt.date(2025, 1, 1))
     q, after, n = f"processed_at:>={start.isoformat()}", None, 0
     while True:
         try:
