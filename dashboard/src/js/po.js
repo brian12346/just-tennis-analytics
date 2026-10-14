@@ -89,12 +89,14 @@
       `(select count(*) ${IV} and ii.paid_on is null)`, `(select min(ii.due_date)::text ${IV} and ii.paid_on is null)`, `(select sum(coalesce(ii.total, ii.subtotal)) ${IV} and ii.paid_on is null)`, "o.shopify_po_url",
       "(select coalesce(sum(l.qty_ordered), 0) from jt.prep_order_lines l where l.order_id = o.id and l.dest = 'prep')", "o.receive_into",
       "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status",
-      "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)", "o.no_shopify_po"],
+      "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)", "o.no_shopify_po",
+      "o.approved_at::text", "o.approved_by", `(select count(*) ${IV} and ii.qbo_bill_id is not null)`],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
-      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "", costsReady: +x[36] || 0, noShop: !!x[37] }))
+      invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "", costsReady: +x[36] || 0, noShop: !!x[37],
+      approvedAt: x[38] || "", approvedBy: x[39] || "", nQB: +x[40] || 0 }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
   }
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
@@ -428,7 +430,7 @@
       const [h, ol, sh, ivs, lp] = await Promise.all([
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check", "o.shopify_received_at::text", "o.shopify_received_by",
           "(select max(seen_at) from jt.variants)::text", "o.shopify_po_status", "o.shopify_po_status_at::text",
-          "(select value::text from jt.settings where key = 'shopify_po_api')", "o.no_shopify_po"],
+          "(select value::text from jt.settings where key = 'shopify_po_api')", "o.approved_at::text", "o.approved_by", "o.no_shopify_po"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id, dest desc, amazon_sku`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
@@ -438,7 +440,7 @@
       ]);
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
-      ed.noShop = !!x[x.length - 1];
+      ed.noShop = !!x[x.length - 1]; ed.approvedAt = x[x.length - 3] || ""; ed.approvedBy = x[x.length - 2] || "";
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
         stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopUrl0: x[12] || "", shopCheck0: JSON.stringify(x[14] || null), shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
@@ -1008,6 +1010,55 @@
       k.addEventListener("click", () => window.JTReader.skip()); b.appendChild(k);
     }
   }
+  // ---------- Orders lanes (Brian, Oct 14) ----------
+  // Ready to approve → Awaiting submission → Ordered → Invoiced → Received → Recorded. A draft waits for Approve, then
+  // for "Mark ordered" once it's with the vendor; an invoice arriving makes it Invoiced (partly received counts there
+  // when it has one); fully received is Received until every invoice is in QuickBooks, then Recorded.
+  const OLANES = [["approve", "Ready to approve", "drafts waiting for approval"], ["submit", "Awaiting submission", "approved, not given to the vendor yet"],
+    ["ordered", "Ordered", "with the vendor, no invoice yet"], ["invoiced", "Invoiced", "invoice in, products to come"],
+    ["received", "Received", "in — bills not all in QuickBooks"], ["recorded", "Recorded", "received and in QuickBooks"]];
+  const OLANE_N = new Map(OLANES.map(([k, n]) => [k, n])), OLANE_P = { approve: "warn", submit: "pos", ordered: "manual", invoiced: "other", received: "ok", recorded: "ok" };
+  const laneOfO = (o) => o.status === "draft" ? (o.approvedAt ? "submit" : "approve") : o.status === "ordered" ? "ordered"
+    : o.status === "invoiced" ? "invoiced" : o.status === "partial" ? (o.nInv ? "invoiced" : "ordered")
+    : o.nInv > 0 && o.nQB >= o.nInv ? "recorded" : "received";
+  function oCard(o, k) {
+    const name = esc(o.po ? poLabel(o.po) : "#" + o.id), units = `${n0(o.units)} unit${o.units === 1 ? "" : "s"}`;
+    const hint = k === "approve" ? `<span class="dim">${n0(o.nLines)} product${o.nLines === 1 ? "" : "s"} · ${units}</span><span class="il-acts"><button class="mini primary" type="button" data-po-approve="${esc(o.id)}">Approve</button></span>`
+      : k === "submit" ? `<span class="dim">approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""}</span><span class="il-acts"><button class="mini" type="button" data-po-mark="${esc(o.id)}" title="It's been given to the vendor">Mark ordered</button></span>`
+      : k === "ordered" ? `<span class="dim">${units}${o.expected ? " · expected " + esc(shortDate(o.expected)) : o.stageAt.ordered ? " · ordered " + esc(when(o.stageAt.ordered)) : ""}</span>`
+      : k === "invoiced" ? (o.received > 0 ? `<span class="pill manual">${n0(o.received)} of ${n0(o.units)} in</span>` : `<span class="dim">${o.nInv} invoice${o.nInv === 1 ? "" : "s"} · ${units} to come</span>`)
+      : k === "received" ? `<span class="dim">received ${esc(when(o.stageAt.received || o.updated))}</span> ${o.nInv ? `<span class="pill warn">${o.nInv - o.nQB} bill${o.nInv - o.nQB === 1 ? "" : "s"} for QuickBooks</span>` : '<span class="pill pos">no invoice</span>'}`
+      : `<span class="dim">received ${esc(when(o.stageAt.received || o.updated))}</span>`;
+    return `<div class="il-card" role="button" tabindex="0" data-po-open="${esc(o.id)}" title="Open ${name}">
+      <span class="il-top"><b>${esc(o.vendor || "—")}</b><span class="il-amt">${m0(o.cost)}</span></span>
+      <span class="il-no"><span class="mono">${name}</span>${o.shopifyUrl ? ' · <span title="Linked to a Shopify PO">Shopify</span>' : ""}</span>
+      <span class="il-hint">${hint}</span></div>`;
+  }
+  function renderOLanes(all) {
+    const by = new Map(OLANES.map(([k]) => [k, []]));
+    for (const o of all) by.get(laneOfO(o)).push(o);
+    for (const k of ["approve", "submit", "ordered", "invoiced"]) by.get(k).sort((a, b) => String(a.created).localeCompare(String(b.created)));   // oldest waiting first
+    $("po-lanes").innerHTML = OLANES.map(([k, n, sub]) => {
+      const os = by.get(k), tot = os.reduce((a, o) => a + (o.cost || 0), 0), more = os.length - LANE_CARDS;
+      return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}">
+        <button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="Show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>
+        <div class="il-sub">${os.length ? `${m0(tot)} · ${sub}` : sub}</div>
+        <div class="il-cards">${os.slice(0, LANE_CARDS).map(o => oCard(o, k)).join("") || '<div class="il-empty">Nothing here</div>'}</div>
+        ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-olane="${k}">+ ${n0(more)} more in the table</button>` : ""}</div>`;
+    }).join("");
+  }
+  async function approveOrder(id, yes) {
+    S.busy = yes === false ? "Saving…" : "Approving…"; render();
+    try { await JT.po.approve(id, yes); S.busy = ""; await loadOrders(true); if (S.ed && S.ed.id === String(id)) await openPO(id); else render();
+      const o = (S.orders || []).find(x => x.id === String(id));
+      note("info", yes === false ? `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} is back in Ready to approve.` : `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} approved — it's in Awaiting submission until you mark it ordered.`); }
+    catch (e) { S.busy = ""; render(); note("bad", "Couldn't approve: " + esc(JT.message(e))); }
+  }
+  async function markOrdered(id) {
+    S.busy = "Saving…"; render();
+    try { await JT.prep.setOrderStatus(Number(id), "ordered"); S.busy = ""; await loadOrders(true); render(); const o = (S.orders || []).find(x => x.id === String(id)); note("info", `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} marked ordered.`); }
+    catch (e) { S.busy = ""; render(); note("bad", "Couldn't mark it ordered: " + esc(JT.message(e))); }
+  }
   function renderList() {
     if (S.mode !== "po" || $("tab-po").hidden) return;
     $("po-list-view").hidden = !!S.ed; $("po-edit-view").hidden = !S.ed;
@@ -1016,19 +1067,21 @@
     if (!S.spos && !S.sposLoading) { S.sposLoading = true; loadShopPos(false).then(() => render(), () => {}).finally(() => { S.sposLoading = false; }); }
     const shopView = S.listView === "shop";
     document.querySelectorAll("#po-listview button").forEach(b => b.setAttribute("aria-pressed", String((b.dataset.lv === "shop") === shopView)));
-    $("po-kpis").style.display = shopView ? "none" : ""; $("po-sslist").style.display = shopView ? "none" : "";
+    $("po-kpis").style.display = shopView ? "none" : ""; $("po-sslist").style.display = shopView ? "none" : ""; $("po-lanes").style.display = shopView ? "none" : "";
     const ph = $("po-pickshop-host"), hadFocus = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ps === "q";
     ph.innerHTML = pickShopHtml();
     if (hadFocus) { const i = ph.querySelector('[data-ps="q"]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
     const all = S.orders || [];
     const isOpen = (o) => o.status !== "complete";
     const needsShop = (o) => isOpen(o) && !o.shopifyUrl && !shopOffO(o);
-    const inStage = (o, st) => st === "open" ? isOpen(o) : st === "noshop" ? needsShop(o) : st === "all" ? true : o.status === st;
+    const isLane = (st) => OLANE_N.has(st);
+    const inStage = (o, st) => st === "open" ? isOpen(o) : st === "noshop" ? needsShop(o) : st === "all" ? true : isLane(st) ? laneOfO(o) === st : o.status === st;
     // a PO linked to a Shopify PO lives on the Shopify POs view (Brian, Oct 13); a search still finds it here
     const q = S.q.trim().toLowerCase().replace(/^#/, "");
     const onShop = (o) => !!(o.shopifyUrl || "").trim(), ssAll = all.filter(o => !onShop(o)), nShop = all.length - ssAll.length;
-    const cnt = (st) => ssAll.filter(o => inStage(o, st)).length;
-    $("po-stage").innerHTML = [["open", "Open"], ...STAGES, ["noshop", "Needs Shopify PO"], ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
+    const cnt = (st) => (isLane(st) ? all : ssAll).filter(o => inStage(o, st)).length;
+    if (S.orders) renderOLanes(all); else $("po-lanes").innerHTML = "";
+    $("po-stage").innerHTML = [["open", "Open"], ...OLANES.map(([k, n]) => [k, n]), ["noshop", "Needs Shopify PO"], ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
     const vs = [...new Set(all.map(o => o.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const vsel = $("po-vendor"); const want = ["all", ...vs].join("|");
     if (vsel.dataset.opts !== want) { vsel.innerHTML = `<option value="all">All vendors</option>` + vs.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join(""); vsel.dataset.opts = want; vsel.value = vs.includes(S.vendor) ? S.vendor : "all"; }
@@ -1040,23 +1093,23 @@
       { l: "Backordered", v: n0(all.reduce((a, o) => a + o.nBack, 0)), s: "products still to come on open POs" },
       { l: "Needs attention", v: n0(flagged.length), s: flagged.length ? "late, unmatched lines, guesses, no invoice" : "nothing flagged" },
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
-    const list = (q ? all : ssAll).filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
+    const list = (q || isLane(S.stage) ? all : ssAll).filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
     const t = $("po-table");
     if (!S.orders) { t.innerHTML = `<tbody><tr><td class="l muted">${S.loading ? "Loading…" : ""}</td></tr></tbody>`; return; }
-    t.innerHTML = `<thead><tr><th class="l">PO</th><th class="l">Vendor</th><th class="l">Stage</th><th>Products</th><th>Ordered</th><th>Invoiced</th><th>Received</th><th>Cost</th><th class="l">Invoices</th><th class="l">Dates</th><th class="l">Needs attention</th></tr></thead><tbody>${
+    t.innerHTML = `<thead><tr><th class="l">PO</th><th class="l">Vendor</th><th class="l">Status</th><th>Products</th><th>Ordered</th><th>Invoiced</th><th>Received</th><th>Cost</th><th class="l">Invoices</th><th class="l">Dates</th><th class="l">Needs attention</th></tr></thead><tbody>${
       list.map(o => {
         const fl = listFlags(o), got = GOT.includes(o.status);
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
         return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopOffO(o) && !o.shopifyUrl ? '<div><span class="small muted">Seller Sage only</span></div>' : o.shopifyUrl || o.shopDiffs != null ? `<div>${o.shopifyUrl ? `<a class="small" href="${esc(shopUrl(o.shopifyUrl))}" target="_blank" rel="noopener">Shopify PO ↗</a>` : '<span class="small muted">Shopify PO</span>'}${o.shopDiffs === 0 ? ' <span class="pill ok" title="Checked against the Shopify PO">matches</span>' : o.shopDiffs ? ` <span class="pill miss" title="Checked against the Shopify PO">${o.shopDiffs} difference${o.shopDiffs === 1 ? "" : "s"}</span>` : ""}${o.shopStatus ? " " + shopStatusPill(o.shopStatus) : ""}</div>` : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
-          <td class="l"><span class="pill ${PILL[o.status]}">${STAGE.get(o.status)}</span></td>
+          <td class="l"><span class="pill ${OLANE_P[laneOfO(o)]}" title="${esc(STAGE.get(o.status))}">${OLANE_N.get(laneOfO(o))}</span></td>
           <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
           <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null ? `<div class="meta">${m(o.invTotal)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
           <td class="l small">${dates}</td>
           <td class="l">${fl.map(f => `<span class="pill ${f[0] === "info" ? "pos" : "miss"}">${esc(f[1])}</span>`).join("")}</td></tr>`;
-      }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open purchase orders. Start one with New PO, then add the vendor's invoices to it." : "No purchase orders match."}</td></tr>`}</tbody>${nShop && !q ? `<tfoot><tr><td class="l muted small" colspan="11">${n0(nShop)} PO${nShop === 1 ? " is" : "s are"} linked to a Shopify PO — ${nShop === 1 ? "it's" : "they're"} under <button class="linkbtn" data-lv-go="shop">Shopify POs</button>. A search here still finds ${nShop === 1 ? "it" : "them"}.</td></tr></tfoot>` : ""}`;
+      }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open orders. Start one with New PO, then add the vendor's invoices to it." : "No orders match."}</td></tr>`}</tbody>${nShop && !q && !isLane(S.stage) ? `<tfoot><tr><td class="l muted small" colspan="11">${n0(nShop)} PO${nShop === 1 ? " is" : "s are"} linked to a Shopify PO — ${nShop === 1 ? "it's" : "they're"} under <button class="linkbtn" data-lv-go="shop">Shopify POs</button>. A search here still finds ${nShop === 1 ? "it" : "them"}.</td></tr></tfoot>` : ""}`;
   }
 
   // ---------- rendering: editor ----------
@@ -1213,9 +1266,9 @@
     const pdfOn = !!(iv && ed.showPdf && (iv.file || iv.parts));
     box.innerHTML = `
       <div class="po-top">
-        <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All purchase orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
+        <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
-        <div class="po-head"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor order")}</button> · <button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}</button>` : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
+        <div class="po-head"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor order")}</button> · <button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}</button>` : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ' <span class="pill warn">Ready to approve</span>') : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
         ${headStrip(ed, ro, both)}
         ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
       </div>
@@ -1520,7 +1573,9 @@
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     out.push(`<button class="btn ${ed.dirty && !NEXT[ed.status] ? "primary" : ""}" data-pact="save" ${busy}>Save</button>`);
-    if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
+    // a draft is approved first (Ready to approve → Awaiting submission), then marked ordered once it's with the vendor
+    if (ed.status === "draft" && !ed.approvedAt) out.push(`<button class="btn primary" data-pact="save-approve" ${busy} title="Approve this order: it moves to Awaiting submission until it's given to the vendor">Save &amp; approve</button>`);
+    else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
     // receive table has its own buttons)
     if (ed.id && true)
@@ -1712,6 +1767,8 @@
       JT.po.moveInvoice(Number(iv.id), Number(to)).then(async () => { S.busy = ""; ed.leaveOk = true; S.ed = null; note("", ""); await loadOrders(true); await loadInvList(true); await openInvoice(iv.id); note("info", `Invoice ${esc(iv.no || "")} is on ${esc((S.ed && S.ed.vendor) || "")} ${esc(S.ed && S.ed.po ? poLabel(S.ed.po) : "")} now.`); })
         .catch(err => { S.busy = ""; render(); note("bad", "Couldn't add it: " + esc(JT.message(err))); }); return; }
     if (a === "save-next" || a === "next-stage") return goStage(NEXT[ed.status][0]);
+    if (a === "save-approve") { (ed.dirty || !ed.id ? save(null, true) : Promise.resolve(ed.id)).then(id => { if (id) approveOrder(id); }); return; }
+    if (a === "unapprove" && ed.id) return approveOrder(ed.id, false);
     if (a === "do-complete") { ed.confirm = false; return save("complete"); }
     if (a === "confirm" && r) { r.confirmed = true; syncLines(ed); ed.dirty = true; render(); return; }
     if (a === "search" && r) { ed.search = { id: r.id, q: r.src.item_code || (r.src.description || "").split(/\s+/).slice(0, 4).join(" ") }; render(); setTimeout(() => { const i = $("pe-sq"); if (i) { i.focus(); i.select(); } }, 0); return; }
@@ -2248,7 +2305,13 @@
     $("po-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderList, 150); });
     $("po-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; renderList(); });
     $("po-stage").addEventListener("click", (e) => { const b = e.target.closest("button[data-st]"); if (b) { S.stage = b.dataset.st; renderList(); } });
-    tab.addEventListener("click", (e) => { if (e.target.closest("[data-lv-go]")) { showShop(true); return; } const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openPO(o.dataset.poOpen); } });
+    tab.addEventListener("click", (e) => { if (e.target.closest("[data-lv-go]")) { showShop(true); return; }
+      const ap = e.target.closest("[data-po-approve]"); if (ap) { e.stopPropagation(); approveOrder(ap.dataset.poApprove); return; }
+      const mk = e.target.closest("[data-po-mark]"); if (mk) { e.stopPropagation(); markOrdered(mk.dataset.poMark); return; }
+      const ln = e.target.closest("[data-olane]"); if (ln) { S.stage = S.stage === ln.dataset.olane && !ln.classList.contains("il-more") ? "open" : ln.dataset.olane; renderList();
+        if (S.stage !== "open") { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
+      const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openPO(o.dataset.poOpen); } });
+    $("po-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && e.target === o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     // a PDF dropped anywhere on the tab
     const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");

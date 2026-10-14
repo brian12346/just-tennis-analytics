@@ -52,7 +52,7 @@
     <button role="tab" data-tab="prep" data-group="prep" aria-selected="false" hidden>Prep</button>
     <button role="tab" data-tab="analyze" data-group="prep" aria-selected="false" hidden>Analyze</button>
     <button role="tab" data-tab="shipments" data-group="prep" aria-selected="false" hidden>Shipments</button>
-    <button role="tab" data-tab="po" data-group="buying" aria-selected="false" hidden>Purchase orders</button>
+    <button role="tab" data-tab="po" data-group="buying" aria-selected="false" hidden>Orders</button>
     <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" hidden>Invoices</button>
     <button role="tab" data-tab="amzres" data-group="buying" aria-selected="false" hidden>Amazon Research</button>
     <button role="tab" data-tab="costmap" data-group="setup" aria-selected="false" hidden>Shopify cost mapping</button>
@@ -717,8 +717,8 @@
   <div id="tab-po" hidden>
     <header class="top">
       <div class="title">
-        <span class="eyebrow">Vendor orders · create the PO, then add its invoices</span>
-        <h1>Purchase orders</h1>
+        <span class="eyebrow">Vendor purchase orders · approve, order, invoice, receive, record</span>
+        <h1>Orders</h1>
       </div>
       <div class="controls">
         <button class="btn" id="po-refresh">Refresh</button>
@@ -728,13 +728,14 @@
         <button class="btn primary" id="po-new">New PO</button>
       </div>
     </header>
-    <div class="status" id="po-status" aria-live="polite">Loading purchase orders…</div>
+    <div class="status" id="po-status" aria-live="polite">Loading orders…</div>
     <div id="po-notes-host"><div class="note info" id="po-busy" hidden aria-live="polite"></div>
     <div id="po-note" hidden></div></div>
     <div id="po-list-view">
       <div class="seg" id="po-listview" role="group" aria-label="Which purchase orders"><button data-lv="ss" aria-pressed="true">Seller Sage POs</button><button data-lv="shop" aria-pressed="false">Shopify POs</button></div>
       <div id="po-pickshop-host"></div>
-      <section class="kpis" id="po-kpis" aria-label="Purchase order totals"></section>
+      <section class="kpis" id="po-kpis" aria-label="Order totals"></section>
+      <section class="il-lanes po-lanes" id="po-lanes" aria-label="Orders by status"></section>
       <section class="panel" id="po-sslist">
         <div class="panel-head">
           <div class="seg" id="po-stage" role="group" aria-label="Stage"></div>

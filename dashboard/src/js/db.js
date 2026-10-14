@@ -594,6 +594,13 @@
         const out = await run(`select jt.invoice_save_alone(${q(JSON.stringify(body))}::jsonb) as id`, true);
         return Number(out[0] && out[0].id);
       },
+      // approve a draft order (Ready to approve → Awaiting submission), or undo it (migration 142)
+      async approve(id, yes) {
+        const body = { id: Number(id), approve: yes !== false };
+        if (WEB) return WEB.write("jt_po_approve", { p: body });
+        const out = await run(`select jt.po_approve(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb)::text as r`, true);
+        return out[0] && out[0].r;
+      },
       // put a saved invoice on another purchase order (or link one that has none) — jt.invoice_move
       async moveInvoice(invoiceId, orderId) {
         const body = { invoice_id: invoiceId, order_id: orderId };

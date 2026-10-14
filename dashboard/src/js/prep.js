@@ -972,7 +972,7 @@
         ${editLines ? `<td><button class="linkbtn small" data-orm="${esc(l.key)}" aria-label="Remove ${esc(l.title)}">✕</button></td>` : ""}</tr>`; }).join("");
     const inv = M.invoiceId && invList ? invList.find(x => x.id === String(M.invoiceId)) : null;
     const out = M.o ? (M.o.shipments || []) : [];
-    return `<div class="panel-head"><h2>${M.id ? esc(M.vendor || "Vendor order") + " · " + esc(M.po ? poLabel(M.po) : "#" + M.id) : "New vendor order"}</h2><span class="steps six">${steps}</span>${M.id && window.JTPO ? `<button class="mini" data-fix="pofull">Open in Purchase orders</button>` : ""}<button class="mini" data-act="close">Close</button></div>
+    return `<div class="panel-head"><h2>${M.id ? esc(M.vendor || "Vendor order") + " · " + esc(M.po ? poLabel(M.po) : "#" + M.id) : "New vendor order"}</h2><span class="steps six">${steps}</span>${M.id && window.JTPO ? `<button class="mini" data-fix="pofull">Open in Orders</button>` : ""}<button class="mini" data-act="close">Close</button></div>
       ${issuesHtml(iss)}
       <div class="pmgrid">
         <label class="stack" for="po-vendor">Vendor<input id="po-vendor" class="inp" list="po-vendors" value="${esc(M.vendor)}" ${got ? "disabled" : ""} autocomplete="off"><datalist id="po-vendors">${vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>

@@ -48,7 +48,7 @@
     const hiddenStock = D.kind === "all" && counts.has("stock") && D.rows.length > LIMIT;
     d.innerHTML = `<div class="dlg-head"><h2>What changed in Shopify</h2>
         <label class="small muted">Sync <select id="chg-run" class="inp sm">${D.runs.map(([t, n]) => `<option value="${esc(t)}" ${t === D.run ? "selected" : ""}>${esc(fmtRun(t))} · ${n} change${n === 1 ? "" : "s"}</option>`).join("") || '<option value="">no syncs recorded yet</option>'}</select></label>
-        <button class="mini ${D.applied ? "" : "primary"}" data-apply title="Reload the Shopify products in every tab (Purchase orders, Invoices, Prep center, Inventory value...)">${D.applied ? "✓ All tabs updated" : "Update all tabs"}</button>
+        <button class="mini ${D.applied ? "" : "primary"}" data-apply title="Reload the Shopify products in every tab (Orders, Invoices, Prep center, Inventory value...)">${D.applied ? "✓ All tabs updated" : "Update all tabs"}</button>
         <button class="mini" data-close aria-label="Close">Close</button></div>
       <div class="dlg-body">
         ${D.busy ? '<div class="muted">Loading…</div>' : !D.rows.length ? `<div class="muted">${D.runs.length ? "Nothing changed in this sync." : "No syncs with changes recorded yet. Changes are recorded from the next sync from Shopify on."}</div>` : `
