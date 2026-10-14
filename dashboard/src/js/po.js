@@ -1385,8 +1385,8 @@
       <div class="po-top">
         <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right"><button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
-        <div class="po-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2></div>
-        ${ed.alone ? aloneSum() : `${invStepsHtml(ed, iv)}
+        <div class="po-head inv-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2>${ed.alone ? "" : invStepsHtml(ed, iv)}</div>
+        ${ed.alone ? aloneSum() : `
         <div class="po-sum"><span>Purchase order ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b> <label class="po-name">PO name <input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off" style="width:180px"></label>` : `<b>${poName}</b>`}${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
           <span class="dbtns">${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>`}
       </div>
@@ -1430,11 +1430,11 @@
         <td>${!lock ? `<button class="linkbtn small" data-pact="rmrow" data-k="${r.id}" title="Remove this invoice line" aria-label="Remove line">✕</button>` : ""}</td></tr>`;
     }).join("");
     return `
-      <div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""} ${iv.paidOn ? '<span class="pill ok">Paid</span>' : overdue(iv) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</span>
+      <div class="po-invbar"><span><b>Invoice details</b>${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}</span>
         <span class="dbtns">${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro && !(invTot(iv).g > 0) ? `<button class="mini" data-pact="rminv">${iv.isNew ? "Discard" : "Delete invoice"}</button>` : ""}</span></div>
       ${ed.confirm === "rminv" && ed.alone ? `<div class="note warn">${iv.id ? `Delete invoice ${esc(iv.no || "")}? It's removed for good.` : `Discard invoice ${esc(iv.no || "")}?`} <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, ${iv.id ? "delete" : "discard"} it</button><button class="mini" data-pact="no">Cancel</button></span></div>`
       : ed.confirm === "rminv" ? `<div class="note warn">${iv.isNew ? `Discard invoice ${esc(iv.no || "")}?` : `Delete invoice ${esc(iv.no || "")}? ${iv.status === "applied" ? "It was applied earlier, so it's only detached from the PO." : "It's deleted when you save."}`} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
-      <div class="pmgrid small-grid">
+      <div class="pmgrid inv-fields">
         <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lock ? "disabled" : ""}></label>
         <label class="stack" for="pe-invdate">Invoice date<input id="pe-invdate" class="inp" type="date" value="${esc(iv.date)}" ${lock ? "disabled" : ""}></label>
         <label class="stack" for="pe-invdue">Due date<input id="pe-invdue" class="inp" type="date" value="${esc(iv.due)}" ${ro ? "disabled" : ""}></label>
@@ -1442,8 +1442,7 @@
         <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lock ? "disabled" : ""}></label>
         <label class="stack" for="pe-invtotal">Invoice total<input id="pe-invtotal" class="inp num" value="${iv.total != null ? iv.total.toFixed(2) : ""}" ${ro ? "disabled" : ""}></label>
       </div>
-      ${payHtml(ed, iv)}
-      ${qbHtml(ed, iv)}
+      <div class="inv-pq">${payHtml(ed, iv)}${qbHtml(ed, iv)}</div>
       ${iss.length ? window.JTIssues.issuesHtml(iss) : ""}
       ${iv.fromPo && !lock && iv.rows.some(r => r.fromPo) ? `<div class="note info frompo">Lines filled in from the PO (the invoice's own lines couldn't be read). Compare them with the PDF${pdfOn ? " alongside" : ""}: fix any quantity or cost that's different, and remove products that aren't on this invoice. <span class="dbtns">${iv.rows.some(r => !r.vid && !r.skip) ? `<button class="mini" data-pact="dropunread">Remove the ${iv.rows.filter(r => !r.vid && !r.skip).length} unmatched line${iv.rows.filter(r => !r.vid && !r.skip).length === 1 ? "" : "s"}</button>` : ""}<button class="mini" data-pact="clearpo">Clear the PO lines</button></span></div>` : ""}
       <div class="po-body ${pdfOn ? "with-pdf" : ""}">
@@ -1501,9 +1500,8 @@
     if (ed.alone) return `<div class="qb"><div class="qb-head"><b>QuickBooks</b><span class="qb-state muted small">Send the bill once the invoice is on its purchase order.</span><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button></div></div>`;
     const ba = byAccount(iv), diff = iv.total != null ? Math.round((iv.total - ba.all) * 100) / 100 : null;
     return `<div class="qb"><div class="qb-head"><b>QuickBooks</b><span class="qb-state">${qbState(ed, iv, ba, diff)}</span><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button></div>${qbPick(ed, iv)}
-      <dl class="qb-meta"><div><dt>Vendor</dt><dd>${esc(ed.vendor || "—")}</dd></div><div><dt>Bill no.</dt><dd class="mono">${esc(iv.no || "—")}</dd></div><div><dt>Bill date</dt><dd>${esc(iv.date || "—")}</dd></div>
-        <div><dt>Due date</dt><dd>${esc(iv.due || "—")}</dd></div><div><dt>Terms</dt><dd>${esc(iv.terms || "—")}</dd></div>${ed.po ? `<div><dt>PO / memo</dt><dd class="mono">${esc(ed.po)}</dd></div>` : ""}<div><dt>Payment</dt><dd>${iv.paidOn ? esc(payTxt(iv)) : "Unpaid"}</dd></div></dl>
-      <table class="qb-t"><thead><tr><th class="l">Account</th><th>Amount</th></tr></thead><tbody>${ACCOUNTS.map(([k, n]) => `<tr><td class="l">${n}</td><td>${m(ba.out.get(k) || 0)}</td></tr>`).join("")}</tbody>
+      <div class="qb-line small" title="Vendor, bill number, dates and terms are the invoice's own (above)">Bill to <b>${esc(ed.vendor || "—")}</b> · no. <span class="mono">${esc(iv.no || "—")}</span>${ed.po ? ` · memo <span class="mono">${esc(ed.po)}</span>` : ""} · ${iv.paidOn ? esc(payTxt(iv)) : "unpaid"}</div>
+      <table class="qb-t"><thead><tr><th class="l">Account</th><th>Amount</th></tr></thead><tbody>${ACCOUNTS.filter(([k]) => Math.abs(ba.out.get(k) || 0) >= 0.005 || k === "inventory").map(([k, n]) => `<tr><td class="l">${n}</td><td>${m(ba.out.get(k) || 0)}</td></tr>`).join("")}</tbody>
         <tfoot><tr><td class="l">Total</td><td>${m(ba.all)}</td></tr>${diff != null ? `<tr class="${Math.abs(diff) >= 0.01 ? "off" : "ok"}"><td class="l">Invoice total</td><td>${m(iv.total)}${Math.abs(diff) >= 0.01 ? ` <span class="small">(${diff > 0 ? "+" : ""}${m(diff)} not assigned)</span>` : ' <span class="small">✓ matches</span>'}</td></tr>` : ""}</tfoot></table></div>`;
   }
   // sent to QuickBooks as a bill, or the button to send it (once: QuickBooks is checked for the same bill number first)
