@@ -200,6 +200,38 @@ def test_catalog_resolves_new_products_on_shopify_pos(conn):
     assert cur.fetchall() == [("PO4242", "Solinco", "ordered", 5, 12)]
 
 
+def test_invoice_without_po_attaches_to_its_shopify_po(conn):
+    # an invoice saved on its own (migration 141), then the Shopify PO built from it syncs in
+    sh.sync_catalog(FakeShopify(), conn, dt.date(2026, 10, 14))
+    cur = conn.cursor()
+    import json
+    inv = {"vendor": "Solinco", "invoice_no": "S-9", "lines": [
+        {"item_code": "HG17", "qty": 12, "unit_cost": 6.5, "variant_id": 5, "match_how": "sku"},
+        {"item_code": "", "description": "Freight", "qty": 1, "unit_cost": 9, "match_how": "skip", "account": "inbound_shipping"}]}
+    cur.execute("select jt.invoice_save_alone(%s::jsonb)", (json.dumps(inv),))
+    iid = cur.fetchone()[0]
+    cur.execute("select jt.invoice_save_alone(%s::jsonb)", (json.dumps({"vendor": "Solinco", "invoice_no": "S-10", "lines": [
+        {"item_code": "BAG", "qty": 1, "unit_cost": 20, "variant_id": 6, "match_how": "sku"}]}),))
+    other = cur.fetchone()[0]
+    cur.execute("select order_id, bool_and(not l.update_cost) from jt.invoices i join jt.invoice_lines l on l.invoice_id = i.id where i.id = %s group by 1", (iid,))
+    assert cur.fetchone() == (None, True)                             # no PO, and no Shopify cost updates
+    conn.commit()
+    cur.execute("""insert into jt.shopify_pos (id, name, status, supplier, created_at, lines_synced, raw)
+                   values (4343, '#PO4343', 'ORDERED', 'Solinco', now(), now(), '{}')""")
+    cur.execute("""insert into jt.shopify_po_lines (po_id, line_id, variant_id, sku, title, qty, qty_received, cost, raw)
+                   values (4343, 'l1', 5, 'HG17', 'Hyper G Set', 12, 0, 6.5, '{}')""")
+    conn.commit()                                                     # the import and the attach run at commit
+    cur.execute("""select o.status, i.id from jt.shopify_pos p join jt.prep_orders o on o.id = p.ss_order_id
+                   join jt.invoices i on i.order_id = o.id where p.id = 4343""")
+    assert cur.fetchall() == [("invoiced", iid)]
+    cur.execute("select order_id from jt.invoices where id = %s", (other,))
+    assert cur.fetchone()[0] is None                                  # different products: left alone
+    import pytest, psycopg
+    with pytest.raises(psycopg.errors.RaiseException):                # on a PO now: it saves with its PO
+        cur.execute("select jt.invoice_save_alone(%s::jsonb)", (json.dumps({"id": iid, "vendor": "Solinco"}),))
+    conn.rollback()
+
+
 def test_invoice_apply_queues_cost_and_price(conn):
     shop = FakeShopify()
     sh.sync_catalog(shop, conn, dt.date(2026, 9, 24))

@@ -588,6 +588,12 @@
         const out = await run(`select jt.po_save(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as r`, true);
         return out[0] && out[0].r;
       },
+      // an invoice saved on its own, before there's a PO for it (migration 141) -> its id
+      async saveInvoiceAlone(body) {
+        if (WEB) return Number(await WEB.write("jt_invoice_save_alone", { p: body }));
+        const out = await run(`select jt.invoice_save_alone(${q(JSON.stringify(body))}::jsonb) as id`, true);
+        return Number(out[0] && out[0].id);
+      },
       // put a saved invoice on another purchase order (or link one that has none) — jt.invoice_move
       async moveInvoice(invoiceId, orderId) {
         const body = { invoice_id: invoiceId, order_id: orderId };

@@ -328,16 +328,22 @@
     return [...by.values()].map(r => ({ ...r, unit: r.qty ? r.ext / r.qty : 0 }));
   }
   async function shopifyCsv(ed) {
-    const rows = shopifyCsvRows(ed), q = (x) => /[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : String(x);
-    if (!rows.length) { note("warn", "Nothing to export — no products with a quantity."); return; }
-    const bad = rows.filter(r => !r.sku && !r.upc);
-    const lines = ["SKU,Barcode,Quantity,Cost", ...rows.filter(r => r.sku || r.upc).map(r => [r.sku, r.sku ? "" : r.upc, r.qty, r.unit.toFixed(2)].map(q).join(","))];
-    await saveFile(fileBase(ed) + "_shopify-import.csv", lines.join("\n") + "\n", "text/csv");
-    const u = rows.reduce((a, r) => a + r.qty, 0), t = rows.reduce((a, r) => a + r.ext, 0);
-    note(bad.length ? "warn" : "info", `Shopify import CSV: ${n0(rows.length - bad.length)} product${rows.length - bad.length === 1 ? "" : "s"}, ${n0(u)} units, ${m(t)}.`
+    await shopifyCsvDownload(shopifyCsvRows(ed), fileBase(ed), ed.shopCheck && ed.shopCheck.scope === "shopify" ? " Shopify-store lines only." : "");
+  }
+  // rows [{sku, upc, title, qty, ext, unit}] -> SKU,Barcode,Quantity,Cost; costs go in to the cent, so when a product's
+  // average isn't a whole cent the PO's total can be a few cents off — the note says by how much
+  async function shopifyCsvDownload(rows, base, extra) {
+    const q = (x) => /[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : String(x);
+    if (!rows.length) { note("warn", "Nothing to export — no matched products with a quantity."); return; }
+    const bad = rows.filter(r => !r.sku && !r.upc), ok = rows.filter(r => r.sku || r.upc);
+    const lines = ["SKU,Barcode,Quantity,Cost", ...ok.map(r => [r.sku, r.sku ? "" : r.upc, r.qty, r.unit.toFixed(2)].map(q).join(","))];
+    await saveFile(base + "_shopify-import.csv", lines.join("\n") + "\n", "text/csv");
+    const u = ok.reduce((a, r) => a + r.qty, 0), t = ok.reduce((a, r) => a + r.ext, 0), tr = ok.reduce((a, r) => a + r.qty * Number(r.unit.toFixed(2)), 0), off = Math.round((tr - t) * 100) / 100;
+    note(bad.length ? "warn" : "info", `Shopify import CSV: ${n0(ok.length)} product${ok.length === 1 ? "" : "s"}, ${n0(u)} units, ${m(t)}.`
+      + (Math.abs(off) >= 0.01 ? ` Averaged costs are rounded to the cent, so Shopify's total will be ${m(Math.abs(off))} ${off > 0 ? "higher" : "lower"} — add a ${off > 0 ? "discount" : "surcharge"} of ${m(Math.abs(off))} on the Shopify PO to match.` : "")
       + (bad.length ? ` Left out (no SKU or barcode in Shopify): ${bad.map(r => esc(r.title)).join(", ")} — add those by hand.` : "")
-      + (ed.shopCheck && ed.shopCheck.scope === "shopify" ? " Shopify-store lines only." : "")
-      + " In Shopify, products already on the PO are skipped on import.");
+      + (extra || "")
+      + " In Shopify: create the purchase order, click the Import icon next to “Search products to add”, and add this file (products already on the PO are skipped).");
   }
   function vendorHtml(ed) {
     const rows = vendorRows(ed), cost = !S.vnocost, u = rows.reduce((a, r) => a + r.qty, 0), t = rows.reduce((a, r) => a + r.ext, 0);
@@ -426,9 +432,7 @@
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id, dest desc, amazon_sku`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
-        JT.rows(["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
-          "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id"],
-          `from jt.invoices i where i.order_id = ${JT.int(id)} or i.id = (select invoice_id from jt.prep_orders where id = ${JT.int(id)}) order by i.id`, true),
+        JT.rows(INV_COLS, `from jt.invoices i where i.order_id = ${JT.int(id)} or i.id = (select invoice_id from jt.prep_orders where id = ${JT.int(id)}) order by i.id`, true),
         // how this vendor was paid last time (for Mark paid)
         JT.rows(["i.pay_method", "i.paid_from"], `from jt.invoices i where i.vendor = (select vendor from jt.prep_orders where id = ${JT.int(id)}) and i.pay_method <> '' order by i.paid_on desc nulls last, i.id desc limit 1`, true),
       ]);
@@ -439,26 +443,8 @@
         stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopUrl0: x[12] || "", shopCheck0: JSON.stringify(x[14] || null), shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
-      ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
-        notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
-        paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "", att: v[23] || "" } : null }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
-      if (ed.invoices.length) {
-        const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account"],
-          `from jt.invoice_lines where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")}) order by invoice_id, line_no`, true);
-        const byId = new Map(ed.invoices.map(v => [v.id, v]));
-        for (const l of il) {
-          const iv = byId.get(l[0]); if (!iv) continue;
-          const hw = howFromSaved(l[8] ? l[9] : "");
-          iv.rows.push({ id: newId(), src: { item_code: l[2] || "", upc: l[3] || "", description: l[4] || "", qty: l[5] == null ? null : +l[5], unit_cost: l[6] == null ? null : +l[6], amount: l[7] == null ? null : +l[7] },
-            vid: l[8] || null, how: hw.how, conf: hw.conf, alts: [], confirmed: false, skip: l[9] === "skip", account: l[10] || "inventory",
-            qty: l[5] == null ? "" : String(+l[5]), cost: fmtCost(l[6]) });
-        }
-        for (const iv of ed.invoices) for (const r of iv.rows) if (needsCheck(r)) r.alts = guessLine(r.src, ed.vendor).alts;
-        const rc = await JT.rows(["invoice_id::text", "variant_id::text", "qty"], `from jt.invoice_receipts where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")})`, true).catch(() => []);
-        for (const [iid, vid, q] of rc) { const iv = byId.get(iid); if (iv) iv.got.set(vid, +q || 0); }
-        ed.cur = ed.invoices.length - 1;
-      }
+      await fillInvoices(ed, ivs);
       const dests = new Set(ed.lines.map(l => l.dest));
       ed.dest = dests.size > 1 || ed.into === "both" ? "both" : dests.size === 1 ? [...dests][0] : ed.into || "shopify";
       ed.showPdf = window.innerWidth >= 1100 && !!(cur(ed) && cur(ed).parts);
@@ -466,6 +452,98 @@
       if (cur(ed) && cur(ed).parts) loadFile(cur(ed)).then(() => { if (S.ed === ed) { const h2 = $("pe-pdf"); if (h2) h2.innerHTML = ""; renderPdf(); } }).catch(() => {});
     } catch (e) { S.busy = ""; S.ed = null; note("bad", esc(JT.message(e))); }
     render();
+  }
+
+  // the saved invoices of a PO (or the one invoice of an invoice saved without a PO): header, lines, receipts
+  const INV_COLS = ["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
+    "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id"];
+  async function fillInvoices(ed, ivs) {
+    ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
+      notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
+      paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "", att: v[23] || "" } : null }));
+    if (!ed.invoices.length) return;
+    const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account"],
+      `from jt.invoice_lines where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")}) order by invoice_id, line_no`, true);
+    const byId = new Map(ed.invoices.map(v => [v.id, v]));
+    for (const l of il) {
+      const iv = byId.get(l[0]); if (!iv) continue;
+      const hw = howFromSaved(l[8] ? l[9] : "");
+      iv.rows.push({ id: newId(), src: { item_code: l[2] || "", upc: l[3] || "", description: l[4] || "", qty: l[5] == null ? null : +l[5], unit_cost: l[6] == null ? null : +l[6], amount: l[7] == null ? null : +l[7] },
+        vid: l[8] || null, how: hw.how, conf: hw.conf, alts: [], confirmed: false, skip: l[9] === "skip", account: l[10] || "inventory",
+        qty: l[5] == null ? "" : String(+l[5]), cost: fmtCost(l[6]) });
+    }
+    for (const iv of ed.invoices) for (const r of iv.rows) if (needsCheck(r)) r.alts = guessLine(r.src, ed.vendor).alts;
+    const rc = await JT.rows(["invoice_id::text", "variant_id::text", "qty"], `from jt.invoice_receipts where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")})`, true).catch(() => []);
+    for (const [iid, vid, q] of rc) { const iv = byId.get(iid); if (iv) iv.got.set(vid, +q || 0); }
+    ed.cur = ed.invoices.length - 1;
+  }
+
+  // ---------- an invoice without a PO (Brian, Oct 14: "we often get the invoice first") ----------
+  // ed.alone: an editor holding one invoice and no PO. Saved with jt.invoice_save_alone; from here it's turned into a
+  // Shopify import CSV (to build the Shopify PO), starts a Seller Sage PO, or goes onto an existing PO. When a Shopify PO
+  // with exactly its products syncs in, the database attaches it to that PO by itself (migration 141).
+  async function openAlone(id) {
+    S.ed = null; S.busy = "Opening the invoice…"; render();
+    try {
+      await catalog();
+      if (!S.orders) await loadOrders(false);
+      const ivs = await JT.rows([...INV_COLS, "i.vendor"], `from jt.invoices i where i.id = ${JT.int(id)}`, true);
+      if (!ivs[0]) throw { code: "tool_error", message: "That invoice no longer exists." };
+      const ed = blankEd(); ed.alone = true; ed.vendor = ivs[0][INV_COLS.length] || "";
+      const lp = ed.vendor ? await JT.rows(["i.pay_method", "i.paid_from"], `from jt.invoices i where i.vendor = ${JT.q(ed.vendor)} and i.pay_method <> '' order by i.paid_on desc nulls last, i.id desc limit 1`, true) : [];
+      ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
+      await fillInvoices(ed, ivs.map(r => r.slice(0, INV_COLS.length)));
+      syncLines(ed);
+      S.ed = ed; S.busy = ""; S.pend = null; pdfToken++; showInvoicePage();
+    } catch (e) { S.busy = ""; S.ed = null; render(); note("bad", esc(JT.message(e))); }
+  }
+  async function saveAlone(quiet) {
+    const ed = S.ed, iv = ed && cur(ed); if (!ed || !iv || S.busy) return null;
+    if (!ed.vendor.trim()) { note("bad", "Enter the vendor."); return null; }
+    const b = iv.rows.find(r => r.qty !== "" && isNaN(Number(r.qty)) || r.cost !== "" && !(Number(r.cost) >= 0));
+    if (b) { note("bad", `Check the quantity and cost of ${esc(b.src.description || b.src.item_code)}.`); return null; }
+    const body = bodyOf(ed), first = !iv.id;
+    S.busy = "Saving…"; render();
+    try {
+      const id = String(await JT.po.saveInvoiceAlone({ ...body.invoices[ed.cur], remember: body.remember }));
+      iv.id = id;
+      if (iv.file && !iv.file.saved) { await uploadFile(id, iv.file); iv.file.saved = true; }
+      S.busy = "";
+      loadInvList(true).catch(() => {});
+      await openAlone(id);
+      if (!quiet) note("info", `Invoice <b>${esc(iv.no || id)}</b> ${first ? "saved" : "saved again"} — no PO yet.${body.remember.length ? " Matches are remembered for this vendor's next invoice." : ""} Build the Shopify PO from it with <b>Shopify import CSV</b>; when that PO syncs in, this invoice goes onto it by itself.`);
+      return id;
+    } catch (e) {
+      S.busy = ""; render();
+      const msg = (e && e.message) || "";
+      note("bad", /invoices_vendor_no_idx|duplicate key/i.test(msg) ? `Invoice ${esc(iv.no)} from ${esc(ed.vendor)} is already saved.` : "Couldn't save: " + esc(JT.message(e)));
+      return null;
+    }
+  }
+  // the invoice's products as Shopify import rows: matched lines only, one row per product (average cost when a product
+  // is on the invoice at two prices — Shopify takes each product once per PO)
+  function invCsvRows(iv) {
+    const by = new Map();
+    for (const r of iv.rows) {
+      if (!r.vid || r.skip || !isSure(r)) continue;
+      const q = Number(r.qty) || 0; if (q <= 0) continue;
+      const v = variant(r.vid), a = by.get(r.vid) || by.set(r.vid, { sku: v ? v.sku || "" : "", upc: v ? v.barcode || "" : "", title: v ? v.title || "" : "variant " + r.vid, qty: 0, ext: 0 }).get(r.vid);
+      a.qty += q; a.ext += q * (Number(r.cost) || 0);
+    }
+    return [...by.values()].map(r => ({ ...r, unit: r.qty ? r.ext / r.qty : 0 }));
+  }
+  async function aloneCsv(ed, iv) {
+    const rows = invCsvRows(iv), left = iv.rows.filter(r => !r.skip && (!r.vid || !isSure(r))).length;
+    await shopifyCsvDownload(rows, `${(ed.vendor || "vendor").replace(/[^A-Za-z0-9]+/g, "-")}_invoice-${String(iv.no || iv.id || "new").replace(/[^A-Za-z0-9]+/g, "-")}`,
+      left ? ` ${left} invoice line${left === 1 ? " isn't" : "s aren't"} matched to a product (or ${left === 1 ? "is a guess" : "are guesses"} to confirm) and ${left === 1 ? "isn't" : "aren't"} in the file.` : "");
+  }
+  function aloneLinkHtml(ed) {
+    const all = (S.orders || []).filter(o => o.status !== "complete");
+    const same = all.filter(o => o.vendor.toLowerCase() === (ed.vendor || "").toLowerCase()), rest = all.filter(o => !same.includes(o));
+    const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
+    return `<div class="note warn">Put this invoice on a purchase order:
+      <select id="pe-alonepo" class="inp sm" style="width:auto;max-width:320px">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
+      <span class="dbtns"><button class="mini primary" data-pact="alone-link-go" ${all.length ? "" : "disabled"}>Add it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
 
   // ---------- where each line stands ----------
@@ -571,7 +649,7 @@
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     note("warn", `<b>Which purchase order is invoice ${esc(inv.invoice_no || file0(pend))} from ${esc(inv.vendor || "this vendor")} for?</b>${inv.po_no ? ` It says PO # <span class="mono">${esc(inv.po_no)}</span>, which doesn't match an open PO.` : " No PO # was found on it."}
       <div class="row">${open.length ? `<select id="pe-pendpo" class="inp sm" style="width:auto;max-width:340px">${same.length ? `<optgroup label="${esc(inv.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="${same.length ? "Other vendors" : "Open purchase orders"}">${rest.map(opt).join("")}</optgroup>` : ""}</select><button class="mini primary" data-pend="pick">Add it to this PO</button>` : ""}
-      <button class="mini ${open.length ? "" : "primary"}" data-pend="new">Start a new PO from it</button><button class="mini" data-pend="cancel">Cancel</button></div>`);
+      <button class="mini" data-pend="new">Start a new PO from it</button><button class="mini ${open.length ? "" : "primary"}" data-pend="alone" title="Keep the invoice on its own for now: check its lines, build the Shopify PO from it (Shopify import CSV), and it goes onto that PO when it syncs in">Save the invoice only — no PO yet</button><button class="mini" data-pend="cancel">Cancel</button></div>`);
   }
   const file0 = (pend) => pend.f.name;
   async function pendGo(how) {
@@ -582,6 +660,7 @@
     if (how === "pick" && !pick) return;
     note("", "");
     if (how === "pick") { await openPO(pick); if (!S.ed) return; return attach(pend, S.ed, ""); }
+    if (how === "alone") { S.ed = Object.assign(blankEd(), { alone: true }); return attach(pend, S.ed, "This invoice is on its own — no PO yet. "); }
     S.ed = blankEd(); return attach(pend, S.ed, "A new purchase order starts from this invoice. ");
   }
   // the parsed invoice goes onto ed (a PO), and opens on the Invoices tab
@@ -643,22 +722,12 @@
       const r = await JT.rows(["coalesce(i.order_id, (select o.id from jt.prep_orders o where o.invoice_id = i.id limit 1))::text", "i.invoice_no", "i.vendor"], `from jt.invoices i where i.id = ${JT.int(id)}`, true);
       if (!r[0]) { note("bad", "That invoice no longer exists."); return; }
       const oid = r[0][0];
-      if (!oid) return linkChooser(String(id), r[0][1], r[0][2]);
+      if (!oid) return openAlone(String(id));
       if (!S.ed || S.ed.id !== oid) await openPO(oid);
       if (!S.ed) return;
       const i = S.ed.invoices.findIndex(v => v.id === String(id)); if (i >= 0) S.ed.cur = i;
       S.pend = null; pdfToken++; showInvoicePage();
     } catch (e) { note("bad", esc(JT.message(e))); }
-  }
-  // an older invoice saved without a PO: link it to one
-  function linkChooser(id, no, vendor) {
-    S.invOpen = false; render();
-    const open = (S.orders || []).filter(o => o.status !== "complete"), v = (vendor || "").toLowerCase();
-    const same = open.filter(o => o.vendor.toLowerCase() === v), rest = open.filter(o => !same.includes(o));
-    const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
-    note("warn", `<b>Invoice ${esc(no || id)} from ${esc(vendor || "?")} isn't on a purchase order yet.</b> Link it to one:
-      <div class="row"><select id="pe-linkpo" class="inp sm" style="width:auto;max-width:340px">${same.length ? `<optgroup label="${esc(vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other">${rest.map(opt).join("")}</optgroup>` : ""}</select>
-      <button class="mini primary" data-link="${esc(id)}" ${open.length ? "" : "disabled"}>Link it</button></div>`);
   }
   async function moveInvoice(iv, toOrder) {
     const ed = S.ed; S.busy = "Moving the invoice…"; render();
@@ -711,7 +780,7 @@
         <td class="l"><b class="mono">${esc(v.no || "(no number)")}</b>${invClosed(v) ? " " + closedPill : ""}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</td>
         <td class="l">${esc(v.vendor || "—")}</td>
         <td class="l small">${v.date ? esc(shortDate(v.date)) : '<span class="dim">—</span>'}</td>
-        <td class="l small">${v.oid ? `<button class="linkbtn small" data-po-go="${esc(v.oid)}">${esc(v.po ? poLabel(v.po) : "#" + v.oid)}</button> <span class="pill ${PILL[v.ostatus] || "pos"}">${esc(STAGE.get(v.ostatus) || "")}</span>` : '<span class="pill miss">No PO</span>'}</td>
+        <td class="l small">${v.oid ? `<button class="linkbtn small" data-po-go="${esc(v.oid)}">${esc(v.po ? poLabel(v.po) : "#" + v.oid)}</button> <span class="pill ${PILL[v.ostatus] || "pos"}">${esc(STAGE.get(v.ostatus) || "")}</span>` : '<span class="pill pos" title="Saved on its own — it goes onto its PO when that PO syncs in with the same products">No PO yet</span>'}</td>
         <td>${m(v.total)}</td>
         <td class="l small">${v.recvAt ? '<span class="pill ok">Received</span>' : v.got > 0 ? `<span class="pill manual">${n0(v.got)} of ${n0(v.billed)} in</span>` : v.billed ? '<span class="dim">not yet</span>' : '<span class="dim">—</span>'}</td>
         <td class="l small">${v.paidOn ? `<span class="pill ok">Paid</span> <span class="meta">${esc(shortDate(v.paidOn))}</span>` : v.due && v.due < today() ? `<span class="pill miss">Overdue</span> <span class="meta">due ${esc(shortDate(v.due))}</span>` : `<span class="pill warn">Unpaid</span>${v.due ? ` <span class="meta">due ${esc(shortDate(v.due))}</span>` : ""}`}</td>
@@ -1219,19 +1288,24 @@
     const poName = ed.id ? `${esc(ed.vendor || "Vendor")} · ${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}` : `New PO · ${esc(ed.vendor || "vendor")}${ed.po ? " " + esc(poLabel(ed.po)) : ""}`;
     const canMove = ed.id && iv.id && !iv.isNew && !ro && !(t.g > 0);
     // name the PO right here when the invoice starts a new one (or its PO has no name yet); stays a field while typing
-    const nameIn = !ed.id || !ed.po || ed.nameIn; if (nameIn) ed.nameIn = true;
+    const nameIn = !ed.alone && (!ed.id || !ed.po || ed.nameIn); if (nameIn) ed.nameIn = true;
+    const saved = ed.alone ? !!iv.id : !!ed.id;
+    // no PO yet: the vendor, and what to do with the invoice — build the Shopify PO from it, start a Seller Sage PO, or put it on one
+    const aloneSum = () => `<div class="po-sum alone"><span>Purchase order <b>none yet</b> <label class="po-name">Vendor <input id="pe-vendor" class="inp sm" list="pe-vendors" value="${esc(ed.vendor)}" autocomplete="off" placeholder="Shopify vendor" style="width:160px"><datalist id="pe-vendors">${S.vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label></span>
+          <span class="dbtns"><button class="mini primary" data-pact="alone-csv" title="Matched products, quantities and costs in Shopify's purchase-order import format — build the Shopify PO from this invoice">Shopify import CSV</button><button class="mini" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="mini" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`;
     box.innerHTML = `
       <div class="po-top">
-        <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
-          <span class="dbtns right"><button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
+        <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? '<span class="muted small">All changes saved</span>' : ""}
+          <span class="dbtns right"><button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
         <div class="po-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2></div>
-        ${invStepsHtml(ed, iv)}
+        ${ed.alone ? aloneSum() : `${invStepsHtml(ed, iv)}
         <div class="po-sum"><span>Purchase order ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b> <label class="po-name">PO name <input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off" style="width:180px"></label>` : `<b>${poName}</b>`}${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
-          <span class="dbtns">${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>
+          <span class="dbtns">${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>`}
       </div>
-      ${ed.confirm === "inv-move" ? moveHtml(ed) : ""}
+      ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
       <section class="panel po-inv" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>
-      ${!ed.id ? '<div class="note info">Saving creates the purchase order with this invoice on it. You can add or change products on the PO afterwards.</div>' : ""}`;
+      ${ed.alone ? `<div class="note info">${saved ? "This invoice isn't on a purchase order yet." : "Saving keeps this invoice on its own — no purchase order yet."} To build the Shopify PO from it, download the <b>Shopify import CSV</b> and add it with the Import icon on a new Shopify purchase order. When that PO syncs in with the same products, this invoice goes onto it by itself.</div>`
+        : !ed.id ? '<div class="note info">Saving creates the purchase order with this invoice on it. You can add or change products on the PO afterwards.</div>' : ""}`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
       if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} }
@@ -1270,7 +1344,8 @@
     return `
       <div class="po-invbar"><span><b>Invoice ${esc(iv.no || "(no number)")}</b>${iv.date ? " · " + esc(shortDate(iv.date)) : ""}${iv.total != null ? " · " + m(iv.total) : ""}${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""} ${iv.paidOn ? '<span class="pill ok">Paid</span>' : overdue(iv) ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'}</span>
         <span class="dbtns">${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro && !(invTot(iv).g > 0) ? `<button class="mini" data-pact="rminv">${iv.isNew ? "Discard" : "Delete invoice"}</button>` : ""}</span></div>
-      ${ed.confirm === "rminv" ? `<div class="note warn">${iv.isNew ? `Discard invoice ${esc(iv.no || "")}?` : `Delete invoice ${esc(iv.no || "")}? ${iv.status === "applied" ? "It was applied earlier, so it's only detached from the PO." : "It's deleted when you save."}`} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
+      ${ed.confirm === "rminv" && ed.alone ? `<div class="note warn">${iv.id ? `Delete invoice ${esc(iv.no || "")}? It's removed for good.` : `Discard invoice ${esc(iv.no || "")}?`} <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, ${iv.id ? "delete" : "discard"} it</button><button class="mini" data-pact="no">Cancel</button></span></div>`
+      : ed.confirm === "rminv" ? `<div class="note warn">${iv.isNew ? `Discard invoice ${esc(iv.no || "")}?` : `Delete invoice ${esc(iv.no || "")}? ${iv.status === "applied" ? "It was applied earlier, so it's only detached from the PO." : "It's deleted when you save."}`} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
       <div class="pmgrid small-grid">
         <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lock ? "disabled" : ""}></label>
         <label class="stack" for="pe-invdate">Invoice date<input id="pe-invdate" class="inp" type="date" value="${esc(iv.date)}" ${lock ? "disabled" : ""}></label>
@@ -1287,7 +1362,7 @@
         <div class="po-ivlines">
           <div class="panel-head"><h3 class="h3">Invoice lines</h3><div class="seg" role="group" aria-label="Show lines">${FILT.map(([k, t]) => `<button data-ifilter="${k}" aria-pressed="${iv.filter === k}">${t}</button>`).join("")}</div></div>
           ${iv.rows.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || '<tr><td class="l muted" colspan="7">No lines here.</td></tr>'}</tbody></table></div>` : '<div class="muted small">No lines on this invoice.</div>'}
-          ${!lock ? `<div class="row">${poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add line</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
+          ${!lock ? `<div class="row">${!ed.alone && poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add line</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
         </div>
         ${pdfOn ? `<aside class="po-pdf"><div class="panel-head"><h3 class="h3">Invoice PDF</h3><button class="mini" data-pact="pdf">Hide</button></div><div id="pe-pdf" class="pdfpages"></div></aside>` : ""}
       </div>
@@ -1335,6 +1410,7 @@
   // A bill as it goes into QuickBooks: header fields and one amount per account.
   function qbHtml(ed, iv) {
     if (!iv.rows.length) return "";
+    if (ed.alone) return `<div class="qb"><div class="qb-head"><b>QuickBooks</b><span class="qb-state muted small">Send the bill once the invoice is on its purchase order.</span><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button></div></div>`;
     const ba = byAccount(iv), diff = iv.total != null ? Math.round((iv.total - ba.all) * 100) / 100 : null;
     return `<div class="qb"><div class="qb-head"><b>QuickBooks</b><span class="qb-state">${qbState(ed, iv, ba, diff)}</span><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button></div>${qbPick(ed, iv)}
       <dl class="qb-meta"><div><dt>Vendor</dt><dd>${esc(ed.vendor || "—")}</dd></div><div><dt>Bill no.</dt><dd class="mono">${esc(iv.no || "—")}</dd></div><div><dt>Bill date</dt><dd>${esc(iv.date || "—")}</dd></div>
@@ -1457,6 +1533,7 @@
   }
   async function save(next, quiet) {
     const ed = S.ed; if (!ed || S.busy) return null;
+    if (ed.alone) return saveAlone(quiet);
     const p = problems(ed); if (p) { note("bad", p); return null; }
     const firstInvoice = ed.invoices.some(v => v.isNew), first = !ed.id, body = bodyOf(ed);
     S.busy = "Saving…"; render();
@@ -1591,6 +1668,14 @@
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
     if (a === "discard") { ed.leaveOk = true; return leave(); }
     if (a === "save") return save(null);
+    // an invoice without a PO
+    if (a === "alone-csv" && iv) return aloneCsv(ed, iv);
+    if (a === "alone-newpo" && iv) { ed.alone = false; ed.confirm = false; ed.nameIn = true; syncLines(ed); ed.dirty = true; render();
+      note("info", `A new purchase order starts from this invoice, with its ${n0(ed.lines.length)} matched product${ed.lines.length === 1 ? "" : "s"}. Name it, then Save.`); setTimeout(() => { const i = $("pe-po"); if (i) i.focus(); }, 0); return; }
+    if (a === "alone-link" && iv) { if (ed.dirty || !iv.id) { note("warn", "Save the invoice first, then add it to a PO."); return; } ed.confirm = "alone-link"; render(); return; }
+    if (a === "alone-link-go" && iv) { const to = ($("pe-alonepo") || {}).value; if (!to) return; S.busy = "Adding it to the PO…"; render();
+      JT.po.moveInvoice(Number(iv.id), Number(to)).then(async () => { S.busy = ""; ed.leaveOk = true; S.ed = null; note("", ""); await loadOrders(true); await loadInvList(true); await openInvoice(iv.id); note("info", `Invoice ${esc(iv.no || "")} is on ${esc((S.ed && S.ed.vendor) || "")} ${esc(S.ed && S.ed.po ? poLabel(S.ed.po) : "")} now.`); })
+        .catch(err => { S.busy = ""; render(); note("bad", "Couldn't add it: " + esc(JT.message(err))); }); return; }
     if (a === "save-next" || a === "next-stage") return goStage(NEXT[ed.status][0]);
     if (a === "do-complete") { ed.confirm = false; return save("complete"); }
     if (a === "confirm" && r) { r.confirmed = true; syncLines(ed); ed.dirty = true; render(); return; }
@@ -1633,6 +1718,9 @@
     if (a === "qbcopy" && iv) { const t = qbText(ed, iv); (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => note("info", "Copied the bill for QuickBooks."), () => note("info", `<pre class="qbpre">${esc(t)}</pre>`)); return; }
     if (a === "pdf") { ed.showPdf = !ed.showPdf; render(); return; }
     if (a === "rminv") { ed.confirm = "rminv"; render(); return; }
+    if (a === "do-rminv" && iv && ed.alone && iv.id) { S.busy = "Deleting…"; render();
+      JT.invoices.remove(iv.id).then(async (ok) => { S.busy = ""; ed.leaveOk = true; S.ed = null; S.invOpen = false; await loadInvList(true); render(); note(ok ? "info" : "warn", ok ? `Invoice ${esc(iv.no || "")} deleted.` : "That invoice can't be deleted (its costs were applied)."); })
+        .catch(err => { S.busy = ""; render(); note("bad", "Couldn't delete it: " + esc(JT.message(err))); }); return; }
     if (a === "do-rminv" && iv) { if (iv.id) ed.removed.push(iv.id); ed.invoices.splice(ed.cur, 1); ed.cur = ed.invoices.length - 1; ed.confirm = false; syncLines(ed); ed.dirty = true; pdfToken++;
       if (S.mode === "inv") { if (!ed.id && !ed.invoices.length) { ed.leaveOk = true; S.ed = null; S.invOpen = false; S.pend = null; note("info", "Invoice discarded."); render(); return; }
         S.invOpen = false; if (ed.id) { save(null, true).then(id => { if (id) { note("info", "Invoice deleted."); loadInvList(true).then(render); } }); return; } }
@@ -2142,9 +2230,6 @@
       const g = e.target.closest("[data-po-go]"); if (g) { e.stopPropagation(); S.invOpen = false; S.mode = "po"; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(g.dataset.poGo); return; }
       const o = e.target.closest("[data-inv-open]"); if (o && !e.target.closest("a")) { openInvoice(o.dataset.invOpen); return; }
       const pb = e.target.closest("[data-pend]"); if (pb) { pendGo(pb.dataset.pend); return; }
-      const lk = e.target.closest("[data-link]"); if (lk) { const to = ($("pe-linkpo") || {}).value; if (!to) return; S.busy = "Linking…"; render();
-        JT.po.moveInvoice(Number(lk.dataset.link), Number(to)).then(async () => { S.busy = ""; note("", ""); await loadOrders(true); await loadInvList(true); openInvoice(lk.dataset.link); })
-          .catch(err => { S.busy = ""; render(); note("bad", "Couldn't link it: " + esc(JT.message(err))); }); return; }
     });
     $("inv-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-inv-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openInvoice(o.dataset.invOpen); } });
     itab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); itab.classList.add("filedrop"); } });
