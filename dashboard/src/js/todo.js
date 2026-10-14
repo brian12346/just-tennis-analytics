@@ -55,7 +55,7 @@
   const bucket = (t) => t.due && t.due <= today() ? "today" : t.due && t.due <= plus(7) ? "week" : "later";
   const order = (a, b) => (b.important - a.important) || String(a.due || "9999").localeCompare(String(b.due || "9999")) || Number(a.id) - Number(b.id);
   const LINK = (l) => { const [k, id] = String(l || "").split(":"); return k === "po" ? "Order" : k === "invoice" ? "Invoice" : l ? l : ""; };
-  const KIND = { approve: ["Approve", "warn"], submit: ["Submit", "pos"], invfix: ["Invoice issue", "miss"], invpo: ["Build PO", "pos"], receive: ["Receive", "manual"], qbo: ["QuickBooks", "ok"] };
+  const KIND = { approve: ["Approve", "warn"], submit: ["Submit", "pos"], invfix: ["Invoice issue", "miss"], invpo: ["Build PO", "pos"], receive: ["Receive", "manual"], qbo: ["QuickBooks", "ok"], discont: ["Discontinued", "warn"] };
 
   function itemHtml(t) {
     if (S.form && S.form.id === t.id) return formHtml();

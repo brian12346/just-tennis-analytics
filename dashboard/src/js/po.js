@@ -2298,11 +2298,13 @@
     const st = S.start; if (!st || !st.vendor.trim()) return;
     st.loading = true; st.err = null; st.rows = null; renderStart();
     try {
-      const r = await JT.rows(["variant_id::text", "product_id::text", "title", "sku", "unit_cost", "shop90 + anr90 + amz90", "shop30 + anr30 + amz30", "shop90", "anr90", "amz90", "greatest(store, 0)", "prep", "amazon", "on_order"],
-        `from jt.reorder_plan(${JT.q(st.vendor.trim())})`, true);
+      const r = await JT.rows(["r.variant_id::text", "r.product_id::text", "r.title", "r.sku", "coalesce(s.list_cost, r.unit_cost)", "r.shop90 + r.anr90 + r.amz90", "r.shop30 + r.anr30 + r.amz30", "r.shop90", "r.anr90", "r.amz90", "greatest(r.store, 0)", "r.prep", "r.amazon", "r.on_order",
+        "coalesce(s.discontinued, false)", "coalesce(s.availability, '')", "s.list_cost is not null"],
+        `from jt.reorder_plan(${JT.q(st.vendor.trim())}) r left join jt.product_status s on s.variant_id = r.variant_id`, true);
       if (S.start !== st) return;
       st.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2] || "", sku: x[3] || "", cost: x[4] == null ? null : +x[4], s90: +x[5] || 0, s30: +x[6] || 0, shop: +x[7] || 0, anr: +x[8] || 0, amz: +x[9] || 0,
-        store: +x[10] || 0, prep: +x[11] || 0, amazon: +x[12] || 0, onOrder: +x[13] || 0 }));
+        store: +x[10] || 0, prep: +x[11] || 0, amazon: +x[12] || 0, onOrder: +x[13] || 0, disc: !!x[14], avail: x[15] || "", listCost: !!x[16] }));
+      st.nDisc = st.rows.filter(r => r.disc).length; st.rows = st.rows.filter(r => !r.disc);   // discontinued products: Inventory › Discontinued
       planQty(st);
     } catch (e) { if (S.start === st) st.err = e; }
     if (S.start === st) { st.loading = false; renderStart(); }
@@ -2341,13 +2343,14 @@
       ${st.rows ? `<div class="ps-row small">
           <span><b>${n0(want.length)}</b> of ${n0(rows.length)} ${esc(st.vendor)} products below ${n0(st.days)} days of stock${rows.length && !want.length ? " — nothing to reorder" : ""}</span>
           <button class="linkbtn" type="button" data-ps-all>${st.all ? "Show just those" : `Show all ${n0(rows.length)}`}</button>
+          ${st.nDisc ? `<button class="linkbtn" type="button" data-ps-disc title="Discontinued products aren't reordered: see them on Inventory › Discontinued">${n0(st.nDisc)} discontinued hidden</button>` : ""}
           <span class="muted">sold = last 90 days, Just Tennis + Ace n Rally + Amazon · on hand = store + prep + Amazon</span></div>
         ${shown.length ? `<div class="tbl-wrap ps-tbl"><table class="prept po-t"><thead><tr><th><input type="checkbox" data-ps-allsel aria-label="Select all" ${picked.length && picked.length === shown.filter(x => +(st.qty.get(x.r.vid) || 0) > 0).length ? "checked" : ""}></th><th class="l">Product</th><th title="Last 90 days (last 30)">Sold 90d</th><th>On hand</th><th>On order</th><th title="On hand + on order, at the 90-day pace">Days left</th><th>Order</th><th>Cost</th><th>Total</th></tr></thead><tbody>${shown.map(x => { const r = x.r, q = st.qty.get(r.vid) || "";
           return `<tr class="${st.sel.has(r.vid) ? "picked" : ""}"><td><input type="checkbox" data-ps-sel="${esc(r.vid)}" ${st.sel.has(r.vid) ? "checked" : ""} aria-label="Order ${esc(r.title)}"></td>
             <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a> <span class="mono dim small">${esc(r.sku)}</span></td>
             <td title="Just Tennis ${n0(r.shop)} · Ace n Rally ${n0(r.anr)} · Amazon ${n0(r.amz)} · last 30 days ${n0(r.s30)}">${n0(r.s90)}${x.p.hot ? ' <span class="pill warn" title="Selling faster in the last 30 days">↑</span>' : ""}</td>
             <td title="Store ${n0(r.store)} · prep ${n0(r.prep)} · Amazon ${n0(r.amazon)}">${n0(x.p.have)}</td><td>${r.onOrder ? n0(r.onOrder) : '<span class="dim">—</span>'}</td><td>${dl(x)}</td>
-            <td><input class="inp num sm" data-ps-qty="${esc(r.vid)}" value="${esc(q)}" inputmode="numeric" style="width:60px"></td><td>${r.cost == null ? '<span class="dim">—</span>' : m(r.cost)}</td><td>${q && r.cost != null ? m(+q * r.cost) : ""}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
+            <td><input class="inp num sm" data-ps-qty="${esc(r.vid)}" value="${esc(q)}" inputmode="numeric" style="width:60px"></td><td title="${r.listCost ? "From the vendor's pricelist" : "Shopify cost"}">${r.cost == null ? '<span class="dim">—</span>' : m(r.cost)}${r.avail === "backorder" || r.avail === "unavailable" ? ` <span class="pill miss" title="The vendor's pricelist says ${esc(r.avail)}">${esc(r.avail === "backorder" ? "backorder" : "unavail.")}</span>` : ""}</td><td>${q && r.cost != null ? m(+q * r.cost) : ""}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
         <div class="ps-row">
           <label class="ps-f">PO name <input id="ps-name" class="inp mono" value="${esc(st.name || `${monthTag()} ${st.vendor}`)}" style="width:190px"></label>
           <button class="btn primary" type="button" data-ps-create ${picked.length ? "" : "disabled"}>Create the draft · ${n0(picked.length)} product${picked.length === 1 ? "" : "s"} · ${n0(units)} units · ${m0(cost)}</button>
@@ -2384,6 +2387,7 @@
       if (t.closest("[data-ps-empty]")) { readStart(); const v = st.vendor; S.start = null; openPO(null, v ? { vendor: v } : {}); return; }
       if (t.closest("[data-ps-all]")) { readStart(); st.all = !st.all; renderStart(); return; }
       if (t.closest("[data-ps-create]")) { createFromStart(); return; }
+      if (t.closest("[data-ps-disc]")) { const b = document.querySelector('.tabs button[data-tab="discontinued"]'); if (b) b.click(); return; }
       const cb = t.closest("[data-ps-sel]"); if (cb) { readStart(); const id = cb.dataset.psSel; if (cb.checked) { st.sel.add(id); if (!(+(st.qty.get(id) || 0) > 0)) { const r = st.rows.find(x => x.vid === id); st.qty.set(id, String(Math.max(st.pack, planRow(st, r).sugg || st.pack))); } } else st.sel.delete(id); renderStart(); return; }
       const all = t.closest("[data-ps-allsel]"); if (all) { readStart(); for (const r of st.rows || []) { if (all.checked && +(st.qty.get(r.vid) || 0) > 0) st.sel.add(r.vid); else if (!all.checked) st.sel.delete(r.vid); } renderStart(); }
     });

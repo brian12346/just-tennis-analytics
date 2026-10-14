@@ -281,6 +281,19 @@
     },
     amazon: amazonCall,
     // To do list (home; migration 143): save -> id, done(id, yes), remove(id), autoclose() -> how many Seller Sage ticked off
+    // Vendor pricelists and discontinued products (migration 146)
+    vendorData: {
+      async saveList(body) {
+        if (WEB) { const r = await WEB.write("jt_price_list_save", { p: body }); return typeof r === "string" ? JSON.parse(r) : r; }
+        const out = await run(`select jt.price_list_save(${q(JSON.stringify({ ...body, by: body.by || "Claude dashboard" }))}::jsonb)::text as r`, true);
+        return JSON.parse(out[0] && out[0].r || "{}");
+      },
+      async setDiscontinued(ids, yes, note, by) {
+        const body = { variant_ids: (ids || []).map(String), discontinued: yes !== false, ...(note != null ? { note } : {}) };
+        if (WEB) return WEB.write("jt_product_status_set", { p: body });
+        return run(`select jt.product_status_set(${q(JSON.stringify({ ...body, by: by || "Claude dashboard", source: "manual" }))}::jsonb) as n`, true);
+      },
+    },
     todo: {
       async save(body) {
         if (WEB) return Number(await WEB.write("jt_todo_save", { p: body }));

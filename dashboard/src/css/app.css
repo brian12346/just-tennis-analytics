@@ -1144,3 +1144,27 @@ button.il-empty.ol-start:hover{border-color:var(--sales);background:var(--sales-
 .ps-tbl td.l{white-space:normal;min-width:240px}
 #po-sslist{padding:10px 12px;gap:8px}
 @media (max-width:640px){ #tab-po > header.po-hdr .controls{display:flex;flex-wrap:wrap} }
+
+/* ---------- Inventory › Discontinued + vendor pricelists (v0.16.0) ---------- */
+#tab-discontinued{display:flex;flex-direction:column;gap:10px}
+#tab-discontinued[hidden],#dc-note[hidden]{display:none!important}
+#tab-discontinued > header.po-hdr{align-items:center;gap:8px 16px}
+#tab-discontinued > header.po-hdr .title{flex-direction:row;align-items:baseline;gap:14px}
+#dc-body{display:flex;flex-direction:column;gap:8px}
+.dc-sum{font-size:13px;color:var(--muted)}
+.dc-sum b{color:var(--ink)}
+.dc-bar{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.dc-bar .right{margin-left:auto}
+.dc-what{margin-top:-2px}
+.dc-tbl{max-height:calc(100vh - 330px);overflow:auto;background:var(--panel)}
+.dc-tbl td,.dc-tbl th{padding:4px 8px}
+.dc-tbl td.l{white-space:normal}
+.dc-markrow{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding-top:4px}
+.dc-mres{flex-basis:100%;display:flex;flex-direction:column;gap:4px;max-width:760px}
+.dc-mhit{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:4px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);font-size:13px}
+.dc-up{padding:10px 12px;gap:8px}
+.dc-map{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}
+.dc-chg{font-size:13px}
+.dc-chg summary{cursor:pointer}
+.dc-small{max-height:260px;overflow:auto;margin-top:6px}
+.dc-hist{max-height:320px;overflow:auto}

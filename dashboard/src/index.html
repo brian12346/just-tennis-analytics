@@ -49,6 +49,7 @@
     <button role="tab" data-tab="costs" data-group="inventory" aria-selected="false" hidden>Value</button>
     <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
+    <button role="tab" data-tab="discontinued" data-group="inventory" aria-selected="false" hidden>Discontinued</button>
     <button role="tab" data-tab="prep" data-group="prep" aria-selected="false" hidden>Prep</button>
     <button role="tab" data-tab="analyze" data-group="prep" aria-selected="false" hidden>Analyze</button>
     <button role="tab" data-tab="shipments" data-group="prep" aria-selected="false" hidden>Shipments</button>
@@ -399,6 +400,17 @@
       <div class="tbl-wrap tall xl"><table id="fba-table" class="fbat"></table></div>
       <div class="row"><button class="btn" id="fba-prev" hidden>Previous</button><button class="btn" id="fba-next" hidden>Next page</button><span class="muted small" id="fba-count"></span></div>
     </section>
+  </div>
+  <div id="tab-discontinued" hidden>
+    <header class="top po-hdr">
+      <div class="title"><h1>Discontinued</h1><span class="status" id="dc-status"></span></div>
+      <div class="controls">
+        <div class="seg sm" id="dc-view" role="group" aria-label="Show"><button type="button" data-dc-view="disc" aria-pressed="true">Discontinued products</button><button type="button" data-dc-view="lists" aria-pressed="false">Vendor pricelists</button></div>
+        <button class="btn icon" id="dc-refresh" type="button" title="Refresh" aria-label="Refresh">↻</button>
+      </div>
+    </header>
+    <div class="note" id="dc-note" hidden></div>
+    <div id="dc-body"></div>
   </div>
   <div id="tab-costs" hidden>
     <header class="top">
@@ -940,6 +952,9 @@
 </script>
 <script>
 <!-- @inline js/todo.js -->
+</script>
+<script>
+<!-- @inline js/discontinued.js -->
 </script>
 <script>
 <!-- @inline js/amz-research.js -->
