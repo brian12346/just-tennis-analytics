@@ -755,9 +755,41 @@
         paidOn: x[10] || "", recvAt: x[11] || "", qbo: x[12] || "", parts: +x[13] || 0, got: +x[14] || 0, billed: +x[15] || 0, check: +x[16] || 0, created: x[17] || "", terms: x[18] || "" }));
     } finally { S.invLoading = false; }
   }
-  // Open = not in QuickBooks yet; Closed (always last) = sent to QuickBooks. Payment doesn't affect it — that's finance's.
-  const INVF = [["all", "All"], ["open", "Open"], ["notrecv", "Not received"], ["check", "Lines to check"], ["nopo", "No PO"], ["unpaid", "To pay"], ["closed", "Closed"]];
-  const invMatch = (v, f) => f === "all" ? true : f === "open" ? !invClosed(v) : f === "closed" ? invClosed(v) : f === "unpaid" ? !v.paidOn : f === "notrecv" ? !v.recvAt : f === "check" ? v.check > 0 : f === "nopo" ? !v.oid : true;
+  // Status lanes (Brian, Oct 14): every invoice is in exactly one, in this order — lines to check or match first, then
+  // no PO yet, then on a PO with products still to come in, then complete (received, or nothing on it to receive).
+  // QuickBooks and payment show on the cards and in the table; they don't move an invoice between lanes.
+  const LANES = [["issues", "Import issues", "lines to check or match"], ["nopo", "No PO", "waiting for their purchase order"],
+    ["receive", "Ready to receive", "on a PO, products still to come in"], ["complete", "Complete", "received"]];
+  const laneOf = (v) => v.check > 0 ? "issues" : !v.oid ? "nopo" : !v.recvAt && v.billed > 0 ? "receive" : "complete";
+  const LANE_CARDS = 6;
+  const INVF = [["all", "All"], ...LANES.map(([k, n]) => [k, n]), ["unpaid", "To pay"], ["noqb", "Not in QuickBooks"]];
+  const invMatch = (v, f) => f === "all" ? true : f === "unpaid" ? !v.paidOn : f === "noqb" ? !invClosed(v) : laneOf(v) === f;
+  const daysAgo = (d) => { const n = Math.floor((Date.now() - new Date(d).getTime()) / 864e5); return n <= 0 ? "today" : n === 1 ? "1 day" : n + " days"; };
+  function laneCard(v, k) {
+    const po = v.oid ? esc(v.po ? poLabel(v.po) : "PO #" + v.oid) : "";
+    const hint = k === "issues" ? `<span class="pill miss">${v.check} line${v.check === 1 ? "" : "s"} to check</span>${po ? ` <span class="dim">${po}</span>` : ' <span class="dim">no PO</span>'}`
+      : k === "nopo" ? `<span class="dim">waiting ${esc(daysAgo(v.created || v.date))} · build its PO with Shopify import CSV</span>`
+      : k === "receive" ? `${po} · ${v.got > 0 ? `<span class="pill manual">${n0(v.got)} of ${n0(v.billed)} in</span>` : `<span class="dim">${n0(v.billed)} unit${v.billed === 1 ? "" : "s"} to come</span>`}`
+      : `${po ? po + " · " : ""}${v.paidOn ? '<span class="pill ok">Paid</span>' : v.due && v.due < today() ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'} ${v.qbo ? '<span class="pill ok">QB</span>' : ""}`;
+    return `<button class="il-card" type="button" data-inv-open="${esc(v.id)}" title="Open invoice ${esc(v.no || "")}">
+      <span class="il-top"><b>${esc(v.vendor || "—")}</b><span class="il-amt">${m(v.total)}</span></span>
+      <span class="il-no"><span class="mono">${esc(v.no || "(no number)")}</span>${v.date ? " · " + esc(shortDate(v.date)) : ""}</span>
+      <span class="il-hint">${hint}</span></button>`;
+  }
+  function renderLanes(all) {
+    const by = new Map(LANES.map(([k]) => [k, []]));
+    for (const v of all) by.get(laneOf(v)).push(v);
+    // oldest first where something is waiting on us; newest first once complete
+    for (const k of ["issues", "nopo", "receive"]) by.get(k).sort((a, b) => String(a.date || a.created).localeCompare(String(b.date || b.created)));
+    $("inv-lanes").innerHTML = LANES.map(([k, n, sub]) => {
+      const vs = by.get(k), tot = vs.reduce((a, v) => a + (v.total || 0), 0), more = vs.length - LANE_CARDS;
+      return `<div class="il-lane il-${k} ${S.invF === k ? "on" : ""}">
+        <button class="il-head" type="button" data-lane="${k}" aria-pressed="${S.invF === k}" title="Show these in the table below"><b>${n}</b><span class="il-cnt">${n0(vs.length)}</span></button>
+        <div class="il-sub">${vs.length ? `${m0(tot)} · ${sub}` : sub}</div>
+        <div class="il-cards">${vs.slice(0, LANE_CARDS).map(v => laneCard(v, k)).join("") || '<div class="il-empty">Nothing here</div>'}</div>
+        ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-lane="${k}">+ ${n0(more)} more in the table</button>` : ""}</div>`;
+    }).join("");
+  }
   function renderInvList() {
     if (S.mode !== "inv" || $("tab-invoices").hidden) return;
     $("inv-list-view").hidden = false; $("po-edit-view").hidden = true;
@@ -771,13 +803,16 @@
       { l: "Open", v: n0(all.filter(v => !invClosed(v)).length), s: "not in QuickBooks yet — closes once sent" },
       { l: "Not received", v: n0(all.filter(v => !v.recvAt && v.billed > 0).length), s: "invoices with products still to come in" },
     ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
+    if (S.invs) renderLanes(all); else $("inv-lanes").innerHTML = "";
     const q = S.invQ.trim().toLowerCase().replace(/^#/, "");
     const list = all.filter(v => invMatch(v, S.invF) && (!q || [v.vendor, v.no, v.po, v.terms].join(" ").toLowerCase().includes(q)));
     const t = $("inv-table");
     if (!S.invs) { t.innerHTML = '<tbody><tr><td class="l muted">Loading…</td></tr></tbody>'; return; }
-    t.innerHTML = `<thead><tr><th class="l">Invoice</th><th class="l">Vendor</th><th class="l">Date</th><th class="l">Purchase order</th><th>Total</th><th class="l">Received</th><th class="l">Payment</th><th class="l">QuickBooks</th></tr></thead><tbody>${
+    const LN = new Map(LANES.map(([k, n]) => [k, n])), LP = { issues: "miss", nopo: "pos", receive: "manual", complete: "ok" };
+    t.innerHTML = `<thead><tr><th class="l">Invoice</th><th class="l">Status</th><th class="l">Vendor</th><th class="l">Date</th><th class="l">Purchase order</th><th>Total</th><th class="l">Received</th><th class="l">Payment</th><th class="l">QuickBooks</th></tr></thead><tbody>${
       list.map(v => `<tr class="po-row" data-inv-open="${v.id}" tabindex="0">
         <td class="l"><b class="mono">${esc(v.no || "(no number)")}</b>${invClosed(v) ? " " + closedPill : ""}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</td>
+        <td class="l small"><span class="pill ${LP[laneOf(v)]}">${LN.get(laneOf(v))}</span></td>
         <td class="l">${esc(v.vendor || "—")}</td>
         <td class="l small">${v.date ? esc(shortDate(v.date)) : '<span class="dim">—</span>'}</td>
         <td class="l small">${v.oid ? `<button class="linkbtn small" data-po-go="${esc(v.oid)}">${esc(v.po ? poLabel(v.po) : "#" + v.oid)}</button> <span class="pill ${PILL[v.ostatus] || "pos"}">${esc(STAGE.get(v.ostatus) || "")}</span>` : '<span class="pill pos" title="Saved on its own — it goes onto its PO when that PO syncs in with the same products">No PO yet</span>'}</td>
@@ -785,7 +820,7 @@
         <td class="l small">${v.recvAt ? '<span class="pill ok">Received</span>' : v.got > 0 ? `<span class="pill manual">${n0(v.got)} of ${n0(v.billed)} in</span>` : v.billed ? '<span class="dim">not yet</span>' : '<span class="dim">—</span>'}</td>
         <td class="l small">${v.paidOn ? `<span class="pill ok">Paid</span> <span class="meta">${esc(shortDate(v.paidOn))}</span>` : v.due && v.due < today() ? `<span class="pill miss">Overdue</span> <span class="meta">due ${esc(shortDate(v.due))}</span>` : `<span class="pill warn">Unpaid</span>${v.due ? ` <span class="meta">due ${esc(shortDate(v.due))}</span>` : ""}`}</td>
         <td class="l small">${v.qbo ? '<span class="pill ok">In QuickBooks</span>' : '<span class="pill pos">Not yet</span>'}</td></tr>`).join("")
-      || `<tr><td class="l muted" colspan="8">${all.length ? "No invoices match." : "No invoices yet. Upload a vendor invoice PDF — it's matched to its purchase order by the PO # on it."}</td></tr>`}</tbody>`;
+      || `<tr><td class="l muted" colspan="9">${all.length ? "No invoices match." : "No invoices yet. Upload a vendor invoice PDF — it's matched to its purchase order by the PO # on it."}</td></tr>`}</tbody>`;
   }
   // A parsed invoice becomes one of the PO's invoices; its products are matched and the PO lines follow.
   function merge(ed, p, f, rawRows, reuse) {
@@ -2226,6 +2261,9 @@
     $("inv-refresh").addEventListener("click", async () => { await Promise.all([loadInvList(true), loadOrders(true)]); if (S.ed && S.ed.id && !S.ed.dirty && S.invOpen) await openInvoice(cur(S.ed).id); render(); });
     $("inv-q").addEventListener("input", (e) => { S.invQ = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderInvList, 150); });
     $("inv-seg").addEventListener("click", (e) => { const b = e.target.closest("button[data-invf]"); if (b) { S.invF = b.dataset.invf; renderInvList(); } });
+    $("inv-lanes").addEventListener("click", (e) => { const b = e.target.closest("[data-lane]"); if (!b) return; e.stopPropagation();
+      S.invF = S.invF === b.dataset.lane && !b.classList.contains("il-more") ? "all" : b.dataset.lane; renderInvList();
+      if (S.invF !== "all") { const t = $("inv-table"); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); } });
     itab.addEventListener("click", (e) => {
       const g = e.target.closest("[data-po-go]"); if (g) { e.stopPropagation(); S.invOpen = false; S.mode = "po"; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(g.dataset.poGo); return; }
       const o = e.target.closest("[data-inv-open]"); if (o && !e.target.closest("a")) { openInvoice(o.dataset.invOpen); return; }

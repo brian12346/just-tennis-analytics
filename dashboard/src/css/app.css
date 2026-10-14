@@ -993,3 +993,28 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 #ar-table td, #ar-table th{white-space:nowrap}
 #ar-table td.l:nth-child(2){white-space:normal;min-width:220px}
 #ar-table tbody td:first-child, #ar-table thead tr:last-child th:first-child{position:sticky;left:0;z-index:1;background:var(--panel)}
+
+/* Invoices tab: status lanes (Import issues · No PO · Ready to receive · Complete) above the table */
+.il-lanes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0}
+.il-lane{display:flex;flex-direction:column;gap:6px;min-width:0;background:var(--line-soft);border:1px solid var(--line);border-top:3px solid var(--faint);border-radius:12px;padding:10px}
+.il-lane.il-issues{border-top-color:var(--warn)}
+.il-lane.il-receive{border-top-color:var(--sales)}
+.il-lane.il-complete{border-top-color:var(--good)}
+.il-lane.on{box-shadow:0 0 0 2px var(--focus)}
+.il-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;background:none;border:0;padding:0;cursor:pointer;color:var(--ink);font:inherit;text-align:left}
+.il-head b{font-size:14px}
+.il-cnt{font-size:12px;font-weight:600;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}
+.il-sub{font-size:12px;color:var(--muted);margin-top:-2px}
+.il-cards{display:flex;flex-direction:column;gap:6px}
+.il-card{display:flex;flex-direction:column;gap:2px;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px;cursor:pointer;font:inherit;color:var(--ink);min-width:0}
+.il-card:hover,.il-card:focus-visible{border-color:var(--sales)}
+.il-top{display:flex;justify-content:space-between;gap:8px;min-width:0}
+.il-top b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.il-amt{font-variant-numeric:tabular-nums;flex:none}
+.il-no{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.il-hint{font-size:12px;color:var(--muted)}
+.il-hint .pill{font-size:11px}
+.il-empty{font-size:12px;color:var(--faint);padding:6px 2px}
+.il-more{align-self:flex-start;font-size:12px}
+@media (max-width:1000px){.il-lanes{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.il-lanes{grid-template-columns:1fr}}
