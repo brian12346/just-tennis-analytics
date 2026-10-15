@@ -653,7 +653,8 @@
     const act = (s) => {
       if (ro) return "";
       if (s.k === "method") return `<select id="pm-place" class="inp sm" style="width:auto"><option value="">Choose…</option>${PLACEMENTS.map(([v, l]) => `<option value="${v}" ${sh.placement === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
-      if (s.k === "count" && !s.done) return `<button class="mini" data-flow="check:counted">Mark counted</button>`;
+      if (s.k === "count") return M.cnt ? "" : s.done ? (s.past ? "" : `<button class="linkbtn small" data-flow="cnt-open">Edit count</button>`)
+        : `<span class="dbtns"><button class="mini" data-flow="cnt-open" title="Enter what's on the shelf for each product">Count</button><button class="mini" data-flow="check:counted" title="The numbers are right as they are">Mark counted</button></span>`;
       if (s.check && !s.done && s.k !== "count") return `<button class="mini" data-flow="check:${s.check}">Mark done</button>`;
       if (s.check && (sh.checks || {})[s.check]) return `<button class="linkbtn small" data-flow="uncheck:${s.check}">Undo</button>`;
       if (s.k === "ship" && !s.done && sh.status === "started") return '<button class="mini primary" data-act="ship-go">Mark shipped</button>';
@@ -666,7 +667,48 @@
     return `<div class="flowbox"><div class="lanehead"><h3 class="psec" style="margin:0">Checklist</h3>${flowBar(f)}<span class="muted small">${f.next ? "Next: " + esc(f.next.label) : "All done"}</span>
         ${ro || sh.exception || M.excEdit != null ? "" : '<button class="linkbtn small right" data-flow="exc-edit">Flag a problem</button>'}</div>
       ${exc}${excEdit}${ro ? '<div class="small muted">The checklist starts working after the next database update.</div>' : ""}
-      <ol class="flow">${f.steps.map((s, i) => `<li class="${s.ok ? "ok" : f.next === s ? "next" : ""}"><span class="fn">${s.ok ? "✓" : i + 1}</span><div class="ft"><b>${esc(s.label)}</b><span>${s.text}</span></div><div class="fa">${act(s)}</div></li>`).join("")}</ol></div>`;
+      <ol class="flow">${f.steps.map((s, i) => `<li class="${s.ok ? "ok" : f.next === s ? "next" : ""}"><span class="fn">${s.ok ? "✓" : i + 1}</span><div class="ft"><b>${esc(s.label)}</b><span>${s.text}</span></div><div class="fa">${act(s)}</div></li>${s.k === "count" && M.cnt ? `<li class="cntli">${cntHtml(M, sh)}</li>` : ""}`).join("")}</ol></div>`;
+  }
+  // Count step: what's on the shelf for each product in the shipment (its listing, plus not-earmarked stock of the
+  // same product). Saving logs each difference as a count (jt.prep_adjust) and marks the step counted.
+  function cntRows(sh) {
+    const out = [], seen = new Set();
+    const add = (vid, asku, need, title, sku) => { const k = vid + "|" + (asku || ""); if (seen.has(k)) return; seen.add(k);
+      out.push({ k, vid, asku: asku || "", need, title, sku, cur: onHand(vid, asku) }); };
+    for (const l of sh.lines.filter(x => x.qty > 0)) {
+      const r = cache.rows.find(x => x.vid === l.vid) || {};
+      add(l.vid, l.asku, l.qty, l.title || r.title || "variant " + l.vid, l.sku || r.sku || "");
+      if (l.asku && onHand(l.vid, "") > 0) add(l.vid, "", 0, l.title || r.title || "variant " + l.vid, l.sku || r.sku || "");
+    }
+    return out;
+  }
+  function cntHtml(M, sh) {
+    const rows = cntRows(sh), C = M.cnt;
+    let bad = 0, changed = 0, du = 0;
+    const body = rows.map(r => {
+      const v = C[r.k], has = v !== undefined && v !== "", q = has ? Number(v) : r.cur, ok = !has || (Number.isInteger(q) && q >= 0);
+      if (!ok) bad++; else if (q !== r.cur) { changed++; du += q - r.cur; }
+      const d = ok ? q - r.cur : 0, shortBy = ok && r.need ? r.need - q : 0;
+      return `<tr><td class="l">${esc(r.title)}<div class="meta mono">${esc(r.sku)}${r.asku ? " · " + esc(r.asku) : " · not earmarked"}</div></td>
+        <td>${r.need ? n0(r.need) : '<span class="dim">—</span>'}</td><td>${n0(r.cur)}</td>
+        <td><input class="inp sm num ${ok ? "" : "bad"}" style="width:70px" data-cnt="${esc(r.k)}" value="${esc(has ? v : String(r.cur))}" inputmode="numeric" aria-label="Counted ${esc(r.title)}"></td>
+        <td class="${d < 0 ? "neg" : d > 0 ? "pos" : "dim"}">${d ? (d > 0 ? "+" : "") + n0(d) : "—"}${shortBy > 0 ? ` <span class="warnt small">${n0(shortBy)} short</span>` : ""}</td></tr>`;
+    }).join("");
+    return `<div class="cntbox"><div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th>Shipment</th><th>Seller Sage</th><th>Counted</th><th>Difference</th></tr></thead><tbody>${body}</tbody></table></div>
+      <div class="row"><input id="pm-cnote" class="inp sm" style="flex:1" value="${esc(M.cntNote || "")}" placeholder="Note (optional) — e.g. 2 found damaged">
+        <span class="dbtns"><button class="mini" data-flow="cnt-cancel">Cancel</button><button class="mini primary" data-flow="cnt-save" ${bad || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : changed ? `Save count (${du > 0 ? "+" : ""}${n0(du)})` : "Counts match — mark counted"}</button></span></div></div>`;
+  }
+  async function cntSave(M) {
+    const sh = cache.shipments.find(x => x.id === String(M.id)); if (!sh) return;
+    const lines = cntRows(sh).filter(r => M.cnt[r.k] !== undefined && M.cnt[r.k] !== "" && Number(M.cnt[r.k]) !== r.cur)
+      .map(r => ({ variant_id: Number(r.vid), amazon_sku: r.asku, qty: Number(M.cnt[r.k]), note: ((M.cntNote || "").trim() || "counted") + " · shipment " + (sh.name || "#" + sh.id) }));
+    P.busy = true; renderModal();
+    try {
+      if (lines.length) await JT.prep.adjust({ lines });
+      P.busy = false; M.cnt = null; M.cntNote = "";
+      await flowDo(M.id, { check: { counted: true } }, lines.length ? `Count saved: ${lines.length} product${lines.length === 1 ? "" : "s"} changed.` : "Marked counted.");
+      refreshTotals();
+    } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't save the count: " + esc(JT.message(e))); }
   }
   async function flowDo(sid, body, msg) {
     try {
@@ -684,6 +726,9 @@
     if (a === "reopen") return flowDo(M.id, { close: false });
     if (a === "exc-edit") { const sh = cache.shipments.find(x => x.id === String(M.id)); M.excEdit = (sh && sh.exception) || ""; renderModal(); setTimeout(() => { const i = $("pm-exc"); if (i) i.focus(); }, 0); return; }
     if (a === "exc-cancel") { M.excEdit = null; renderModal(); return; }
+    if (a === "cnt-open") { M.cnt = {}; M.cntNote = ""; renderModal(); setTimeout(() => { const i = document.querySelector("#prep-mcard [data-cnt]"); if (i) { i.focus(); i.select(); } }, 0); return; }
+    if (a === "cnt-cancel") { M.cnt = null; renderModal(); return; }
+    if (a === "cnt-save") return cntSave(M);
     if (a === "exc-save") { const t = (M.excEdit || "").trim(); if (!t) { note("bad", "Say what's wrong first."); return; } return flowDo(M.id, { exception: t }, "Shipment flagged as an exception."); }
     if (a === "exc-clear") return flowDo(M.id, { exception: "" }, "Exception resolved.");
   }
@@ -1514,7 +1559,7 @@
     const box = $("prep-modal"), M = P.modal;
     box.hidden = !M; document.body.classList.toggle("modal-open", !!M);
     if (!M) { $("prep-mcard").innerHTML = ""; return; }
-    const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, s: document.activeElement.selectionStart } : null;
+    const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, c: document.activeElement.dataset.cnt, s: document.activeElement.selectionStart } : null;
     let html = "";
     if (M.kind === "count") {
       const listings = M.pick && cache ? (cache.byVariant.get(M.pick.vid) || []) : [];
@@ -1603,7 +1648,7 @@
             ${M.status === "started" ? `<button class="btn" data-act="save-reopen" ${bad || P.busy ? "disabled" : ""}>Back to open</button><button class="btn primary" data-act="ship-go" ${!lines || bad || blocked || P.busy ? "disabled" : ""}>Mark shipped</button>` : ""}`}</span></div>`;
     }
     $("prep-mcard").innerHTML = html; $("prep-mcard").classList.toggle("prod-card", M.kind === "prod");
-    if (keep) { const el = keep.id ? $(keep.id) : keep.k ? box.querySelector(`input[data-k="${CSS.escape(keep.k)}"]`) : null; if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
+    if (keep) { const el = keep.id ? $(keep.id) : keep.k ? box.querySelector(`input[data-k="${CSS.escape(keep.k)}"]`) : keep.c ? box.querySelector(`input[data-cnt="${CSS.escape(keep.c)}"]`) : null; if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
   }
 
   function applyFix(d) {
@@ -1748,6 +1793,8 @@
       if (M.kind === "assign") { if (t.dataset.aq != null) { M.qty[t.dataset.aq] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 250); } else if (t.id === "pm-anote") M.note = t.value; return; }
       if (t.id === "pm-nq") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-exc") { M.excEdit = t.value; return; }
+      if (t.dataset.cnt != null && M.cnt) { M.cnt[t.dataset.cnt] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 300); return; }
+      if (t.id === "pm-cnote") { M.cntNote = t.value; return; }
       if (t.id === "pm-q") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-qty") { M.qty = t.value.trim(); renderModal(); return; }
       if (t.id === "pm-note") { M.note = t.value; return; }
@@ -1777,6 +1824,10 @@
       if (e.target.id === "pm-nq") { e.preventDefault(); clearTimeout(box._t); M.q = e.target.value; const c = skuCandidates(M.q).list; if (c.length === 1) pickNewShip(c[0]); else renderModal(); return; }
       if (e.target.id === "pm-q") { const b = box.querySelector(".mres button[data-pick]"); if (b) b.click(); }
       else if (e.target.id === "pm-add") { e.preventDefault(); clearTimeout(box._t); const f = findRows(M.add, M.lines); if (f.length) addLine(keyOf(f[0])); else renderModal(); }
+      else if (M.cnt && e.target.dataset.cnt != null) { e.preventDefault(); clearTimeout(box._t); M.cnt[e.target.dataset.cnt] = e.target.value.trim();
+        const all = [...box.querySelectorAll("input[data-cnt]")], i = all.indexOf(e.target);
+        if (i >= 0 && i < all.length - 1) { renderModal(); const nx = box.querySelectorAll("input[data-cnt]")[i + 1]; if (nx) { nx.focus(); nx.select(); } }
+        else { renderModal(); const b = box.querySelector('[data-flow="cnt-save"]'); if (b && !b.disabled) cntSave(M); } }
       else if (M.kind === "ship" && e.target.dataset.k) { e.preventDefault(); const a = $("pm-add"); if (a) a.focus(); }
       else if (M.kind === "count" && (e.target.id === "pm-qty" || e.target.id === "pm-note")) { const b = box.querySelector('[data-act="save-count"]'); if (b && !b.disabled) saveCount(); }
     });
