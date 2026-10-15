@@ -358,7 +358,11 @@
       const extra = [...S.only.skus].filter(k => !have.has(k)).map(k => ({ sku: k, asin: S.only.asins[k] || "", title: S.only.titles[k] || k, price: null, qty: null, channel: "DEFAULT", status: "Not in listings report", extra: true, units: 0, sales: 0 }));
       return L.filter(l => S.only.skus.has(l.sku)).concat(extra).sort((a, b) => a.title.localeCompare(b.title));
     }
-    const q = $("amz-q").value.trim().toLowerCase(), st = $("amz-fstatus").value, fm = $("amz-fmap").value, fc = $("amz-fchan").value;
+    const q = $("amz-q").value.trim().toLowerCase();
+    // a search looks through every listing (a mapped or inactive one too), not just what the filters show
+    if (q) return allListings().filter(l => l.title.toLowerCase().includes(q) || l.sku.toLowerCase().includes(q) || (l.asin || "").toLowerCase().includes(q) || ((S.maps.get(l.sku) || {}).asin || "").toLowerCase().includes(q) || ((S.maps.get(l.sku) || {}).vsku || "").toLowerCase().includes(q))
+      .sort((a, b) => (b.sales - a.sales) || ((a.status === "Active" ? 0 : 1) - (b.status === "Active" ? 0 : 1)) || a.title.localeCompare(b.title));
+    const st = $("amz-fstatus").value, fm = $("amz-fmap").value, fc = $("amz-fchan").value;
     const conf = fm === "conflict" ? conflictAsins() : null;
     return allListings().filter(l => {
       if (fm === "conflict") {
@@ -457,7 +461,7 @@
         </tr>${open ? editorRow(l) : ""}`;
     }).join("");
     t.innerHTML = `<thead><tr><th class="l">Amazon listing</th><th></th><th class="l">Fulfillment</th><th>Price</th><th class="l">Status</th><th>Units sold</th><th>Sales</th><th class="l">Shopify product</th><th>Units</th><th>Cost per sale</th><th>Cost % of price</th></tr></thead>
-      <tbody>${body || `<tr><td class="l dim" colspan="11">${S.listings.length ? "No listings match these filters." : "Upload your All Listings report to start mapping."}</td></tr>`}</tbody>`;
+      <tbody>${body || `<tr><td class="l dim" colspan="11">${S.listings.length ? ($("amz-q").value.trim() ? "No listing has that title, Amazon SKU, ASIN or Shopify SKU." : "No listings match these filters.") : "Upload your All Listings report to start mapping."}</td></tr>`}</tbody>`;
     $("amz-more").hidden = rows.length <= S.shown;
     $("amz-count").textContent = rows.length ? `Showing ${Math.min(S.shown, rows.length)} of ${rows.length}` : "";
     if (activeId && $(activeId)) { const i = $(activeId); i.focus(); try { i.setSelectionRange(sel[0], sel[1]); } catch (_) {} }
