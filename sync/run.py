@@ -106,6 +106,10 @@ def main(argv: list[str] | None = None) -> None:
         run("fbm_inventory", lambda: sh3.apply_fbm_adjustments(shopify(), conn))
         # units sent back to Shopify from the prep center (Seller Central reconcile; migration 087)
         run("stock_moves", lambda: sh3.apply_stock_moves(shopify(), conn))
+        # packing photos: link each Shopify order to its photos in Seller Sage (migration 151)
+        run("photo_links", lambda: sh3.link_order_photos(shopify(), conn, "justtennis"))
+        if os.environ.get("ACENRALLY_SHOP"):
+            run("acenrally_photo_links", lambda: sh3.link_order_photos(sh3.Shopify("ACENRALLY"), conn, "acenrally"))
 
     if a.job in ("hourly", "nightly", "shopify-payouts"):
         # Shopify Payments payouts for the finance dashboard's cash flow page (needs read_shopify_payments_payouts)

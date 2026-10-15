@@ -1397,3 +1397,46 @@ def _shipment_accepted(shop: Shopify, ship_id: str) -> dict:
             return got
         after = info.get("endCursor")
     raise RuntimeError("too many line pages")
+
+
+# ---------------------------------------------------------------- packing photos link (migration 151)
+# Each Shopify order with packing photos gets a link back to them in Seller Sage: an order metafield
+# seller_sage.packing_photos (URL, pinned so it shows on the order page). Needs the app's write_orders scope; without
+# it the link is marked failed with Shopify's message and the photos are still in Seller Sage.
+PHOTO_URL = "https://dashboard.andersenlifestyle.com/#pack/{store}/{order_id}"
+PHOTO_DEF_M = """mutation { metafieldDefinitionCreate(definition: { name: "Packing photos", namespace: "seller_sage", key: "packing_photos",
+  type: "url", ownerType: ORDER, pin: true, description: "Photos taken while packing this order (Seller Sage)" }) {
+  createdDefinition { id } userErrors { field message code } } }"""
+PHOTO_SET_M = """mutation($m: [MetafieldsSetInput!]!) { metafieldsSet(metafields: $m) { metafields { id } userErrors { field message code } } }"""
+
+
+def link_order_photos(shop: "Shopify", conn, store: str = "justtennis") -> int | dict:
+    with conn.cursor() as cur:
+        cur.execute("""select order_id from jt.order_photo_links where store = %s and status = 'pending' order by order_id limit 200""", (store,))
+        todo = [r[0] for r in cur.fetchall()]
+    if not todo:
+        return 0
+    try:      # the definition (once per store; "taken" means it's already there)
+        shop.graphql(PHOTO_DEF_M)
+    except Exception as e:  # noqa: BLE001 - record it and carry on
+        print(f"packing photos ({store}): definition:", str(e)[:200])
+    done = 0
+    for oid in todo:
+        err = ""
+        try:
+            r = shop.graphql(PHOTO_SET_M, {"m": [{"ownerId": f"gid://shopify/Order/{oid}", "namespace": "seller_sage", "key": "packing_photos",
+                                                  "type": "url", "value": PHOTO_URL.format(store=store, order_id=oid)}]})
+            errs = ((r or {}).get("metafieldsSet") or {}).get("userErrors") or []
+            if errs:
+                err = "; ".join(e.get("message", "") for e in errs)[:500]
+        except Exception as e:  # noqa: BLE001 - record it and carry on
+            err = str(e)[:500]
+        with conn.cursor() as cur:
+            cur.execute("""update jt.order_photo_links set status = %s, error = %s, linked_at = case when %s = 'done' then now() else linked_at end
+                           where store = %s and order_id = %s""", ("failed" if err else "done", err, "failed" if err else "done", store, oid))
+        conn.commit()
+        if err and any(w in err.lower() for w in ("access denied", "scope", "not approved", "unauthorized")):
+            print(f"packing photos ({store}): no write_orders scope —", err[:200])
+            break
+        done += 0 if err else 1
+    return done

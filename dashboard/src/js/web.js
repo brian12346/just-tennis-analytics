@@ -144,5 +144,5 @@
       return Promise.resolve(null);
     },
   };
-  window.JTWeb = { ready, rpc, sql, write, fn, clearCache: clearAll };
+  window.JTWeb = { ready, rpc, sql, write, fn, clearCache: clearAll, storage: () => (sb ? sb.storage : null) };
 })();
