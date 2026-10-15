@@ -1528,50 +1528,68 @@
   // Count the Shopify store and each prep center listing, and move units between the prep center and the Shopify
   // store. Nothing is written until Save; changed rows and the numbers they'll become are highlighted.
   function invState(M) { return M.ed || (M.ed = { shop: "", prep: {}, moves: [], note: "", mv: { dir: "to_shopify", sku: null, qty: "" }, warn: false }); }
+  // the Change boxes take an amount (+5 adds, -3 takes away; "=12" sets an exact count)
+  function ivParse(v) {
+    const t = String(v ?? "").trim().replace(/[−–]/g, "-").replace(/\s+/g, "");
+    if (!t) return null;
+    const m = /^(=)?([+-]?\d+)$/.exec(t); if (!m) return { bad: true };
+    return { set: !!m[1], n: Number(m[2]) };
+  }
   function invCalc(M, buckets) {
-    const E = invState(M), I = M.info || {}, num = (v) => v === "" || v == null ? null : Number(v), bad = new Set();
-    const shopNow = I.shopQty || 0, shopCnt = num(E.shop);
-    if (shopCnt != null && !Number.isInteger(shopCnt)) bad.add("shop");
-    let shopAfter = shopCnt == null || bad.has("shop") ? shopNow : shopCnt, shopMoved = 0;
-    const prep = buckets.map(b => { const c = num(E.prep[b.sku]), ok = c == null || (Number.isInteger(c) && c >= 0); if (!ok) bad.add("p:" + b.sku);
-      return { ...b, cnt: ok ? c : null, after: ok && c != null ? c : b.now, moved: 0 }; });
+    const E = invState(M), I = M.info || {}, bad = new Set();
+    const chgOf = (v, now) => { const x = ivParse(v); if (!x) return 0; if (x.bad) return NaN; return x.set ? x.n - now : x.n; };
+    const shopNow = I.shopQty || 0, sc = chgOf(E.shop, shopNow);
+    if (isNaN(sc)) bad.add("shop");
+    const shopChg = isNaN(sc) ? 0 : sc;
+    let shopAfter = shopNow + shopChg, shopMoved = 0;
+    const prep = buckets.map(b => { const c = chgOf(E.prep[b.sku], b.now); if (isNaN(c)) bad.add("p:" + b.sku);
+      const chg = isNaN(c) ? 0 : c; return { ...b, chg, after: b.now + chg, moved: 0 }; });
     for (const mv of E.moves) {
       const r = prep.find(x => x.sku === mv.sku); if (!r) continue;
       const d = mv.dir === "to_shopify" ? -mv.qty : mv.qty; r.after += d; r.moved += d; shopAfter -= d; shopMoved -= d;
     }
     for (const r of prep) if (r.after < 0) bad.add("p:" + r.sku);
-    const changes = (shopCnt != null && !bad.has("shop") && shopCnt !== shopNow ? 1 : 0) + prep.filter(r => r.cnt != null && r.cnt !== r.now).length + E.moves.length;
-    return { shopNow, shopCnt, shopAfter, shopMoved, prep, changes, bad };
+    const changes = (shopChg ? 1 : 0) + prep.filter(r => r.chg).length + E.moves.length;
+    const sum = (f) => prep.reduce((t, r) => t + r[f], 0);
+    const tot = { prepNow: sum("now"), prepChg: sum("chg"), prepMoved: sum("moved"), prepAfter: sum("after") };
+    const anyB = prep.find(r => r.any), listChg = prep.filter(r => !r.any).reduce((t, r) => t + r.chg, 0);
+    return { shopNow, shopChg, shopAfter, shopMoved, prep, changes, bad, tot, balance: anyB && listChg + anyB.chg !== 0 && listChg !== 0 ? -listChg : null };
   }
   const bucketName = (b) => b.any ? "Any listing" : `${b.asin || "no ASIN"} · ${b.sku}${b.units !== 1 ? ` (${b.units}-pack)` : ""}`;
   function invEditHtml(M, C) {
     const E = invState(M), ro = M.info.shopQty == null;
     const delta = (a, b) => { const d = b - a; return d ? `<span class="ivd ${d < 0 ? "neg" : "pos"}">${d > 0 ? "+" : "−"}${n0(Math.abs(d))}</span>` : ""; };
     const mvTxt = (d) => d ? `<span class="${d < 0 ? "neg" : "pos"}">${d > 0 ? "+" : "−"}${n0(Math.abs(d))}</span>` : '<span class="dim">—</span>';
-    const row = (key, label, meta, now, val, moved, after, isBad) => {
-      const chg = after !== now || (val !== "" && Number(val) !== now);
+    const row = (key, label, meta, now, val, chgN, moved, after, isBad) => {
+      const chg = after !== now || chgN !== 0;
       return `<tr class="${chg ? "ivchg" : ""}"><td class="l">${label}<div class="meta">${meta}</div></td><td>${n0(now)}</td>
-        <td><input class="inp sm num ${val !== "" ? "ivset" : ""} ${isBad ? "bad" : ""}" style="width:76px" data-iv="${esc(key)}" value="${esc(val)}" placeholder="${n0(now)}" inputmode="numeric" aria-label="Counted ${esc(label.replace(/<[^>]+>/g, ""))}"></td>
+        <td><input class="inp sm num ${val !== "" ? "ivset" : ""} ${isBad ? "bad" : ""}" style="width:76px" data-iv="${esc(key)}" value="${esc(val)}" placeholder="+/−" inputmode="text" aria-label="Change for ${esc(label.replace(/<[^>]+>/g, ""))}"></td>
         <td>${mvTxt(moved)}</td><td>${after === now ? `<span class="dim">${n0(now)}</span>` : `<b>${n0(after)}</b> ${delta(now, after)}`}</td></tr>`;
     };
-    const rows = row("shop", "<b>Shopify store</b>", "available to sell · changed in Shopify on save", C.shopNow, E.shop, C.shopMoved, C.shopAfter, C.bad.has("shop"))
-      + C.prep.filter(b => !b.any || b.now || b.cnt != null || b.moved || C.prep.length === 1).map(b =>
-        row("p:" + b.sku, `Prep center · <span class="mono">${esc(b.any ? "any listing" : b.sku)}</span>`, b.any ? "not earmarked for a listing" : esc(b.asin || "no ASIN") + (b.units !== 1 ? ` · ${b.units}-pack listing` : ""), b.now, E.prep[b.sku] ?? "", b.moved, b.after, C.bad.has("p:" + b.sku))).join("");
+    const tline = (label, now, chgN, moved, after) => `<tr class="ivtot ${after !== now || chgN ? "ivchg" : ""}"><td class="l"><b>${label}</b></td><td>${n0(now)}</td><td>${mvTxt(chgN)}</td><td>${mvTxt(moved)}</td><td>${after === now ? `<b>${n0(now)}</b>` : `<b>${n0(after)}</b> ${delta(now, after)}`}</td></tr>`;
+    const T = C.tot;
+    const rows = row("shop", "<b>Shopify store</b>", "available to sell · changed in Shopify on save", C.shopNow, E.shop, C.shopChg, C.shopMoved, C.shopAfter, C.bad.has("shop"))
+      + C.prep.map(b =>
+        row("p:" + b.sku, `Prep center · <span class="mono">${esc(b.any ? "any listing" : b.sku)}</span>`, b.any ? "not earmarked for a listing" : esc(b.asin || "no ASIN") + (b.units !== 1 ? ` · ${b.units}-pack listing` : ""), b.now, E.prep[b.sku] ?? "", b.chg, b.moved, b.after, C.bad.has("p:" + b.sku))).join("");
+    const foot = tline("Prep center total", T.prepNow, T.prepChg, T.prepMoved, T.prepAfter)
+      + tline("All inventory · Shopify + prep center", C.shopNow + T.prepNow, C.shopChg + T.prepChg, 0, C.shopAfter + T.prepAfter);
+    const bal = C.balance != null ? `<div class="note warn ivbal">The listing changes add up to ${C.balance < 0 ? "+" : "−"}${n0(Math.abs(C.balance))}, so the prep center total changes. If units only moved between listings, balance it from Any listing.
+        <button class="mini" data-act="iv-bal">${C.balance > 0 ? "Add" : "Take"} ${n0(Math.abs(C.balance))} ${C.balance > 0 ? "to" : "from"} Any listing</button></div>` : "";
     const mvSku = E.mv.sku == null ? ((C.prep.find(b => b.now > 0) || C.prep[0] || {}).sku || "") : E.mv.sku;
     const opts = C.prep.map(b => `<option value="${esc(b.sku)}" ${b.sku === mvSku ? "selected" : ""}>${esc(bucketName(b))} (${n0(b.after)})</option>`).join("");
     const mvQ = E.mv.qty === "" ? null : Number(E.mv.qty), mvBad = mvQ != null && (!Number.isInteger(mvQ) || mvQ <= 0);
     const chips = E.moves.map((mv, i) => { const b = C.prep.find(x => x.sku === mv.sku) || { sku: mv.sku };
       return `<span class="ivchip">${n0(mv.qty)} · ${mv.dir === "to_shopify" ? `Prep (${esc(b.any ? "any" : b.sku)}) → Shopify` : `Shopify → Prep (${esc(b.any ? "any" : b.sku)})`}<button class="linkbtn small" data-act="iv-rm" data-i="${i}" aria-label="Remove this transfer">✕</button></span>`; }).join("");
     const nBad = C.bad.size;
-    return `<div class="ivbox ${C.changes ? "dirty" : ""}"><div class="lanehead"><h3 class="psec" style="margin:0">Inventory</h3><span class="muted small">Type a count to set it, or move units between the prep center and the Shopify store. Nothing changes until you save.</span></div>
-      <div class="tbl-wrap"><table class="prept ivt"><thead><tr><th class="l">Where</th><th>Now</th><th>Counted</th><th>Moved</th><th>After save</th></tr></thead><tbody>${rows}</tbody></table></div>
+    return `<div class="ivbox ${C.changes ? "dirty" : ""}"><div class="lanehead"><h3 class="psec" style="margin:0">Inventory</h3><span class="muted small">Type a change: <b>+5</b> adds, <b>-3</b> takes away (<b>=12</b> sets an exact count). Or move units between the prep center and the Shopify store. Nothing changes until you save.</span></div>
+      <div class="tbl-wrap"><table class="prept ivt"><thead><tr><th class="l">Where</th><th>Now</th><th>Change</th><th>Moved</th><th>After save</th></tr></thead><tbody>${rows}</tbody><tfoot>${foot}</tfoot></table></div>${bal}
       <div class="ivmove"><span>Move</span><input class="inp sm num ${mvBad ? "bad" : ""}" style="width:70px" id="iv-mq" value="${esc(E.mv.qty)}" inputmode="numeric" placeholder="qty" aria-label="Units to move">
         <select class="inp sm" id="iv-md" style="width:auto"><option value="to_shopify" ${E.mv.dir === "to_shopify" ? "selected" : ""}>from the prep center to the Shopify store</option><option value="from_shopify" ${E.mv.dir === "from_shopify" ? "selected" : ""}>from the Shopify store to the prep center</option></select>
         <select class="inp sm" id="iv-ms" style="width:auto;max-width:300px" aria-label="Prep center listing">${opts}</select>
         <button class="mini" data-act="iv-add" ${mvQ == null || mvBad ? "disabled" : ""}>Add transfer</button></div>
       ${chips ? `<div class="ivchips">${chips}</div>` : ""}
       ${E.warn && C.changes ? '<div class="note warn">You have unsaved inventory changes — save them, or Discard, then close.</div>' : ""}
-      ${nBad ? '<div class="note bad">Fix the highlighted numbers: counts are whole numbers, and the prep center can\'t go below 0.</div>' : ""}
+      ${nBad ? '<div class="note bad">Fix the highlighted numbers: a change is a whole number like +5 or -3, and the prep center can\'t go below 0.</div>' : ""}
       <div class="row"><input class="inp sm" id="iv-note" style="flex:1;min-width:200px" value="${esc(E.note)}" placeholder="Reason (optional) — e.g. cycle count, found in back room, damaged">
         <span class="dbtns"><span class="muted small">${C.changes ? `${C.changes} change${C.changes === 1 ? "" : "s"} not saved` : "No changes"}</span>
         <button class="btn" data-act="iv-discard" ${C.changes || E.note ? "" : "disabled"}>Discard</button>
@@ -1581,7 +1599,7 @@
     if (!I.log || !I.log.length) return "";
     const K = { adjust: "Count", to_shopify: "To Shopify", from_shopify: "From Shopify", count: "Count", ship: "Shipped to Amazon", receive: "Received", unship: "Unshipped", unreceive: "Unreceived", assign: "Earmarked", reconcile: "Seller Central", seed: "Starting count" };
     return `<h3 class="psec">Inventory log</h3><div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">When</th><th class="l">Where</th><th class="l">What</th><th>Change</th><th>After</th><th class="l">Note</th><th class="l">By</th></tr></thead><tbody>${I.log.map(r =>
-      `<tr><td class="l small">${esc(when(r.at))}</td><td class="l small">${r.src === "shopify" ? "Shopify store" : "Prep center" + (r.sku ? ` · <span class="mono">${esc(r.sku)}</span>` : "")}</td>
+      `<tr><td class="l small">${esc(when(r.at))}</td><td class="l small">${r.src === "shopify" ? "Shopify store" : "Prep center" + (r.sku ? ` · <span class="mono">${esc(r.sku)}</span>` : " · any listing")}</td>
         <td class="l small">${esc(K[r.kind] || r.kind)}${r.src === "shopify" ? (r.st === "pending" ? ' <span class="pill warn" title="Waiting for the sync to apply it in Shopify">pending</span>' : r.st === "failed" ? ` <span class="pill miss" title="${esc(r.err)}">failed</span>` : ' <span class="pill ok">in Shopify</span>') : ""}</td>
         <td class="${r.chg < 0 ? "neg" : "pos"}">${r.chg > 0 ? "+" : "−"}${n0(Math.abs(r.chg))}</td><td>${r.after == null ? '<span class="dim">—</span>' : n0(r.after)}</td>
         <td class="l small">${esc(r.note)}${r.st === "failed" && r.err ? `<div class="meta neg">${esc(r.err.slice(0, 140))}</div>` : ""}</td><td class="l small">${esc(r.who)}</td></tr>`).join("")}</tbody></table></div>`;
@@ -1590,8 +1608,9 @@
     const I = M.info, E = invState(M), ls = (cache.byVariant.get(M.vid) || []).map(l => l.sku);
     for (const r of cache.rows) if (r.vid === M.vid && r.asku && !ls.includes(r.asku)) ls.push(r.asku);
     const body = { variant_id: Number(M.vid), note: E.note || "", prep: [], moves: E.moves.map(m => ({ dir: m.dir, amazon_sku: m.sku, qty: m.qty })) };
-    for (const [sku, v] of Object.entries(E.prep)) if (v !== "" && Number(v) !== onHand(M.vid, sku)) body.prep.push({ amazon_sku: sku, qty: Number(v) });
-    if (E.shop !== "" && Number(E.shop) !== I.shopQty) body.shopify = { qty: Number(E.shop), expect: I.shopQty };
+    for (const [sku, v] of Object.entries(E.prep)) { const x = ivParse(v); if (!x || x.bad) continue; const now = onHand(M.vid, sku), want = x.set ? x.n : now + x.n;
+      if (want !== now) body.prep.push({ amazon_sku: sku, qty: want }); }
+    { const x = ivParse(E.shop), now = I.shopQty || 0; if (x && !x.bad) { const want = x.set ? x.n : now + x.n; if (want !== now) body.shopify = { qty: want, expect: I.shopQty }; } }
     P.busy = true; renderModal();
     try {
       const r = await JT.prep.inventoryEdit(body);
@@ -1952,6 +1971,11 @@
         if (b.dataset.act === "iv-add") { const q = Number(E.mv.qty), sel = $("iv-ms"), sku = E.mv.sku != null ? E.mv.sku : sel ? sel.value : "";
           if (!Number.isInteger(q) || q <= 0) return; E.moves.push({ dir: E.mv.dir, sku, qty: q }); E.mv.qty = ""; E.warn = false; renderModal(); return; }
         if (b.dataset.act === "iv-rm") { E.moves.splice(+b.dataset.i, 1); renderModal(); return; }
+        if (b.dataset.act === "iv-bal") { const ls = (cache.byVariant.get(M.vid) || []).map(l => ({ sku: l.sku, asin: l.asin, units: l.units || 1, now: onHand(M.vid, l.sku) }));
+          for (const r of cache.rows) if (r.vid === M.vid && r.asku && !ls.some(l => l.sku === r.asku)) ls.push({ sku: r.asku, units: 1, now: r.qty });
+          const C = invCalc(M, [...ls, { sku: "", now: onHand(M.vid, ""), any: true }]);
+          if (C.balance != null) { const cur = (C.prep.find(r => r.any) || {}).chg || 0, v = cur + C.balance; E.prep[""] = v ? (v > 0 ? "+" : "") + v : ""; }
+          renderModal(); return; }
         if (b.dataset.act === "iv-discard") { M.ed = null; renderModal(); return; }
         if (b.dataset.act === "iv-save") return invSave(M);
         return;

@@ -1197,3 +1197,6 @@ table.ivt input.ivset{border-color:var(--attention-ink,#b7791f);font-weight:600}
 .ivmove{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px}
 .ivchips{display:flex;flex-wrap:wrap;gap:6px}
 .ivchip{white-space:nowrap;display:inline-flex;align-items:center;gap:6px;background:var(--warn-bg);color:var(--ink);border-radius:999px;padding:2px 4px 2px 10px;font-size:12px;font-weight:600}
+table.ivt tfoot tr.ivtot td{border-top:1px solid var(--line);background:var(--surface-sunken,transparent)}
+table.ivt tfoot tr.ivtot.ivchg td{background:var(--warn-bg)}
+.ivbal{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
