@@ -1175,3 +1175,13 @@ button.il-empty.ol-start:hover{border-color:var(--sales);background:var(--sales-
 .oc-inv{border:1px solid var(--sales);background:var(--sales-soft);color:var(--sales);border-radius:999px;font:inherit;font-size:10.5px;font-weight:600;line-height:16px;padding:0 6px;cursor:pointer;white-space:nowrap}
 .oc-inv:hover{background:var(--sales);color:#fff}
 .oc-v{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden}.oc-v b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Sales › Ads (v0.17.0) */
+#ad-chart .bar.ch-justtennis{fill:var(--ch-jt)}#ad-chart .bar.ch-acenrally{fill:var(--ch-anr)}
+table.adt td,table.adt th{white-space:nowrap}
+table.adt td.l{white-space:normal;min-width:220px}
+table.adt tr.lose td{background:var(--bad-bg)}
+table.adt tfoot td{font-weight:600;border-top:1px solid var(--line)}
+.roas{display:inline-block;min-width:44px;padding:1px 6px;border-radius:999px;font-weight:600;font-variant-numeric:tabular-nums;text-align:center}
+.roas.bad{background:var(--bad-bg);color:var(--bad)}.roas.mid{background:var(--warn-bg);color:var(--warn)}.roas.good{background:var(--sales-soft);color:var(--sales)}
+#ad-foot{margin-top:6px}

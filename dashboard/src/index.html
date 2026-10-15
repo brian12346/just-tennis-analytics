@@ -46,6 +46,7 @@
     <button role="tab" data-tab="shopify" data-group="sales" aria-selected="true">Just Tennis</button>
     <button role="tab" data-tab="anr" data-group="sales" aria-selected="false">Ace n Rally</button>
     <button role="tab" data-tab="amazon" data-group="sales" aria-selected="false">Amazon</button>
+    <button role="tab" data-tab="ads" data-group="sales" aria-selected="false">Ads</button>
     <button role="tab" data-tab="costs" data-group="inventory" aria-selected="false" hidden>Value</button>
     <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
@@ -399,6 +400,39 @@
       <div class="cmbar"><span class="muted small">Est. fees = referral fee % × price + FBA fee per unit, from each SKU's own sales in the last 180 days (or 15% and the typical FBA fee for its size when it hasn't sold). Profit = price − fees − cost. Storage fees aren't included.</span><span class="dbtns right"><button class="btn" id="fba-dl" hidden>Download CSV</button></span></div>
       <div class="tbl-wrap tall xl"><table id="fba-table" class="fbat"></table></div>
       <div class="row"><button class="btn" id="fba-prev" hidden>Previous</button><button class="btn" id="fba-next" hidden>Next page</button><span class="muted small" id="fba-count"></span></div>
+    </section>
+  </div>
+  <div id="tab-ads" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Google Ads · Just Tennis · Ace n Rally · Pacific time</span>
+        <h1>Ads</h1>
+      </div>
+      <div class="controls">
+        <div class="seg sm" id="ad-store" role="group" aria-label="Store"><button type="button" data-st="all" aria-pressed="true">Both</button><button type="button" data-st="justtennis" aria-pressed="false">Just Tennis</button><button type="button" data-st="acenrally" aria-pressed="false">Ace n Rally</button></div>
+        <div class="seg" id="ad-rangeseg" role="group" aria-label="Ads range"></div>
+        <div class="dates">
+          <input type="date" id="ad-start" aria-label="Start date">
+          <span>–</span>
+          <input type="date" id="ad-end" aria-label="End date">
+        </div>
+        <button class="btn primary" id="ad-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="ad-status" aria-live="polite">Loading ads…</div>
+    <section class="kpis" id="ad-kpis" aria-label="Ads totals"></section>
+    <section class="panel">
+      <div class="panel-head"><h2>Spend by day</h2>
+        <div class="legend" id="ad-legend"><span><i class="chsw ch-justtennis"></i>Just Tennis</span><span><i class="chsw ch-acenrally"></i>Ace n Rally</span></div>
+      </div>
+      <div class="chart" id="ad-chart"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Campaigns</h2>
+        <label class="small muted">Sort <select id="ad-sort" class="inp sm" style="width:auto"><option value="spend">Spend</option><option value="worst">Lowest ROAS first</option><option value="roas">Highest ROAS first</option><option value="value">Conversion value</option></select></label>
+      </div>
+      <div class="tbl-wrap"><table id="ad-camps" class="adt"></table></div>
+      <div class="muted small" id="ad-foot"></div>
     </section>
   </div>
   <div id="tab-discontinued" hidden>
@@ -955,6 +989,9 @@
 </script>
 <script>
 <!-- @inline js/discontinued.js -->
+</script>
+<script>
+<!-- @inline js/ads.js -->
 </script>
 <script>
 <!-- @inline js/amz-research.js -->
