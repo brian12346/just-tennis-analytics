@@ -497,6 +497,12 @@
         const out = await run(`select jt.prep_incoming_hide(${q(JSON.stringify(body))}::jsonb) as ok`, true);
         return out[0] && out[0].ok;
       },
+      // product screen: prep center counts, a Shopify count and transfers to / from the Shopify store in one save (migration 150)
+      async inventoryEdit(body) {
+        if (WEB) { const r = await WEB.write("jt_inventory_edit", { p: body }); return typeof r === "string" ? JSON.parse(r) : r; }
+        const out = await run(`select jt.inventory_edit(${q(JSON.stringify({ ...body, by: body.by || "Claude dashboard" }))}::jsonb)::text as r`, true);
+        return out[0] && out[0].r ? JSON.parse(out[0].r) : null;
+      },
       async adjust(body) {
         if (WEB) return Number(await WEB.write("jt_prep_adjust", { p: body }));
         const out = await run(`select jt.prep_adjust(${q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb) as n`, true);

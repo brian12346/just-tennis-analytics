@@ -1232,10 +1232,10 @@
 
   function renderMoves() {
     const d = cache; const el = $("prep-moves");
-    const list = d.moves.filter(x => P.moveKind === "all" || x[1] === P.moveKind || x[1] === "un" + P.moveKind);
+    const list = d.moves.filter(x => P.moveKind === "all" || x[1] === P.moveKind || x[1] === "un" + P.moveKind || (P.moveKind === "to_shopify" && x[1] === "from_shopify"));
     document.querySelectorAll("#prep-mkind button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.k === P.moveKind)));
     if (!d.moves.length) { el.innerHTML = `<div class="muted small" style="padding:8px 2px">No activity yet. Counts, shipments to Amazon and the starting inventory will be listed here.</div>`; return; }
-    const KIND = { adjust: '<span class="pill pos">Count</span>', ship: '<span class="pill web">Shipped</span>', seed: '<span class="pill ok">Starting stock</span>', receive: '<span class="pill other">Received</span>', unship: '<span class="pill warn">Un-shipped</span>', unreceive: '<span class="pill warn">Un-received</span>', assign: '<span class="pill manual">Assigned</span>' };
+    const KIND = { adjust: '<span class="pill pos">Count</span>', ship: '<span class="pill web">Shipped</span>', seed: '<span class="pill ok">Starting stock</span>', receive: '<span class="pill other">Received</span>', unship: '<span class="pill warn">Un-shipped</span>', unreceive: '<span class="pill warn">Un-received</span>', assign: '<span class="pill manual">Assigned</span>', to_shopify: '<span class="pill other">To Shopify</span>', from_shopify: '<span class="pill other">From Shopify</span>', reconcile: '<span class="pill warn">Seller Central</span>' };
     el.innerHTML = `<div class="tbl-wrap tall"><table class="prepm"><thead><tr><th class="l">When</th><th class="l">What</th><th class="l">Product</th><th>Change</th><th>After</th><th class="l">Shipment</th><th class="l">By</th><th class="l">Note</th></tr></thead><tbody>${
       list.map(x => { const [at, kind, vid, asku, chg, after, shipment, dest, nt, by, title, sku] = x;
         return `<tr><td class="l small">${when(at)}</td><td class="l">${KIND[kind] || esc(kind)}</td>
@@ -1379,7 +1379,14 @@
     setTimeout(() => { const i = document.querySelector(`#prep-modal input[data-k="${CSS.escape(k)}"]`); if (i) i.focus(); }, 0);
   }
   // Closing a popup opened from a shipment (e.g. a recount) goes back to that shipment, with its edits kept.
-  function closeModal() { const b = P.modal && P.modal.back; P.modal = b || null; P.busy = false; renderModal(); }
+  function closeModal() {
+    const M = P.modal;
+    if (M && M.kind === "prod" && M.info && M.ed && !M.ed.warn) {     // unsaved inventory changes: say so once before closing
+      const ls = (cache.byVariant.get(M.vid) || []).map(l => ({ sku: l.sku, asin: l.asin, units: l.units || 1, now: onHand(M.vid, l.sku) }));
+      if (invCalc(M, [...ls, { sku: "", now: onHand(M.vid, ""), any: true }]).changes) { M.ed.warn = true; renderModal(); return; }
+    }
+    const b = M && M.back; P.modal = b || null; P.busy = false; renderModal();
+  }
   function onHand(vid, sku) { const r = cache && cache.rows.find(x => x.vid === vid && x.asku === (sku || "")); return r ? r.qty : 0; }
 
   // ---------- product detail (click a row on Incoming products) ----------
@@ -1397,7 +1404,7 @@
     const asins = [...new Set(ls.map(l => l.asin).filter(Boolean))];
     const inList = (a) => a.length ? a.map(JT.q).join(",") : "''";
     const T = "(now() at time zone 'America/Los_Angeles')::date";
-    const [vr, sales, fba, invs, pos, lastShip, hist] = await Promise.all([
+    const [vr, sales, fba, invs, pos, lastShip, hist, shopNow, log] = await Promise.all([
       JT.rows(["coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.vendor", "v.unit_cost", "v.price", "v.inventory_qty", "v.product_id::text", "v.barcode"],
         `from jt.variants v where v.variant_id = ${v}`, true),
       asins.length ? JT.rows(["a.asin", `coalesce(sum(a.units) filter (where a.day > ${T} - 7), 0)`, `coalesce(sum(a.units) filter (where a.day > ${T} - 30), 0)`, "coalesce(sum(a.units), 0)",
@@ -1420,10 +1427,18 @@
       JT.rows(["max(coalesce((o.stage_at->>'ordered')::timestamptz, o.created_at))::date::text", FLOW ? "max(l.backorder_at)::date::text" : "null::text",
           "bool_or(l.backorder and l.qty_received < l.qty_ordered and o.status in ('ordered', 'invoiced', 'partial'))"],
         `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id where l.variant_id = ${v} and o.status <> 'draft'`, true).catch(() => []),
+      // Shopify on hand including changes not applied yet, and the inventory change log (migration 150)
+      JT.rows(["jt.shopify_qty_now(" + v + ")"], "from (select 1) x", true).catch(() => []),
+      JT.rows(["at::text", "src", "kind", "sku", "chg", "after", "note", "who", "st", "err"],
+        `from (select m.at, 'prep' src, m.kind, m.amazon_sku sku, m.qty_change chg, m.qty_after after, coalesce(nullif(m.note, ''), m.shipment) note, m.by_user who, '' st, '' err
+                 from jt.prep_moves m where m.variant_id = ${v}
+               union all select s.created_at, 'shopify', s.kind, s.amazon_sku, s.delta, null, s.reason, s.created_by, s.status, s.error
+                 from jt.shopify_stock_moves s where s.variant_id = ${v}) t order by at desc limit 12`, true).catch(() => []),
     ]);
     const x = vr[0] || [];
     return {
-      title: x[0] || "", sku: x[1] || "", vendor: x[2] || "", cost: x[3] == null ? null : +x[3], price: x[4] == null ? null : +x[4], shopQty: x[5] == null ? null : +x[5], pid: x[6] || "", upc: x[7] || "",
+      title: x[0] || "", sku: x[1] || "", vendor: x[2] || "", cost: x[3] == null ? null : +x[3], price: x[4] == null ? null : +x[4], shopQty: (shopNow[0] && shopNow[0][0] != null) ? +shopNow[0][0] : x[5] == null ? null : +x[5], pid: x[6] || "", upc: x[7] || "",
+      log: log.map(r => ({ at: r[0], src: r[1], kind: r[2], sku: r[3] || "", chg: +r[4] || 0, after: r[5] == null ? null : +r[5], note: r[6] || "", who: r[7] || "", st: r[8] || "", err: r[9] || "" })),
       sales: new Map(sales.map(r => [r[0], { d7: +r[1], d30: +r[2], d90: +r[3], fba30: +r[4] }])),
       fba: fba.map(r => ({ sku: r[0], asin: r[1], avail: +r[2], inbound: +r[3], reserved: +r[4], unf: +r[5], active: !!r[6] })),
       invs: invs.map(r => ({ id: r[0], no: r[1] || "", vendor: r[2] || "", date: r[3] || "", oid: r[4] || null, billed: +r[5] || 0, cost: r[6] == null ? null : +r[6], got: r[7] == null ? 0 : +r[7], recv: !!r[8], paid: r[9] || "" })),
@@ -1484,7 +1499,11 @@
         <tfoot><tr><td class="l">Total${multi ? " · single units" : ""}</td><td></td><td>${n0(tot.prep)}${tot.coming ? `<div class="meta">+ ${n0(tot.coming)} incoming</div>` : ""}</td><td>${n0(tot.ship)}</td><td>${n0(tot.avail)}</td><td>${n0(tot.inbound)}</td><td>${n0(tot.reserved)}</td><td>${n0(tot.s7)}</td><td>${n0(tot.s30)}</td><td>${n0(tot.s90)}</td><td></td><td></td></tr></tfoot></table></div>
         <p class="muted small" style="margin:4px 0 0">Prep center and shipment counts are Shopify units (single items); FBA stock and sales are Amazon units (packs) per listing. Sales are all Amazon orders for the ASIN (FBA and FBM).</p>`
         : `<div class="note warn">No Amazon listing is mapped to this product.</div>`}`;
-    const kpis = `<div class="pkpis">${[["Shopify on hand", I.shopQty == null ? "—" : n0(I.shopQty)], ["At prep center", n0(tot.prep)], ["Incoming", n0(tot.coming)], ["FBA available", n0(tot.avail)], ["Sold 30d", n0(tot.s30)],
+    const buckets = ls.map(l => ({ sku: l.sku, asin: l.asin || "", units: l.units || 1, now: prepOf(l.sku) }));
+    buckets.push({ sku: "", asin: "", units: 1, now: anyP, any: true });
+    const C = invCalc(M, buckets), prepAfter = C.prep.reduce((t, r) => t + r.after, 0);
+    const pv = (now, after) => after === now ? n0(now) : `<span class="dim" style="text-decoration:line-through">${n0(now)}</span> <span class="ivto">${n0(after)}</span>`;
+    const kpis = `<div class="pkpis">${[["Shopify on hand", I.shopQty == null ? "—" : pv(C.shopNow, C.shopAfter)], ["At prep center", pv(tot.prep, prepAfter)], ["Incoming", n0(tot.coming)], ["FBA available", n0(tot.avail)], ["Sold 30d", n0(tot.s30)],
       ["Last ordered", I.lastOrdered ? shortDate(I.lastOrdered) + (ago(I.lastOrdered) > 330 ? " " + I.lastOrdered.slice(0, 4) : "") : "never"],
       ["Last backordered", I.backorderNow ? "now" : I.lastBackorder ? shortDate(I.lastBackorder) + (ago(I.lastBackorder) > 330 ? " " + I.lastBackorder.slice(0, 4) : "") : "—"]]
       .map(([l, v]) => `<div><span class="dim small">${l}</span><b>${v}</b></div>`).join("")}</div>`;
@@ -1503,7 +1522,89 @@
     const ships = cache.shipments.filter(s => s.status !== "shipped" && s.lines.some(l => l.vid === M.vid));
     const shipTbl = ships.length ? `<h3 class="psec">Amazon shipments in progress</h3><div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Shipment</th><th class="l">Status</th><th class="l">Listing</th><th>Units</th></tr></thead><tbody>${ships.map(s => s.lines.filter(l => l.vid === M.vid).map(l =>
         `<tr><td class="l">${esc(s.name || "(no shipment ID)")} <span class="pill ${s.dest === "AWD" ? "manual" : "web"}">${esc(s.dest)}</span></td><td class="l small">${esc(s.status)}</td><td class="l mono small">${esc(l.asku || "any")}</td><td>${n0(l.qty)}</td></tr>`).join("")).join("")}</tbody></table></div>` : "";
-    return head + kpis + listTbl + poTbl + invTbl + shipTbl;
+    return head + kpis + invEditHtml(M, C) + listTbl + poTbl + invTbl + shipTbl + invLogHtml(I);
+  }
+  // ---------- inventory editor on the product screen (customer feedback, Oct 15; migration 150) ----------
+  // Count the Shopify store and each prep center listing, and move units between the prep center and the Shopify
+  // store. Nothing is written until Save; changed rows and the numbers they'll become are highlighted.
+  function invState(M) { return M.ed || (M.ed = { shop: "", prep: {}, moves: [], note: "", mv: { dir: "to_shopify", sku: null, qty: "" }, warn: false }); }
+  function invCalc(M, buckets) {
+    const E = invState(M), I = M.info || {}, num = (v) => v === "" || v == null ? null : Number(v), bad = new Set();
+    const shopNow = I.shopQty || 0, shopCnt = num(E.shop);
+    if (shopCnt != null && !Number.isInteger(shopCnt)) bad.add("shop");
+    let shopAfter = shopCnt == null || bad.has("shop") ? shopNow : shopCnt, shopMoved = 0;
+    const prep = buckets.map(b => { const c = num(E.prep[b.sku]), ok = c == null || (Number.isInteger(c) && c >= 0); if (!ok) bad.add("p:" + b.sku);
+      return { ...b, cnt: ok ? c : null, after: ok && c != null ? c : b.now, moved: 0 }; });
+    for (const mv of E.moves) {
+      const r = prep.find(x => x.sku === mv.sku); if (!r) continue;
+      const d = mv.dir === "to_shopify" ? -mv.qty : mv.qty; r.after += d; r.moved += d; shopAfter -= d; shopMoved -= d;
+    }
+    for (const r of prep) if (r.after < 0) bad.add("p:" + r.sku);
+    const changes = (shopCnt != null && !bad.has("shop") && shopCnt !== shopNow ? 1 : 0) + prep.filter(r => r.cnt != null && r.cnt !== r.now).length + E.moves.length;
+    return { shopNow, shopCnt, shopAfter, shopMoved, prep, changes, bad };
+  }
+  const bucketName = (b) => b.any ? "Any listing" : `${b.asin || "no ASIN"} · ${b.sku}${b.units !== 1 ? ` (${b.units}-pack)` : ""}`;
+  function invEditHtml(M, C) {
+    const E = invState(M), ro = M.info.shopQty == null;
+    const delta = (a, b) => { const d = b - a; return d ? `<span class="ivd ${d < 0 ? "neg" : "pos"}">${d > 0 ? "+" : "−"}${n0(Math.abs(d))}</span>` : ""; };
+    const mvTxt = (d) => d ? `<span class="${d < 0 ? "neg" : "pos"}">${d > 0 ? "+" : "−"}${n0(Math.abs(d))}</span>` : '<span class="dim">—</span>';
+    const row = (key, label, meta, now, val, moved, after, isBad) => {
+      const chg = after !== now || (val !== "" && Number(val) !== now);
+      return `<tr class="${chg ? "ivchg" : ""}"><td class="l">${label}<div class="meta">${meta}</div></td><td>${n0(now)}</td>
+        <td><input class="inp sm num ${val !== "" ? "ivset" : ""} ${isBad ? "bad" : ""}" style="width:76px" data-iv="${esc(key)}" value="${esc(val)}" placeholder="${n0(now)}" inputmode="numeric" aria-label="Counted ${esc(label.replace(/<[^>]+>/g, ""))}"></td>
+        <td>${mvTxt(moved)}</td><td>${after === now ? `<span class="dim">${n0(now)}</span>` : `<b>${n0(after)}</b> ${delta(now, after)}`}</td></tr>`;
+    };
+    const rows = row("shop", "<b>Shopify store</b>", "available to sell · changed in Shopify on save", C.shopNow, E.shop, C.shopMoved, C.shopAfter, C.bad.has("shop"))
+      + C.prep.filter(b => !b.any || b.now || b.cnt != null || b.moved || C.prep.length === 1).map(b =>
+        row("p:" + b.sku, `Prep center · <span class="mono">${esc(b.any ? "any listing" : b.sku)}</span>`, b.any ? "not earmarked for a listing" : esc(b.asin || "no ASIN") + (b.units !== 1 ? ` · ${b.units}-pack listing` : ""), b.now, E.prep[b.sku] ?? "", b.moved, b.after, C.bad.has("p:" + b.sku))).join("");
+    const mvSku = E.mv.sku == null ? ((C.prep.find(b => b.now > 0) || C.prep[0] || {}).sku || "") : E.mv.sku;
+    const opts = C.prep.map(b => `<option value="${esc(b.sku)}" ${b.sku === mvSku ? "selected" : ""}>${esc(bucketName(b))} (${n0(b.after)})</option>`).join("");
+    const mvQ = E.mv.qty === "" ? null : Number(E.mv.qty), mvBad = mvQ != null && (!Number.isInteger(mvQ) || mvQ <= 0);
+    const chips = E.moves.map((mv, i) => { const b = C.prep.find(x => x.sku === mv.sku) || { sku: mv.sku };
+      return `<span class="ivchip">${n0(mv.qty)} · ${mv.dir === "to_shopify" ? `Prep (${esc(b.any ? "any" : b.sku)}) → Shopify` : `Shopify → Prep (${esc(b.any ? "any" : b.sku)})`}<button class="linkbtn small" data-act="iv-rm" data-i="${i}" aria-label="Remove this transfer">✕</button></span>`; }).join("");
+    const nBad = C.bad.size;
+    return `<div class="ivbox ${C.changes ? "dirty" : ""}"><div class="lanehead"><h3 class="psec" style="margin:0">Inventory</h3><span class="muted small">Type a count to set it, or move units between the prep center and the Shopify store. Nothing changes until you save.</span></div>
+      <div class="tbl-wrap"><table class="prept ivt"><thead><tr><th class="l">Where</th><th>Now</th><th>Counted</th><th>Moved</th><th>After save</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="ivmove"><span>Move</span><input class="inp sm num ${mvBad ? "bad" : ""}" style="width:70px" id="iv-mq" value="${esc(E.mv.qty)}" inputmode="numeric" placeholder="qty" aria-label="Units to move">
+        <select class="inp sm" id="iv-md" style="width:auto"><option value="to_shopify" ${E.mv.dir === "to_shopify" ? "selected" : ""}>from the prep center to the Shopify store</option><option value="from_shopify" ${E.mv.dir === "from_shopify" ? "selected" : ""}>from the Shopify store to the prep center</option></select>
+        <select class="inp sm" id="iv-ms" style="width:auto;max-width:300px" aria-label="Prep center listing">${opts}</select>
+        <button class="mini" data-act="iv-add" ${mvQ == null || mvBad ? "disabled" : ""}>Add transfer</button></div>
+      ${chips ? `<div class="ivchips">${chips}</div>` : ""}
+      ${E.warn && C.changes ? '<div class="note warn">You have unsaved inventory changes — save them, or Discard, then close.</div>' : ""}
+      ${nBad ? '<div class="note bad">Fix the highlighted numbers: counts are whole numbers, and the prep center can\'t go below 0.</div>' : ""}
+      <div class="row"><input class="inp sm" id="iv-note" style="flex:1;min-width:200px" value="${esc(E.note)}" placeholder="Reason (optional) — e.g. cycle count, found in back room, damaged">
+        <span class="dbtns"><span class="muted small">${C.changes ? `${C.changes} change${C.changes === 1 ? "" : "s"} not saved` : "No changes"}</span>
+        <button class="btn" data-act="iv-discard" ${C.changes || E.note ? "" : "disabled"}>Discard</button>
+        <button class="btn primary" data-act="iv-save" ${!C.changes || nBad || P.busy || ro ? "disabled" : ""}>${P.busy ? "Saving…" : C.changes ? `Save ${C.changes} change${C.changes === 1 ? "" : "s"}` : "Save"}</button></span></div></div>`;
+  }
+  function invLogHtml(I) {
+    if (!I.log || !I.log.length) return "";
+    const K = { adjust: "Count", to_shopify: "To Shopify", from_shopify: "From Shopify", count: "Count", ship: "Shipped to Amazon", receive: "Received", unship: "Unshipped", unreceive: "Unreceived", assign: "Earmarked", reconcile: "Seller Central", seed: "Starting count" };
+    return `<h3 class="psec">Inventory log</h3><div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">When</th><th class="l">Where</th><th class="l">What</th><th>Change</th><th>After</th><th class="l">Note</th><th class="l">By</th></tr></thead><tbody>${I.log.map(r =>
+      `<tr><td class="l small">${esc(when(r.at))}</td><td class="l small">${r.src === "shopify" ? "Shopify store" : "Prep center" + (r.sku ? ` · <span class="mono">${esc(r.sku)}</span>` : "")}</td>
+        <td class="l small">${esc(K[r.kind] || r.kind)}${r.src === "shopify" ? (r.st === "pending" ? ' <span class="pill warn" title="Waiting for the sync to apply it in Shopify">pending</span>' : r.st === "failed" ? ` <span class="pill miss" title="${esc(r.err)}">failed</span>` : ' <span class="pill ok">in Shopify</span>') : ""}</td>
+        <td class="${r.chg < 0 ? "neg" : "pos"}">${r.chg > 0 ? "+" : "−"}${n0(Math.abs(r.chg))}</td><td>${r.after == null ? '<span class="dim">—</span>' : n0(r.after)}</td>
+        <td class="l small">${esc(r.note)}${r.st === "failed" && r.err ? `<div class="meta neg">${esc(r.err.slice(0, 140))}</div>` : ""}</td><td class="l small">${esc(r.who)}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  async function invSave(M) {
+    const I = M.info, E = invState(M), ls = (cache.byVariant.get(M.vid) || []).map(l => l.sku);
+    for (const r of cache.rows) if (r.vid === M.vid && r.asku && !ls.includes(r.asku)) ls.push(r.asku);
+    const body = { variant_id: Number(M.vid), note: E.note || "", prep: [], moves: E.moves.map(m => ({ dir: m.dir, amazon_sku: m.sku, qty: m.qty })) };
+    for (const [sku, v] of Object.entries(E.prep)) if (v !== "" && Number(v) !== onHand(M.vid, sku)) body.prep.push({ amazon_sku: sku, qty: Number(v) });
+    if (E.shop !== "" && Number(E.shop) !== I.shopQty) body.shopify = { qty: Number(E.shop), expect: I.shopQty };
+    P.busy = true; renderModal();
+    try {
+      const r = await JT.prep.inventoryEdit(body);
+      P.busy = false;
+      const parts = [];
+      if (r && r.prep) parts.push(`${r.prep} prep center count${r.prep === 1 ? "" : "s"} saved`);
+      if (r && r.shopify) parts.push(`Shopify count ${r.shopify > 0 ? "+" : "−"}${n0(Math.abs(r.shopify))}`);
+      if (r && r.moved) parts.push(`${r.moved} transfer${r.moved === 1 ? "" : "s"}`);
+      M.ed = null;
+      await load(true); render(); refreshTotals();
+      if (P.modal === M) { M.info = await loadProduct(M.vid); renderModal(); }
+      note("info", `${esc(I.title || "Product")}: ${parts.join(" · ") || "saved"}.${r && (r.shopify || r.moved) ? " Shopify is updated by the sync in a minute or two (shown as pending in the log until then)." : ""}`);
+    } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't save the inventory change: " + esc(JT.message(e))); }
   }
   // the Amazon listing (ASIN / seller SKU) a shipment line is for; changing it re-keys the line, and Save earmarks
   // not-earmarked prep center stock for the new listing
@@ -1559,7 +1660,7 @@
     const box = $("prep-modal"), M = P.modal;
     box.hidden = !M; document.body.classList.toggle("modal-open", !!M);
     if (!M) { $("prep-mcard").innerHTML = ""; return; }
-    const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, c: document.activeElement.dataset.cnt, s: document.activeElement.selectionStart } : null;
+    const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, c: document.activeElement.dataset.cnt, iv: document.activeElement.dataset.iv, s: document.activeElement.selectionStart } : null;
     let html = "";
     if (M.kind === "count") {
       const listings = M.pick && cache ? (cache.byVariant.get(M.pick.vid) || []) : [];
@@ -1648,7 +1749,7 @@
             ${M.status === "started" ? `<button class="btn" data-act="save-reopen" ${bad || P.busy ? "disabled" : ""}>Back to open</button><button class="btn primary" data-act="ship-go" ${!lines || bad || blocked || P.busy ? "disabled" : ""}>Mark shipped</button>` : ""}`}</span></div>`;
     }
     $("prep-mcard").innerHTML = html; $("prep-mcard").classList.toggle("prod-card", M.kind === "prod");
-    if (keep) { const el = keep.id ? $(keep.id) : keep.k ? box.querySelector(`input[data-k="${CSS.escape(keep.k)}"]`) : keep.c ? box.querySelector(`input[data-cnt="${CSS.escape(keep.c)}"]`) : null; if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
+    if (keep) { const el = keep.id ? $(keep.id) : keep.k ? box.querySelector(`input[data-k="${CSS.escape(keep.k)}"]`) : keep.c ? box.querySelector(`input[data-cnt="${CSS.escape(keep.c)}"]`) : keep.iv ? box.querySelector(`input[data-iv="${CSS.escape(keep.iv)}"]`) : null; if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
   }
 
   function applyFix(d) {
@@ -1793,6 +1894,12 @@
       if (M.kind === "assign") { if (t.dataset.aq != null) { M.qty[t.dataset.aq] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 250); } else if (t.id === "pm-anote") M.note = t.value; return; }
       if (t.id === "pm-nq") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-exc") { M.excEdit = t.value; return; }
+      if (M.kind === "prod" && M.info) {
+        const E = invState(M);
+        if (t.dataset.iv != null) { const v = t.value.trim(); if (t.dataset.iv === "shop") E.shop = v; else E.prep[t.dataset.iv.slice(2)] = v; E.warn = false; clearTimeout(box._t); box._t = setTimeout(renderModal, 250); return; }
+        if (t.id === "iv-mq") { E.mv.qty = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 250); return; }
+        if (t.id === "iv-note") { E.note = t.value; return; }
+      }
       if (t.dataset.cnt != null && M.cnt) { M.cnt[t.dataset.cnt] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 300); return; }
       if (t.id === "pm-cnote") { M.cntNote = t.value; return; }
       if (t.id === "pm-q") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
@@ -1808,6 +1915,7 @@
       if (e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); }
       if (e.target.dataset && e.target.dataset.topo != null && M.kind === "topo") { M.pick = e.target.dataset.topo; renderModal(); }
       if (e.target.id === "pm-amz") { M.amzPick = e.target.value; renderModal(); }
+      if (M.kind === "prod" && (e.target.id === "iv-md" || e.target.id === "iv-ms")) { const E = invState(M); if (e.target.id === "iv-md") E.mv.dir = e.target.value; else E.mv.sku = e.target.value; renderModal(); }
       if (e.target.dataset && e.target.dataset.lsku != null && M.kind === "ship") { rekeyLine(M, e.target.dataset.lsku, e.target.value); renderModal(); }
       if (e.target.id === "pm-place" && M.id) flowDo(M.id, { placement: e.target.value });
       if (M.recon && e.target.dataset.rto) { const r = M.recon.rows.find(x => String(x.vid) === e.target.dataset.rto); if (r) { r.to = e.target.value; renderModal(); } }
@@ -1824,6 +1932,8 @@
       if (e.target.id === "pm-nq") { e.preventDefault(); clearTimeout(box._t); M.q = e.target.value; const c = skuCandidates(M.q).list; if (c.length === 1) pickNewShip(c[0]); else renderModal(); return; }
       if (e.target.id === "pm-q") { const b = box.querySelector(".mres button[data-pick]"); if (b) b.click(); }
       else if (e.target.id === "pm-add") { e.preventDefault(); clearTimeout(box._t); const f = findRows(M.add, M.lines); if (f.length) addLine(keyOf(f[0])); else renderModal(); }
+      else if (M.kind === "prod" && e.target.id === "iv-mq") { e.preventDefault(); clearTimeout(box._t); invState(M).mv.qty = e.target.value.trim(); const b = box.querySelector('[data-act="iv-add"]'); renderModal(); const b2 = box.querySelector('[data-act="iv-add"]'); if (b2 && !b2.disabled) b2.click(); }
+      else if (M.kind === "prod" && e.target.dataset.iv != null) { e.preventDefault(); const all = [...box.querySelectorAll("input[data-iv]")], i = all.indexOf(e.target); if (all[i + 1]) { all[i + 1].focus(); all[i + 1].select(); } }
       else if (M.cnt && e.target.dataset.cnt != null) { e.preventDefault(); clearTimeout(box._t); M.cnt[e.target.dataset.cnt] = e.target.value.trim();
         const all = [...box.querySelectorAll("input[data-cnt]")], i = all.indexOf(e.target);
         if (i >= 0 && i < all.length - 1) { renderModal(); const nx = box.querySelectorAll("input[data-cnt]")[i + 1]; if (nx) { nx.focus(); nx.select(); } }
@@ -1836,7 +1946,16 @@
       if (b.dataset.act === "close") return closeModal();
       if (M.kind === "topo") { if (b.dataset.act === "topo-go") toPoGo(); return; }
       if (M.kind === "newship") { if (b.dataset.pickship != null) { const c = skuCandidates(M.q).list[+b.dataset.pickship]; if (c) pickNewShip(c); } return; }
-      if (M.kind === "prod") { if (b.dataset.act === "gotoorder") { P.modal = null; renderModal(); openOrder(b.dataset.oid); } return; }
+      if (M.kind === "prod") {
+        if (b.dataset.act === "gotoorder") { P.modal = null; renderModal(); openOrder(b.dataset.oid); return; }
+        const E = invState(M);
+        if (b.dataset.act === "iv-add") { const q = Number(E.mv.qty), sel = $("iv-ms"), sku = E.mv.sku != null ? E.mv.sku : sel ? sel.value : "";
+          if (!Number.isInteger(q) || q <= 0) return; E.moves.push({ dir: E.mv.dir, sku, qty: q }); E.mv.qty = ""; E.warn = false; renderModal(); return; }
+        if (b.dataset.act === "iv-rm") { E.moves.splice(+b.dataset.i, 1); renderModal(); return; }
+        if (b.dataset.act === "iv-discard") { M.ed = null; renderModal(); return; }
+        if (b.dataset.act === "iv-save") return invSave(M);
+        return;
+      }
       if (b.dataset.pick) { const v = cat.find(x => x.vid === b.dataset.pick); M.pick = { vid: v.vid, sku: v.sku, title: v.title, vendor: v.vendor, cost: v.cost }; M.asku = ""; renderModal(); setTimeout(() => { const i = $("pm-qty"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "repick") { M.pick = null; M.qty = ""; renderModal(); setTimeout(() => { const i = $("pm-q"); if (i) i.focus(); }, 0); return; }
       if (b.dataset.act === "save-count") return saveCount();
