@@ -1022,8 +1022,8 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 @media (max-width:1000px){.il-lanes{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:560px){.il-lanes{grid-template-columns:1fr}}
 
-/* Orders tab: six lanes (Ready to approve · Awaiting submission · Ordered · Invoiced · Received · Recorded) */
-.il-lanes.po-lanes{grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}
+/* Orders tab: six lanes (Ready to approve · Ordered · Invoiced · Seller Sage · Invoiced · Shopify · Received · Recorded) */
+.il-lanes.po-lanes{grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
 .po-lanes .il-lane{padding:8px}
 .il-lane.ol-approve{border-top-color:var(--warn)}
 .il-lane.ol-ordered,.il-lane.ol-invoiced,.il-lane.ol-invshop{border-top-color:var(--sales)}
@@ -1031,7 +1031,7 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .il-lane.ol-recorded{border-top-color:var(--good);opacity:.92}
 .il-acts{display:flex;gap:6px;margin-top:4px}
 .po-lanes .il-hint{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
-@media (max-width:1300px){.il-lanes.po-lanes{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:1300px){.il-lanes.po-lanes{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:760px){.il-lanes.po-lanes{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:480px){.il-lanes.po-lanes{grid-template-columns:1fr}}
 

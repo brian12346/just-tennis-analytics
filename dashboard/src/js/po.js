@@ -1013,18 +1013,20 @@
     }
   }
   // ---------- Orders lanes (Brian, Oct 14) ----------
-  // Ready to approve → Awaiting submission → Ordered → Invoiced → Received → Recorded. A draft waits for Approve, then
+  // (Awaiting submission dropped Oct 16 — Brian: redundant. Approve now marks the order ordered too; an older approved
+  // draft shows in Ordered with its Mark ordered button.)
+  // Ready to approve → Ordered → Invoiced → Received → Recorded. A draft waits for Approve, then
   // for "Mark ordered" once it's with the vendor; an invoice arriving makes it Invoiced (partly received counts there
   // when it has one); fully received is Received until every invoice is in QuickBooks, then Recorded.
   // Invoiced is two lanes (Brian, Oct 16): an order with any Shopify-store products is "Invoiced · Shopify" (received
   // on the Shopify PO); one that's all prep center is "Invoiced · Seller Sage" (received here).
-  const OLANES = [["approve", "Ready to approve", "drafts waiting for approval"], ["submit", "Awaiting submission", "approved, not given to the vendor yet"],
+  const OLANES = [["approve", "Ready to approve", "drafts waiting for approval"],
     ["ordered", "Ordered", "with the vendor, no invoice yet"], ["invoiced", "Invoiced · Seller Sage", "invoice in, all prep center products — received in Seller Sage"],
     ["invshop", "Invoiced · Shopify", "invoice in, has Shopify-store products — received on the Shopify PO"],
     ["received", "Received", "in — bills not all in QuickBooks"], ["recorded", "Recorded", "received and in QuickBooks"]];
-  const OLANE_N = new Map(OLANES.map(([k, n]) => [k, n])), OLANE_P = { approve: "warn", submit: "pos", ordered: "manual", invoiced: "other", invshop: "other", received: "ok", recorded: "ok" };
+  const OLANE_N = new Map(OLANES.map(([k, n]) => [k, n])), OLANE_P = { approve: "warn", ordered: "manual", invoiced: "other", invshop: "other", received: "ok", recorded: "ok" };
   const invLane = (o) => o.nLines > o.prepLines ? "invshop" : "invoiced";
-  const laneOfO = (o) => o.status === "draft" ? (o.approvedAt ? "submit" : "approve") : o.status === "ordered" ? "ordered"
+  const laneOfO = (o) => o.status === "draft" ? (o.approvedAt ? "ordered" : "approve") : o.status === "ordered" ? "ordered"
     : o.status === "invoiced" ? invLane(o) : o.status === "partial" ? (o.nInv ? invLane(o) : "ordered")
     : o.nInv > 0 && o.nQB >= o.nInv ? "recorded" : "received";
   // a card is two short lines (vendor · cost / PO · what's next) so ten fit in a lane without scrolling (Brian, Oct 14)
@@ -1032,7 +1034,7 @@
   function oCard(o, k) {
     const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received);
     const hint = k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
-      : k === "submit" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
+      : k === "ordered" && o.status === "draft" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
       : k === "ordered" ? `<span class="dim">${o.expected ? "exp " + esc(shortDate(o.expected)) : n0(o.units) + " units"}</span>`
       : k === "invoiced" || k === "invshop" ? (o.received > 0 ? `<span class="pill manual">${n0(o.received)}/${n0(o.units)} in</span>` : `<span class="dim">${n0(left)} to come</span>`)
       : k === "received" ? (o.nInv ? `<span class="pill warn" title="Bills to enter in QuickBooks">${o.nInv - o.nQB} for QB</span>` : '<span class="pill pos">no invoice</span>')
@@ -1048,7 +1050,7 @@
   function renderOLanes(all) {
     const by = new Map(OLANES.map(([k]) => [k, []]));
     for (const o of all) by.get(laneOfO(o)).push(o);
-    for (const k of ["approve", "submit", "ordered", "invoiced", "invshop"]) by.get(k).sort((a, b) => String(a.created).localeCompare(String(b.created)));   // oldest waiting first
+    for (const k of ["approve", "ordered", "invoiced", "invshop"]) by.get(k).sort((a, b) => String(a.created).localeCompare(String(b.created)));   // oldest waiting first
     $("po-lanes").innerHTML = OLANES.map(([k, n, sub]) => {
       const os = by.get(k), tot = os.reduce((a, o) => a + (o.cost || 0), 0), more = os.length - OLANE_CARDS;
       return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}">
@@ -1060,9 +1062,9 @@
   }
   async function approveOrder(id, yes) {
     S.busy = yes === false ? "Saving…" : "Approving…"; render();
-    try { await JT.po.approve(id, yes); S.busy = ""; await loadOrders(true); if (S.ed && S.ed.id === String(id)) await openPO(id); else render();
+    try { await JT.po.approve(id, yes); if (yes !== false) await JT.prep.setOrderStatus(Number(id), "ordered"); S.busy = ""; await loadOrders(true); if (S.ed && S.ed.id === String(id)) await openPO(id); else render();
       const o = (S.orders || []).find(x => x.id === String(id));
-      note("info", yes === false ? `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} is back in Ready to approve.` : `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} approved — it's in Awaiting submission until you mark it ordered.`); }
+      note("info", yes === false ? `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} is back in Ready to approve.` : `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} approved and marked ordered.`); }
     catch (e) { S.busy = ""; render(); note("bad", "Couldn't approve: " + esc(JT.message(e))); }
   }
   async function markOrdered(id) {
@@ -1579,8 +1581,8 @@
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     out.push(`<button class="btn ${ed.dirty && !NEXT[ed.status] ? "primary" : ""}" data-pact="save" ${busy}>Save</button>`);
-    // a draft is approved first (Ready to approve → Awaiting submission), then marked ordered once it's with the vendor
-    if (ed.status === "draft" && !ed.approvedAt) out.push(`<button class="btn primary" data-pact="save-approve" ${busy} title="Approve this order: it moves to Awaiting submission until it's given to the vendor">Save &amp; approve</button>`);
+    // a draft is approved (Ready to approve → Ordered: approving marks it ordered)
+    if (ed.status === "draft" && !ed.approvedAt) out.push(`<button class="btn primary" data-pact="save-approve" ${busy} title="Approve this order: it's marked ordered and moves to Ordered">Save &amp; approve</button>`);
     else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
     // receive table has its own buttons)
