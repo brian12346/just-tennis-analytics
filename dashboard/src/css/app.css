@@ -1023,15 +1023,15 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 @media (max-width:560px){.il-lanes{grid-template-columns:1fr}}
 
 /* Orders tab: six lanes (Ready to approve · Awaiting submission · Ordered · Invoiced · Received · Recorded) */
-.il-lanes.po-lanes{grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+.il-lanes.po-lanes{grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}
 .po-lanes .il-lane{padding:8px}
 .il-lane.ol-approve{border-top-color:var(--warn)}
-.il-lane.ol-ordered,.il-lane.ol-invoiced{border-top-color:var(--sales)}
+.il-lane.ol-ordered,.il-lane.ol-invoiced,.il-lane.ol-invshop{border-top-color:var(--sales)}
 .il-lane.ol-received{border-top-color:var(--good)}
 .il-lane.ol-recorded{border-top-color:var(--good);opacity:.92}
 .il-acts{display:flex;gap:6px;margin-top:4px}
 .po-lanes .il-hint{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
-@media (max-width:1300px){.il-lanes.po-lanes{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:1300px){.il-lanes.po-lanes{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:760px){.il-lanes.po-lanes{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:480px){.il-lanes.po-lanes{grid-template-columns:1fr}}
 
@@ -1118,7 +1118,8 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .ol-headrow{display:flex;align-items:center;gap:6px;padding:2px 2px 0}
 .ol-headrow .il-head{flex:1;min-width:0;align-items:center;justify-content:flex-start;gap:6px}
 .ol-headrow .il-head .il-cnt{margin-left:auto}
-.ol-headrow .il-head b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ol-headrow .il-head b{font-size:13px;line-height:15px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.ol-headrow{min-height:34px}
 .ol-sum{font-weight:700;font-size:16px;line-height:20px;padding:0 2px 2px;font-variant-numeric:tabular-nums;color:var(--ink);letter-spacing:-0.01em}
 #po-pickshop-host:empty,#po-start-host:empty{display:none}
 #po-notes-host:not(:has(> :not([hidden]))){display:none}
