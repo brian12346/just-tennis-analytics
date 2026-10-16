@@ -1285,6 +1285,13 @@
       P.busy = false; P.modal = null; note("info", `Assigned ${n0(n)} unit${n === 1 ? "" : "s"}.`); await load(true); render();
     } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't assign: " + esc(JT.message(e))); }
   }
+  // "+ Stock": a product found on the prep center shelf that isn't in the stock list (or more of one that is) —
+  // pick any Shopify product, enter the units found; saved as a count (current + found), so it's logged like one.
+  function openAddStock() {
+    P.modal = { kind: "count", plus: true, q: "", pick: null, asku: "", qty: "", note: "", back: null };
+    catalog().then(() => renderModal()).catch(e => note("bad", esc(JT.message(e))));
+    renderModal(); setTimeout(() => { const i = $("pm-q"); if (i) i.focus(); }, 0);
+  }
   function openCount(vid, sku, back, fallback) {
     const r = vid && cache ? cache.rows.find(x => x.vid === vid && x.asku === (sku || "")) : null;
     const pick = r ? { vid: r.vid, sku: r.sku, title: r.title, vendor: r.vendor, cost: r.cost } : fallback || null;
@@ -1684,22 +1691,24 @@
     if (M.kind === "count") {
       const listings = M.pick && cache ? (cache.byVariant.get(M.pick.vid) || []) : [];
       const cur = M.pick ? onHand(M.pick.vid, M.asku) : 0;
-      const want = M.qty === "" ? null : Number(M.qty);
-      const bad = M.qty !== "" && (!Number.isInteger(want) || want < 0);
+      const add = M.plus ? (M.qty === "" ? null : Number(M.qty)) : null;
+      const want = M.qty === "" ? null : M.plus ? cur + add : Number(M.qty);
+      const bad = M.qty !== "" && (M.plus ? !Number.isInteger(add) || add <= 0 : !Number.isInteger(want) || want < 0);
       const res = !M.pick ? searchCat(M.q) : [];
-      html = `<div class="panel-head"><h2>Count stock</h2><button class="mini" data-act="close">Close</button></div>
-        <p class="muted small" style="margin:0">Enter how many units are on the prep center shelf now. The difference from the current count is logged.</p>
+      html = `<div class="panel-head"><h2>${M.plus ? "Add to prep center stock" : "Count stock"}</h2><button class="mini" data-act="close">Close</button></div>
+        <p class="muted small" style="margin:0">${M.plus ? "Found something in the prep center that isn't in the stock list? Pick the Shopify product and enter how many units you found. They're added to prep center stock and logged." : "Enter how many units are on the prep center shelf now. The difference from the current count is logged."}</p>
         ${M.pick ? `<div class="pickbox"><b>${esc(M.pick.title)}</b> <span class="mono dim">${esc(M.pick.sku)}</span> · ${esc(M.pick.vendor)} · cost ${m(M.pick.cost)} <button class="linkbtn small" data-act="repick">change</button></div>`
           : `<label class="stack" for="pm-q">Shopify product<input id="pm-q" class="inp" value="${esc(M.q)}" placeholder="Search by product name, SKU, vendor or UPC" autocomplete="off"></label>
              <div class="mres">${!cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : res.map(v => `<button data-pick="${esc(v.vid)}"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.sku)} · ${esc(v.vendor)} · ${m(v.cost)}${v.status !== "ACTIVE" ? " · " + esc(v.status.toLowerCase()) : ""}</span></button>`).join("") || (M.q.trim() ? '<span class="muted small">No products match.</span>' : "")}</div>`}
         ${M.pick ? `<div class="pmgrid">
           <label class="stack" for="pm-sku">For Amazon listing<select id="pm-sku" class="inp"><option value="">Any listing (not earmarked)</option>${listings.map(l => `<option value="${esc(l.sku)}" ${l.sku === M.asku ? "selected" : ""}>${esc(l.sku)}${l.units !== 1 ? ` (×${l.units})` : ""} · ${esc((l.title || "").slice(0, 60))}</option>`).join("")}${M.asku && !listings.some(l => l.sku === M.asku) ? `<option selected>${esc(M.asku)}</option>` : ""}</select></label>
           <label class="stack">In prep center now<b class="num" style="font-size:18px;padding:6px 0">${n0(cur)}</b></label>
-          <label class="stack" for="pm-qty">Counted units<input id="pm-qty" class="inp num ${bad ? "bad" : ""}" value="${esc(M.qty)}" inputmode="numeric" placeholder="0"></label>
-          <label class="stack" for="pm-note" style="grid-column:1 / -1">Note (optional)<input id="pm-note" class="inp" value="${esc(M.note)}" placeholder="e.g. cycle count, received from Wilson PO 1234"></label>
+          <label class="stack" for="pm-qty">${M.plus ? "Units found (added)" : "Counted units"}<input id="pm-qty" class="inp num ${bad ? "bad" : ""}" value="${esc(M.qty)}" inputmode="numeric" placeholder="0"></label>
+          <label class="stack" for="pm-note" style="grid-column:1 / -1">Note (optional)<input id="pm-note" class="inp" value="${esc(M.note)}" placeholder="${M.plus ? "e.g. found on shelf B3 during packing" : "e.g. cycle count, received from Wilson PO 1234"}"></label>
         </div>
         <div class="row">${want != null && !bad ? `<span class="${want - cur < 0 ? "neg" : "pos"}">${want - cur > 0 ? "+" : ""}${n0(want - cur)} units${M.pick.cost != null ? " · " + m0((want - cur) * M.pick.cost) + " at cost" : ""}</span>` : ""}
-          <span class="dbtns right"><button class="btn" data-act="close">${M.back ? "Back to shipment" : "Cancel"}</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : "Save count"}</button></span></div>` : ""}`;
+          ${M.plus && want != null && !bad ? `<span class="muted small">${n0(cur)} → ${n0(want)} in the prep center</span>` : ""}
+          <span class="dbtns right"><button class="btn" data-act="close">${M.back ? "Back to shipment" : "Cancel"}</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : M.plus ? "Add to stock" : "Save count"}</button></span></div>` : ""}`;
     } else if (M.kind === "assign") {
       html = assignHtml(M);
     } else if (M.kind === "topo") {
@@ -1792,8 +1801,9 @@
     const M = P.modal; if (!M || !M.pick) return;
     P.busy = true; renderModal();
     try {
-      await JT.prep.adjust({ lines: [{ variant_id: Number(M.pick.vid), amazon_sku: M.asku || "", qty: Number(M.qty), note: M.note || "" }] });
-      note("info", `Saved the count for ${esc(M.pick.title)}.`); await load(true); closeModal(); render(); refreshTotals();
+      const qty = M.plus ? onHand(M.pick.vid, M.asku) + Number(M.qty) : Number(M.qty);
+      await JT.prep.adjust({ lines: [{ variant_id: Number(M.pick.vid), amazon_sku: M.asku || "", qty, note: M.plus ? ("Added with + Stock" + (M.note ? " · " + M.note : "")) : M.note || "" }] });
+      note("info", M.plus ? `Added ${n0(Number(M.qty))} × ${esc(M.pick.title)} to prep center stock.` : `Saved the count for ${esc(M.pick.title)}.`); await load(true); closeModal(); render(); refreshTotals();
     } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't save: " + esc(JT.message(e))); }
   }
   // Save the editor, then optionally move the status (started / open / shipped).
@@ -1884,6 +1894,7 @@
       if (pr && !e.target.closest("button, a, input, select") && !String(window.getSelection() || "")) { openProduct(pr.dataset.prod, pr.dataset.psku); return; }
       const b = e.target.closest("[data-act]"); if (!b || b.closest("#prep-modal")) return;
       if (b.dataset.act === "count") openCount(b.dataset.vid, b.dataset.sku);
+      if (b.dataset.act === "addstock") openAddStock();
       if (b.dataset.act === "ship") { openShip(b.dataset.vid, b.dataset.sku, b.dataset.oid, b.dataset.n ? Number(b.dataset.n) : 0); if (b.closest(".anacard") && P.modal) P.modal.anaKey = b.dataset.vid + "|" + (b.dataset.sku || ""); }
       if (b.dataset.act === "gotoorder") openOrder(b.dataset.oid);
       if (b.dataset.act === "plan-inv") planInvoice(b.dataset.iid);
