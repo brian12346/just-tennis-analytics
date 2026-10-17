@@ -5,7 +5,7 @@
 // Price = the Buy Box landed price (New); when Just Tennis holds the Buy Box, or there is none, the lowest other new offer.
 // Same credentials and callers as the "amazon" function: SQL with x-jt-key, or a signed-in app user.
 // Our in-stock ASINs (FBA and FBM, jt.v_pm_amazon_stock) are priced first; our own offer and the lowest other seller's
-// are saved too, for Sales › Price match › Amazon prices (migration 155).
+// are saved too, for Sales › Price match › Amazon prices (migration 155), and whether Amazon.com itself has an offer (156).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-jt-key", "Access-Control-Allow-Methods": "POST, OPTIONS" };
@@ -58,6 +58,7 @@ const SELLER_ID = "AJPAM6HXYXK3Y";   // Just Tennis's seller (merchant) id; not 
 const wait = (ms: number) => new Promise((f) => setTimeout(f, ms));
 
 const US_MKT = "ATVPDKIKX0DER";
+const AMAZON_RETAIL = "ATVPDKIKX0DER";   // Amazon.com's own seller id on amazon.com (same as the marketplace id)
 async function buybox(c: Creds, deadline: number) {
   const seller = c.spapi_seller_id || SELLER_ID;
   const todo = await rpc("jt_pm_amazon_todo", { p: { upcs: 400, asins: 300 } });
@@ -110,11 +111,13 @@ async function buybox(c: Creds, deadline: number) {
         const fba = offers.some((o) => o.IsBuyBoxWinner && o.IsFulfilledByAmazon && o.SellerId !== seller);
         const landed = (o: any) => Number(o.ListingPrice?.Amount || 0) + Number(o.Shipping?.Amount || 0);
         const mine = offers.find((o) => o.SellerId === seller);
+        const amz = offers.find((o) => o.SellerId === AMAZON_RETAIL);   // Amazon.com itself selling on the listing
         const others = offers.filter((o) => o.SellerId !== seller && String(o.SubCondition || "").toLowerCase() === "new").map(landed).filter((x) => x > 0);
         const r2 = (x: number | null) => x == null ? null : Math.round(x * 100) / 100;
         rows.push({ asin, price: r2(price), buybox_price: bb, own_buybox: own, amazon_fulfilled: fba,
                     offers: pl.Summary?.TotalOfferCount ?? offers.length, error: "",
-                    own_price: mine ? r2(landed(mine)) : null, lowest_other: others.length ? r2(Math.min(...others)) : null });
+                    own_price: mine ? r2(landed(mine)) : null, lowest_other: others.length ? r2(Math.min(...others)) : null,
+                    amazon_retail: !!amz, amazon_retail_price: amz ? r2(landed(amz)) : null, amazon_retail_buybox: !!(amz && amz.IsBuyBoxWinner) });
         if (price != null) res.priced++;
       });
       await rpc("jt_pm_amazon_save", { p: { prices: rows } });

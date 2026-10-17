@@ -168,11 +168,13 @@
     P.amzLoading = true; P.amzErr = null; render();
     try {
       const r = await JT().rows(["sku", "asin", "title", "channel", "qty::text", "inbound::text", "our_price::text", "listing_price::text", "own_price::text",
-        "buybox_price::text", "own_buybox::text", "amazon_fulfilled::text", "lowest_other::text", "offers::text", "checked_at::text", "error"],
+        "buybox_price::text", "own_buybox::text", "amazon_fulfilled::text", "lowest_other::text", "offers::text", "checked_at::text", "error",
+        "amazon_now::text", "amazon_price::text", "amazon_buybox::text", "amazon_last_seen::text", "amazon_days_90::text", "amazon_bb_days_90::text"],
         "from jt.v_pm_amazon_stock order by title, sku", refresh);
       P.amz = r.map(x => ({ sku: x[0], asin: x[1], title: x[2], ch: x[3], qty: +x[4] || 0, inbound: +x[5] || 0, ours: x[6] == null ? null : +x[6],
         listing: x[7] == null ? null : +x[7], live: x[8] != null, bb: x[9] == null ? null : +x[9], own: x[10] === "true", fba: x[11] === "true",
-        low: x[12] == null ? null : +x[12], offers: x[13] == null ? null : +x[13], checked: x[14], err: x[15] || "" }));
+        low: x[12] == null ? null : +x[12], offers: x[13] == null ? null : +x[13], checked: x[14], err: x[15] || "",
+        amzNow: x[16] === "true", amzPrice: x[17] == null ? null : +x[17], amzBb: x[18] === "true", amzLast: x[19] || "", amzDays: +x[20] || 0, amzBbDays: +x[21] || 0 }));
     } catch (e) { P.amzErr = e; }
     P.amzLoading = false; render();
   }
@@ -186,8 +188,19 @@
       { l: "In-stock listings", v: P.amz ? n0(all.length) : "—", s: P.amz ? `${n0(units(all))} units · FBA ${n0(all.filter(r => r.ch === "FBA").length)} · FBM ${n0(all.filter(r => r.ch === "FBM").length)}` : "" },
       { l: "We have the Buy Box", v: P.amz ? n0(own.length) : "—", s: P.amz ? `${n0(units(own))} units` : "" },
       { l: "Buy Box with someone else", v: P.amz ? n0(lost.length) : "—", s: P.amz ? `${n0(units(lost))} units` : "", c: lost.length ? "warn" : "" },
+      { l: "Amazon.com on the listing", v: P.amz ? n0(all.filter(r => r.amzNow).length) : "—", s: P.amz ? `${n0(all.filter(r => r.amzBb).length)} with the Buy Box · ${n0(all.filter(r => !r.amzNow && r.amzLast).length)} more in the last 90 days` : "", c: all.some(r => r.amzNow) ? "warn" : "" },
       { l: "We're the higher price", v: P.amz ? n0(higher.length) : "—", s: "than the Buy Box, or the next seller when we have it" },
     ].map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${esc(x.s)}</span></div>`).join("");
+  }
+  // Amazon.com itself on the listing: now (with its price, and whether it has the Buy Box), or when it was last seen
+  // in the daily checks of the past 90 days (the log starts Oct 17, 2026)
+  const shortDay = (d) => d ? new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
+  function amzCell(r) {
+    if (!r.checked) return '<span class="dim">—</span>';
+    const hist = r.amzDays ? `<div class="meta">seen ${n0(r.amzDays)} day${r.amzDays === 1 ? "" : "s"} in 90${r.amzBbDays ? ` · Buy Box ${n0(r.amzBbDays)}` : ""}</div>` : "";
+    if (r.amzNow) return `<span class="pill warn">Selling</span> ${m2(r.amzPrice)}${r.amzBb ? '<div class="meta neg">has the Buy Box</div>' : ""}${hist}`;
+    if (r.amzLast) return `<span class="pill pos">Not now</span><div class="meta">last seen ${esc(shortDay(r.amzLast))}</div>${hist}`;
+    return '<span class="dim">No</span>';
   }
   // the price to compare with: the Buy Box when someone else has it, else the lowest other seller
   const amzRival = (r) => r.own ? r.low : r.bb != null ? r.bb : r.low;
@@ -197,7 +210,7 @@
     const all = P.amz, q = P.aq.trim().toLowerCase();
     const gap = (r) => { const x = amzRival(r); return x != null && r.ours ? (r.ours - x) / x : null; };      // + = we're higher
     const F = { lost: (r) => !r.own && r.bb != null, own: (r) => r.own, higher: (r) => (gap(r) ?? 0) > 0.005, nobb: (r) => r.checked && r.bb == null,
-      unpriced: (r) => !r.checked, all: () => true };
+      unpriced: (r) => !r.checked, amzon: (r) => r.amzNow, amzrecent: (r) => !r.amzNow && !!r.amzLast, all: () => true };
     const chan = (r) => P.aVendor === "all" || r.ch === P.aVendor;
     const rows = all.filter(r => F[P.af](r) && chan(r) && (!q || (r.title + " " + r.sku + " " + r.asin).toLowerCase().includes(q)));
     const sorts = { gap: (a, b) => (gap(b) ?? -9) - (gap(a) ?? -9), dollars: (a, b) => ((b.ours || 0) - (amzRival(b) ?? 1e9)) - ((a.ours || 0) - (amzRival(a) ?? 1e9)),
@@ -208,25 +221,26 @@
     const units = all.filter(chan).reduce((a, r) => a + r.qty, 0);
     const shown = rows.slice(0, 600);
     return `<div class="pm-bar">
-      <span class="seg sm" role="group" aria-label="Show">${[["lost", "Buy Box with someone else"], ["higher", "We're higher"], ["own", "We have the Buy Box"], ["nobb", "No Buy Box"], ["unpriced", "Not checked yet"], ["all", "All"]]
+      <span class="seg sm" role="group" aria-label="Show">${[["lost", "Buy Box with someone else"], ["higher", "We're higher"], ["own", "We have the Buy Box"], ["amzon", "Amazon.com selling"], ["amzrecent", "Amazon.com lately"], ["nobb", "No Buy Box"], ["unpriced", "Not checked yet"], ["all", "All"]]
         .map(([k, n]) => `<button type="button" data-paf="${k}" aria-pressed="${P.af === k}">${n} <span class="cnt">${n0(cnt(k))}</span></button>`).join("")}</span>
       <span class="seg sm" role="group" aria-label="Channel">${[["all", "FBA + FBM"], ["FBA", "FBA"], ["FBM", "FBM"]].map(([k, n]) => `<button type="button" data-pach="${k}" aria-pressed="${P.aVendor === k}">${n}</button>`).join("")}</span>
       <label class="small">Sort <select class="inp sm" data-pmf="asort" style="width:auto">${[["gap", "We're highest (%)"], ["dollars", "We're highest ($)"], ["stock", "Most units"], ["name", "Product"]]
         .map(([k, n]) => `<option value="${k}" ${P.asort === k ? "selected" : ""}>${n}</option>`).join("")}</select></label>
       <input class="inp" type="search" data-pmf="aq" value="${esc(P.aq)}" placeholder="Product, SKU, ASIN" style="max-width:200px">
       <span class="right small muted">${n0(all.filter(chan).length)} in-stock listings · ${n0(units)} units${last ? ` · Amazon checked ${esc(when(last))}` : ""} <button class="linkbtn small" data-pm="amz-refresh">Reload</button></span></div>
-    ${rows.length ? `<div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Listing</th><th>Stock</th><th>Our price</th><th class="l">Buy Box</th><th>Lowest other</th><th>Gap</th></tr></thead><tbody>${
+    ${rows.length ? `<div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Listing</th><th>Stock</th><th>Our price</th><th class="l">Buy Box</th><th>Lowest other</th><th class="l">Amazon.com</th><th>Gap</th></tr></thead><tbody>${
       shown.map(r => { const g = gap(r);
         return `<tr><td class="l"><a class="olink" href="https://www.amazon.com/dp/${esc(r.asin)}" target="_blank" rel="noopener">${esc(r.title || r.asin)}</a>
             <div class="meta"><span class="mono">${esc(r.sku)}</span> · <span class="mono">${esc(r.asin)}</span>${r.err ? ` · <span class="neg">${esc(r.err)}</span>` : ""}</div></td>
           <td><b>${n0(r.qty)}</b><div class="meta">${esc(r.ch)}${r.inbound ? ` · +${n0(r.inbound)} inbound` : ""}</div></td>
           <td>${m2(r.ours)}${r.ours != null && !r.live ? '<div class="meta" title="From the daily listings report — Amazon didn\'t show our offer among the top offers">listing price</div>' : ""}</td>
-          <td class="l">${!r.checked ? '<span class="dim">not checked yet</span>' : r.own ? `<span class="pill ok">Just Tennis</span> ${m2(r.bb)}` : r.bb != null ? `<b>${m2(r.bb)}</b>${r.fba ? ' <span class="pill other" title="The Buy Box offer is fulfilled by Amazon">FBA</span>' : ' <span class="pill pos">FBM</span>'}` : '<span class="dim">no Buy Box</span>'}${r.offers != null ? `<div class="meta">${n0(r.offers)} offer${r.offers === 1 ? "" : "s"}</div>` : ""}</td>
+          <td class="l">${!r.checked ? '<span class="dim">not checked yet</span>' : r.own ? `<span class="pill ok">Just Tennis</span> ${m2(r.bb)}` : r.bb != null ? `<b>${m2(r.bb)}</b>${r.amzBb ? ' <span class="pill warn" title="Amazon.com itself has the Buy Box">Amazon.com</span>' : r.fba ? ' <span class="pill other" title="The Buy Box offer is fulfilled by Amazon">FBA</span>' : ' <span class="pill pos">FBM</span>'}` : '<span class="dim">no Buy Box</span>'}${r.offers != null ? `<div class="meta">${n0(r.offers)} offer${r.offers === 1 ? "" : "s"}</div>` : ""}</td>
           <td>${r.low == null ? '<span class="dim">—</span>' : m2(r.low)}</td>
+          <td class="l small">${amzCell(r)}</td>
           <td class="${g == null ? "" : g > 0.005 ? "neg" : g < -0.005 ? "pos" : ""}">${g == null ? '<span class="dim">—</span>' : `${g > 0 ? "+" : ""}${(g * 100).toFixed(1)}%<div class="meta">${r.ours - amzRival(r) > 0 ? "+" : ""}${m2(r.ours - amzRival(r))}</div>`}</td></tr>`; }).join("")}</tbody></table></div>
       ${rows.length > shown.length ? `<p class="muted small">Showing ${n0(shown.length)} of ${n0(rows.length)} — narrow it with search.</p>` : ""}`
       : '<div class="muted small" style="padding:10px 2px">Nothing matches.</div>'}
-    <p class="muted small">Our in-stock listings: FBA with fulfillable units, FBM with quantity on Amazon. Buy Box = the featured New offer (item + shipping). Gap = our price against the Buy Box when someone else has it, or against the next-lowest seller when we have it (red = we're higher). Checked every morning, our listings first.</p>`;
+    <p class="muted small">Our in-stock listings: FBA with fulfillable units, FBM with quantity on Amazon. Buy Box = the featured New offer (item + shipping). Gap = our price against the Buy Box when someone else has it, or against the next-lowest seller when we have it (red = we're higher). Amazon.com = Amazon itself selling the item (not a third-party seller), from the same daily check; "seen N days in 90" counts the mornings it was there (history starts Oct 17, 2026). Checked every morning, our listings first.</p>`;
   }
 
   function historyHtml() {
