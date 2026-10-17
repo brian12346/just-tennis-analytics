@@ -11,7 +11,8 @@
   const n0 = (x) => Math.round(x || 0).toLocaleString();
   const when = (t) => t ? new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
-  const P = { view: "proposed", src: "all", q: "", sel: new Set(), data: null, err: null, busy: "", note: null, mapBrand: "all", csv: "", loaded: false, req: 0 };
+  const P = { view: "proposed", src: "all", q: "", sel: new Set(), data: null, err: null, busy: "", note: null, mapBrand: "all", csv: "", loaded: false, req: 0,
+    amz: null, amzErr: null, amzLoading: false, aq: "", af: "lost", asort: "gap", aVendor: "all" };
 
   const JT = () => window.JT, WEB = () => window.JTWeb || null;
   async function call(fn, sqlFn, p) {
@@ -77,7 +78,7 @@
       { l: "Not covered", v: n0((tot.not_covered || []).length), s: (tot.not_covered || []).join(", ") || "every source read", c: (tot.not_covered || []).length ? "warn" : "" },
     ].map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${esc(x.s)}</span></div>`).join("");
     const cnt = { proposed: prop.length, applied: applied.length, history: D.runs.length };
-    $("pm-views").innerHTML = [["proposed", "Proposed"], ["applied", "Applied"], ["history", "History"], ["settings", "Settings"]]
+    $("pm-views").innerHTML = [["proposed", "Proposed"], ["applied", "Applied"], ["amazon", "Amazon prices"], ["history", "History"], ["settings", "Settings"]]
       .map(([k, n]) => `<button type="button" data-pmv="${k}" aria-pressed="${P.view === k}">${n}${cnt[k] != null ? ` <span class="cnt">${n0(cnt[k])}</span>` : ""}</button>`).join("");
     $("pm-run").disabled = !!P.busy || (last && last.status === "running");
     $("pm-run").textContent = last && last.status === "running" ? "Running…" : "Run now";
@@ -85,6 +86,7 @@
     if (P.view === "proposed") body.innerHTML = proposedHtml(prop);
     else if (P.view === "applied") body.innerHTML = appliedHtml(applied);
     else if (P.view === "history") body.innerHTML = historyHtml();
+    else if (P.view === "amazon") body.innerHTML = amazonHtml();
     else body.innerHTML = settingsHtml();
   }
 
@@ -143,6 +145,61 @@
     if (recent.length) html += `<details class="pm-run"><summary class="small muted">Rolled back and rejected lately (${n0(recent.length)})</summary><div class="tbl-wrap"><table class="prept pm-t"><tbody>${
       recent.map(c => `<tr><td class="l">${prodCell(c)}</td><td class="l small">${esc(c.source)}</td><td class="l">${priceCell(c)}</td><td class="l small">${c.status === "rejected" ? `Rejected${c.decided_by ? " by " + esc(c.decided_by.split("@")[0]) : ""} <button class="linkbtn small" data-pm="reopen" data-id="${c.id}">undo</button>` : "Rolled back " + esc(when(c.rolled_back_at))}</td></tr>`).join("")}</tbody></table></div></details>`;
     return html;
+  }
+
+  // ---------------------------------------------------------------- Amazon prices (Brian, Oct 17: "based on our in stock asins")
+  // Our in-stock Amazon listings (FBA fulfillable units, FBM quantity on Amazon; jt.v_pm_amazon_stock, migration 155):
+  // our price against the Buy Box (New, item + shipping) and the lowest other seller, as the pm-amazon step last saw it.
+  async function loadAmazon(refresh) {
+    P.amzLoading = true; P.amzErr = null; render();
+    try {
+      const r = await JT().rows(["sku", "asin", "title", "channel", "qty::text", "inbound::text", "our_price::text", "listing_price::text", "own_price::text",
+        "buybox_price::text", "own_buybox::text", "amazon_fulfilled::text", "lowest_other::text", "offers::text", "checked_at::text", "error"],
+        "from jt.v_pm_amazon_stock order by title, sku", refresh);
+      P.amz = r.map(x => ({ sku: x[0], asin: x[1], title: x[2], ch: x[3], qty: +x[4] || 0, inbound: +x[5] || 0, ours: x[6] == null ? null : +x[6],
+        listing: x[7] == null ? null : +x[7], live: x[8] != null, bb: x[9] == null ? null : +x[9], own: x[10] === "true", fba: x[11] === "true",
+        low: x[12] == null ? null : +x[12], offers: x[13] == null ? null : +x[13], checked: x[14], err: x[15] || "" }));
+    } catch (e) { P.amzErr = e; }
+    P.amzLoading = false; render();
+  }
+  // the price to compare with: the Buy Box when someone else has it, else the lowest other seller
+  const amzRival = (r) => r.own ? r.low : r.bb != null ? r.bb : r.low;
+  function amazonHtml() {
+    if (P.amzErr) return `<div class="note bad">Couldn't load Amazon prices: ${esc(msg(P.amzErr))}${/v_pm_amazon_stock/.test(msg(P.amzErr)) ? " — this view arrives with the next sync after you push (migration 155)." : ""}</div>`;
+    if (!P.amz) { if (!P.amzLoading) loadAmazon(false); return '<div class="muted small" style="padding:10px 2px">Loading Amazon prices…</div>'; }
+    const all = P.amz, q = P.aq.trim().toLowerCase();
+    const gap = (r) => { const x = amzRival(r); return x != null && r.ours ? (r.ours - x) / x : null; };      // + = we're higher
+    const F = { lost: (r) => !r.own && r.bb != null, own: (r) => r.own, higher: (r) => (gap(r) ?? 0) > 0.005, nobb: (r) => r.checked && r.bb == null,
+      unpriced: (r) => !r.checked, all: () => true };
+    const chan = (r) => P.aVendor === "all" || r.ch === P.aVendor;
+    const rows = all.filter(r => F[P.af](r) && chan(r) && (!q || (r.title + " " + r.sku + " " + r.asin).toLowerCase().includes(q)));
+    const sorts = { gap: (a, b) => (gap(b) ?? -9) - (gap(a) ?? -9), dollars: (a, b) => ((b.ours || 0) - (amzRival(b) ?? 1e9)) - ((a.ours || 0) - (amzRival(a) ?? 1e9)),
+      stock: (a, b) => b.qty - a.qty, name: (a, b) => (a.title + a.sku).localeCompare(b.title + b.sku) };
+    rows.sort(sorts[P.asort] || sorts.gap);
+    const cnt = (k) => all.filter(r => F[k](r) && chan(r)).length;
+    const last = all.reduce((m, r) => (r.checked || "") > m ? r.checked : m, "");
+    const units = all.filter(chan).reduce((a, r) => a + r.qty, 0);
+    const shown = rows.slice(0, 600);
+    return `<div class="pm-bar">
+      <span class="seg sm" role="group" aria-label="Show">${[["lost", "Buy Box with someone else"], ["higher", "We're higher"], ["own", "We have the Buy Box"], ["nobb", "No Buy Box"], ["unpriced", "Not checked yet"], ["all", "All"]]
+        .map(([k, n]) => `<button type="button" data-paf="${k}" aria-pressed="${P.af === k}">${n} <span class="cnt">${n0(cnt(k))}</span></button>`).join("")}</span>
+      <span class="seg sm" role="group" aria-label="Channel">${[["all", "FBA + FBM"], ["FBA", "FBA"], ["FBM", "FBM"]].map(([k, n]) => `<button type="button" data-pach="${k}" aria-pressed="${P.aVendor === k}">${n}</button>`).join("")}</span>
+      <label class="small">Sort <select class="inp sm" data-pmf="asort" style="width:auto">${[["gap", "We're highest (%)"], ["dollars", "We're highest ($)"], ["stock", "Most units"], ["name", "Product"]]
+        .map(([k, n]) => `<option value="${k}" ${P.asort === k ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+      <input class="inp" type="search" data-pmf="aq" value="${esc(P.aq)}" placeholder="Product, SKU, ASIN" style="max-width:200px">
+      <span class="right small muted">${n0(all.filter(chan).length)} in-stock listings · ${n0(units)} units${last ? ` · Amazon checked ${esc(when(last))}` : ""} <button class="linkbtn small" data-pm="amz-refresh">Reload</button></span></div>
+    ${rows.length ? `<div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Listing</th><th>Stock</th><th>Our price</th><th class="l">Buy Box</th><th>Lowest other</th><th>Gap</th></tr></thead><tbody>${
+      shown.map(r => { const g = gap(r);
+        return `<tr><td class="l"><a class="olink" href="https://www.amazon.com/dp/${esc(r.asin)}" target="_blank" rel="noopener">${esc(r.title || r.asin)}</a>
+            <div class="meta"><span class="mono">${esc(r.sku)}</span> · <span class="mono">${esc(r.asin)}</span>${r.err ? ` · <span class="neg">${esc(r.err)}</span>` : ""}</div></td>
+          <td><b>${n0(r.qty)}</b><div class="meta">${esc(r.ch)}${r.inbound ? ` · +${n0(r.inbound)} inbound` : ""}</div></td>
+          <td>${m2(r.ours)}${r.ours != null && !r.live ? '<div class="meta" title="From the daily listings report — Amazon didn\'t show our offer among the top offers">listing price</div>' : ""}</td>
+          <td class="l">${!r.checked ? '<span class="dim">not checked yet</span>' : r.own ? `<span class="pill ok">Just Tennis</span> ${m2(r.bb)}` : r.bb != null ? `<b>${m2(r.bb)}</b>${r.fba ? ' <span class="pill other" title="The Buy Box offer is fulfilled by Amazon">FBA</span>' : ' <span class="pill pos">FBM</span>'}` : '<span class="dim">no Buy Box</span>'}${r.offers != null ? `<div class="meta">${n0(r.offers)} offer${r.offers === 1 ? "" : "s"}</div>` : ""}</td>
+          <td>${r.low == null ? '<span class="dim">—</span>' : m2(r.low)}</td>
+          <td class="${g == null ? "" : g > 0.005 ? "neg" : g < -0.005 ? "pos" : ""}">${g == null ? '<span class="dim">—</span>' : `${g > 0 ? "+" : ""}${(g * 100).toFixed(1)}%<div class="meta">${r.ours - amzRival(r) > 0 ? "+" : ""}${m2(r.ours - amzRival(r))}</div>`}</td></tr>`; }).join("")}</tbody></table></div>
+      ${rows.length > shown.length ? `<p class="muted small">Showing ${n0(shown.length)} of ${n0(rows.length)} — narrow it with search.</p>` : ""}`
+      : '<div class="muted small" style="padding:10px 2px">Nothing matches.</div>'}
+    <p class="muted small">Our in-stock listings: FBA with fulfillable units, FBM with quantity on Amazon. Buy Box = the featured New offer (item + shipping). Gap = our price against the Buy Box when someone else has it, or against the next-lowest seller when we have it (red = we're higher). Checked every morning, our listings first.</p>`;
   }
 
   function historyHtml() {
@@ -217,11 +274,14 @@
   const box = $("tab-pricematch");
   box.addEventListener("click", (e) => {
     const v = e.target.closest("[data-pmv]"); if (v) { P.view = v.dataset.pmv; render(); return; }
+    const af = e.target.closest("[data-paf]"); if (af) { P.af = af.dataset.paf; render(); return; }
+    const ac = e.target.closest("[data-pach]"); if (ac) { P.aVendor = ac.dataset.pach; render(); return; }
     const md = e.target.closest("[data-pmmode]");
     if (md) { const mode = md.dataset.pmmode; act("set", () => saveSettings({ mode }), () => mode === "auto" ? "Auto mode on: tomorrow's run applies changes (big drops still wait for review)." : "Review mode: changes wait here for approval."); return; }
     const b = e.target.closest("[data-pm]"); if (!b) return;
     const a = b.dataset.pm, D = P.data;
     if (a === "note-x") { P.note = null; render(); }
+    else if (a === "amz-refresh") loadAmazon(true);
     else if (a === "all") {
       const q = P.q.trim().toLowerCase();
       const ids = D.changes.filter(c => ["proposed", "failed"].includes(c.status) && (P.src === "all" || c.source === P.src) && (!q || (c.product_title + " " + c.sku + " " + c.vendor).toLowerCase().includes(q))).map(c => c.id);
@@ -252,14 +312,16 @@
     if (t.dataset.pmsel) { const id = t.dataset.pmsel; if (t.checked) P.sel.add(id); else P.sel.delete(id); render(); }
     else if (t.dataset.pmf === "src") { P.src = t.value; render(); }
     else if (t.dataset.pmf === "mapBrand") { P.mapBrand = t.value; render(); }
+    else if (t.dataset.pmf === "asort") { P.asort = t.value; render(); }
     else if (t.dataset.pmsrc) { const name = t.dataset.pmsrc, on = t.checked; act("src", () => saveSettings({ source: name, enabled: on }), () => `${esc(name)} ${on ? "on" : "off"}.`); }
     else if (t.id === "pm-csvfile" && t.files && t.files[0]) { t.files[0].text().then(txt => { P.csv = txt; render(); }); }
   });
   box.addEventListener("input", (e) => {
     if (e.target.dataset.pmf === "q") { P.q = e.target.value; const pos = e.target.selectionStart; render(); const i = box.querySelector('[data-pmf="q"]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } }
+    else if (e.target.dataset.pmf === "aq") { P.aq = e.target.value; const pos = e.target.selectionStart; render(); const i = box.querySelector('[data-pmf="aq"]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } }
     else if (e.target.id === "pm-csv") P.csv = e.target.value;
   });
-  $("pm-refresh").addEventListener("click", () => load(true));
+  $("pm-refresh").addEventListener("click", () => { load(true); if (P.amz) loadAmazon(true); });
   $("pm-run").addEventListener("click", () => act("run", runNow, (r) => r && r.already ? "A run is already going — refresh in a few minutes." : "Run started (review only: it proposes, changes nothing). Takes about 5 minutes — then Refresh."));
 
   window.pmShow = () => { if (!P.loaded) load(false); else render(); };

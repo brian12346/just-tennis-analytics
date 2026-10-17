@@ -4,6 +4,8 @@
 // scheduled every 3 minutes early in the morning (jt.pm_amazon_call), before the 05:30 PT "price-match" sync job.
 // Price = the Buy Box landed price (New); when Just Tennis holds the Buy Box, or there is none, the lowest other new offer.
 // Same credentials and callers as the "amazon" function: SQL with x-jt-key, or a signed-in app user.
+// Our in-stock ASINs (FBA and FBM, jt.v_pm_amazon_stock) are priced first; our own offer and the lowest other seller's
+// are saved too, for Sales › Price match › Amazon prices (migration 155).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-jt-key", "Access-Control-Allow-Methods": "POST, OPTIONS" };
@@ -106,8 +108,13 @@ async function buybox(c: Creds, deadline: number) {
           price = others.length ? Math.min(...others) : null;
         }
         const fba = offers.some((o) => o.IsBuyBoxWinner && o.IsFulfilledByAmazon && o.SellerId !== seller);
-        rows.push({ asin, price: price == null ? null : Math.round(price * 100) / 100, buybox_price: bb, own_buybox: own, amazon_fulfilled: fba,
-                    offers: pl.Summary?.TotalOfferCount ?? offers.length, error: "" });
+        const landed = (o: any) => Number(o.ListingPrice?.Amount || 0) + Number(o.Shipping?.Amount || 0);
+        const mine = offers.find((o) => o.SellerId === seller);
+        const others = offers.filter((o) => o.SellerId !== seller && String(o.SubCondition || "").toLowerCase() === "new").map(landed).filter((x) => x > 0);
+        const r2 = (x: number | null) => x == null ? null : Math.round(x * 100) / 100;
+        rows.push({ asin, price: r2(price), buybox_price: bb, own_buybox: own, amazon_fulfilled: fba,
+                    offers: pl.Summary?.TotalOfferCount ?? offers.length, error: "",
+                    own_price: mine ? r2(landed(mine)) : null, lowest_other: others.length ? r2(Math.min(...others)) : null });
         if (price != null) res.priced++;
       });
       await rpc("jt_pm_amazon_save", { p: { prices: rows } });
