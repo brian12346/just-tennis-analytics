@@ -116,7 +116,7 @@ def test_run_review_approve_apply_rollback(conn, monkeypatch):
         cur.execute("insert into jt.pm_upc_asin (upc, asin) values ('0003', 'B03')")
         cur.execute("insert into jt.pm_amazon_prices (asin, price) values ('B03', 250)")
     conn.commit()
-    monkeypatch.setattr(pm, "fetch_brand", lambda s, sess=None: ({"WR1234567": {"price": 199.0, "list": 249.0, "title": "Blade", "available": True, "url": "u"},
+    monkeypatch.setattr(pm, "read_source", lambda s, sess=None, keys=None: ({"WR1234567": {"price": 199.0, "list": 249.0, "title": "Blade", "available": True, "url": "u"},
                                                                   "WR7777777": {"price": 50.0, "list": 100.0, "title": "x", "available": True, "url": ""}}, None))
     shop = PMShop()
     out = pm.run(shop, conn)
@@ -166,7 +166,111 @@ def test_restore_after_sale_ends(conn, monkeypatch):
         cur.execute("insert into jt.pm_state (variant_id, product_id, orig_price, source) values (1, 101, 269, 'Wilson')")
         cur.execute("""update jt.settings set value = value || '{"mode": "auto", "amazon": false}' where key = 'price_match'""")
     conn.commit()
-    monkeypatch.setattr(pm, "fetch_brand", lambda s, sess=None: ({"WR1234567": {"price": 259.0, "list": 259.0, "title": "Blade", "available": True, "url": "u"}}, None))
+    monkeypatch.setattr(pm, "read_source", lambda s, sess=None, keys=None: ({"WR1234567": {"price": 259.0, "list": 259.0, "title": "Blade", "available": True, "url": "u"}}, None))
     shop = PMShop()
     out = pm.run(shop, conn)
     assert out["restored"] == 1 and out["applied"] == 1 and shop.v[1][0] == 259.0   # min(original 269, brand list 259)
+
+
+# ---------------------------------------------------------------- brand-site readers
+from sync import price_sources as ps
+
+
+def test_jt_keys():
+    assert ps.jt_keys("base", 0, "101531-2", "") == ["101531"]
+    assert ps.jt_keys("base", 0, "32S24883-6018(1.5)", "") == ["32S24883"]
+    assert ps.jt_keys("sku", 11, "04603-162-M-085", "") == ["04603-162-M"]
+    assert ps.jt_keys("barcode", 0, "x", "008235873291") == ["8235873291", "823587329"]
+    assert ps.jt_keys("barcode", 0, "x", "") == []
+
+
+class FakeResp:
+    def __init__(self, status=200, text="", js=None, ctype="text/html"):
+        self.status_code, self.text, self._js, self.headers = status, text, js, {"content-type": ctype}
+
+    def json(self):
+        if self._js is None:
+            raise ValueError("no json")
+        return self._js
+
+
+class FakeSess:
+    def __init__(self, fn):
+        self.fn, self.headers, self.calls = fn, {}, []
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append((url, params))
+        return self.fn(url, params or {})
+
+
+TILE = '''<div class="product" data-pid="{pid}"><div class="price"><span>{strike}<span class="c-price__sales sales "><span class="c-price__value value" content="{sale}">${sale}</span></span></span></div></div>'''
+
+
+def test_sfcc_grid_pages_and_prices(monkeypatch):
+    monkeypatch.setattr(ps.time, "sleep", lambda *_: None)
+    pages = {0: TILE.format(pid="101531", sale="249.00", strike='<del><span class="strike-through list"><span class="value" content="299.00">$299</span></span></del>')
+             + TILE.format(pid="3A0S26B752", sale="140.00", strike=""), 2: ""}
+    sess = FakeSess(lambda url, p: FakeResp(text=pages.get(p.get("start"), "")))
+    out, err = ps.sfcc_grid({"base_url": "https://www.babolat.com", "options": {"site": "babolatus"}}, sess)
+    assert err is None and out["101531"]["price"] == 249.0 and out["101531"]["list"] == 299.0 and out["3A0S26B752"]["list"] == 140.0
+    assert "Sites-babolatus-Site/en_US/Search-UpdateGrid" in sess.calls[0][0]
+
+
+def test_sfcc_search_needs_a_single_hit_and_reads_the_colorway(monkeypatch):
+    monkeypatch.setattr(ps.time, "sleep", lambda *_: None)
+
+    def fn(url, p):
+        if "Search-UpdateGrid" in url:
+            q = p["q"]
+            if q == "WCHRALC2":
+                return FakeResp(text=TILE.format(pid="WCHRALV2-51723", sale="149.99", strike=""))
+            if q == "MANY":
+                return FakeResp(text=TILE.format(pid="A", sale="1", strike="") + TILE.format(pid="B", sale="2", strike=""))
+            return FakeResp(text="")
+        return FakeResp(js={"product": {"variationAttributes": [{"id": "style", "values": [{"id": "WCHRALC2"}]}],
+                                        "price": {"sales": {"value": 119.99}, "list": {"value": 149.99}}}}, ctype="application/json")
+    out, err = ps.sfcc_search({"base_url": "https://www.newbalance.com", "options": {"site": "NBUS", "variation": "style"}},
+                              FakeSess(fn), keys={"WCHRALC2", "MANY", "NONE"})
+    assert err is None and list(out) == ["WCHRALC2"] and out["WCHRALC2"]["price"] == 119.99 and out["WCHRALC2"]["list"] == 149.99
+
+
+def test_head_next(monkeypatch):
+    monkeypatch.setattr(ps.time, "sleep", lambda *_: None)
+
+    def item(sku, fin, reg):
+        return {"product": {"sku": sku, "name": "R", "price_range": {"minimum_price": {"final_price": {"value": fin}, "regular_price": {"value": reg}}}},
+                "productView": {"inStock": True, "url": "u"}}
+
+    def fn(url, p):
+        if url.endswith("/en_US/"):
+            return FakeResp(text='<script id="__NEXT_DATA__">{"buildId":"B1"}</script>')
+        assert "/_next/data/B1/en_US/" in url
+        page = (p or {}).get("page", 1)
+        items = [item("232016", 199.0, 249.0)] if page == 1 else [item("236103", 269.0, 269.0)]
+        return FakeResp(js={"pageProps": {"runtimeData": {"categorySSRData": {"catalogServiceData": {"productSearch": {
+            "page_info": {"total_pages": 2}, "items": items}}}}}}, ctype="application/json")
+    out, err = ps.head_next({"base_url": "https://www.head.com/en_US", "options": {"categories": ["shop-tennis"]}}, FakeSess(fn))
+    assert err is None and out["232016"] == {"price": 199.0, "list": 249.0, "title": "R", "available": True, "url": "u"} and "236103" in out
+
+
+def test_shopify_barcode_and_handle(monkeypatch):
+    monkeypatch.setattr(ps.time, "sleep", lambda *_: None)
+
+    def fn(url, p):
+        if "products.json" in url:
+            pg = int(url.split("page=")[1])
+            return FakeResp(js={"products": [{"id": 1, "handle": "ezone-98", "title": "EZONE 98", "variants": [
+                {"sku": "08EZ98", "price": "240.00", "compare_at_price": None, "available": True}]}] if pg == 1 else []}, ctype="application/json")
+        return FakeResp(js={"title": "EZONE 98", "variants": [{"barcode": "8235873291", "price": 21600, "compare_at_price": 24000, "available": True}]})
+    out, err = ps.shopify_barcode({"base_url": "https://us.yonex.com"}, FakeSess(fn))
+    assert err is None and out["8235873291"]["price"] == 216.0 and out["8235873291"]["list"] == 240.0
+    out, err = ps.shopify_site({"base_url": "https://x", "options": {"key": "handle"}, "collections": ["all"]}, FakeSess(fn))
+    assert err is None and "EZONE-98" in out
+
+
+def test_plan_matches_by_base_and_barcode():
+    brands = {"Babolat": {"prefix": 0, "match": "base", "vendors": {"babolat"}, "prices": {"101531": bp(199.0, 249.0)}},
+              "Yonex": {"prefix": 0, "match": "barcode", "vendors": {"yonex"}, "prices": {"8235873291": bp(200.0, 240.0)}}}
+    vs = [V(1, "101531-2", 249.0, vendor="Babolat"), V(2, "EZ0898L1", 240.0, vendor="Yonex", barcode="008235873291")]
+    ch, st = plan(vs, brands, None, {}, {}, CFG, set())
+    assert {c["vid"]: c["new"] for c in ch} == {1: 199.0, 2: 200.0} and st["Yonex"]["matched"] == 1

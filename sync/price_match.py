@@ -56,53 +56,13 @@ def _vkey(v):
     return "".join(ch for ch in (v or "").lower() if ch.isalpha())
 
 
-# ---------------------------------------------------------------- brand sites
-def fetch_brand(src: dict, session=None, pause=0.4):
-    """{normalized sku: {price, list, title, available, url}} from a Shopify-built brand site, or (None, reason)."""
-    out, seen = {}, set()
-    s = session or requests.Session()
-    s.headers.update(UA)
-    base = src["base_url"].rstrip("/")
-    for coll in src["collections"] or ["all"]:
-        path = "/products.json" if coll == "all" else f"/collections/{coll}/products.json"
-        for page in range(1, 40):
-            url = f"{base}{path}?limit=250&page={page}"
-            try:
-                r = s.get(url, timeout=30)
-            except requests.RequestException as e:
-                return None, f"network error: {str(e)[:160]}"
-            if r.status_code == 404 and page == 1 and coll != "all":
-                break  # that collection isn't on this site
-            if r.status_code != 200 or "json" not in r.headers.get("content-type", ""):
-                return None, f"HTTP {r.status_code} on {path} (not a Shopify store's products.json)"
-            try:
-                prods = r.json().get("products", [])
-            except ValueError:
-                return None, f"not JSON on {path}"
-            if not prods:
-                break
-            for p in prods:
-                if p.get("id") in seen:
-                    continue
-                seen.add(p.get("id"))
-                for v in p.get("variants", []):
-                    k = norm_sku(v.get("sku"), src["sku_prefix"])
-                    if not k:
-                        continue
-                    try:
-                        price = float(v["price"])
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    cmp_ = _f(v.get("compare_at_price"))
-                    lst = cmp_ if cmp_ and cmp_ > price else price
-                    cur = out.get(k)
-                    avail = bool(v.get("available"))
-                    # keep the lowest available price per key
-                    if cur is None or (avail and (not cur["available"] or price < cur["price"])):
-                        out[k] = {"price": round(price, 2), "list": round(lst, 2), "title": p.get("title") or "", "available": avail,
-                                  "url": f"{base}/products/{p.get('handle')}" if p.get("handle") else ""}
-            time.sleep(pause)
-    return out, None
+# ---------------------------------------------------------------- brand sites (sync/price_sources.py)
+from .price_sources import jt_keys, read as read_source  # noqa: E402
+
+
+def fetch_brand(src: dict, session=None):
+    """Kept for the package's original name: a Shopify-built brand site."""
+    return read_source({**src, "kind": "shopify_site"}, session)
 
 
 # ---------------------------------------------------------------- rules
@@ -136,7 +96,7 @@ def plan(variants: list[dict], brands: dict, amazon: dict | None, state: dict, f
     """The changes for one run. Pure: no I/O.
 
     variants: [{vid, pid, title, vtitle, sku, barcode, vendor, price, cmp, cost}]
-    brands:   {source name: {"prefix": n, "vendors": set(vendor keys), "prices": {...} or None (not covered)}}
+    brands:   {source name: {"prefix": n, "match": sku|base|barcode, "vendors": set(vendor keys), "prices": {...} or None}}
     amazon:   {upc: {asin, price}} or None when Amazon isn't covered this run
     state:    {vid: {orig_price, orig_cmp, source}}   (active rows of jt.pm_state)
     skip:     variant ids not to touch (an approved change is still waiting to be applied)
@@ -170,8 +130,7 @@ def plan(variants: list[dict], brands: dict, amazon: dict | None, state: dict, f
         if b["prices"] is None:
             continue  # not covered this run: no lowering, and no restoring on missing data
         st = state.get(v["vid"])
-        k = norm_sku(v["sku"], b["prefix"])
-        hit = b["prices"].get(k) if k else None
+        hit = next((b["prices"][k] for k in jt_keys(b.get("match", "sku"), b["prefix"], v["sku"], v["barcode"]) if k in b["prices"]), None)
         if hit:
             stats[name]["matched"] += 1
         P = v["price"]
@@ -280,8 +239,9 @@ def run(shop, conn, preview: bool = False, started_by: str = "schedule") -> dict
     summary = {"sources": {}, "amazon": {}}
     try:
         with conn.cursor() as cur:
-            cur.execute("select name, kind, base_url, collections, sku_prefix, vendors from jt.pm_sources where enabled order by sort, name")
-            sources = [dict(zip(["name", "kind", "base_url", "collections", "sku_prefix", "vendors"], r)) for r in cur.fetchall()]
+            cur.execute("""select name, kind, base_url, collections, sku_prefix, vendors, match, options
+                           from jt.pm_sources where enabled order by sort, name""")
+            sources = [dict(zip(["name", "kind", "base_url", "collections", "sku_prefix", "vendors", "match", "options"], r)) for r in cur.fetchall()]
             cur.execute("""select distinct on (brand, sku_prefix) brand, sku_prefix, map_price from jt.pm_map_floors
                            where active and effective_from <= (now() at time zone 'America/Los_Angeles')::date
                            order by brand, sku_prefix, effective_from desc""")
@@ -304,8 +264,10 @@ def run(shop, conn, preview: bool = False, started_by: str = "schedule") -> dict
         brands = {}
         sess = requests.Session()
         for s in sources:
-            prices, err = (None, "needs a custom adapter") if s["kind"] != "shopify_site" else fetch_brand(s, sess)
-            brands[s["name"]] = {"prefix": s["sku_prefix"], "vendors": {_vkey(v) for v in s["vendors"]}, "prices": prices}
+            vk = {_vkey(v) for v in s["vendors"]}
+            keys = {k for v in variants if _vkey(v["vendor"]) in vk for k in jt_keys(s["match"], s["sku_prefix"], v["sku"], v["barcode"])}
+            prices, err = read_source(s, sess, keys)
+            brands[s["name"]] = {"prefix": s["sku_prefix"], "match": s["match"], "vendors": vk, "prices": prices}
             st = "ok" if prices is not None else "not covered"
             summary["sources"][s["name"]] = {"status": st, "skus": len(prices or {}), "error": err or ""}
             with conn.cursor() as cur:

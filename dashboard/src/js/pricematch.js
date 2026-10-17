@@ -19,6 +19,8 @@
     const out = await JT().run(`select ${sqlFn}(${p === undefined ? "" : JT().q(JSON.stringify({ ...p, by: "Claude dashboard" })) + "::jsonb"})::text as r`, true);
     return out[0] && out[0].r ? JSON.parse(out[0].r) : null;
   }
+  const READER = { shopify_site: "Shopify store", shopify_barcode: "Shopify store (by UPC)", sfcc_grid: "Salesforce store, full catalog",
+    sfcc_search: "Salesforce store, searched product by product", head_next: "head.com catalog" };
   const decide = (p) => call("jt_pm_decide", "jt.pm_decide", p);
   const saveSettings = (p) => call("jt_pm_settings_save", "jt.pm_settings_save", p);
   const saveMap = (p) => call("jt_pm_map_save", "jt.pm_map_save", p);
@@ -33,7 +35,7 @@
       const [ch, runs, src, set, maps, st] = await Promise.all([
         JT().rows(CH.map(c => c + "::text"), "from jt.pm_changes where status in ('proposed', 'approved', 'failed', 'rollback') or (status in ('applied', 'rolled_back', 'rejected') and created_at > now() - interval '45 days') order by id desc limit 3000", refresh),
         JT().rows(["id::text", "started_at::text", "finished_at::text", "mode", "status", "summary::text", "error", "started_by"], "from jt.pm_runs order by id desc limit 60", refresh),
-        JT().rows(["name", "kind", "base_url", "array_to_string(vendors, ', ')", "sku_prefix::text", "enabled::text", "status", "last_error", "last_count::text", "checked_at::text"], "from jt.pm_sources order by sort, name", refresh),
+        JT().rows(["name", "kind", "base_url", "array_to_string(vendors, ', ')", "sku_prefix::text", "enabled::text", "status", "last_error", "last_count::text", "checked_at::text", "match"], "from jt.pm_sources order by sort, name", refresh),
         JT().rows(["value::text"], "from jt.settings where key = 'price_match'", refresh),
         JT().rows(["id::text", "brand", "sku_prefix", "map_price::text", "effective_from::text", "source"], "from jt.pm_map_floors where active order by brand, sku_prefix, effective_from desc", refresh),
         JT().rows(["count(*)::text"], "from jt.pm_state where active", refresh),
@@ -42,7 +44,7 @@
       P.data = {
         changes: ch.map(r => { const o = Object.fromEntries(CH.map((c, i) => [c, r[i]])); for (const k of ["competitor_price", "competitor_list", "old_price", "old_compare_at", "new_price", "new_compare_at", "cost", "map_price"]) o[k] = o[k] == null ? null : +o[k]; o.big_drop = o.big_drop === "true"; return o; }),
         runs: runs.map(r => { let s = {}; try { s = JSON.parse(r[5] || "{}"); } catch (_) {} return { id: r[0], started: r[1], finished: r[2], mode: r[3], status: r[4], summary: s, error: r[6], by: r[7] }; }),
-        sources: src.map(r => ({ name: r[0], kind: r[1], url: r[2], vendors: r[3], prefix: +r[4], enabled: r[5] === "true", status: r[6], error: r[7], count: r[8] == null ? null : +r[8], checked: r[9] })),
+        sources: src.map(r => ({ name: r[0], kind: r[1], url: r[2], vendors: r[3], prefix: +r[4], enabled: r[5] === "true", status: r[6], error: r[7], count: r[8] == null ? null : +r[8], checked: r[9], match: r[10] || "sku" })),
         settings: (() => { try { return JSON.parse((set[0] || [])[0] || "{}"); } catch (_) { return {}; } })(),
         maps: maps.map(r => ({ id: r[0], brand: r[1], prefix: r[2], price: +r[3], from: r[4], source: r[5] })),
         lowered: +((st[0] || [])[0] || 0),
@@ -179,10 +181,10 @@
       <section><h3 class="psec">Brands</h3>
         <div class="tbl-wrap"><table class="prept pm-t"><thead><tr><th class="l">On</th><th class="l">Brand</th><th class="l">Website</th><th class="l">Last run</th></tr></thead><tbody>${
           D.sources.map(x => `<tr><td class="l"><input type="checkbox" data-pmsrc="${esc(x.name)}" ${x.enabled ? "checked" : ""} aria-label="Match ${esc(x.name)}"></td>
-            <td class="l"><b>${esc(x.name)}</b><div class="meta">vendors ${esc(x.vendors)}${x.prefix ? ` · SKU first ${x.prefix} characters` : ""}</div></td>
+            <td class="l"><b>${esc(x.name)}</b><div class="meta">vendors ${esc(x.vendors)} · ${esc(READER[x.kind] || x.kind)} · matched by ${x.match === "barcode" ? "UPC" : x.match === "base" ? "style code (SKU before the first “-”)" : x.prefix ? `the SKU's first ${x.prefix} characters` : "SKU"}</div></td>
             <td class="l small"><a class="olink" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url.replace(/^https?:\/\/(www\.)?/, ""))}</a></td>
             <td class="l small">${!x.checked ? '<span class="dim">not run yet</span>' : x.status === "ok" ? `<span class="pill ok">Covered</span> <span class="dim">${n0(x.count)} SKUs</span>` : `<span class="pill warn">Not covered</span><div class="meta">${esc(x.error)}</div>`}</td></tr>`).join("")}</tbody></table></div>
-        <p class="muted small">Brand sites built on Shopify work as they are. “Not covered” brands need their own reader — ask Claude to add one.</p>
+        <p class="muted small">“Not covered” means the brand's site couldn't be read that morning (it changed, or refused the request) — nothing is lowered or restored for that brand until it's read again.</p>
       </section>
       <section><h3 class="psec">MAP list <span class="small muted">(${n0(D.maps.length)} prices)</span></h3>
         <div class="row"><label class="small">Brand <select class="inp sm" data-pmf="mapBrand" style="width:auto"><option value="all">All</option>${brands.map(b => `<option ${P.mapBrand === b ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></label></div>
