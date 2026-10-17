@@ -48,6 +48,7 @@
     <button role="tab" data-tab="anr" data-group="sales" aria-selected="false">Ace n Rally</button>
     <button role="tab" data-tab="amazon" data-group="sales" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="ads" data-group="sales" aria-selected="false">Ads</button>
+    <button role="tab" data-tab="pricematch" data-group="sales" aria-selected="false">Price match</button>
     <button role="tab" data-tab="costs" data-group="inventory" aria-selected="false" hidden>Value</button>
     <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
@@ -413,6 +414,26 @@
     <div class="note" id="pk-note" hidden></div>
     <div id="pk-body"></div>
   </div>
+  <div id="tab-pricematch" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Brand websites · Amazon Buy Box · Just Tennis prices</span>
+        <h1>Price match</h1>
+      </div>
+      <div class="controls">
+        <button class="btn" id="pm-run" title="Check every brand and Amazon now. Review only: it proposes changes, nothing changes in Shopify">Run now</button>
+        <button class="btn primary" id="pm-refresh">Refresh</button>
+      </div>
+    </header>
+    <div class="status" id="pm-status" aria-live="polite">Loading price match…</div>
+    <div id="pm-note"></div>
+    <section class="kpis" id="pm-kpis" aria-label="Price match totals"></section>
+    <section class="panel">
+      <div class="panel-head"><div class="seg" id="pm-views" role="group" aria-label="Price match view"></div></div>
+      <div id="pm-body"></div>
+    </section>
+  </div>
+
   <div id="tab-ads" hidden>
     <header class="top">
       <div class="title">
@@ -1003,6 +1024,9 @@
 </script>
 <script>
 <!-- @inline js/ads.js -->
+</script>
+<script>
+<!-- @inline js/pricematch.js -->
 </script>
 <script>
 <!-- @inline js/pack.js -->

@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "shopify-order-payments", "shopify-pickups", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "shopify-order-payments", "shopify-pickups", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo", "price-match", "price-match-preview", "price-match-apply"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -166,6 +166,16 @@ def main(argv: list[str] | None = None) -> None:
         # `veeqo --since …` starts a history load (continued by later runs, 5 minutes at a time)
         run("veeqo_shipments", lambda: sync_shipments(conn, _utc(since - dt.timedelta(days=1)),
                                                       backfill=a.job == "veeqo" and a.since is not None))
+
+    if a.job in ("price-match", "price-match-preview"):
+        # brand sites + Amazon Buy Box vs Just Tennis prices (migration 152): daily 05:30 PT, or "Run now" (preview)
+        from . import price_match
+        run("price_match", lambda: price_match.run(shopify(), conn, preview=a.job == "price-match-preview",
+                                                   started_by="Run now" if a.job == "price-match-preview" else "schedule"))
+    if a.job in ("hourly", "price-match-apply"):
+        # approved price changes and rollbacks -> Shopify (approving on Sales > Price match starts this job)
+        from . import price_match as pm2
+        run("price_match_apply", lambda: pm2.apply(shopify(), conn))
 
     if a.job.startswith("amazon-"):
         if not a.file:

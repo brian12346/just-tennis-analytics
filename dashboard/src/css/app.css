@@ -1225,3 +1225,23 @@ table.ivt tfoot tr.ivtot.ivchg td{background:var(--warn-bg)}
 .pk-big{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:12px}
 .pk-big img{max-width:100%;max-height:80vh;border-radius:8px}
 .pk-bigbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;color:#fff}
+
+/* Sales › Price match (migration 152) */
+#tab-pricematch .pm-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 8px}
+#tab-pricematch .pm-bar .right{margin-left:auto;display:flex;gap:6px;align-items:center}
+.pm-t td{vertical-align:top}
+.pm-t tr.sel td{background:var(--sales-soft)}
+.pm-t .strike{text-decoration:line-through}
+.pm-t td .pill{margin:0 2px 2px 0}
+.pm-run{margin:10px 0 14px}
+.pm-runh{display:flex;align-items:center;gap:8px;margin:0 2px 6px}
+.pm-runh .right{margin-left:auto}
+.pm-chips{display:flex;flex-wrap:wrap;gap:4px}
+.pm-chip{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--sales-soft);color:var(--sales);white-space:nowrap;cursor:default}
+.pm-chip.off{background:var(--warn-bg);color:var(--warn)}
+.pm-set{display:grid;gap:18px}
+.pm-set section{display:grid;gap:8px}
+.pm-tog{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.pm-tog .muted{flex-basis:100%;margin-left:24px;margin-top:-4px}
+#tab-pricematch .kpi.warn .v{color:var(--warn)}
+@media (max-width:760px){#tab-pricematch .pm-bar .right{margin-left:0;width:100%}}

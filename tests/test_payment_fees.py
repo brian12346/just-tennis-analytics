@@ -32,10 +32,10 @@ def test_fees_sync_and_channel_profit(conn):
     assert [(str(d), float(f)) for d, f in cur.fetchall()] == [("2026-10-01", 3.49), ("2026-10-03", 15)]   # test charge left out
     cur.execute("select pay_fees, profit from jt.v_sales_channels_daily where channel = 'justtennis' and day = '2026-10-01'")
     assert tuple(map(float, cur.fetchone())) == (3.49, 60 + 10 - 3.49)
-    # next run starts a week before the newest transaction
+    # next run starts a week before the newest transaction, plus a day (Pacific evening charges are the next day in UTC)
     shop2 = FakeShop([{"nodes": [], "pageInfo": {"hasNextPage": False}}])
     assert shopify.sync_payment_fees(shop2, conn, "justtennis") == 0
-    assert shop2.calls[0]["q"] == "processed_at:>=2026-09-26"
+    assert shop2.calls[0]["q"] == "processed_at:>=2026-09-25"
 
 
 def test_fees_scope_missing_is_skipped(conn):
