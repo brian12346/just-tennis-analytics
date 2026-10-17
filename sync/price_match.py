@@ -92,12 +92,14 @@ def lower_target(price: float, comp: float, floor_map, cost, cfg: dict):
     return (target, floor) if target < price - EPS else (None, floor)
 
 
-def plan(variants: list[dict], brands: dict, amazon: dict | None, state: dict, floors: dict, cfg: dict, skip: set):
+def plan(variants: list[dict], brands: dict, amazon: dict | None, state: dict, floors: dict, cfg: dict, skip: set, markets: dict | None = None,
+         market_vendors: set | None = None):
     """The changes for one run. Pure: no I/O.
 
     variants: [{vid, pid, title, vtitle, sku, barcode, vendor, price, cmp, cost}]
     brands:   {source name: {"prefix": n, "match": sku|base|barcode, "vendors": set(vendor keys), "prices": {...} or None}}
     amazon:   {upc: {asin, price}} or None when Amazon isn't covered this run
+    markets:  retailers {name: {"prices": {barcode key: {...}} or None}} (Tennis Warehouse, Tennis Express)
     state:    {vid: {orig_price, orig_cmp, source}}   (active rows of jt.pm_state)
     skip:     variant ids not to touch (an approved change is still waiting to be applied)
     Returns (changes, stats).
@@ -149,35 +151,55 @@ def plan(variants: list[dict], brands: dict, amazon: dict | None, state: dict, f
                     hit["title"] if hit else "", hit["url"] if hit else "")
                 stats[name]["restored"] += 1
 
-    # Amazon (after the brand pass; never a variant the brand pass changed)
+    # Retailers and Amazon (after the brand pass; never a variant the brand pass changed): matched by UPC; the lowest
+    # available price among them is the one to meet. Same rules as the spec's Amazon rule: compare-at = max(existing
+    # compare-at, original price); restore once the lowest of them is back at/above the original price.
+    mk = {name: m for name, m in (markets or {}).items()}
     if amazon is not None and cfg.get("amazon", True):
-        vendors = {vk for b in brands.values() for vk in b["vendors"]}
+        mk["Amazon"] = {"prices": {u: {"price": a["price"], "list": None, "title": a.get("asin", ""), "available": True,
+                                       "url": f"https://www.amazon.com/dp/{a['asin']}", "ref": a.get("asin", "")} for u, a in amazon.items()},
+                        "exact": True}
+    for name in mk:
+        stats.setdefault(name, {"matched": 0, "lowered": 0, "restored": 0, "floored": 0})
+    stats["Amazon"].setdefault("no_upc", 0)
+    covered = {n for n, m in mk.items() if m.get("prices") is not None}
+    if covered:
+        vendors = market_vendors if market_vendors is not None else {vk for b in brands.values() for vk in b["vendors"]}
         for v in variants:
             if v["vid"] in skip or v["vid"] in touched or _vkey(v["vendor"]) not in vendors:
                 continue
             st = state.get(v["vid"])
             if not v["barcode"]:
                 stats["Amazon"]["no_upc"] += 1
-                if not (st and st["source"] == "Amazon"):
+                if not (st and st["source"] in mk):
                     continue
-            a = amazon.get(v["barcode"]) if v["barcode"] else None
-            if a:
-                stats["Amazon"]["matched"] += 1
+            keys = jt_keys("barcode", 0, "", v["barcode"])
+            hits = []
+            for n in covered:
+                m = mk[n]
+                h = m["prices"].get(v["barcode"]) if m.get("exact") else next((m["prices"][k] for k in keys if k in m["prices"]), None)
+                if h:
+                    stats[n]["matched"] += 1
+                    if h.get("available", True):
+                        hits.append((h["price"], n, h))
             P = v["price"]
-            if a and P > a["price"] + EPS:
+            best = min(hits, key=lambda x: x[0]) if hits else None
+            if best and P > best[0] + EPS:
+                comp, n, h = best
                 mp = map_floor(floors, v["vendor"], v["sku"])
-                target, floor = lower_target(P, a["price"], mp, v["cost"], cfg)
+                target, floor = lower_target(P, comp, mp, v["cost"], cfg)
                 if target is not None:
                     orig = st["orig_price"] if st else P
-                    add(v, "Amazon", "lower", target, max(v["cmp"] or 0, orig) or None, a["price"], None, a["asin"],
-                        f"https://www.amazon.com/dp/{a['asin']}", floor, mp)
-                    stats["Amazon"]["lowered"] += 1
-                    stats["Amazon"]["floored"] += 1 if floor else 0
-            elif st and st["source"] == "Amazon" and (not a or a["price"] >= st["orig_price"] - EPS):
+                    add(v, n, "lower", target, max(v["cmp"] or 0, orig) or None, comp, h.get("list"), h.get("ref") or h.get("title", ""),
+                        h.get("url", ""), floor, mp)
+                    stats[n]["lowered"] += 1
+                    stats[n]["floored"] += 1 if floor else 0
+            elif st and st["source"] in covered and (not best or best[0] >= st["orig_price"] - EPS):
                 if abs(st["orig_price"] - P) > EPS:
-                    add(v, "Amazon", "restore", st["orig_price"], st["orig_cmp"], a["price"] if a else None, None,
-                        a["asin"] if a else "", f"https://www.amazon.com/dp/{a['asin']}" if a else "")
-                    stats["Amazon"]["restored"] += 1
+                    n = st["source"]
+                    add(v, n, "restore", st["orig_price"], st["orig_cmp"], best[0] if best else None, None,
+                        (best[2].get("ref") or best[2].get("title", "")) if best else "", best[2].get("url", "") if best else "")
+                    stats[n]["restored"] += 1
     return changes, stats
 
 
@@ -258,16 +280,23 @@ def run(shop, conn, preview: bool = False, started_by: str = "schedule") -> dict
             amazon_rows = cur.fetchall()
             cur.execute("select count(*), count(*) filter (where checked_at > now() - interval '30 hours') from jt.pm_amazon_prices")
             n_amz, n_fresh = cur.fetchone()
-        vendor_keys = {_vkey(v) for s in sources for v in s["vendors"]}
+        # every brand's products (a brand whose own site is off, e.g. Tecnifibre, is still matched to retailers and Amazon)
+        with conn.cursor() as cur:
+            cur.execute("select coalesce(array_agg(v), '{}') from jt.pm_sources s, unnest(s.vendors) v where not coalesce((s.options->>'retail')::boolean, false)")
+            vendor_keys = {_vkey(v) for v in cur.fetchone()[0]}
         variants = load_catalog(shop, vendor_keys, cfg)
 
-        brands = {}
+        brands, markets = {}, {}
         sess = requests.Session()
         for s in sources:
-            vk = {_vkey(v) for v in s["vendors"]}
+            retail = bool((s.get("options") or {}).get("retail"))
+            vk = {_vkey(v) for v in s["vendors"]} if not retail else vendor_keys
             keys = {k for v in variants if _vkey(v["vendor"]) in vk for k in jt_keys(s["match"], s["sku_prefix"], v["sku"], v["barcode"])}
-            prices, err = read_source(s, sess, keys)
-            brands[s["name"]] = {"prefix": s["sku_prefix"], "match": s["match"], "vendors": vk, "prices": prices}
+            prices, err = read_source({**s, "_conn": conn}, sess, keys)
+            if retail:
+                markets[s["name"]] = {"prices": prices}
+            else:
+                brands[s["name"]] = {"prefix": s["sku_prefix"], "match": s["match"], "vendors": vk, "prices": prices}
             st = "ok" if prices is not None else "not covered"
             summary["sources"][s["name"]] = {"status": st, "skus": len(prices or {}), "error": err or ""}
             with conn.cursor() as cur:
@@ -284,7 +313,7 @@ def run(shop, conn, preview: bool = False, started_by: str = "schedule") -> dict
         else:
             summary["amazon"] = {"status": "not covered", "error": "no fresh Amazon prices (the buybox step hasn't run today)" if n_amz else "no Amazon prices yet"}
 
-        changes, stats = plan(variants, brands, amazon, state, floors, cfg, skip)
+        changes, stats = plan(variants, brands, amazon, state, floors, cfg, skip, markets, vendor_keys)
         for name, s in stats.items():
             (summary["amazon"] if name == "Amazon" else summary["sources"].setdefault(name, {})).update(s)
 

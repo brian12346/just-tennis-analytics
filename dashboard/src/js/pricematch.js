@@ -20,7 +20,8 @@
     return out[0] && out[0].r ? JSON.parse(out[0].r) : null;
   }
   const READER = { shopify_site: "Shopify store", shopify_barcode: "Shopify store (by UPC)", sfcc_grid: "Salesforce store, full catalog",
-    sfcc_search: "Salesforce store, searched product by product", head_next: "head.com catalog" };
+    sfcc_search: "Salesforce store, searched product by product", head_next: "head.com catalog",
+    tw_catalog: "retailer · category pages + product pages", shopify_upc_search: "retailer · Shopify store searched by UPC" };
   const decide = (p) => call("jt_pm_decide", "jt.pm_decide", p);
   const saveSettings = (p) => call("jt_pm_settings_save", "jt.pm_settings_save", p);
   const saveMap = (p) => call("jt_pm_map_save", "jt.pm_map_save", p);
@@ -181,7 +182,7 @@
       <section><h3 class="psec">Brands</h3>
         <div class="tbl-wrap"><table class="prept pm-t"><thead><tr><th class="l">On</th><th class="l">Brand</th><th class="l">Website</th><th class="l">Last run</th></tr></thead><tbody>${
           D.sources.map(x => `<tr><td class="l"><input type="checkbox" data-pmsrc="${esc(x.name)}" ${x.enabled ? "checked" : ""} aria-label="Match ${esc(x.name)}"></td>
-            <td class="l"><b>${esc(x.name)}</b><div class="meta">vendors ${esc(x.vendors)} · ${esc(READER[x.kind] || x.kind)} · matched by ${x.match === "barcode" ? "UPC" : x.match === "base" ? "style code (SKU before the first “-”)" : x.prefix ? `the SKU's first ${x.prefix} characters` : "SKU"}</div></td>
+            <td class="l"><b>${esc(x.name)}</b><div class="meta">${x.vendors ? "vendors " + esc(x.vendors) : "every brand — the lowest of the retailers and Amazon is matched"} · ${esc(READER[x.kind] || x.kind)} · matched by ${x.match === "barcode" ? "UPC" : x.match === "base" ? "style code (SKU before the first “-”)" : x.prefix ? `the SKU's first ${x.prefix} characters` : "SKU"}</div></td>
             <td class="l small"><a class="olink" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url.replace(/^https?:\/\/(www\.)?/, ""))}</a></td>
             <td class="l small">${!x.checked ? '<span class="dim">not run yet</span>' : x.status === "ok" ? `<span class="pill ok">Covered</span> <span class="dim">${n0(x.count)} SKUs</span>` : `<span class="pill warn">Not covered</span><div class="meta">${esc(x.error)}</div>`}</td></tr>`).join("")}</tbody></table></div>
         <p class="muted small">“Not covered” means the brand's site couldn't be read that morning (it changed, or refused the request) — nothing is lowered or restored for that brand until it's read again.</p>

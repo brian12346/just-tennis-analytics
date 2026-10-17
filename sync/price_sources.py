@@ -21,7 +21,7 @@ import requests
 
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
       "Accept": "text/html,application/json;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9"}
-BUDGET = 9 * 60          # seconds per brand at most
+BUDGET = 6 * 60          # seconds per brand site at most (retailers: their own, below)
 
 
 def _f(x):
@@ -291,8 +291,209 @@ def head_next(src: dict, sess=None, keys=None, pause=0.8):
     return out, None
 
 
+# ---------------------------------------------------------------- retailers (Tennis Warehouse, Tennis Express)
+# Retailers are matched by UPC across every brand. What maps a UPC to the retailer's product is cached in
+# jt.pm_retail_map (src["_conn"]), filled a little each run, so a daily run only reads prices.
+def _map_load(conn, source):
+    with conn.cursor() as cur:
+        cur.execute("select key, ref, checked_at from jt.pm_retail_map where source = %s", (source,))
+        return {k: (r, t) for k, r, t in cur.fetchall()}
+
+
+def _map_save(conn, source, rows):
+    if not rows:
+        return
+    with conn.cursor() as cur:
+        cur.executemany("""insert into jt.pm_retail_map (source, key, ref, checked_at) values (%s, %s, %s, now())
+                           on conflict (source, key) do update set ref = excluded.ref, checked_at = now()""",
+                        [(source, k, r) for k, r in rows])
+    conn.commit()
+
+
+def shopify_upc_search(src: dict, sess=None, keys=None, pause=0.35):
+    """A Shopify store with its own SKUs (Tennis Express): each of our UPCs is looked up once with the store's
+    predictive search (it searches barcodes) and remembered (rechecked monthly); every day each product found is read
+    from /products/<handle>.js and the variant with that barcode gives the price."""
+    import datetime as dt
+    s, conn = _session(sess), src.get("_conn")
+    base, name = src["base_url"].rstrip("/"), src["name"]
+    t0, budget = time.time(), 8 * 60
+    known = _map_load(conn, name) if conn else {}
+    stale = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    todo = [k for k in sorted(keys or []) if k not in known or (known[k][1] and known[k][1] < stale)]
+    found, looked = [], 0
+    for k in todo:                                     # look up new UPCs for half the time at most
+        if time.time() - t0 > budget / 2:
+            break
+        r = None
+        try:
+            r = _get(s, f"{base}/search/suggest.json", params={"q": k.zfill(12), "resources[type]": "product", "resources[limit]": 1})
+            ps = ((r.json().get("resources") or {}).get("results") or {}).get("products") or [] if r.status_code == 200 else None
+        except (requests.RequestException, ValueError):
+            ps = None
+        if ps is None:
+            if looked == 0 and r is not None and r.status_code in (401, 403, 406, 429):
+                return None, f"HTTP {r.status_code} on search"
+            continue
+        looked += 1
+        found.append((k, ps[0]["handle"] if ps else ""))
+        if len(found) >= 50:
+            _map_save(conn, name, found) if conn else None
+            for kk, h in found:
+                known[kk] = (h, None)
+            found = []
+        time.sleep(pause)
+    if conn:
+        _map_save(conn, name, found)
+    for kk, h in found:
+        known[kk] = (h, None)
+    wanted = set(keys or [])
+    handles = sorted({h for k, (h, _) in known.items() if h and k in wanted})
+    out, read = {}, 0
+    for h in handles:
+        if time.time() - t0 > budget:
+            break
+        try:
+            r = _get(s, f"{base}/products/{h}.js")
+            p = r.json() if r.status_code == 200 else None
+        except (requests.RequestException, ValueError):
+            p = None
+        if not p:
+            continue
+        read += 1
+        for v in p.get("variants", []):
+            pr, cmp_ = v.get("price"), v.get("compare_at_price")
+            _add(out, strip0(v.get("barcode")), pr / 100 if isinstance(pr, (int, float)) else None,
+                 cmp_ / 100 if isinstance(cmp_, (int, float)) else None, p.get("title"), bool(v.get("available")), f"{base}/products/{h}")
+        time.sleep(pause)
+    if not out and not read:
+        return None, f"no products read ({len(handles)} known, {looked} looked up)"
+    return out, None
+
+
+TW_BUDGET = 12 * 60
+_TW_CELL = re.compile(r'descpage([A-Z0-9][A-Z0-9-]+)\.html')
+
+
+def tw_catalog(src: dict, sess=None, keys=None, pause=1.2):
+    """tennis-warehouse.com: brand category pages (from the sitemap) give each product's price; product pages give
+    the UPCs of its sizes (schema.org offers: gtin13, price, availability), cached in jt.pm_retail_map and refreshed a
+    few hundred pages a day. Search pages are off limits in robots.txt, so they aren't used."""
+    import datetime as dt
+    s, conn = _session(sess), src.get("_conn")
+    base, name = src["base_url"].rstrip("/"), src["name"]
+    opt = src.get("options") or {}
+    brands = [b.lower() for b in opt.get("brands", [])]
+    t0 = time.time()
+    try:
+        sm = _get(s, f"{base}/sitemap.xml")
+    except requests.RequestException as e:
+        return None, f"network error: {str(e)[:160]}"
+    if sm.status_code != 200:
+        return None, f"HTTP {sm.status_code} on sitemap.xml"
+    cats = [u for u in re.findall(r"<loc>([^<]+catpage[^<]+)</loc>", sm.text)
+            if any(re.sub(r"^https?://[^/]+/", "", u).lower().startswith(b) for b in brands)]
+    prices = {}                                         # product id -> (price, msrp, url)
+    for u in cats:
+        if time.time() - t0 > TW_BUDGET * 0.6:
+            break
+        try:
+            r = _get(s, u)
+        except requests.RequestException:
+            continue
+        if r.status_code != 200:
+            if not prices and r.status_code in (401, 403, 429):
+                return None, f"HTTP {r.status_code} on category pages"
+            continue
+        for cell in r.text.split('cattable-wrap-cell-inner')[1:]:
+            m = _TW_CELL.search(cell)
+            pr = re.search(r'cattable-wrap-cell-info-price(?!-)[^"]*"[\s\S]{0,200}?\$\s*([\d,]+\.\d\d)', cell)
+            if not m or not pr:
+                continue
+            msrp = re.search(r'cattable-wrap-cell-info-price-msrp[^"]*"[\s\S]{0,200}?\$\s*([\d,]+\.\d\d)', cell)
+            pid = m.group(1)
+            if pid not in prices:
+                prices[pid] = (_f(pr.group(1).replace(",", "")), _f(msrp.group(1).replace(",", "")) if msrp else None, f"{base}/descpage{pid}.html")
+        time.sleep(pause)
+    if not prices:
+        return None, "no products on the category pages"
+    # UPC -> product id, from product pages (cached; new and month-old products first, as time allows)
+    known = _map_load(conn, name) if conn else {}
+    with (conn.cursor() if conn else _Null()) as cur:
+        if conn:
+            cur.execute("select ref, checked_at from jt.pm_retail_pages where source = %s", (name,))
+            seen = dict(cur.fetchall())
+        else:
+            seen = {}
+    stale = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)
+    queue = sorted(prices, key=lambda pid: (pid in seen, seen.get(pid) or stale))
+    queue = [pid for pid in queue if pid not in seen or seen[pid] < stale]
+    fresh = {}                                          # UPC -> exact offer from a page read today
+    for pid in queue:
+        if time.time() - t0 > TW_BUDGET:
+            break
+        try:
+            r = _get(s, f"{base}/descpage{pid}.html")
+        except requests.RequestException:
+            continue
+        if r.status_code != 200:
+            continue
+        rows = []
+        for off in re.split(r'itemprop=["\']offers["\']', r.text)[1:]:
+            props = _itemprops(off)
+            g, p, a = props.get("gtin13") or props.get("gtin12") or props.get("gtin"), props.get("price"), props.get("availability", "")
+            if not g or not re.sub(r"\D", "", g):
+                continue
+            k = strip0(g)
+            rows.append((k, pid))
+            if p:
+                fresh[k] = (_f(p), not a or a.rsplit("/", 1)[-1] in ("InStock", "LimitedAvailability", "PreOrder"))
+        if conn:
+            _map_save(conn, name, rows)
+            with conn.cursor() as cur:
+                cur.execute("""insert into jt.pm_retail_pages (source, ref, checked_at, n_keys) values (%s, %s, now(), %s)
+                               on conflict (source, ref) do update set checked_at = now(), n_keys = excluded.n_keys""", (name, pid, len(rows)))
+            conn.commit()
+        for k, _ in rows:
+            known[k] = (pid, None)
+        time.sleep(pause)
+    out = {}
+    for k, (pid, _) in known.items():
+        if pid not in prices:
+            continue                                    # not in today's category pages: not counted
+        price, msrp, url = prices[pid]
+        if k in fresh and fresh[k][0]:
+            _add(out, k, fresh[k][0], msrp, pid, fresh[k][1], url)
+        else:
+            _add(out, k, price, msrp, pid, True, url)
+    if not out:
+        return None, f"no UPCs mapped yet ({len(prices)} products listed; product pages are read a few hundred a day)"
+    return out, None
+
+
+def _itemprops(chunk: str) -> dict:
+    """First value of each schema.org itemprop in a piece of HTML (content=, href= or the element's text), any order."""
+    out = {}
+    for tag in re.finditer(r"<[^>]*\bitemprop=[\"']([\w]+)[\"'][^>]*>([^<]{0,80})", chunk):
+        name = tag.group(1)
+        if name in out:
+            continue
+        t = tag.group(0)
+        v = re.search(r"\b(?:content|href)=[\"']([^\"']*)[\"']", t)
+        out[name] = (v.group(1) if v else tag.group(2)).strip()
+    return out
+
+
+class _Null:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *a):
+        return False
+
+
 READERS = {"shopify_site": shopify_site, "shopify_barcode": shopify_barcode, "sfcc_grid": sfcc_grid,
-           "sfcc_search": sfcc_search, "head_next": head_next}
+           "sfcc_search": sfcc_search, "head_next": head_next, "shopify_upc_search": shopify_upc_search, "tw_catalog": tw_catalog}
 
 
 def read(src: dict, sess=None, keys=None):

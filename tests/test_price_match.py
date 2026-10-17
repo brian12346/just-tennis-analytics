@@ -274,3 +274,62 @@ def test_plan_matches_by_base_and_barcode():
     vs = [V(1, "101531-2", 249.0, vendor="Babolat"), V(2, "EZ0898L1", 240.0, vendor="Yonex", barcode="008235873291")]
     ch, st = plan(vs, brands, None, {}, {}, CFG, set())
     assert {c["vid"]: c["new"] for c in ch} == {1: 199.0, 2: 200.0} and st["Yonex"]["matched"] == 1
+
+
+def test_plan_retailers_lowest_wins_and_restore():
+    brands = {"Head": {"prefix": 0, "match": "base", "vendors": {"head"}, "prices": None}}      # Head's site not read today
+    markets = {"Tennis Warehouse": {"prices": {"198772071516": {"price": 189.0, "list": 199.0, "title": "PWR", "available": True, "url": "tw"}}},
+               "Tennis Express": {"prices": {"198772071516": {"price": 185.0, "list": None, "title": "PWR", "available": True, "url": "te"},
+                                             "111": {"price": 50.0, "list": None, "title": "x", "available": True, "url": "te2"}}}}
+    amz = {"198772071516": {"asin": "B1", "price": 187.0}}
+    state = {2: {"orig_price": 60.0, "orig_cmp": None, "source": "Tennis Express"}}
+    vs = [V(1, "232316-3", 199.0, vendor="Head", barcode="198772071516"), V(2, "x", 50.0, vendor="Head", barcode="000000000111")]
+    markets["Tennis Express"]["prices"]["111"]["price"] = 65.0                                   # back above the original 60
+    ch, st = plan(vs, brands, amz, state, {}, CFG, set(), markets, {"head"})
+    by = {c["vid"]: c for c in ch}
+    assert by[1]["source"] == "Tennis Express" and by[1]["new"] == 185.0 and st["Tennis Warehouse"]["matched"] == 1
+    assert by[2]["reason"] == "restore" and by[2]["new"] == 60.0
+
+
+def test_tennis_express_reader_caches_the_lookup(conn, monkeypatch):
+    monkeypatch.setattr(ps.time, "sleep", lambda *_: None)
+    calls = {"suggest": 0}
+
+    def fn(url, p):
+        if "suggest.json" in url:
+            calls["suggest"] += 1
+            hit = [{"handle": "pwr-110"}] if p["q"] == "198772071516" else []
+            return FakeResp(js={"resources": {"results": {"products": hit}}}, ctype="application/json")
+        return FakeResp(js={"title": "PWR 110", "variants": [{"barcode": "198772071516", "price": 18500, "compare_at_price": 19900, "available": True}]})
+    src = {"name": "Tennis Express", "base_url": "https://www.tennisexpress.com", "_conn": conn}
+    out, err = ps.shopify_upc_search(src, FakeSess(fn), keys={"198772071516", "999999999999"})
+    assert err is None and out["198772071516"]["price"] == 185.0 and calls["suggest"] == 2
+    out, err = ps.shopify_upc_search(src, FakeSess(fn), keys={"198772071516", "999999999999"})
+    assert out["198772071516"]["price"] == 185.0 and calls["suggest"] == 2             # remembered: no new lookups
+
+
+def test_tennis_warehouse_reader(conn, monkeypatch):
+    monkeypatch.setattr(ps.time, "sleep", lambda *_: None)
+    cat = ('<div class="cattable-wrap-cell-inner"><a href="\nhttps://www.tennis-warehouse.com/Head_PWR_110/descpageRCHEAD-HPWR10.html?color=WB\r\n">'
+           '<div class="cattable-wrap-cell-info-price is-sale">$179.00</div><div class="cattable-wrap-cell-info-price-msrp">MSRP $199.00</div></a></div>'
+           '<div class="cattable-wrap-cell-inner"><a href="/x/descpageOTHER-1.html"><span class="cattable-wrap-cell-info-price">$9.00</span></a></div>')
+    page = ('<div itemprop="offers" itemscope><meta itemprop="price" content="179.00"><meta content="0198772071493" itemprop="gtin13">'
+            '<link itemprop="availability" href="http://schema.org/InStock"></div>'
+            '<div itemprop="offers" itemscope><meta itemprop="price" content="179.00"><meta itemprop="gtin13" content="0198772071516">'
+            '<link itemprop="availability" href="http://schema.org/OutOfStock"></div>')
+
+    def fn(url, p):
+        if url.endswith("sitemap.xml"):
+            return FakeResp(text="<loc>https://www.tennis-warehouse.com/Head_Tennis_Racquets/catpage-HEADRAC.html</loc>"
+                                 "<loc>https://www.tennis-warehouse.com/Nike_Mens/catpage-NIKE.html</loc>")
+        if "catpage" in url:
+            assert "Nike" not in url
+            return FakeResp(text=cat)
+        return FakeResp(text=page if "HPWR10" in url else "")
+    src = {"name": "Tennis Warehouse", "base_url": "https://www.tennis-warehouse.com", "options": {"brands": ["head"]}, "_conn": conn}
+    out, err = ps.tw_catalog(src, FakeSess(fn), keys=set())
+    assert err is None and out["198772071493"]["price"] == 179.0 and out["198772071493"]["list"] == 199.0
+    assert out["198772071516"]["available"] is False
+    with conn.cursor() as cur:
+        cur.execute("select count(*) from jt.pm_retail_map where source = 'Tennis Warehouse' and ref = 'RCHEAD-HPWR10'")
+        assert cur.fetchone()[0] == 2
