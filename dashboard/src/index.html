@@ -52,6 +52,7 @@
     <button role="tab" data-tab="costs" data-group="inventory" aria-selected="false" hidden>Value</button>
     <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
+    <button role="tab" data-tab="shoes" data-group="inventory" aria-selected="false" hidden>Shoes</button>
     <button role="tab" data-tab="discontinued" data-group="inventory" aria-selected="false" hidden>Discontinued</button>
     <button role="tab" data-tab="prep" data-group="prep" aria-selected="false" hidden>Prep</button>
     <button role="tab" data-tab="analyze" data-group="prep" aria-selected="false" hidden>Analyze</button>
@@ -467,6 +468,19 @@
       <div class="tbl-wrap"><table id="ad-camps" class="adt"></table></div>
       <div class="muted small" id="ad-foot"></div>
     </section>
+  </div>
+  <div id="tab-shoes" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Just Tennis · tennis, pickleball and padel shoes</span>
+        <h1>Shoes</h1>
+      </div>
+      <div class="controls"><button class="btn primary" id="sz-refresh">Refresh</button></div>
+    </header>
+    <div class="status" id="sz-status" aria-live="polite">Loading shoes…</div>
+    <section class="kpis" id="sz-kpis" aria-label="Shoe totals"></section>
+    <div class="pm-bar sz-filters" id="sz-filters"></div>
+    <div id="sz-body"></div>
   </div>
   <div id="tab-discontinued" hidden>
     <header class="top po-hdr">
@@ -1028,6 +1042,9 @@
 </script>
 <script>
 <!-- @inline js/pricematch.js -->
+</script>
+<script>
+<!-- @inline js/shoes.js -->
 </script>
 <script>
 <!-- @inline js/pack.js -->
