@@ -11,7 +11,7 @@
   const n0 = (x) => Math.round(x || 0).toLocaleString();
   const when = (t) => t ? new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
-  const P = { view: "proposed", src: "all", q: "", sel: new Set(), data: null, err: null, busy: "", note: null, mapBrand: "all", csv: "", loaded: false, req: 0,
+  const P = { chan: (() => { try { return localStorage.getItem("pm-chan") === "amazon" ? "amazon" : "shopify"; } catch (_) { return "shopify"; } })(), view: "proposed", src: "all", q: "", sel: new Set(), data: null, err: null, busy: "", note: null, mapBrand: "all", csv: "", loaded: false, req: 0,
     amz: null, amzErr: null, amzLoading: false, aq: "", af: "lost", asort: "gap", aVendor: "all" };
 
   const JT = () => window.JT, WEB = () => window.JTWeb || null;
@@ -63,11 +63,26 @@
   // ---------------------------------------------------------------- render
   function render() {
     const st = $("pm-status");
+    // Shopify / Amazon toggle (Brian, Oct 17): Shopify = the price match itself; Amazon = our in-stock listings vs the Buy Box
+    document.querySelectorAll("#pm-chan button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.pmch === P.chan)));
+    $("pm-run").hidden = P.chan !== "shopify";
+    $("tab-pricematch").querySelector(".eyebrow").textContent = P.chan === "amazon" ? "Our in-stock Amazon listings · Buy Box · other sellers" : "Brand websites · retailers · Amazon · Just Tennis prices";
+    if (P.chan === "amazon") {
+      st.innerHTML = P.amz ? `${n0(P.amz.length)} in-stock listings · checked every morning before 5:30 am` : "Amazon prices";
+      $("pm-kpis").innerHTML = amazonKpis();
+      $("pm-views").innerHTML = "";
+      $("pm-views").parentElement.hidden = true;
+      $("pm-note").innerHTML = P.note ? `<div class="note ${P.note.kind}">${P.note.html} <button class="linkbtn small" data-pm="note-x">Dismiss</button></div>` : "";
+      $("pm-body").innerHTML = amazonHtml();
+      return;
+    }
     if (P.err) { st.textContent = "Couldn't load price match: " + msg(P.err); return; }
     if (!P.data) { st.textContent = "Loading price match…"; return; }
     const D = P.data, last = D.runs[0], s = D.settings;
     st.innerHTML = last ? `Last run ${esc(when(last.started))} (${esc(last.status === "running" ? "running now" : last.mode === "auto" ? "auto" : "review")}${last.by === "Run now" ? ", Run now" : ""})` + ` · mode <b>${s.mode === "auto" ? "Auto" : "Review"}</b> · runs daily 5:30 am` : `No runs yet · mode <b>${s.mode === "auto" ? "Auto" : "Review"}</b> · runs daily 5:30 am — or Run now`;
     $("pm-note").innerHTML = P.note ? `<div class="note ${P.note.kind}">${P.note.html} <button class="linkbtn small" data-pm="note-x">Dismiss</button></div>` : "";
+    $("pm-views").parentElement.hidden = false;
+    if (P.view === "amazon") P.view = "proposed";
     const prop = D.changes.filter(c => ["proposed", "failed", "approved"].includes(c.status));
     const applied = D.changes.filter(c => ["applied", "rollback"].includes(c.status));
     const tot = (last && last.summary && last.summary.totals) || {};
@@ -78,7 +93,7 @@
       { l: "Not covered", v: n0((tot.not_covered || []).length), s: (tot.not_covered || []).join(", ") || "every source read", c: (tot.not_covered || []).length ? "warn" : "" },
     ].map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${esc(x.s)}</span></div>`).join("");
     const cnt = { proposed: prop.length, applied: applied.length, history: D.runs.length };
-    $("pm-views").innerHTML = [["proposed", "Proposed"], ["applied", "Applied"], ["amazon", "Amazon prices"], ["history", "History"], ["settings", "Settings"]]
+    $("pm-views").innerHTML = [["proposed", "Proposed"], ["applied", "Applied"], ["history", "History"], ["settings", "Settings"]]
       .map(([k, n]) => `<button type="button" data-pmv="${k}" aria-pressed="${P.view === k}">${n}${cnt[k] != null ? ` <span class="cnt">${n0(cnt[k])}</span>` : ""}</button>`).join("");
     $("pm-run").disabled = !!P.busy || (last && last.status === "running");
     $("pm-run").textContent = last && last.status === "running" ? "Running…" : "Run now";
@@ -86,7 +101,6 @@
     if (P.view === "proposed") body.innerHTML = proposedHtml(prop);
     else if (P.view === "applied") body.innerHTML = appliedHtml(applied);
     else if (P.view === "history") body.innerHTML = historyHtml();
-    else if (P.view === "amazon") body.innerHTML = amazonHtml();
     else body.innerHTML = settingsHtml();
   }
 
@@ -161,6 +175,19 @@
         low: x[12] == null ? null : +x[12], offers: x[13] == null ? null : +x[13], checked: x[14], err: x[15] || "" }));
     } catch (e) { P.amzErr = e; }
     P.amzLoading = false; render();
+  }
+  function amazonKpis() {
+    const all = P.amz || [];
+    const rival = (r) => r.own ? r.low : r.bb != null ? r.bb : r.low;
+    const higher = all.filter(r => { const x = rival(r); return x != null && r.ours != null && r.ours > x + 0.005; });
+    const lost = all.filter(r => !r.own && r.bb != null), own = all.filter(r => r.own);
+    const units = (xs) => xs.reduce((a, r) => a + r.qty, 0);
+    return [
+      { l: "In-stock listings", v: P.amz ? n0(all.length) : "—", s: P.amz ? `${n0(units(all))} units · FBA ${n0(all.filter(r => r.ch === "FBA").length)} · FBM ${n0(all.filter(r => r.ch === "FBM").length)}` : "" },
+      { l: "We have the Buy Box", v: P.amz ? n0(own.length) : "—", s: P.amz ? `${n0(units(own))} units` : "" },
+      { l: "Buy Box with someone else", v: P.amz ? n0(lost.length) : "—", s: P.amz ? `${n0(units(lost))} units` : "", c: lost.length ? "warn" : "" },
+      { l: "We're the higher price", v: P.amz ? n0(higher.length) : "—", s: "than the Buy Box, or the next seller when we have it" },
+    ].map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${esc(x.s)}</span></div>`).join("");
   }
   // the price to compare with: the Buy Box when someone else has it, else the lowest other seller
   const amzRival = (r) => r.own ? r.low : r.bb != null ? r.bb : r.low;
@@ -273,6 +300,8 @@
   }
   const box = $("tab-pricematch");
   box.addEventListener("click", (e) => {
+    const ch = e.target.closest("[data-pmch]");
+    if (ch) { P.chan = ch.dataset.pmch; try { localStorage.setItem("pm-chan", P.chan); } catch (_) {} render(); return; }
     const v = e.target.closest("[data-pmv]"); if (v) { P.view = v.dataset.pmv; render(); return; }
     const af = e.target.closest("[data-paf]"); if (af) { P.af = af.dataset.paf; render(); return; }
     const ac = e.target.closest("[data-pach]"); if (ac) { P.aVendor = ac.dataset.pach; render(); return; }
