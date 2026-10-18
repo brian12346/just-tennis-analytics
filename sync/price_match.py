@@ -1,12 +1,13 @@
 """Price match (migration 152; Brian, Oct 17 — ported from the jt-price-match package's price_match.py).
 
-Every day, for each enabled brand (jt.pm_sources): the brand's own website prices (Shopify stores' /products.json,
-matched by SKU) and the Amazon Buy Box (jt.pm_amazon_prices, filled by the "amazon" edge function's "buybox" action,
-matched by UPC) are compared with Just Tennis's Shopify prices.
+Every day, for each enabled brand (jt.pm_sources): the brand's own website prices (matched by SKU / style code / UPC)
+and retailers (Tennis Warehouse, Tennis Express; by UPC) are compared with Just Tennis's Shopify prices. Amazon prices
+are not used for Shopify prices (Brian, Oct 18) — they're on Price match › Amazon; prices lowered to meet Amazon before
+that are restored.
 
   * Lower: Just Tennis above the competitor -> the competitor's price, but never below the brand's MAP
     (jt.pm_map_floors) or cost x (1 + min margin %); compare-at = the brand's list price (or the original price).
-  * Restore: a price this feature lowered (jt.pm_state) goes back once the brand's sale ends / Amazon is back up.
+  * Restore: a price this feature lowered (jt.pm_state) goes back once the brand's sale ends / the retailer is back up.
   * Never above the original price; one change per variant per run (the brand pass wins).
 
 Review mode (default): changes are proposed on Sales > Price match; approving them starts job "price-match-apply".
@@ -90,6 +91,9 @@ def lower_target(price: float, comp: float, floor_map, cost, cfg: dict):
             target, floor = cf, "cost"
     target = round(target, 2)
     return (target, floor) if target < price - EPS else (None, floor)
+
+
+RETIRED = {"Amazon"}      # Amazon prices aren't used for Shopify prices (Brian, Oct 18); see Price match › Amazon instead
 
 
 def plan(variants: list[dict], brands: dict, amazon: dict | None, state: dict, floors: dict, cfg: dict, skip: set, markets: dict | None = None,
@@ -200,6 +204,17 @@ def plan(variants: list[dict], brands: dict, amazon: dict | None, state: dict, f
                     add(v, n, "restore", st["orig_price"], st["orig_cmp"], best[0] if best else None, None,
                         (best[2].get("ref") or best[2].get("title", "")) if best else "", best[2].get("url", "") if best else "")
                     stats[n]["restored"] += 1
+
+    # Sources no longer used for Shopify prices (Amazon, Brian Oct 18): a price lowered to meet one goes back to what it
+    # was, unless a pass above already changed it this run (it then keeps the original price on record).
+    for v in variants:
+        if v["vid"] in skip or v["vid"] in touched:
+            continue
+        st = state.get(v["vid"])
+        if st and st["source"] in RETIRED and abs(st["orig_price"] - v["price"]) > EPS:
+            stats.setdefault(st["source"], {"matched": 0, "lowered": 0, "restored": 0, "floored": 0})
+            add(v, st["source"], "restore", st["orig_price"], st["orig_cmp"], None, None, "no longer matched for Shopify prices", "")
+            stats[st["source"]]["restored"] += 1
     return changes, stats
 
 
@@ -274,13 +289,7 @@ def run(shop, conn, preview: bool = False, started_by: str = "schedule") -> dict
             state = {r[0]: {"orig_price": float(r[1]), "orig_cmp": _f(r[2]), "source": r[3]} for r in cur.fetchall()}
             cur.execute("select distinct variant_id from jt.pm_changes where status in ('approved', 'rollback')")
             skip = {r[0] for r in cur.fetchall()}
-            # Amazon prices are fresh if most were checked in the last 30 hours (the edge function runs before this job)
-            cur.execute("""select u.upc, u.asin, a.price from jt.pm_upc_asin u join jt.pm_amazon_prices a on a.asin = u.asin
-                           where u.asin <> '' and a.price is not null and a.checked_at > now() - interval '30 hours'""")
-            amazon_rows = cur.fetchall()
-            cur.execute("select count(*), count(*) filter (where checked_at > now() - interval '30 hours') from jt.pm_amazon_prices")
-            n_amz, n_fresh = cur.fetchone()
-        # every brand's products (a brand whose own site is off, e.g. Tecnifibre, is still matched to retailers and Amazon)
+        # every brand's products (a brand whose own site is off, e.g. Tecnifibre, is still matched to retailers)
         with conn.cursor() as cur:
             cur.execute("select coalesce(array_agg(v), '{}') from jt.pm_sources s, unnest(s.vendors) v where not coalesce((s.options->>'retail')::boolean, false)")
             vendor_keys = {_vkey(v) for v in cur.fetchone()[0]}
@@ -304,14 +313,9 @@ def run(shop, conn, preview: bool = False, started_by: str = "schedule") -> dict
                             (st, err or "", len(prices) if prices is not None else None, s["name"]))
             conn.commit()
 
+        # Amazon prices aren't used for Shopify prices (Brian, Oct 18); prices lowered to meet Amazon earlier are restored
         amazon = None
-        if not cfg.get("amazon", True):
-            summary["amazon"] = {"status": "off"}
-        elif n_amz and n_fresh >= 0.5 * n_amz:
-            amazon = {upc: {"asin": asin, "price": float(price)} for upc, asin, price in amazon_rows}
-            summary["amazon"] = {"status": "ok", "prices": len(amazon)}
-        else:
-            summary["amazon"] = {"status": "not covered", "error": "no fresh Amazon prices (the buybox step hasn't run today)" if n_amz else "no Amazon prices yet"}
+        summary["amazon"] = {"status": "off"}
 
         changes, stats = plan(variants, brands, amazon, state, floors, cfg, skip, markets, vendor_keys)
         for name, s in stats.items():

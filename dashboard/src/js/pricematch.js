@@ -1,5 +1,5 @@
-// Sales › Price match (Brian, Oct 17; migration 152, sync/price_match.py). Each morning the brand sites and the Amazon
-// Buy Box are checked against Just Tennis's Shopify prices. Proposed changes are approved here (Approve & apply starts
+// Sales › Price match (Brian, Oct 17; migration 152, sync/price_match.py). Each morning the brand sites and retailers
+// are checked against Just Tennis's Shopify prices (Amazon isn't, since Oct 18: it has its own side, the Amazon toggle). Proposed changes are approved here (Approve & apply starts
 // the sync job "price-match-apply"); applied ones can be rolled back one by one or a whole run at a time. Settings:
 // review/auto mode, floors (MAP, cost + margin), max drop, exclusions, brands on/off, the MAP list (CSV import).
 (() => {
@@ -66,7 +66,7 @@
     // Shopify / Amazon toggle (Brian, Oct 17): Shopify = the price match itself; Amazon = our in-stock listings vs the Buy Box
     document.querySelectorAll("#pm-chan button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.pmch === P.chan)));
     $("pm-run").hidden = P.chan !== "shopify";
-    $("tab-pricematch").querySelector(".eyebrow").textContent = P.chan === "amazon" ? "Our in-stock Amazon listings · Buy Box · other sellers" : "Brand websites · retailers · Amazon · Just Tennis prices";
+    $("tab-pricematch").querySelector(".eyebrow").textContent = P.chan === "amazon" ? "Our in-stock Amazon listings · Buy Box · other sellers" : "Brand websites · retailers · Just Tennis prices";
     if (P.chan === "amazon") {
       st.innerHTML = P.amz ? `${n0(P.amz.length)} in-stock listings · checked every morning before 5:30 am` : "Amazon prices";
       $("pm-kpis").innerHTML = amazonKpis();
@@ -249,7 +249,7 @@
     return `<div class="tbl-wrap"><table class="prept pm-t"><thead><tr><th class="l">Run</th><th class="l">Started</th><th class="l">Mode</th><th>Checked</th><th>Lower</th><th>Restore</th><th class="l">Sources</th></tr></thead><tbody>${
       D.runs.map(r => { const t = r.summary.totals || {}, src = Object.entries(r.summary.sources || {}), amz = r.summary.amazon || {};
         const chips = src.map(([n, s]) => `<span class="pm-chip ${s.status === "ok" ? "" : "off"}" title="${esc(s.status === "ok" ? `${n0(s.skus)} SKUs on the site · ${n0(s.matched)} matched · ${n0(s.lowered)} lower · ${n0(s.restored)} restore${s.floored ? ` · ${n0(s.floored)} held at a floor` : ""}` : s.error || s.status)}">${esc(n)}${s.status === "ok" ? ` ${n0(s.matched)}` : " ✕"}</span>`).join("")
-          + (amz.status ? `<span class="pm-chip ${amz.status === "ok" ? "" : "off"}" title="${esc(amz.status === "ok" ? `${n0(amz.prices)} Amazon prices · ${n0(amz.matched)} matched · ${n0(amz.lowered)} lower · ${n0(amz.restored)} restore · ${n0(amz.no_upc)} without a UPC` : amz.error || amz.status)}">Amazon${amz.status === "ok" ? ` ${n0(amz.matched)}` : amz.status === "off" ? " off" : " ✕"}</span>` : "");
+          + (amz.status && amz.status !== "off" ? `<span class="pm-chip ${amz.status === "ok" ? "" : "off"}" title="${esc(amz.status === "ok" ? `${n0(amz.prices)} Amazon prices · ${n0(amz.matched)} matched · ${n0(amz.lowered)} lower · ${n0(amz.restored)} restore · ${n0(amz.no_upc)} without a UPC` : amz.error || amz.status)}">Amazon${amz.status === "ok" ? ` ${n0(amz.matched)}` : amz.status === "off" ? " off" : " ✕"}</span>` : "");
         return `<tr><td class="l mono">${esc(r.id)}</td><td class="l small">${esc(when(r.started))}${r.by ? `<div class="meta">${esc(r.by)}</div>` : ""}</td>
           <td class="l small">${r.status === "failed" ? `<span class="pill cx" title="${esc(r.error)}">Failed</span>` : r.status === "running" ? '<span class="pill manual">Running</span>' : esc(r.mode === "auto" ? "Auto" : "Review")}</td>
           <td>${t.variants != null ? n0(t.variants) : ""}</td><td>${t.lowered != null ? n0(t.lowered) : ""}${t.big ? `<div class="meta">${n0(t.big)} big</div>` : ""}</td><td>${t.restored != null ? n0(t.restored) : ""}</td>
@@ -266,7 +266,6 @@
       <section><h3 class="psec">How it runs</h3>
         <div class="row"><span class="seg" role="group" aria-label="Mode"><button type="button" data-pmmode="review" aria-pressed="${s.mode !== "auto"}">Review</button><button type="button" data-pmmode="auto" aria-pressed="${s.mode === "auto"}">Auto</button></span>
           <span class="small muted">${s.mode === "auto" ? "Changes are applied each morning; big drops still wait for review." : "Changes wait here for Approve &amp; apply. Switch to Auto after a couple of weeks of clean runs."}</span></div>
-        ${tog("amazon", "Match Amazon", "the Buy Box price (New) by UPC; your own listing is skipped")}
         ${tog("map_floor", "Never below MAP", "the MAP list below")}
         ${tog("cost_floor", "Never below cost + margin", "Shopify unit cost × (1 + min margin)")}
         <div class="pmgrid">
@@ -280,7 +279,7 @@
       <section><h3 class="psec">Brands</h3>
         <div class="tbl-wrap"><table class="prept pm-t"><thead><tr><th class="l">On</th><th class="l">Brand</th><th class="l">Website</th><th class="l">Last run</th></tr></thead><tbody>${
           D.sources.map(x => `<tr><td class="l"><input type="checkbox" data-pmsrc="${esc(x.name)}" ${x.enabled ? "checked" : ""} aria-label="Match ${esc(x.name)}"></td>
-            <td class="l"><b>${esc(x.name)}</b><div class="meta">${x.vendors ? "vendors " + esc(x.vendors) : "every brand — the lowest of the retailers and Amazon is matched"} · ${esc(READER[x.kind] || x.kind)} · matched by ${x.match === "barcode" ? "UPC" : x.match === "base" ? "style code (SKU before the first “-”)" : x.prefix ? `the SKU's first ${x.prefix} characters` : "SKU"}</div></td>
+            <td class="l"><b>${esc(x.name)}</b><div class="meta">${x.vendors ? "vendors " + esc(x.vendors) : "every brand — the lowest of the retailers is matched"} · ${esc(READER[x.kind] || x.kind)} · matched by ${x.match === "barcode" ? "UPC" : x.match === "base" ? "style code (SKU before the first “-”)" : x.prefix ? `the SKU's first ${x.prefix} characters` : "SKU"}</div></td>
             <td class="l small"><a class="olink" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.url.replace(/^https?:\/\/(www\.)?/, ""))}</a></td>
             <td class="l small">${!x.checked ? '<span class="dim">not run yet</span>' : x.status === "ok" ? `<span class="pill ok">Covered</span> <span class="dim">${n0(x.count)} SKUs</span>` : `<span class="pill warn">Not covered</span><div class="meta">${esc(x.error)}</div>`}</td></tr>`).join("")}</tbody></table></div>
         <p class="muted small">“Not covered” means the brand's site couldn't be read that morning (it changed, or refused the request) — nothing is lowered or restored for that brand until it's read again.</p>
@@ -340,7 +339,7 @@
       const num = (id) => Number(String($(id).value).replace(/[%\s]/g, ""));
       const list = (id) => $(id).value.split(",").map(x => x.trim()).filter(Boolean);
       const p = { min_margin: num("pm-mm"), max_drop: num("pm-md"), exclude_tags: list("pm-xt"), exclude_types: list("pm-xp") };
-      for (const k of ["amazon", "map_floor", "cost_floor"]) { const i = box.querySelector(`[data-pms="${k}"]`); if (i) p[k] = i.checked; }
+      for (const k of ["map_floor", "cost_floor"]) { const i = box.querySelector(`[data-pms="${k}"]`); if (i) p[k] = i.checked; }
       if (!isFinite(p.min_margin) || !isFinite(p.max_drop)) { note("bad", "Min margin and max drop must be numbers."); return; }
       act("set", () => saveSettings(p), () => "Settings saved.");
     } else if (a === "map-off") { const x = D.maps.find(m => m.id === b.dataset.id); act("map", () => saveMap({ off: [Number(b.dataset.id)] }), () => `${esc(x ? x.brand + " " + x.prefix : "MAP price")} taken off the list.`); }

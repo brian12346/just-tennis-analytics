@@ -114,34 +114,34 @@ def test_run_review_approve_apply_rollback(conn, monkeypatch):
     with conn.cursor() as cur:
         cur.execute("update jt.pm_sources set enabled = (name = 'Wilson')")
         cur.execute("insert into jt.pm_upc_asin (upc, asin) values ('0003', 'B03')")
-        cur.execute("insert into jt.pm_amazon_prices (asin, price) values ('B03', 250)")
+        cur.execute("insert into jt.pm_amazon_prices (asin, price) values ('B03', 250)")      # Amazon: not used for Shopify prices
+        cur.execute("insert into jt.pm_state (variant_id, product_id, orig_price, orig_compare_at, source) values (3, 103, 330, null, 'Amazon')")
     conn.commit()
     monkeypatch.setattr(pm, "read_source", lambda s, sess=None, keys=None: ({"WR1234567": {"price": 199.0, "list": 249.0, "title": "Blade", "available": True, "url": "u"},
                                                                   "WR7777777": {"price": 50.0, "list": 100.0, "title": "x", "available": True, "url": ""}}, None))
     shop = PMShop()
     out = pm.run(shop, conn)
-    assert out["lowered"] == 2 and shop.updates == []           # review mode: nothing written; JTonly skipped
+    assert out["lowered"] == 1 and out["restored"] == 1 and shop.updates == []     # review mode: nothing written; JTonly skipped
     with conn.cursor() as cur:
-        cur.execute("select variant_id, source, new_price, new_compare_at, status from jt.pm_changes order by variant_id")
+        cur.execute("select variant_id, source, reason, new_price, new_compare_at, status from jt.pm_changes order by variant_id")
         rows = cur.fetchall()
-    assert [(r[0], r[1], float(r[2]), r[4]) for r in rows] == [(1, "Wilson", 199.0, "proposed"), (3, "Amazon", 250.0, "proposed")]
-    assert float(rows[1][3]) == 320.0                            # Amazon: compare-at stays the higher existing one
+    assert [(r[0], r[1], r[2], float(r[3]), r[5]) for r in rows] == [(1, "Wilson", "lower", 199.0, "proposed"), (3, "Amazon", "restore", 330.0, "proposed")]
     with conn.cursor() as cur:
         cur.execute("""select jt.pm_decide('{"ids": [1, 2], "action": "approve", "by": "t"}'::jsonb)""")
     conn.commit()
     res = pm.apply(shop, conn)
     assert res == {"applied": 2, "rolled_back": 0, "failed": 0}
-    assert shop.v[1][:2] == (199.0, 249.0)
+    assert shop.v[1][:2] == (199.0, 249.0) and shop.v[3][0] == 330.0
     with conn.cursor() as cur:
         cur.execute("select variant_id, orig_price, active from jt.pm_state order by 1")
-        assert [(r[0], float(r[1]), r[2]) for r in cur.fetchall()] == [(1, 249.0, True), (3, 300.0, True)]
+        assert [(r[0], float(r[1]), r[2]) for r in cur.fetchall()] == [(1, 249.0, True), (3, 330.0, False)]
         cur.execute("select jt.pm_decide('{\"run_id\": 1, \"action\": \"rollback_run\"}'::jsonb)")
     conn.commit()
     res = pm.apply(shop, conn)
     assert res["rolled_back"] == 2 and shop.v[1][:2] == (249.0, None) and shop.v[3][:2] == (300.0, 320.0)
     with conn.cursor() as cur:
-        cur.execute("select count(*) from jt.pm_state where active")
-        assert cur.fetchone()[0] == 0
+        cur.execute("select variant_id from jt.pm_state where active")
+        assert [r[0] for r in cur.fetchall()] == [3]                                # the restore rolled back: lowered again
 
 
 def test_apply_refuses_when_price_changed(conn):
