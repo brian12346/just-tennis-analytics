@@ -1239,6 +1239,9 @@ table.ivt tfoot tr.ivtot.ivchg td{background:var(--warn-bg)}
 .pm-chips{display:flex;flex-wrap:wrap;gap:4px}
 .pm-chip{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--sales-soft);color:var(--sales);white-space:nowrap;cursor:default}
 .pm-chip.off{background:var(--warn-bg);color:var(--warn)}
+.pm-mapup{padding:10px 12px;display:grid;gap:8px;margin-bottom:10px}
+.pm-mapup .row{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.pm-t tr.dim td{opacity:.6}
 .pm-amzedit{display:grid;gap:4px;min-width:170px}
 .pm-amzedit .pm-amzin{display:flex;align-items:center;gap:3px}
 .pm-amzedit .pm-amzin .inp{width:90px}

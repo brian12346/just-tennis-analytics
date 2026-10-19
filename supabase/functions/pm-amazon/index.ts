@@ -7,6 +7,7 @@
 // Our in-stock ASINs (FBA and FBM, jt.v_pm_amazon_stock) are priced first; our own offer and the lowest other seller's
 // are saved too, for Sales › Price match › Amazon prices (migration 155), and whether Amazon.com itself has an offer (156).
 // POST {action: "offers"} reads our minimum / maximum price per in-stock SKU (159; daily, and from the page).
+// POST {action: "map_lookup", file_id} / {action: "map_apply"}: MAP files (160) — UPC -> ASIN, and the scheduled price changes.
 // POST {action: "set_price", items: [{sku, asin, price?, min?}]} sets our price and/or minimum price on amazon.com (signed-in app users, or the Claude dashboard through jt.pm_amazon_call; 158).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -162,6 +163,52 @@ async function readOffers(c: Creds, skus: string[] | null, deadline: number) {
   return res;
 }
 
+// ---- MAP files (migration 160): POST {action: "map_lookup", file_id} finds the ASIN of each UPC in the file (Catalog
+// Items, 20 a call; saved in jt.pm_upc_asin like the Buy Box step); POST {action: "map_apply"} sets the price of the
+// Amazon rows due today (jt_pm_map_amazon_due) to the new MAP and reports back (jt_pm_map_amazon_done).
+async function mapLookup(c: Creds, fileId: number, deadline: number) {
+  const upcs: string[] = await rpc("jt_pm_map_lookup_todo", { p: { file_id: fileId } });
+  const strip = (x: string) => String(x || "").replace(/^0+/, "");
+  const res = { upcs: 0, found: 0, left: 0 };
+  const groups: Record<string, string[]> = { UPC: [], EAN: [], GTIN: [] };
+  for (const u of upcs) (u.length === 12 ? groups.UPC : u.length === 13 ? groups.EAN : groups.GTIN).push(u);
+  for (const [type, list] of Object.entries(groups)) {
+    for (let i = 0; i < list.length; i += 20) {
+      const chunk = list.slice(i, i + 20);
+      if (Date.now() > deadline) { res.left += chunk.length; continue; }
+      const q = new URLSearchParams({ identifiersType: type, identifiers: chunk.join(","), marketplaceIds: US_MKT, includedData: "identifiers,summaries", pageSize: "20" });
+      const r = await sp(c, "GET", "/catalog/2022-04-01/items?" + q.toString());
+      const hit: Record<string, { asin: string; title: string }> = {};
+      for (const it of r.items || []) {
+        const title = ((it.summaries || [])[0] || {}).itemName || "";
+        for (const set of it.identifiers || []) for (const id of set.identifiers || []) {
+          const u = chunk.find((x) => strip(x) === strip(id.identifier));
+          if (u && !hit[u]) hit[u] = { asin: it.asin, title };
+        }
+      }
+      await rpc("jt_pm_amazon_save", { p: { upcs: chunk.map((u) => ({ upc: u, asin: hit[u]?.asin || "", title: hit[u]?.title || "" })) } });
+      res.upcs += chunk.length; res.found += Object.keys(hit).length;
+      await wait(600);
+    }
+  }
+  return res;
+}
+async function mapApply(c: Creds, deadline: number) {
+  const due: any[] = await rpc("jt_pm_map_amazon_due", { p: { limit: 120 } });
+  const done: any[] = [];
+  const res = { rows: due.length, applied: 0, unchanged: 0, failed: 0 };
+  for (const d of due) {
+    if (Date.now() > deadline) break;   // the rest stays "sending" and is picked up again by the next call
+    const [r] = await setPrices(c, d.by, [{ sku: d.sku, asin: d.asin, price: d.price, map: true, only_below: d.reason === "map_below", lower_min: true }], deadline);
+    const st = r.status === "ACCEPTED" ? "applied" : r.status === "UNCHANGED" ? "unchanged" : "failed";
+    (res as any)[st]++;
+    done.push({ id: d.id, status: st, price: st === "failed" ? null : r.price, error: r.error || "" });
+    if (done.length >= 20) { await rpc("jt_pm_map_amazon_done", { p: { rows: done.splice(0) } }); }
+  }
+  if (done.length) await rpc("jt_pm_map_amazon_done", { p: { rows: done } });
+  return res;
+}
+
 // ---- set our price and/or minimum price (migrations 158, 159): POST {action: "set_price", items: [{sku, asin, price?, min?}]}
 // Reads the listing's purchasable_offer for amazon.com, checks the new values against each other and the maximum price,
 // then replaces the offer with our_price / minimum_seller_allowed_price changed and everything else kept.
@@ -173,8 +220,8 @@ async function setPrices(c: Creds, by: string, items: any[], deadline: number) {
   for (const it of items) {
     const sku = String(it.sku || "");
     const price = it.price == null || it.price === "" ? null : money2(Number(it.price));
-    const min = it.min == null || it.min === "" ? null : money2(Number(it.min));
-    const kind = price != null && min != null ? "both" : min != null ? "min" : "price";
+    let min = it.min == null || it.min === "" ? null : money2(Number(it.min));
+    let kind = price != null && min != null ? "both" : min != null ? "min" : "price";
     const rec: any = { sku, asin: String(it.asin || ""), kind, old_price: null, new_price: price, old_min: null, new_min: min, status: "failed", issues: [], error: "", by };
     if (Date.now() > deadline) { results.push({ ...rec, error: "out of time — try again" }); continue; }
     try {
@@ -186,6 +233,13 @@ async function setPrices(c: Creds, by: string, items: any[], deadline: number) {
       rec.asin = rec.asin || o.sum.asin || "";
       rec.old_price = o.price; rec.old_min = o.min;
       if (!o.sum.productType) throw new Error("Amazon has no product type for this listing");
+      // MAP schedule (migration 160): nothing to do when already there (or, for "only_below", already at or above it);
+      // the minimum price comes down with the price when it would be above it
+      if (it.map && price != null && o.price != null && (Math.abs(o.price - price) < 0.005 || (it.only_below && o.price >= price - 0.005))) {
+        results.push({ sku, asin: rec.asin, kind, old_price: o.price, price: o.price, old_min: o.min, min: null, status: "UNCHANGED", error: "", issues: [] });
+        continue;
+      }
+      if (it.lower_min && price != null && min == null && o.min != null && o.min > price + 0.005) { min = price; kind = "both"; rec.kind = kind; rec.new_min = min; }
       const p2 = price ?? o.price, m2 = min ?? o.min;
       if (p2 == null) throw new Error("the listing has no price yet — set a price first");
       if (m2 != null && p2 < m2) throw new Error(min != null && price == null
@@ -236,6 +290,8 @@ Deno.serve(async (req) => {
     const p = await req.json().catch(() => ({}));
     if (p.action === "buybox") return json({ ok: true, ...(await buybox(c, t0 + 110_000)) });
     if (p.action === "offers") return json({ ok: true, ...(await readOffers(c, Array.isArray(p.skus) ? p.skus.slice(0, 300).map(String) : null, t0 + 110_000)) });
+    if (p.action === "map_lookup") return json({ ok: true, ...(await mapLookup(c, Number(p.file_id), t0 + 100_000)) });
+    if (p.action === "map_apply") return json({ ok: true, ...(await mapApply(c, t0 + 100_000)) });
     if (p.action === "set_price") {
       // x-jt-key callers are SQL through jt.pm_amazon_call (owner only: the Claude dashboard); they name themselves
       const who = by === "scheduler" ? String(p.by || "Claude dashboard").slice(0, 80) : by;

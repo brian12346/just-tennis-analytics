@@ -333,3 +333,42 @@ def test_tennis_warehouse_reader(conn, monkeypatch):
     with conn.cursor() as cur:
         cur.execute("select count(*) from jt.pm_retail_map where source = 'Tennis Warehouse' and ref = 'RCHEAD-HPWR10'")
         assert cur.fetchone()[0] == 2
+
+
+def test_map_file_queue_due_and_apply(conn):
+    """A MAP file (migration 160): floors saved, queue built per date, the due step makes approved changes, apply writes."""
+    from sync import price_match as pm
+    import json
+    with conn.cursor() as cur:
+        cur.execute("""insert into jt.variants (variant_id, product_id, sku, product_title, variant_title, vendor, status, price, barcode)
+                       values (1, 101, 'WR1234567U2', 'Blade', '1/4', 'Wilson', 'ACTIVE', 249, '097512000001'),
+                              (2, 102, 'OTHER-SKU', 'Clash', '', 'Wilson', 'ACTIVE', 180, '097512000002'),
+                              (3, 103, 'WR3333333U2', 'RF', '', 'Wilson', 'ACTIVE', 300, '')""")
+        rows = [{"sku": "WR1234567U2", "upc": "00097512000001", "prev": 219, "maps": [{"d": "2099-10-26", "p": 219}, {"d": "2099-11-01", "p": 199}]},
+                {"sku": "WR2222222U2", "upc": "00097512000002", "prev": 219, "maps": [{"d": "2099-10-26", "p": 219}, {"d": "2099-11-01", "p": 219}]},
+                {"sku": "WR3333333U2", "upc": "", "prev": 279, "maps": [{"d": "2099-10-26", "p": 279}, {"d": "2099-11-01", "p": None}]}]
+        cur.execute("select jt.pm_map_upload(%s::jsonb)", (json.dumps({"brand": "Wilson", "file_name": "w.xlsx", "rows": rows, "by": "t"}),))
+        out = cur.fetchone()[0]
+        assert out["items"] == 3 and out["dates"] == ["2099-10-26", "2099-11-01"]
+        cur.execute("select effective_from::text, key, reason, old_map::float, new_map::float from jt.pm_map_queue order by 1, 2")
+        assert cur.fetchall() == [("2099-10-26", "2", "map_below", 219.0, 219.0), ("2099-11-01", "1", "map_down", 219.0, 199.0),
+                                  ("2099-11-01", "2", "map_below", 219.0, 219.0)]
+        # floors under the item SKU and the matched Shopify SKU (variant 2 is matched by UPC only); OFF = 0
+        cur.execute("select sku_prefix, map_price::float from jt.pm_map_floors where effective_from = '2099-11-01' order by 1")
+        assert cur.fetchall() == [("OTHER-SKU", 219.0), ("WR1234567U2", 199.0), ("WR2222222U2", 219.0), ("WR3333333U2", 0.0)]
+        cur.execute("select jt.pm_map_skip('{\"ids\": [3], \"skip\": true}'::jsonb)")
+        cur.execute("update jt.pm_map_queue set effective_from = current_date - 1 where effective_from = '2099-11-01'")
+        cur.execute("select jt.pm_map_due()")
+        assert cur.fetchone()[0]["shopify"] == 1
+        cur.execute("select variant_id, old_price::float, new_price::float, reason, map_kind, status from jt.pm_changes")
+        assert cur.fetchall() == [(1, 249.0, 199.0, "restore", "map_down", "approved")]
+    conn.commit()
+    shop = PMShop()
+    shop.v[1] = (259.0, 289.0) + shop.v[1][2:]          # changed in Shopify since: a MAP change is written anyway
+    assert pm.apply(shop, conn)["applied"] == 1
+    assert shop.v[1][:2] == (199.0, 289.0)
+    with conn.cursor() as cur:
+        cur.execute("select old_price::float, old_compare_at::float, status from jt.pm_changes")
+        assert cur.fetchone() == (259.0, 289.0, "applied")
+        cur.execute("select status from jt.v_pm_map_queue where id <= 3 order by id")   # (the dates moved: the due step re-adds 2099 rows)
+        assert [r[0] for r in cur.fetchall()] == ["queued", "applied", "skipped"]

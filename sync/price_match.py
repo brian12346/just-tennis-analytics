@@ -363,9 +363,9 @@ def apply(shop, conn) -> dict:
     a rollback); otherwise it's marked failed — someone changed the price in Shopify in the meantime.
     """
     with conn.cursor() as cur:
-        cur.execute("""select id, product_id, variant_id, status, reason, source, old_price, old_compare_at, new_price, new_compare_at
+        cur.execute("""select id, product_id, variant_id, status, reason, source, old_price, old_compare_at, new_price, new_compare_at, map_kind
                        from jt.pm_changes where status in ('approved', 'rollback') order by id""")
-        cols = ["id", "pid", "vid", "status", "reason", "source", "old", "old_cmp", "new", "new_cmp"]
+        cols = ["id", "pid", "vid", "status", "reason", "source", "old", "old_cmp", "new", "new_cmp", "map_kind"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     if not rows:
         return {"applied": 0, "rolled_back": 0, "failed": 0}
@@ -398,12 +398,21 @@ def apply(shop, conn) -> dict:
                 _mark(conn, r, "failed" if not rb else "applied", "variant not found in Shopify (deleted or not active)")
                 res["failed"] += 1
                 continue
-            if abs(cur_p - expect) > EPS:
+            # a MAP-file change (migration 160) is written whatever the price is by now; its compare-at is the live one
+            # when that's still above the new price
+            mapc = bool(r.get("map_kind")) and not rb
+            if abs(cur_p - expect) > EPS and not mapc:
                 _mark(conn, r, "failed" if not rb else "applied",
                       f"the price in Shopify is now ${cur_p:.2f}, not ${expect:.2f} — changed since this was proposed")
                 res["failed"] += 1
                 continue
             price, cmp_ = (r["old"], r["old_cmp"]) if rb else (r["new"], r["new_cmp"])
+            if mapc:
+                cmp_ = now.get(r["vid"], (None, None))[1]
+                if abs(cur_p - r["old"]) > EPS or r["old_cmp"] != cmp_:
+                    with conn.cursor() as cur:   # what it was really changed from, for the record and a rollback
+                        cur.execute("update jt.pm_changes set old_price = %s, old_compare_at = %s where id = %s", (cur_p, cmp_, r["id"]))
+                    r["old"], r["old_cmp"] = cur_p, cmp_
             if cmp_ is not None and cmp_ <= price + EPS:
                 cmp_ = None  # a compare-at at or under the price shows no sale; clear it
             payload.append({"id": f"gid://shopify/ProductVariant/{r['vid']}", "price": f"{price:.2f}",
