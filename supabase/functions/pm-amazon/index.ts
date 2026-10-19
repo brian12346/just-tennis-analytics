@@ -6,6 +6,7 @@
 // Same credentials and callers as the "amazon" function: SQL with x-jt-key, or a signed-in app user.
 // Our in-stock ASINs (FBA and FBM, jt.v_pm_amazon_stock) are priced first; our own offer and the lowest other seller's
 // are saved too, for Sales › Price match › Amazon prices (migration 155), and whether Amazon.com itself has an offer (156).
+// POST {action: "set_price", items: [{sku, asin, price}]} sets our price on amazon.com (signed-in app users, or the Claude dashboard through jt.pm_amazon_call; 158).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-jt-key", "Access-Control-Allow-Methods": "POST, OPTIONS" };
@@ -128,6 +129,50 @@ async function buybox(c: Creds, deadline: number) {
   return res;
 }
 
+// ---- set our price (migration 158): POST {action: "set_price", items: [{sku, asin, price}]}
+// Listings Items API: read the listing's purchasable_offer for amazon.com, check the new price against the minimum /
+// maximum price set in Seller Central, then replace our_price keeping everything else of the offer.
+const money2 = (x: number) => Math.round(x * 100) / 100;
+async function setPrices(c: Creds, by: string, items: any[], deadline: number) {
+  const seller = c.spapi_seller_id || SELLER_ID;
+  const results: any[] = [];
+  for (const it of items) {
+    if (Date.now() > deadline) { results.push({ sku: it.sku, status: "failed", error: "out of time — try again" }); continue; }
+    const sku = String(it.sku || ""), price = money2(Number(it.price));
+    const rec: any = { sku, asin: String(it.asin || ""), old_price: null, new_price: price, status: "failed", issues: [], error: "", by };
+    try {
+      if (!sku) throw new Error("no SKU");
+      if (!Number.isFinite(price) || price <= 0 || price > 10000) throw new Error("the price must be between $0.01 and $10,000");
+      const path = `/listings/2021-08-01/items/${encodeURIComponent(seller)}/${encodeURIComponent(sku)}?marketplaceIds=${US_MKT}`;
+      const cur = await sp(c, "GET", path + "&includedData=summaries,attributes");
+      const sum = (cur.summaries || [])[0] || {};
+      rec.asin = rec.asin || sum.asin || "";
+      if (!sum.productType) throw new Error("Amazon has no product type for this listing");
+      const offers: any[] = (cur.attributes && cur.attributes.purchasable_offer) || [];
+      const mine = offers.find((o) => (o.marketplace_id || US_MKT) === US_MKT && (o.audience || "ALL") === "ALL") || {};
+      const val = (k: string) => { const s = ((mine[k] || [])[0] || {}).schedule; return s && s[0] ? Number(s[0].value_with_tax) : null; };
+      rec.old_price = val("our_price");
+      const min = val("minimum_seller_allowed_price"), max = val("maximum_seller_allowed_price");
+      if (min != null && price < min) throw new Error(`below your minimum price of $${min.toFixed(2)} (set in Seller Central)`);
+      if (max != null && price > max) throw new Error(`above your maximum price of $${max.toFixed(2)} (set in Seller Central)`);
+      const offer = { ...mine, marketplace_id: US_MKT, currency: mine.currency || "USD", audience: mine.audience || "ALL",
+                      our_price: [{ schedule: [{ value_with_tax: price }] }] };
+      const rest = offers.filter((o) => o !== mine);
+      const body = { productType: sum.productType, patches: [{ op: "replace", path: "/attributes/purchasable_offer", value: [offer, ...rest] }] };
+      const r = await sp(c, "PATCH", path + "&includedData=issues", body);
+      rec.status = r.status || "failed";
+      rec.issues = (r.issues || []).map((x: any) => ({ code: x.code, message: x.message, severity: x.severity }));
+      if (rec.status !== "ACCEPTED") rec.error = rec.issues.filter((x: any) => x.severity === "ERROR").map((x: any) => x.message).join("; ") || `Amazon said ${rec.status}`;
+    } catch (e) {
+      rec.status = "failed"; rec.error = String((e as Error).message).slice(0, 500);
+    }
+    await rpc("jt_pm_amazon_price_push_save", { p: rec });
+    results.push({ sku, asin: rec.asin, old_price: rec.old_price, price, status: rec.status, error: rec.error, issues: rec.issues });
+    await wait(250);   // Listings API: 5 requests a second
+  }
+  return results;
+}
+
 async function caller(req: Request, c: Creds): Promise<string | null> {
   const k = req.headers.get("x-jt-key");
   if (k && c.jt_fn_key && k === c.jt_fn_key) return "scheduler";
@@ -149,6 +194,13 @@ Deno.serve(async (req) => {
     for (const k of ["spapi_client_id", "spapi_client_secret", "spapi_refresh_token"]) if (!c[k]) return json({ ok: false, error: `${k} is missing from Vault` }, 400);
     const p = await req.json().catch(() => ({}));
     if (p.action === "buybox") return json({ ok: true, ...(await buybox(c, t0 + 110_000)) });
+    if (p.action === "set_price") {
+      // x-jt-key callers are SQL through jt.pm_amazon_call (owner only: the Claude dashboard); they name themselves
+      const who = by === "scheduler" ? String(p.by || "Claude dashboard").slice(0, 80) : by;
+      const items = Array.isArray(p.items) ? p.items.slice(0, 50) : [];
+      if (!items.length) return json({ ok: false, error: "no items" }, 400);
+      return json({ ok: true, results: await setPrices(c, who, items, t0 + 100_000) });
+    }
     return json({ ok: false, error: "unknown action" }, 400);
   } catch (e) {
     return json({ ok: false, error: (e as Error).message });
