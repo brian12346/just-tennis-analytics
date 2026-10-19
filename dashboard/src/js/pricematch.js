@@ -12,7 +12,7 @@
   const when = (t) => t ? new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const P = { chan: (() => { try { return localStorage.getItem("pm-chan") === "amazon" ? "amazon" : "shopify"; } catch (_) { return "shopify"; } })(), view: "proposed", src: "all", q: "", sel: new Set(), data: null, err: null, busy: "", note: null, mapBrand: "all", csv: "", loaded: false, req: 0,
-    amz: null, amzErr: null, amzLoading: false, aq: "", af: "lost", asort: "gap", aVendor: "all", pushes: {}, aEdit: "", aBusy: "" };
+    amz: null, amzErr: null, amzLoading: false, aq: "", af: "lost", asort: "gap", aVendor: "all", pushes: {}, offers: {}, aEdit: "", aBusy: "" };
 
   const JT = () => window.JT, WEB = () => window.JTWeb || null;
   async function call(fn, sqlFn, p) {
@@ -173,9 +173,15 @@
         "from jt.v_pm_amazon_stock order by title, sku", refresh);
       P.pushes = {};
       try {   // the last price we set from this page, per SKU (migration 158; missing until the sync after the push)
-        const ps = await JT().rows(["sku", "new_price::text", "old_price::text", "status", "error", "requested_by", "requested_at::text"],
+        const ps = await JT().rows(["sku", "new_price::text", "old_price::text", "status", "error", "requested_by", "requested_at::text", "kind", "new_min::text", "old_min::text"],
           "from jt.v_pm_amazon_last_push where requested_at > now() - interval '30 days'", refresh);
-        for (const x of ps) P.pushes[x[0]] = { price: +x[1], old: x[2] == null ? null : +x[2], status: x[3], error: x[4] || "", by: x[5] || "", at: x[6] };
+        for (const x of ps) P.pushes[x[0]] = { price: +x[1], old: x[2] == null ? null : +x[2], status: x[3], error: x[4] || "", by: x[5] || "", at: x[6],
+          kind: x[7] || "price", min: x[8] == null ? null : +x[8], oldMin: x[9] == null ? null : +x[9] };
+      } catch (_) {}
+      P.offers = {};
+      try {   // our minimum / maximum price per SKU (migration 159)
+        const os = await JT().rows(["sku", "min_price::text", "max_price::text", "error", "checked_at::text"], "from jt.pm_amazon_offers", refresh);
+        for (const x of os) P.offers[x[0]] = { min: x[1] == null ? null : +x[1], max: x[2] == null ? null : +x[2], err: x[3] || "", at: x[4] };
       } catch (_) {}
       P.amz = r.map(x => ({ sku: x[0], asin: x[1], title: x[2], ch: x[3], qty: +x[4] || 0, inbound: +x[5] || 0, ours: x[6] == null ? null : +x[6],
         listing: x[7] == null ? null : +x[7], live: x[8] != null, bb: x[9] == null ? null : +x[9], own: x[10] === "true", fba: x[11] === "true",
@@ -208,31 +214,42 @@
     if (r.amzLast) return `<span class="pill pos">Not now</span><div class="meta">last seen ${esc(shortDay(r.amzLast))}</div>${hist}`;
     return '<span class="dim">No</span>';
   }
-  // the last price set from this page (Amazon applies an accepted change within about 15 minutes)
+  // the last change made from this page (Amazon applies an accepted change within about 15 minutes)
   function pushCell(r) {
     const x = P.pushes[r.sku]; if (!x) return "";
-    if (x.status === "ACCEPTED") return `<div class="meta pos" title="Set by ${esc(x.by)} · ${esc(when(x.at))}${x.old != null ? " · was " + m2(x.old) : ""}">set to ${m2(x.price)} ${esc(when(x.at))}</div>`;
-    return `<div class="meta neg" title="${esc(x.error)}">couldn't set ${m2(x.price)}: ${esc(x.error.slice(0, 90))}</div>`;
+    const what = x.kind === "min" ? `min ${m2(x.min)}` : x.kind === "both" ? `${m2(x.price)}, min ${m2(x.min)}` : m2(x.price);
+    if (x.status === "ACCEPTED") return `<div class="meta pos" title="Set by ${esc(x.by)} · ${esc(when(x.at))}${x.old != null ? " · price was " + m2(x.old) : ""}${x.oldMin != null ? " · min was " + m2(x.oldMin) : ""}">set ${what} ${esc(when(x.at))}</div>`;
+    return `<div class="meta neg" title="${esc(x.error)}">couldn't set ${what}: ${esc(x.error.slice(0, 90))}</div>`;
+  }
+  // our minimum / maximum price (Seller Central; read each morning, migration 159)
+  const offerOf = (r) => P.offers[r.sku] || null;
+  const underMin = (r) => { const o = offerOf(r), x = amzRival(r); return !!(o && o.min != null && x != null && x < o.min - 0.005); };
+  function minCell(r) {
+    const o = offerOf(r);
+    if (!o) return '<span class="dim" title="Not read from Amazon yet — Read min prices">—</span>';
+    if (o.err && o.min == null) return `<span class="dim" title="${esc(o.err)}">couldn't read</span>`;
+    return `${o.min != null ? m2(o.min) : '<span class="dim">none</span>'}${o.max != null ? `<div class="meta">max ${m2(o.max)}</div>` : ""}${underMin(r) ? `<div class="meta neg" title="The price to beat is below our minimum">${amzRival(r) === r.bb && !r.own ? "Buy Box" : "next seller"} is under it</div>` : ""}`;
   }
   function editCell(r) {
     if (P.aEdit !== r.sku) return `<button class="btn sm" data-pm="amz-edit" data-sku="${esc(r.sku)}" ${P.aBusy ? "disabled" : ""}>Change</button>`;
-    const quick = [];
+    const quick = [], o = offerOf(r);
     if (!r.own && r.bb != null) quick.push(["Match Buy Box", r.bb], ["1¢ under", Math.round(r.bb * 100 - 1) / 100]);
     else if (r.low != null) quick.push(["Match next seller", r.low]);
     if (r.amzNow && r.amzPrice != null && !quick.some(q => q[1] === r.amzPrice)) quick.push(["Match Amazon.com", r.amzPrice]);
-    const busy = P.aBusy === r.sku;
-    return `<div class="pm-amzedit"><span class="pm-amzin">$<input class="inp sm num" id="pm-ap-${esc(r.sku)}" data-pmap="${esc(r.sku)}" value="${r.ours != null ? r.ours.toFixed(2) : ""}" inputmode="decimal" aria-label="New price for ${esc(r.sku)}" ${busy ? "disabled" : ""}></span>
-      ${quick.map(([n, v]) => `<button type="button" class="linkbtn small" data-pm="amz-quick" data-sku="${esc(r.sku)}" data-v="${v.toFixed(2)}" ${busy ? "disabled" : ""}>${n} ${m2(v)}</button>`).join("")}
-      <div class="row"><button class="btn sm primary" data-pm="amz-set" data-sku="${esc(r.sku)}" ${busy ? "disabled" : ""}>${busy ? "Setting…" : "Set on Amazon"}</button>
-        <button class="linkbtn small" data-pm="amz-cancel" ${busy ? "disabled" : ""}>Cancel</button></div></div>`;
+    const busy = P.aBusy === r.sku, dis = busy ? "disabled" : "";
+    return `<div class="pm-amzedit"><label class="pm-amzin small">Price $<input class="inp sm num" id="pm-ap-${esc(r.sku)}" data-pmap="${esc(r.sku)}" value="${r.ours != null ? r.ours.toFixed(2) : ""}" inputmode="decimal" aria-label="New price for ${esc(r.sku)}" ${dis}></label>
+      ${quick.map(([n, v]) => `<button type="button" class="linkbtn small" data-pm="amz-quick" data-sku="${esc(r.sku)}" data-v="${v.toFixed(2)}" ${dis}>${n} ${m2(v)}</button>`).join("")}
+      <label class="pm-amzin small">Min $<input class="inp sm num" id="pm-am-${esc(r.sku)}" data-pmap="${esc(r.sku)}" value="${o && o.min != null ? o.min.toFixed(2) : ""}" inputmode="decimal" aria-label="Minimum price for ${esc(r.sku)}" placeholder="${o ? "none" : "not read"}" ${dis}></label>
+      <div class="row"><button class="btn sm primary" data-pm="amz-set" data-sku="${esc(r.sku)}" ${dis}>${busy ? "Setting…" : "Set on Amazon"}</button>
+        <button class="linkbtn small" data-pm="amz-cancel" ${dis}>Cancel</button></div></div>`;
   }
-  // pm-amazon "set_price": web version through the edge function as the signed-in user; here through jt.pm_amazon_call
-  // (pg_net) and the response it saves, like JT.amazon
-  async function setAmazonPrice(items) {
-    if (WEB()) return WEB().fn("pm-amazon", { action: "set_price", items });
-    const st = await JT().run(`select jt.pm_amazon_call(${JT().q(JSON.stringify({ action: "set_price", items, by: "Claude dashboard" }))}::jsonb)::text as id`, true);
+  // pm-amazon: web version through the edge function as the signed-in user; here through jt.pm_amazon_call (pg_net) and
+  // the response it saves, like JT.amazon
+  async function pmAmazon(body) {
+    if (WEB()) return WEB().fn("pm-amazon", body);
+    const st = await JT().run(`select jt.pm_amazon_call(${JT().q(JSON.stringify({ ...body, by: "Claude dashboard" }))}::jsonb)::text as id`, true);
     const id = st[0] && Number(st[0].id); if (!id) throw { message: "Couldn't reach Amazon." };
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 70; i++) {
       await new Promise(res => setTimeout(res, i ? 2000 : 3000));
       const r = await JT().run(`select jt.qbo_result(${id})::text as r`, true);
       const x = r[0] && r[0].r ? JSON.parse(r[0].r) : null;
@@ -240,25 +257,55 @@
       if (x.error && !x.body) throw { message: "Amazon call failed: " + x.error };
       return typeof x.body === "string" ? JSON.parse(x.body) : x.body;
     }
-    throw { message: "Amazon took too long to answer — check the listing in a few minutes." };
+    throw { message: "Amazon took too long to answer — check again in a few minutes." };
   }
+  const num = (v) => { const t = String(v ?? "").replace(/[$,\s]/g, ""); return t === "" ? null : Math.round(Number(t) * 100) / 100; };
   async function pushPrice(sku) {
     const r = (P.amz || []).find(x => x.sku === sku); if (!r) return;
-    const inp = $("pm-ap-" + sku), v = Math.round(Number(String(inp ? inp.value : "").replace(/[$,\s]/g, "")) * 100) / 100;
-    if (!isFinite(v) || v <= 0) { note("bad", "Enter a price, like 129.99."); return; }
-    if (r.ours != null && Math.abs(v - r.ours) < 0.005) { note("bad", `${esc(sku)} is already ${m2(v)}.`); return; }
-    if (r.ours != null && (v < r.ours * 0.5 || v > r.ours * 3) && !confirm(`${r.title || sku}: change ${m2(r.ours)} to ${m2(v)} on Amazon? That's a big move.`)) return;
+    const o = offerOf(r), pi = $("pm-ap-" + sku), mi = $("pm-am-" + sku);
+    const v = num(pi && pi.value), mn = num(mi && mi.value);
+    if (v != null && (!isFinite(v) || v <= 0)) { note("bad", "Enter a price, like 129.99."); return; }
+    if (mn != null && (!isFinite(mn) || mn <= 0)) { note("bad", "Enter a minimum price, like 99.99 — or leave it as it is."); return; }
+    const item = { sku, asin: r.asin };
+    if (v != null && (r.ours == null || Math.abs(v - r.ours) >= 0.005)) item.price = v;
+    if (mn != null && (!o || o.min == null || Math.abs(mn - o.min) >= 0.005)) item.min = mn;
+    if (item.price == null && item.min == null) { note("bad", `Nothing changed for ${esc(sku)}.`); return; }
+    const after = item.price ?? r.ours, minAfter = item.min ?? (o ? o.min : null);
+    if (after != null && minAfter != null && after < minAfter - 0.005) { note("bad", `The price (${m2(after)}) can't be below the minimum (${m2(minAfter)}) — Amazon would take the offer down.`); return; }
+    if (item.price != null && r.ours != null && (v < r.ours * 0.5 || v > r.ours * 3) && !confirm(`${r.title || sku}: change ${m2(r.ours)} to ${m2(v)} on Amazon? That's a big move.`)) return;
     P.aBusy = sku; render();
     try {
-      const out = await setAmazonPrice([{ sku, asin: r.asin, price: v }]);
+      const out = await pmAmazon({ action: "set_price", items: [item] });
       if (out && out.ok === false) throw { message: out.error || "Amazon refused" };
       const x = (out && out.results || [])[0] || {};
-      P.pushes[sku] = { price: v, old: x.old_price ?? r.ours, status: x.status || "failed", error: x.error || "", by: "you", at: new Date().toISOString() };
-      if (x.status === "ACCEPTED") { r.ours = v; r.live = true; P.aEdit = ""; P.note = { kind: "info", html: `${esc(r.title || sku)}: price set to ${m2(v)} on Amazon. Amazon usually shows it within 15 minutes; the morning check confirms the Buy Box.` }; }
-      else P.note = { kind: "bad", html: `Amazon didn't take ${m2(v)} for ${esc(sku)}: ${esc(x.error || x.status || "no answer")}` };
-    } catch (e) { P.note = { kind: "bad", html: `Couldn't set the price for ${esc(sku)}: ${esc(msg(e))}` }; }
+      P.pushes[sku] = { kind: x.kind || "price", price: x.price ?? item.price, old: x.old_price ?? r.ours, min: x.min ?? item.min, oldMin: x.old_min,
+        status: x.status || "failed", error: x.error || "", by: "you", at: new Date().toISOString() };
+      const said = [item.price != null ? `price ${m2(item.price)}` : "", item.min != null ? `minimum ${m2(item.min)}` : ""].filter(Boolean).join(" and ");
+      if (x.status === "ACCEPTED") {
+        if (item.price != null) { r.ours = item.price; r.live = true; }
+        if (item.min != null) P.offers[sku] = { ...(o || { max: null, err: "" }), min: item.min };
+        P.aEdit = ""; P.note = { kind: "info", html: `${esc(r.title || sku)}: ${said} set on Amazon. Amazon usually shows it within 15 minutes.` };
+      } else P.note = { kind: "bad", html: `Amazon didn't take the ${said} for ${esc(sku)}: ${esc(x.error || x.status || "no answer")}` };
+    } catch (e) { P.note = { kind: "bad", html: `Couldn't change ${esc(sku)}: ${esc(msg(e))}` }; }
     P.aBusy = ""; render();
   }
+  // reads every listing again, about 150 per call (Amazon allows 5 a second), until done
+  async function readMins() {
+    const skus = (P.amz || []).map(r => r.sku), tot = { read: 0, errors: 0 };
+    P.aBusy = "read"; render();
+    try {
+      for (let k = 0; k < skus.length; k += 150) {
+        P.note = { kind: "info", html: `Reading minimum and maximum prices from Amazon — ${n0(k)} of ${n0(skus.length)} listings…` }; render();
+        const out = await pmAmazon({ action: "offers", skus: skus.slice(k, k + 150) });
+        if (out && out.ok === false) throw { message: out.error || "Amazon refused" };
+        tot.read += out.read || 0; tot.errors += out.errors || 0;
+        if (out.left) k -= out.left;   // ran out of time: the rest goes in the next call
+      }
+      P.aBusy = ""; await loadAmazon(true);
+      P.note = { kind: tot.errors ? "bad" : "info", html: `Read ${n0(tot.read)} listing${tot.read === 1 ? "" : "s"}${tot.errors ? ` · ${n0(tot.errors)} couldn't be read (hover “couldn't read”)` : ""}.` }; render();
+    } catch (e) { P.aBusy = ""; P.note = { kind: "bad", html: "Couldn't read min prices: " + esc(msg(e)) }; render(); }
+  }
+
   // the price to compare with: the Buy Box when someone else has it, else the lowest other seller
   const amzRival = (r) => r.own ? r.low : r.bb != null ? r.bb : r.low;
   function amazonHtml() {
@@ -267,7 +314,7 @@
     const all = P.amz, q = P.aq.trim().toLowerCase();
     const gap = (r) => { const x = amzRival(r); return x != null && r.ours ? (r.ours - x) / x : null; };      // + = we're higher
     const F = { lost: (r) => !r.own && r.bb != null, own: (r) => r.own, higher: (r) => (gap(r) ?? 0) > 0.005, nobb: (r) => r.checked && r.bb == null,
-      unpriced: (r) => !r.checked, amzon: (r) => r.amzNow, amzrecent: (r) => !r.amzNow && !!r.amzLast, all: () => true };
+      unpriced: (r) => !r.checked, amzon: (r) => r.amzNow, amzrecent: (r) => !r.amzNow && !!r.amzLast, undermin: underMin, all: () => true };
     const chan = (r) => P.aVendor === "all" || r.ch === P.aVendor;
     const rows = all.filter(r => F[P.af](r) && chan(r) && (!q || (r.title + " " + r.sku + " " + r.asin).toLowerCase().includes(q)));
     const sorts = { gap: (a, b) => (gap(b) ?? -9) - (gap(a) ?? -9), dollars: (a, b) => ((b.ours || 0) - (amzRival(b) ?? 1e9)) - ((a.ours || 0) - (amzRival(a) ?? 1e9)),
@@ -278,19 +325,20 @@
     const units = all.filter(chan).reduce((a, r) => a + r.qty, 0);
     const shown = rows.slice(0, 600);
     return `<div class="pm-bar">
-      <span class="seg sm" role="group" aria-label="Show">${[["lost", "Buy Box with someone else"], ["higher", "We're higher"], ["own", "We have the Buy Box"], ["amzon", "Amazon.com selling"], ["amzrecent", "Amazon.com lately"], ["nobb", "No Buy Box"], ["unpriced", "Not checked yet"], ["all", "All"]]
+      <span class="seg sm" role="group" aria-label="Show">${[["lost", "Buy Box with someone else"], ["higher", "We're higher"], ["own", "We have the Buy Box"], ["amzon", "Amazon.com selling"], ["amzrecent", "Amazon.com lately"], ["undermin", "Under our min"], ["nobb", "No Buy Box"], ["unpriced", "Not checked yet"], ["all", "All"]]
         .map(([k, n]) => `<button type="button" data-paf="${k}" aria-pressed="${P.af === k}">${n} <span class="cnt">${n0(cnt(k))}</span></button>`).join("")}</span>
       <span class="seg sm" role="group" aria-label="Channel">${[["all", "FBA + FBM"], ["FBA", "FBA"], ["FBM", "FBM"]].map(([k, n]) => `<button type="button" data-pach="${k}" aria-pressed="${P.aVendor === k}">${n}</button>`).join("")}</span>
       <label class="small">Sort <select class="inp sm" data-pmf="asort" style="width:auto">${[["gap", "We're highest (%)"], ["dollars", "We're highest ($)"], ["stock", "Most units"], ["name", "Product"]]
         .map(([k, n]) => `<option value="${k}" ${P.asort === k ? "selected" : ""}>${n}</option>`).join("")}</select></label>
       <input class="inp" type="search" data-pmf="aq" value="${esc(P.aq)}" placeholder="Product, SKU, ASIN" style="max-width:200px">
-      <span class="right small muted">${n0(all.filter(chan).length)} in-stock listings · ${n0(units)} units${last ? ` · Amazon checked ${esc(when(last))}` : ""} <button class="linkbtn small" data-pm="amz-refresh">Reload</button></span></div>
-    ${rows.length ? `<div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Listing</th><th>Stock</th><th>Our price</th><th class="l">Buy Box</th><th>Lowest other</th><th class="l">Amazon.com</th><th>Gap</th><th class="l">Set price</th></tr></thead><tbody>${
+      <span class="right small muted">${n0(all.filter(chan).length)} in-stock listings · ${n0(units)} units${last ? ` · Amazon checked ${esc(when(last))}` : ""} <button class="linkbtn small" data-pm="amz-refresh">Reload</button> · <button class="linkbtn small" data-pm="amz-mins" ${P.aBusy ? "disabled" : ""} title="Read our minimum and maximum price for every listing from Amazon now (also done each morning)">${P.aBusy === "read" ? "Reading min prices…" : "Read min prices"}</button></span></div>
+    ${rows.length ? `<div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Listing</th><th>Stock</th><th>Our price</th><th>Min price</th><th class="l">Buy Box</th><th>Lowest other</th><th class="l">Amazon.com</th><th>Gap</th><th class="l">Set price</th></tr></thead><tbody>${
       shown.map(r => { const g = gap(r);
         return `<tr><td class="l"><a class="olink" href="https://www.amazon.com/dp/${esc(r.asin)}" target="_blank" rel="noopener">${esc(r.title || r.asin)}</a>
             <div class="meta"><span class="mono">${esc(r.sku)}</span> · <span class="mono">${esc(r.asin)}</span>${r.err ? ` · <span class="neg">${esc(r.err)}</span>` : ""}</div></td>
           <td><b>${n0(r.qty)}</b><div class="meta">${esc(r.ch)}${r.inbound ? ` · +${n0(r.inbound)} inbound` : ""}</div></td>
           <td>${m2(r.ours)}${r.ours != null && !r.live ? '<div class="meta" title="From the daily listings report — Amazon didn\'t show our offer among the top offers">listing price</div>' : ""}${pushCell(r)}</td>
+          <td>${minCell(r)}</td>
           <td class="l">${!r.checked ? '<span class="dim">not checked yet</span>' : r.own ? `<span class="pill ok">Just Tennis</span> ${m2(r.bb)}` : r.bb != null ? `<b>${m2(r.bb)}</b>${r.amzBb ? ' <span class="pill warn" title="Amazon.com itself has the Buy Box">Amazon.com</span>' : r.fba ? ' <span class="pill other" title="The Buy Box offer is fulfilled by Amazon">FBA</span>' : ' <span class="pill pos">FBM</span>'}` : '<span class="dim">no Buy Box</span>'}${r.offers != null ? `<div class="meta">${n0(r.offers)} offer${r.offers === 1 ? "" : "s"}</div>` : ""}</td>
           <td>${r.low == null ? '<span class="dim">—</span>' : m2(r.low)}</td>
           <td class="l small">${amzCell(r)}</td>
@@ -298,7 +346,7 @@
           <td class="l">${editCell(r)}</td></tr>`; }).join("")}</tbody></table></div>
       ${rows.length > shown.length ? `<p class="muted small">Showing ${n0(shown.length)} of ${n0(rows.length)} — narrow it with search.</p>` : ""}`
       : '<div class="muted small" style="padding:10px 2px">Nothing matches.</div>'}
-    <p class="muted small">Our in-stock listings: FBA with fulfillable units, FBM with quantity on Amazon. Buy Box = the featured New offer (item + shipping). Gap = our price against the Buy Box when someone else has it, or against the next-lowest seller when we have it (red = we're higher). Amazon.com = Amazon itself selling the item (not a third-party seller), from the same daily check; "seen N days in 90" counts the mornings it was there (history starts Oct 17, 2026). Checked every morning, our listings first. Change sets our price for amazon.com right away (Listings API); the minimum and maximum prices set in Seller Central still apply.</p>`;
+    <p class="muted small">Our in-stock listings: FBA with fulfillable units, FBM with quantity on Amazon. Buy Box = the featured New offer (item + shipping). Gap = our price against the Buy Box when someone else has it, or against the next-lowest seller when we have it (red = we're higher). Amazon.com = Amazon itself selling the item (not a third-party seller), from the same daily check; "seen N days in 90" counts the mornings it was there (history starts Oct 17, 2026). Checked every morning, our listings first. Min price = Seller Central's minimum price for the offer (max under it); Amazon takes the offer down if our price goes below it, and “under it” flags listings where the price to beat is below our minimum. Change sets our price and/or minimum for amazon.com right away (Listings API).</p>`;
   }
 
   function historyHtml() {
@@ -386,6 +434,7 @@
     else if (a === "amz-cancel") { P.aEdit = ""; render(); }
     else if (a === "amz-quick") { const i = $("pm-ap-" + b.dataset.sku); if (i) { i.value = b.dataset.v; i.focus(); } }
     else if (a === "amz-set") pushPrice(b.dataset.sku);
+    else if (a === "amz-mins") readMins();
     else if (a === "all") {
       const q = P.q.trim().toLowerCase();
       const ids = D.changes.filter(c => ["proposed", "failed"].includes(c.status) && (P.src === "all" || c.source === P.src) && (!q || (c.product_title + " " + c.sku + " " + c.vendor).toLowerCase().includes(q))).map(c => c.id);

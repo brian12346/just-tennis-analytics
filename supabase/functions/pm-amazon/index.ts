@@ -6,7 +6,8 @@
 // Same credentials and callers as the "amazon" function: SQL with x-jt-key, or a signed-in app user.
 // Our in-stock ASINs (FBA and FBM, jt.v_pm_amazon_stock) are priced first; our own offer and the lowest other seller's
 // are saved too, for Sales › Price match › Amazon prices (migration 155), and whether Amazon.com itself has an offer (156).
-// POST {action: "set_price", items: [{sku, asin, price}]} sets our price on amazon.com (signed-in app users, or the Claude dashboard through jt.pm_amazon_call; 158).
+// POST {action: "offers"} reads our minimum / maximum price per in-stock SKU (159; daily, and from the page).
+// POST {action: "set_price", items: [{sku, asin, price?, min?}]} sets our price and/or minimum price on amazon.com (signed-in app users, or the Claude dashboard through jt.pm_amazon_call; 158).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-jt-key", "Access-Control-Allow-Methods": "POST, OPTIONS" };
@@ -129,45 +130,85 @@ async function buybox(c: Creds, deadline: number) {
   return res;
 }
 
-// ---- set our price (migration 158): POST {action: "set_price", items: [{sku, asin, price}]}
-// Listings Items API: read the listing's purchasable_offer for amazon.com, check the new price against the minimum /
-// maximum price set in Seller Central, then replace our_price keeping everything else of the offer.
+// ---- our offer on a listing (Listings Items API 2021-08-01): product type, our price, minimum / maximum price
+async function readOffer(c: Creds, seller: string, sku: string) {
+  const path = `/listings/2021-08-01/items/${encodeURIComponent(seller)}/${encodeURIComponent(sku)}?marketplaceIds=${US_MKT}`;
+  const cur = await sp(c, "GET", path + "&includedData=summaries,attributes");
+  const sum = (cur.summaries || [])[0] || {};
+  const offers: any[] = (cur.attributes && cur.attributes.purchasable_offer) || [];
+  const mine = offers.find((o) => (o.marketplace_id || US_MKT) === US_MKT && (o.audience || "ALL") === "ALL") || {};
+  const val = (k: string) => { const s = ((mine[k] || [])[0] || {}).schedule; return s && s[0] && s[0].value_with_tax != null ? Number(s[0].value_with_tax) : null; };
+  return { path, sum, offers, mine, price: val("our_price"), min: val("minimum_seller_allowed_price"), max: val("maximum_seller_allowed_price") };
+}
+
+// ---- POST {action: "offers", skus?: [...]}: read the minimum / maximum price of our in-stock listings (migration 159)
+async function readOffers(c: Creds, skus: string[] | null, deadline: number) {
+  const seller = c.spapi_seller_id || SELLER_ID;
+  const todo: any[] = await rpc("jt_pm_amazon_offer_todo", { p: skus ? { skus } : { limit: 300 } });
+  const res = { read: 0, errors: 0, left: 0 };
+  let rows: any[] = [];
+  const flush = async () => { if (rows.length) await rpc("jt_pm_amazon_offer_save", { p: { rows } }); rows = []; };
+  for (const t of todo) {
+    if (Date.now() > deadline) { res.left++; continue; }
+    try {
+      const o = await readOffer(c, seller, t.sku);
+      rows.push({ sku: t.sku, asin: o.sum.asin || t.asin, product_type: o.sum.productType || "", our_price: o.price, min_price: o.min, max_price: o.max });
+      res.read++;
+    } catch (e) { rows.push({ sku: t.sku, asin: t.asin, error: String((e as Error).message).slice(0, 500) }); res.errors++; }
+    if (rows.length >= 25) await flush();
+    await wait(220);   // getListingsItem: 5 requests a second
+  }
+  await flush();
+  return res;
+}
+
+// ---- set our price and/or minimum price (migrations 158, 159): POST {action: "set_price", items: [{sku, asin, price?, min?}]}
+// Reads the listing's purchasable_offer for amazon.com, checks the new values against each other and the maximum price,
+// then replaces the offer with our_price / minimum_seller_allowed_price changed and everything else kept.
 const money2 = (x: number) => Math.round(x * 100) / 100;
+const sched = (v: number) => [{ schedule: [{ value_with_tax: v }] }];
 async function setPrices(c: Creds, by: string, items: any[], deadline: number) {
   const seller = c.spapi_seller_id || SELLER_ID;
   const results: any[] = [];
   for (const it of items) {
-    if (Date.now() > deadline) { results.push({ sku: it.sku, status: "failed", error: "out of time — try again" }); continue; }
-    const sku = String(it.sku || ""), price = money2(Number(it.price));
-    const rec: any = { sku, asin: String(it.asin || ""), old_price: null, new_price: price, status: "failed", issues: [], error: "", by };
+    const sku = String(it.sku || "");
+    const price = it.price == null || it.price === "" ? null : money2(Number(it.price));
+    const min = it.min == null || it.min === "" ? null : money2(Number(it.min));
+    const kind = price != null && min != null ? "both" : min != null ? "min" : "price";
+    const rec: any = { sku, asin: String(it.asin || ""), kind, old_price: null, new_price: price, old_min: null, new_min: min, status: "failed", issues: [], error: "", by };
+    if (Date.now() > deadline) { results.push({ ...rec, error: "out of time — try again" }); continue; }
     try {
       if (!sku) throw new Error("no SKU");
-      if (!Number.isFinite(price) || price <= 0 || price > 10000) throw new Error("the price must be between $0.01 and $10,000");
-      const path = `/listings/2021-08-01/items/${encodeURIComponent(seller)}/${encodeURIComponent(sku)}?marketplaceIds=${US_MKT}`;
-      const cur = await sp(c, "GET", path + "&includedData=summaries,attributes");
-      const sum = (cur.summaries || [])[0] || {};
-      rec.asin = rec.asin || sum.asin || "";
-      if (!sum.productType) throw new Error("Amazon has no product type for this listing");
-      const offers: any[] = (cur.attributes && cur.attributes.purchasable_offer) || [];
-      const mine = offers.find((o) => (o.marketplace_id || US_MKT) === US_MKT && (o.audience || "ALL") === "ALL") || {};
-      const val = (k: string) => { const s = ((mine[k] || [])[0] || {}).schedule; return s && s[0] ? Number(s[0].value_with_tax) : null; };
-      rec.old_price = val("our_price");
-      const min = val("minimum_seller_allowed_price"), max = val("maximum_seller_allowed_price");
-      if (min != null && price < min) throw new Error(`below your minimum price of $${min.toFixed(2)} (set in Seller Central)`);
-      if (max != null && price > max) throw new Error(`above your maximum price of $${max.toFixed(2)} (set in Seller Central)`);
-      const offer = { ...mine, marketplace_id: US_MKT, currency: mine.currency || "USD", audience: mine.audience || "ALL",
-                      our_price: [{ schedule: [{ value_with_tax: price }] }] };
-      const rest = offers.filter((o) => o !== mine);
-      const body = { productType: sum.productType, patches: [{ op: "replace", path: "/attributes/purchasable_offer", value: [offer, ...rest] }] };
-      const r = await sp(c, "PATCH", path + "&includedData=issues", body);
+      if (price == null && min == null) throw new Error("nothing to change");
+      for (const [n, v] of [["price", price], ["minimum price", min]] as [string, number | null][])
+        if (v != null && (!Number.isFinite(v) || v <= 0 || v > 10000)) throw new Error(`the ${n} must be between $0.01 and $10,000`);
+      const o = await readOffer(c, seller, sku);
+      rec.asin = rec.asin || o.sum.asin || "";
+      rec.old_price = o.price; rec.old_min = o.min;
+      if (!o.sum.productType) throw new Error("Amazon has no product type for this listing");
+      const p2 = price ?? o.price, m2 = min ?? o.min;
+      if (p2 == null) throw new Error("the listing has no price yet — set a price first");
+      if (m2 != null && p2 < m2) throw new Error(min != null && price == null
+        ? `the minimum ($${m2.toFixed(2)}) can't be above our price of $${p2.toFixed(2)} — Amazon would take the offer down`
+        : `below the minimum price of $${m2.toFixed(2)}${min == null ? " (change the minimum first, or with it)" : ""}`);
+      if (o.max != null && p2 > o.max) throw new Error(`above your maximum price of $${o.max.toFixed(2)} (set in Seller Central)`);
+      if (o.max != null && m2 != null && m2 > o.max) throw new Error(`the minimum can't be above your maximum price of $${o.max.toFixed(2)}`);
+      const offer: any = { ...o.mine, marketplace_id: US_MKT, currency: o.mine.currency || "USD", audience: o.mine.audience || "ALL" };
+      if (price != null) offer.our_price = sched(price);
+      if (min != null) offer.minimum_seller_allowed_price = sched(min);
+      const rest = o.offers.filter((x) => x !== o.mine);
+      const body = { productType: o.sum.productType, patches: [{ op: "replace", path: "/attributes/purchasable_offer", value: [offer, ...rest] }] };
+      const r = await sp(c, "PATCH", o.path + "&includedData=issues", body);
       rec.status = r.status || "failed";
       rec.issues = (r.issues || []).map((x: any) => ({ code: x.code, message: x.message, severity: x.severity }));
       if (rec.status !== "ACCEPTED") rec.error = rec.issues.filter((x: any) => x.severity === "ERROR").map((x: any) => x.message).join("; ") || `Amazon said ${rec.status}`;
+      if (rec.status === "ACCEPTED" && price == null) rec.new_price = o.price;
     } catch (e) {
       rec.status = "failed"; rec.error = String((e as Error).message).slice(0, 500);
     }
     await rpc("jt_pm_amazon_price_push_save", { p: rec });
-    results.push({ sku, asin: rec.asin, old_price: rec.old_price, price, status: rec.status, error: rec.error, issues: rec.issues });
+    results.push({ sku, asin: rec.asin, kind, old_price: rec.old_price, price: rec.new_price, old_min: rec.old_min, min: rec.new_min,
+                   status: rec.status, error: rec.error, issues: rec.issues });
     await wait(250);   // Listings API: 5 requests a second
   }
   return results;
@@ -194,6 +235,7 @@ Deno.serve(async (req) => {
     for (const k of ["spapi_client_id", "spapi_client_secret", "spapi_refresh_token"]) if (!c[k]) return json({ ok: false, error: `${k} is missing from Vault` }, 400);
     const p = await req.json().catch(() => ({}));
     if (p.action === "buybox") return json({ ok: true, ...(await buybox(c, t0 + 110_000)) });
+    if (p.action === "offers") return json({ ok: true, ...(await readOffers(c, Array.isArray(p.skus) ? p.skus.slice(0, 300).map(String) : null, t0 + 110_000)) });
     if (p.action === "set_price") {
       // x-jt-key callers are SQL through jt.pm_amazon_call (owner only: the Claude dashboard); they name themselves
       const who = by === "scheduler" ? String(p.by || "Claude dashboard").slice(0, 80) : by;
