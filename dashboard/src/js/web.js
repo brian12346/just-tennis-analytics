@@ -1,4 +1,6 @@
 (() => {
+  // remember the address the page was opened with (#po/41 etc.): the tab code rewrites the hash before the PO page reads it
+  window.__bootHash = location.hash || "";
   // Web version (dashboard.andersenlifestyle.com). Inside Claude this file does nothing.
   // On the web it signs in with Supabase Auth and stands in for what the Claude host provides:
   //   window.claude.use("mcp")       -> only lets the page know the database is ready (Shopify is not called from the web)

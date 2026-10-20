@@ -1030,8 +1030,22 @@
   }
 
   // ---------- rendering: list ----------
+  // the address bar follows what's open, so the link can be shared (Brian, Oct 20: "a shareable URL for POs … review
+  // the order with Brittany"): #po/41, #invoices/123 (the web version asks to sign in first)
+  function syncHash() {
+    const iv = S.ed && S.invOpen ? cur(S.ed) : null;
+    const want = S.mode === "inv" ? (iv && iv.id && !iv.isNew ? "#invoices/" + iv.id : "#invoices") : S.ed && S.ed.id ? "#po/" + S.ed.id : "#po";
+    if (location.hash !== want) try { history.replaceState(null, "", want); } catch (_) {}
+  }
+  const APP_URL = "https://dashboard.andersenlifestyle.com/";
+  const shareUrl = (h) => (window.JTWeb ? location.origin + location.pathname : APP_URL) + h;
+  async function copyLink(h, what) {
+    const u = shareUrl(h);
+    try { await navigator.clipboard.writeText(u); note("info", `Link to ${esc(what)} copied: <span class="mono">${esc(u)}</span> — anyone with a Seller Sage sign-in can open it.`); }
+    catch (_) { note("info", `Link to ${esc(what)}: <input class="inp sm mono" value="${esc(u)}" readonly onclick="this.select()" style="width:360px"> — anyone with a Seller Sage sign-in can open it.`); }
+  }
   function render() {
-    if (!shown()) return; place(); renderBusy();
+    if (!shown()) return; place(); renderBusy(); syncHash();
     if (S.mode === "inv") { if (S.ed && S.invOpen) renderEditor(); else renderInvList(); return; }
     if (S.ed) renderEditor(); else renderList();
   }
@@ -1313,7 +1327,7 @@
     const pdfOn = !!(iv && ed.showPdf && (iv.file || iv.parts));
     box.innerHTML = `
       <div class="po-top">
-        <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
+        <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All orders</button>${ed.id ? `<button class="linkbtn small" data-pact="copy-link" title="Copy a link to this PO to share (needs a Seller Sage sign-in)">🔗 Copy link</button>` : ""}${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
         <div class="po-head"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor order")}</button> · <button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}</button>` : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ' <span class="pill warn">Ready to approve</span>') : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
         ${headStrip(ed, ro, both)}${planHtml(ed, ro)}${doubleHtml(ed)}
@@ -1430,7 +1444,7 @@
           <span class="dbtns"><button class="mini primary" data-pact="alone-csv" title="Matched products, quantities and costs in Shopify's purchase-order import format — build the Shopify PO from this invoice">Shopify import CSV</button><button class="mini" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="mini" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`;
     box.innerHTML = `
       <div class="po-top">
-        <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? '<span class="muted small">All changes saved</span>' : ""}
+        <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${iv && iv.id && !iv.isNew ? `<button class="linkbtn small" data-pact="copy-link" title="Copy a link to this invoice to share (needs a Seller Sage sign-in)">🔗 Copy link</button>` : ""}${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right"><button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
         <div class="po-head inv-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2>${ed.alone ? "" : invStepsHtml(ed, iv)}</div>
         ${ed.alone ? aloneSum() : `
@@ -1916,6 +1930,10 @@
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
     if (a === "print-slip") { printSlip(ed, cur(ed)); return; }
+    if (a === "copy-link") { const iv2 = cur(ed);
+      if (S.mode === "inv" && iv2 && iv2.id) copyLink("#invoices/" + iv2.id, "invoice " + (iv2.no || iv2.id));
+      else if (ed.id) copyLink("#po/" + ed.id, `${ed.vendor} ${ed.po ? poLabel(ed.po) : "PO #" + ed.id}`);
+      return; }
     if (a === "miss-on" || a === "miss-off") {
       planCall("jt_po_flag_missing_invoice", "jt.po_flag_missing_invoice", { id: Number(ed.id), on: a === "miss-on" })
         .then(() => { ed.missingInv = a === "miss-on"; ed.missingAt = new Date().toISOString(); const o = (S.orders || []).find(x => x.id === ed.id); if (o) o.missingInv = ed.missingInv; render(); })
@@ -2919,6 +2937,16 @@
   window.JTPO = { _state: S, render: () => render(), open: (id) => { const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(id); }, openInvoice, guessLine, merge, progress };
   // the Prep center (and tests) open invoices this way
   window.JTInvoices = { open: (id) => { const b = document.querySelector('.tabs button[data-tab="invoices"]'); if (b && $("tab-invoices").hidden) b.click(); openInvoice(id); } };
-  if ((location.hash || "") === "#invoices") setTimeout(() => window.invShow(), 0);
-  if ((location.hash || "") === "#po") setTimeout(() => window.poShow(), 0);
+  // opened from a link: #po, #po/41, #invoices, #invoices/123
+  // (waits for sign-in on the web, so a shared link opens the PO once the person has logged in)
+  { const h = window.__bootHash != null ? window.__bootHash : (location.hash || ""), mp = /^#po\/(\d+)/.exec(h), mi = /^#invoices\/(\d+)/.exec(h);
+    const go = (fn) => (window.JTWeb ? window.JTWeb.ready : Promise.resolve()).then(() => setTimeout(fn, 0));
+    if (mi) go(() => { window.JTInvoices.open(mi[1]); });
+    if (mp) go(() => { window.JTPO.open(mp[1]); });
+    // a link pasted into a tab that already has Seller Sage open
+    window.addEventListener("hashchange", () => {
+      const h2 = location.hash || "", p2 = /^#po\/(\d+)/.exec(h2), i2 = /^#invoices\/(\d+)/.exec(h2);
+      if (p2 && !(S.ed && String(S.ed.id) === p2[1])) window.JTPO.open(p2[1]);
+      else if (i2) window.JTInvoices.open(i2[1]);
+    }); }
 })();
