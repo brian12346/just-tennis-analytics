@@ -101,10 +101,10 @@
       invs: (x[41] || "").split("|").filter(Boolean).map(t => { const [id, f, ...no] = t.split(":"); return { id, recv: f[0] === "1", qb: f[1] === "1", no: no.join(":") }; }) }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     // category / budget / placeholder (migration 162; empty until it's in)
-    const pl = await JT.rows(["id::text", "category", "budget::text", "placeholder::text"], "from jt.prep_orders where category <> '' or budget is not null or placeholder", refresh).catch(() => null);
+    const pl = await JT.rows(["id::text", "category", "budget::text", "placeholder::text", "missing_invoice::text"], "from jt.prep_orders where category <> '' or budget is not null or placeholder or missing_invoice", refresh).catch(() => null);
     S.planOn = !!pl;
     const pm = new Map((pl || []).map(x => [x[0], x]));
-    for (const o of S.orders) { const x = pm.get(o.id); o.category = x ? x[1] || "" : ""; o.budget = x && x[2] != null ? +x[2] : null; o.placeholder = !!x && x[3] === "true"; }
+    for (const o of S.orders) { const x = pm.get(o.id); o.category = x ? x[1] || "" : ""; o.budget = x && x[2] != null ? +x[2] : null; o.placeholder = !!x && x[3] === "true"; o.missingInv = !!x && x[4] === "true"; }
   }
   // what a PO is missing for its plan: shown as flags (only the vendor is required)
   const planGaps = (o) => [!o.category && "no category", o.budget == null && "no budget"].filter(Boolean);
@@ -464,8 +464,9 @@
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       await fillInvoices(ed, ivs);
-      { const pl = await JT.rows(["category", "budget::text", "placeholder::text"], `from jt.prep_orders where id = ${JT.int(id)}`, true).catch(() => null);
-        ed.planOn = !!pl; ed.category = pl && pl[0] ? pl[0][0] || "" : ""; ed.budget = pl && pl[0] && pl[0][1] != null ? +pl[0][1] : null; ed.placeholder = !!(pl && pl[0] && pl[0][2] === "true"); }
+      { const pl = await JT.rows(["category", "budget::text", "placeholder::text", "missing_invoice::text", "missing_invoice_at::text", "missing_invoice_by"], `from jt.prep_orders where id = ${JT.int(id)}`, true).catch(() => null);
+        ed.planOn = !!pl; ed.category = pl && pl[0] ? pl[0][0] || "" : ""; ed.budget = pl && pl[0] && pl[0][1] != null ? +pl[0][1] : null; ed.placeholder = !!(pl && pl[0] && pl[0][2] === "true");
+        ed.missingInv = !!(pl && pl[0] && pl[0][3] === "true"); ed.missingAt = pl && pl[0] ? pl[0][4] || "" : ""; ed.missingBy = pl && pl[0] ? pl[0][5] || "" : ""; }
       // store units received here and on the Shopify PO too (migration 161): {variant_id: units Shopify counted twice}
       ed.recvDouble = await JT.rows(["recv_double::text"], `from jt.prep_orders where id = ${JT.int(id)}`, true).then(r => { try { return JSON.parse((r[0] || [])[0] || "{}"); } catch (_) { return {}; } }).catch(() => ({}));
       const dests = new Set(ed.lines.map(l => l.dest));
@@ -1069,7 +1070,7 @@
     const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received);
     const hint = k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
       : k === "ordered" && o.status === "draft" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
-      : k === "ordered" && !o.nLines ? `<span class="pill other" title="Placeholder — fills out from the invoices put on it${planGaps(o).length ? "; " + planGaps(o).join(", ") : ""}">${o.category ? esc(o.category) : "placeholder"}</span>${planGaps(o).length ? ` <span class="pill warn" title="${esc(planGaps(o).join(", "))}">!</span>` : ""}`
+      : k === "ordered" && !o.nLines && !o.missingInv ? `<span class="pill other" title="Placeholder — fills out from the invoices put on it${planGaps(o).length ? "; " + planGaps(o).join(", ") : ""}">${o.category ? esc(o.category) : "placeholder"}</span>${planGaps(o).length ? ` <span class="pill warn" title="${esc(planGaps(o).join(", "))}">!</span>` : ""}`
       : k === "ordered" ? `<span class="dim">${o.expected ? "exp " + esc(shortDate(o.expected)) : n0(o.units) + " units"}</span>`
       : k === "invoiced" || k === "invshop" ? (o.received > 0 ? `<span class="pill manual">${n0(o.received)}/${n0(o.units)} in</span>` : `<span class="dim">${n0(left)} to come</span>`)
       : k === "received" ? (o.nInv ? `<span class="pill warn" title="Bills to enter in QuickBooks">${o.nInv - o.nQB} for QB</span>` : '<span class="pill pos">no invoice</span>')
@@ -1077,10 +1078,11 @@
     // the invoice, one click away (Brian, Oct 14): the next one that needs something — to receive, then to enter in QuickBooks
     const iv = ["invoiced", "invshop", "received", "recorded"].includes(k) && o.invs && o.invs.length
       ? (k === "invoiced" || k === "invshop" ? o.invs.find(v => !v.recv) : k === "received" ? o.invs.find(v => !v.qb) : null) || o.invs[o.invs.length - 1] : null;
+    const miss = o.missingInv ? '<span class="pill warn" title="Goods came in with no invoice in the system — it clears when an invoice is put on this order">missing invoice</span> ' : "";
     const ivChip = iv ? `<button class="oc-inv" type="button" data-inv-open="${esc(iv.id)}" title="Open invoice ${esc(iv.no)}${o.invs.length > 1 ? ` (${o.invs.length} invoices on this order)` : ""}">${o.invs.length > 1 ? `${o.invs.length} inv` : "Inv"} ${esc(String(iv.no).replace(/^#/, "").slice(-6))} →</button>` : "";
     return `<div class="il-card oc" role="button" tabindex="0" data-po-open="${esc(o.id)}" title="Open ${esc(o.vendor || "")} ${name}${o.shopifyUrl ? " (linked to a Shopify PO)" : ""}">
       <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span><span class="il-amt" ${o.budget != null ? `title="Budget ${m0(o.budget)}${o.cost ? ` · ordered ${m0(o.cost)}` : ""}"` : ""}>${!o.cost && o.budget != null ? `<span class="dim">budget</span> ${m0(o.budget)}` : m0(o.cost)}</span></span>
-      <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${hint}</span></span></div>`;
+      <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${miss}${hint}</span></span></div>`;
   }
   function renderOLanes(all) {
     const by = new Map(OLANES.map(([k]) => [k, []]));
@@ -1511,14 +1513,16 @@
     const ordered = ed.lines.reduce((a, l) => a + (Number(l.qty) || 0) * (Number(l.cost) || 0), 0);
     const invoiced = ed.invoices.filter(v => v.id && !v.isNew).reduce((a, v) => a + (v.total != null ? v.total : v.subtotal || 0), 0);
     const b = ed.budget, used = Math.max(ordered, invoiced), pct = b ? Math.min(100, Math.round(used / b * 100)) : 0;
-    const gaps = [!ed.category && "No category", b == null && "No budget"].filter(Boolean);
+    const gaps = ed.placeholder ? [!ed.category && "No category", b == null && "No budget"].filter(Boolean) : [];   // flagged on placeholders
     return `<div class="po-plan">
       ${ed.placeholder && !ed.lines.length ? '<span class="pill other" title="Made as a placeholder: put invoices on it and their products fill it out">Placeholder</span>' : ""}
       <label class="small">Category <input class="inp sm" id="pe-cat" list="pe-cats" value="${esc(ed.category)}" placeholder="add a category" ${ro ? "disabled" : ""} style="width:150px"><datalist id="pe-cats">${catOptions()}</datalist></label>
       <label class="small">Budget $<input class="inp sm num" id="pe-budget" value="${b == null ? "" : esc(String(b))}" placeholder="add a budget" inputmode="decimal" ${ro ? "disabled" : ""} style="width:100px"></label>
       ${b != null ? `<span class="po-bud" title="Ordered ${m0(ordered)} · invoiced ${m0(invoiced)}"><span class="po-bar"><span style="width:${pct}%" class="${used > b ? "over" : ""}"></span></span>
         <span class="small">${ordered ? `${m0(ordered)} ordered · ` : ""}${m0(invoiced)} invoiced · <b class="${used > b ? "neg" : ""}">${used > b ? `${m0(used - b)} over` : `${m0(b - used)} left`}</b> of ${m0(b)}</span></span>` : ""}
-      ${gaps.map(g => `<span class="pill warn">${g}</span>`).join("")}</div>`;
+      ${gaps.map(g => `<span class="pill warn">${g}</span>`).join("")}
+      ${ed.missingInv ? `<span class="pill warn" title="Flagged ${esc(when(ed.missingAt))}${ed.missingBy ? " by " + esc(ed.missingBy.split("@")[0]) : ""} — clears by itself when an invoice is put on this order">Missing invoice</span>${ro ? "" : '<button class="linkbtn small" data-pact="miss-off">clear</button>'}`
+        : !ro && !ed.invoices.some(v => v.id && !v.isNew) ? '<button class="linkbtn small" data-pact="miss-on" title="Goods came in and there\'s no invoice for them yet">Flag: invoice missing</button>' : ""}</div>`;
   }
   async function savePlan(ed, field, val) {
     const p = { id: Number(ed.id) };
@@ -1912,6 +1916,10 @@
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
     if (a === "print-slip") { printSlip(ed, cur(ed)); return; }
+    if (a === "miss-on" || a === "miss-off") {
+      planCall("jt_po_flag_missing_invoice", "jt.po_flag_missing_invoice", { id: Number(ed.id), on: a === "miss-on" })
+        .then(() => { ed.missingInv = a === "miss-on"; ed.missingAt = new Date().toISOString(); const o = (S.orders || []).find(x => x.id === ed.id); if (o) o.missingInv = ed.missingInv; render(); })
+        .catch(e => note("bad", "Couldn't save it: " + esc(JT.message(e)))); return; }
     if (a === "inv-move-to" && iv && k) { moveInvoice(iv, k); return; }
     if (a === "inv-move-go" && iv) { const to = ($("pe-movepo") || {}).value; if (to) moveInvoice(iv, to); return; }
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
@@ -2502,7 +2510,7 @@
         <label class="ps-f" title="Days of stock to hold (90 = 3 months)">Hold <input id="ps-days" class="inp num" value="${esc(st.days)}" inputmode="numeric" style="width:56px"> days</label>
         <label class="ps-f" title="Quantities round up to this (e.g. Head racquets ship 20 to a case); remembered for this vendor">Case pack <input id="ps-pack" class="inp num" value="${esc(st.pack)}" inputmode="numeric" style="width:52px"></label>
         <button class="btn primary sm" type="button" data-ps-go ${st.loading ? "disabled" : ""}>${st.loading ? "Looking…" : st.rows ? "Recalculate" : "What to reorder"}</button>
-        <span class="ps-or">or <button class="linkbtn" type="button" data-ps-ph title="Just the vendor, a category and a budget — it fills out from the invoices you put on it">placeholder</button> · <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <button class="linkbtn" type="button" data-lv-go>from a Shopify PO</button> · <label class="linkbtn" for="po-shopnew">from a PDF</label></span>
+        <span class="ps-or">or <button class="linkbtn" type="button" data-ps-ph title="Just the vendor, a category and a budget — it fills out from the invoices you put on it">placeholder</button> · <button class="linkbtn" type="button" data-ps-mi title="Stuff arrived and there's nothing in the system for it: start an order to receive it, flagged until the invoice comes">missing invoice</button> · <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <button class="linkbtn" type="button" data-lv-go>from a Shopify PO</button> · <label class="linkbtn" for="po-shopnew">from a PDF</label></span>
         <button class="mini ps-x" type="button" data-ps-close title="Close" aria-label="Close">✕</button>
       </div>
       ${st.ph ? `<div class="ps-row ps-ph"><b>Placeholder order</b>
@@ -2511,6 +2519,10 @@
           <label class="ps-f">Name <input id="ps-phname" class="inp" value="${esc(st.phName || "")}" placeholder="optional, e.g. Fall shoes" style="width:150px"></label>
           <button class="btn primary sm" type="button" data-ps-phgo ${S.busy ? "disabled" : ""}>Create placeholder</button>
           <span class="small muted">Only the vendor is needed; anything left blank is flagged on the order. Put invoices on it (Change PO / Add to a PO) and their products fill it out.</span></div>` : ""}
+      ${st.mi ? `<div class="ps-row ps-ph"><b>Missing invoice</b>
+          <label class="ps-f">What arrived <input id="ps-minote" class="inp" value="${esc(st.miNote || "")}" placeholder="optional, e.g. 3 boxes of shoes, tracking #" style="width:260px"></label>
+          <button class="btn primary sm" type="button" data-ps-migo ${S.busy ? "disabled" : ""}>Start it</button>
+          <span class="small muted">Vendor is needed. Add what came in and receive it; the order stays flagged "missing invoice" until its invoice is put on it.</span></div>` : ""}
       ${st.err ? `<div class="note bad">Couldn't work out the reorder list: ${esc(JT.message(st.err))}</div>` : ""}
       ${st.rows ? `<div class="ps-row small">
           <span><b>${n0(want.length)}</b> of ${n0(rows.length)} ${esc(st.vendor)} products below ${n0(st.days)} days of stock${rows.length && !want.length ? " — nothing to reorder" : ""}</span>
@@ -2530,6 +2542,16 @@
     </section>`;
     if (st.focus) { st.focus = false; const i = $(st.vendor ? "ps-days" : "ps-vendor"); if (i && !st.vendor) i.focus(); }
     else if (keep && keep.id) { const el = $(keep.id); if (el) { el.focus(); try { el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
+  }
+  async function createMissing(st) {
+    if (!st.vendor) { note("warn", "Pick the vendor the goods came from."); const v = $("ps-vendor"); if (v) v.focus(); return; }
+    S.busy = "Starting the order…"; render();
+    try {
+      const id = await planCall("jt_po_missing_invoice_create", "jt.po_missing_invoice_create", { vendor: st.vendor, note: (st.miNote || "").trim() });
+      S.busy = ""; S.start = null; renderStart(); await loadOrders(true); await openPO(String(id));
+      note("warn", `Order for ${esc(st.vendor)} started and flagged <b>missing invoice</b>. Add the products that came in (Add product, quantity = what arrived), Save, then Receive. Put the invoice on it when it shows up and the flag clears.`);
+      setTimeout(() => { const a = document.querySelector('#po-edit-view [placeholder^="Shopify SKU"]'); if (a) a.focus(); }, 50);
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't start it: " + esc(JT.message(e))); }
   }
   async function createPlaceholder(st) {
     if (!st.vendor) { note("warn", "Pick the vendor for the placeholder."); const v = $("ps-vendor"); if (v) v.focus(); return; }
@@ -2551,6 +2573,7 @@
     if (k) st.pack = Math.max(1, Math.round(+k.value) || 1);
     if (nm) st.name = nm.value;
     const pc = $("ps-cat"), pb = $("ps-budget"), pn = $("ps-phname");
+    { const mn = $("ps-minote"); if (mn) st.miNote = mn.value; }
     if (pc) st.phCat = pc.value; if (pb) st.phBudget = pb.value; if (pn) st.phName = pn.value;
   }
   function createFromStart() {
@@ -2572,6 +2595,8 @@
       if (t.closest("[data-ps-go]")) { readStart(); const pr = startPrefs(); if (!st.packTouched) st.pack = (pr.packs || {})[st.vendor.toLowerCase()] || st.pack; keepStart(p => { p.vendor = st.vendor; p.days = st.days; }); loadPlan(); return; }
       if (t.closest("[data-ps-ph]")) { readStart(); st.ph = !st.ph; renderStart(); const c = $("ps-cat"); if (c) c.focus(); return; }
       if (t.closest("[data-ps-phgo]")) { readStart(); createPlaceholder(st); return; }
+      if (t.closest("[data-ps-mi]")) { readStart(); st.mi = !st.mi; renderStart(); const c = $("ps-minote"); if (c) c.focus(); return; }
+      if (t.closest("[data-ps-migo]")) { readStart(); createMissing(st); return; }
       if (t.closest("[data-ps-empty]")) { readStart(); const v = st.vendor; S.start = null; openPO(null, v ? { vendor: v } : {}); return; }
       if (t.closest("[data-ps-all]")) { readStart(); st.all = !st.all; renderStart(); return; }
       if (t.closest("[data-ps-create]")) { createFromStart(); return; }

@@ -743,3 +743,20 @@ def test_placeholder_takes_received_invoice(conn):
     cur.execute("select qty_ordered, qty_received, qty_pushed, unit_cost from jt.prep_order_lines where order_id = %s", (ph,))
     assert cur.fetchall() == [(10, 4, 4, 5)]
     cur.execute("select status from jt.prep_orders where id = %s", (ph,)); assert cur.fetchone()[0] == "partial"
+
+
+def test_missing_invoice_order(conn):
+    """Goods arrived with nothing in the system: a 'missing invoice' order, cleared when an invoice lands on it (163)."""
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (1002, 99, 5, 'Dunlop')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    mi = call("po_missing_invoice_create", {"vendor": "Dunlop", "note": "3 boxes, no paperwork"})
+    cur.execute("select status, missing_invoice, note from jt.prep_orders where id = %s", (mi,)); assert cur.fetchone() == ("ordered", True, "3 boxes, no paperwork")
+    call("prep_order_receive", {"id": mi, "lines": [{"variant_id": 1002, "dest": "shopify", "qty": 12}]})
+    inv = {"vendor": "Dunlop", "invoice_no": "D-1", "invoice_date": "2026-10-20", "subtotal": 60,
+           "lines": [{"item_code": "a", "description": "A", "qty": 12, "unit_cost": 5, "amount": 60, "variant_id": 1002, "match_how": "sku"}]}
+    other = call("po_save", {"order": {"vendor": "Dunlop", "po_no": "Z"}, "lines": [], "invoices": [inv]})
+    assert call("invoice_move", {"invoice_id": other["invoice_ids"][0], "order_id": mi})
+    cur.execute("select missing_invoice from jt.prep_orders where id = %s", (mi,)); assert cur.fetchone()[0] is False
+    assert call("po_flag_missing_invoice", {"id": mi, "on": True}) is True
+    cur.execute("select missing_invoice from jt.prep_orders where id = %s", (mi,)); assert cur.fetchone()[0] is True
