@@ -1280,7 +1280,7 @@
         : !ro && t.g > 0 ? '<button class="mini" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : "";
       return `<div class="po-recv ${ivNow.recvAt ? "done" : ""}"><div class="panel-head"><h3 class="h3">${ivNow.recvAt ? "✓ Received in full" : `Receive this invoice ${recvPill(ivNow)}`}</h3>
           <span class="muted small">${ivNow.recvAt ? `All ${n0(t.b)} units are in.` : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
-          <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
+          <span class="dbtns right"><button class="btn" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
             ? `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Save${left ? ` (${n0(left)} units)` : ""}</button>`
             : `<button class="btn primary" data-pact="rq-start" title="Open receiving for this invoice">Receive</button>`) : ""}</span></div>
         ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived and press a product's Receive, or Save to receive everything entered. Cancel leaves without receiving the rest.${all.some(l => l.dest === "shopify") ? " Shopify-store units go into Shopify's stock when you receive them here — don't receive them on the Shopify PO as well." : ""}</div>` : ""}
@@ -1415,7 +1415,7 @@
         <div class="po-head inv-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2>${ed.alone ? "" : invStepsHtml(ed, iv)}</div>
         ${ed.alone ? aloneSum() : `
         <div class="po-sum"><span>Purchase order ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b> <label class="po-name">PO name <input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off" style="width:180px"></label>` : `<b>${poName}</b>`}${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
-          <span class="dbtns">${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>`}
+          <span class="dbtns">${ed.id && iv.id && !iv.isNew ? `<button class="mini" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>`}
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
       <section class="panel po-inv" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>
@@ -1428,6 +1428,64 @@
     if (pdfOn && $("pe-pdf") && !$("pe-pdf").childElementCount) renderPdf();
     { const bar = document.querySelector(".appbar"), top = box.querySelector(".po-top"), st = document.documentElement.style;
       if (bar) st.setProperty("--appbar-h", bar.offsetHeight + "px"); if (top) st.setProperty("--potop-h", top.offsetHeight + "px"); }
+  }
+  // ---------- packing slip (Brian, Oct 20): the invoice's products with what's been received and what's still to come,
+  // printed for checking the boxes as they're opened. One row per PO line the invoice covers (a product split between the
+  // store and the prep center has two), still-to-come first; lines not matched to a product listed at the end.
+  function slipHtml(ed, iv) {
+    const sh = invShares(ed, iv), V = (vid) => (S.byVid && S.byVid.get(vid)) || {};
+    const code = (vid) => { const r = iv.rows.find(x => x.vid === vid); return r ? { item: r.item_code || "", upc: r.upc || "" } : { item: "", upc: "" }; };
+    const rows = ed.lines.filter(l => sh.has(l.id) && sh.get(l.id).billed > 0).map(l => {
+      const x = sh.get(l.id), v = V(l.vid), c = code(l.vid);
+      return { l, v, c, billed: x.billed, got: x.got, left: x.left, st: x.left <= 0 ? "Received" : x.got > 0 ? "Partly received" : "Still to come" };
+    });
+    const open = rows.filter(r => r.left > 0).sort((a, b) => (a.v.title || "").localeCompare(b.v.title || "")), done = rows.filter(r => r.left <= 0).sort((a, b) => (a.v.title || "").localeCompare(b.v.title || ""));
+    const other = iv.rows.filter(r => !r.vid && !r.skip && (r.description || r.item_code));
+    const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
+    const e = (x) => String(x ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const tr = (r) => `<tr class="${r.left <= 0 ? "done" : ""}"><td class="box">${r.left <= 0 ? "✓" : ""}</td>
+      <td><b>${e(r.v.product || r.v.title || "variant " + r.l.vid)}</b>${r.v.variant && r.v.variant !== "Default Title" ? ` · ${e(r.v.variant)}` : ""}
+        <div class="m">${[r.v.sku && "SKU " + r.v.sku, r.c.item && r.c.item !== r.v.sku && "item " + r.c.item, (r.v.barcode || r.c.upc) && "UPC " + (r.v.barcode || r.c.upc)].filter(Boolean).map(e).join(" · ")}</div></td>
+      <td>${r.l.dest === "prep" ? `Prep center${r.l.asku ? `<div class="m">${e(r.l.asku)}</div>` : ""}` : "Shopify store"}</td>
+      <td class="n">${r.billed}</td><td class="n">${r.got}</td><td class="n"><b>${r.left || ""}</b></td>
+      <td>${e(r.st)}${r.l.backorder && r.left > 0 ? `<div class="m">backordered${r.l.eta ? " · expected " + e(shortDate(r.l.eta)) : ""}</div>` : ""}</td>
+      <td class="cnt"></td></tr>`;
+    const table = (title, rs) => rs.length ? `<h2>${title} <span>(${rs.length})</span></h2><table class="t"><colgroup><col style="width:22px"><col><col style="width:110px"><col style="width:62px"><col style="width:66px"><col style="width:48px"><col style="width:120px"><col style="width:62px"></colgroup><thead><tr><th></th><th>Product</th><th>For</th><th class="n">Invoiced</th><th class="n">Received</th><th class="n">Open</th><th>Status</th><th>Count</th></tr></thead><tbody>${rs.map(tr).join("")}</tbody></table>` : "";
+    const now = new Date().toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Packing slip ${e(iv.no || "")}</title><style>
+      @page{size:letter;margin:12mm}*{box-sizing:border-box}body{font:11px/1.35 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#111;margin:0}
+      h1{font-size:18px;margin:0}h2{font-size:13px;margin:14px 0 4px}h2 span{color:#666;font-weight:400}
+      .hd{display:flex;justify-content:space-between;gap:16px;border-bottom:2px solid #111;padding-bottom:6px;margin-bottom:8px}
+      .hd .r{text-align:right}.k{color:#555}.sum{display:flex;gap:18px;margin:6px 0 2px;font-size:12px}.sum b{font-size:14px}
+      table{width:100%;border-collapse:collapse;page-break-inside:auto}table.t{table-layout:fixed}tr{page-break-inside:avoid}
+      th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:#444;border-bottom:1px solid #111;padding:4px 5px}
+      td{border-bottom:1px solid #ccc;padding:5px;vertical-align:top}.n{text-align:right;white-space:nowrap}.m{color:#555;font-size:10px}
+      td.box{width:18px;font-size:13px;text-align:center}td.box::before{content:"";}tr:not(.done) td.box{border:1px solid #111;border-bottom-color:#111}
+      td.cnt{width:60px;border-bottom:1px solid #111}tr.done td{color:#555}.foot{margin-top:12px;color:#666;font-size:10px}
+    </style></head><body>
+      <div class="hd"><div><h1>Packing slip · ${e(ed.vendor || "")}</h1><div>Invoice <b>${e(iv.no || "—")}</b>${iv.date ? ` · ${e(shortDate(iv.date))}` : ""}</div>
+        <div>${ed.po ? e(poLabel(ed.po)) : "No PO"}${ed.status ? ` · ${e(STAGE.get(ed.status) || ed.status)}` : ""}</div></div>
+        <div class="r"><div class="k">Printed ${e(now)}</div>${iv.recvAt ? `<div><b>Received in full</b> ${e(shortDate(String(iv.recvAt).slice(0, 10)))}</div>` : ""}</div></div>
+      <div class="sum"><span>Invoiced <b>${sum("billed")}</b></span><span>Received <b>${sum("got")}</b></span><span>Still open <b>${sum("left")}</b></span><span>${rows.length} product line${rows.length === 1 ? "" : "s"}</span></div>
+      ${table("Still to come", open)}${table("Received", done)}
+      ${other.length ? `<h2>On the invoice, not matched to a product <span>(${other.length})</span></h2><table><tbody>${other.map(r => `<tr><td>${e(r.item_code)}</td><td>${e(r.description)}</td><td class="n">${e(r.qty ?? "")}</td></tr>`).join("")}</tbody></table>` : ""}
+      <div class="foot">Count what's in the box, write it in Count, then receive it on the invoice in Seller Sage.</div>
+    </body></html>`;
+  }
+  function printSlip(ed, iv) {
+    if (!iv || !iv.id) { note("warn", "Save the invoice first."); return; }
+    const html = slipHtml(ed, iv);
+    const f = document.createElement("iframe");
+    f.setAttribute("aria-hidden", "true"); f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+    document.body.appendChild(f);
+    const d = f.contentWindow.document; d.open(); d.write(html); d.close();
+    setTimeout(() => {
+      try { f.contentWindow.focus(); f.contentWindow.print(); }
+      catch (_) {   // printing blocked here: open it in a window instead
+        const w = window.open("", "_blank"); if (w) { w.document.write(html); w.document.close(); w.focus(); w.print(); } else note("warn", "Your browser blocked printing from this page.");
+      }
+      setTimeout(() => f.remove(), 60000);
+    }, 250);
   }
   // received in Seller Sage and on the Shopify PO as well: Shopify has those units twice (migration 161)
   function doubleHtml(ed) {
@@ -1810,6 +1868,7 @@
       rankOpenPOs(ed.vendor, vids, ed.id).then(rk => { if (S.ed === ed && ed.confirm === "inv-move") { ed.moveRank = { rk, n: vids.length }; render(); } });
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
+    if (a === "print-slip") { printSlip(ed, cur(ed)); return; }
     if (a === "inv-move-to" && iv && k) { moveInvoice(iv, k); return; }
     if (a === "inv-move-go" && iv) { const to = ($("pe-movepo") || {}).value; if (to) moveInvoice(iv, to); return; }
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
