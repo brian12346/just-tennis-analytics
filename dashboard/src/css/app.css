@@ -1281,3 +1281,10 @@ table.sz-t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-num
 .po-rank-row{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:6px 10px;border:1px solid var(--line, #ddd);border-radius:8px;background:var(--panel, #fff)}
 .po-rank-row.best{border-color:var(--sales, #2a78d6)}
 .po-rank-row .mini{margin-left:auto}
+/* placeholder orders: category + budget (v0.24.0) */
+.po-plan{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:6px 0 2px}
+.po-bud{display:inline-flex;align-items:center;gap:8px}
+.po-bar{display:inline-block;width:120px;height:8px;border-radius:4px;background:var(--line, #e5e5e5);overflow:hidden}
+.po-bar>span{display:block;height:100%;background:var(--sales, #2a78d6);border-radius:4px}
+.po-bar>span.over{background:var(--neg, #c2362f)}
+.ps-ph{flex-wrap:wrap;gap:8px 12px;border-top:1px dashed var(--line, #ddd);padding-top:8px}

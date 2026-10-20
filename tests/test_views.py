@@ -703,3 +703,43 @@ def test_receive_without_invoice_counts_on_invoice(conn):
     call("prep_order_unreceive_line", {"id": oid, "variant_id": 996, "dest": "shopify", "qty": 4})
     call("po_receive_invoice", {"id": oid, "invoice_id": iid, "lines": [{"variant_id": 996, "dest": "shopify", "qty": 4}]})
     cur.execute("select qty from jt.invoice_receipts where invoice_id = %s", (iid,)); assert cur.fetchone()[0] == 10
+
+
+def test_placeholder_order_fills_from_invoice(conn):
+    """Placeholder PO (vendor, category, budget) that fills out from the invoice put on it (migration 162)."""
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (998, 99, 5, 'Yonex'), (999, 99, 6, 'Yonex')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    cur.execute("savepoint s")
+    with pytest.raises(Exception, match="vendor"):
+        call("po_placeholder_create", {"vendor": " "})
+    cur.execute("rollback to savepoint s")
+    ph = call("po_placeholder_create", {"vendor": "Yonex", "budget": "5000"})
+    cur.execute("select status, category, budget, placeholder from jt.prep_orders where id = %s", (ph,))
+    assert cur.fetchone() == ("ordered", "", 5000, True)
+    assert call("po_plan_set", {"id": ph, "category": "Racquets"})
+    inv = {"vendor": "Yonex", "invoice_no": "Y-1", "invoice_date": "2026-10-20", "subtotal": 110,
+           "lines": [{"item_code": "a", "description": "A", "qty": 10, "unit_cost": 5, "amount": 50, "variant_id": 998, "match_how": "sku"},
+                     {"item_code": "b", "description": "B", "qty": 10, "unit_cost": 6, "amount": 60, "variant_id": 999, "match_how": "guess"},
+                     {"item_code": "FRT", "description": "Freight", "qty": 1, "unit_cost": 9, "amount": 9, "variant_id": None, "match_how": "skip"}]}
+    other = call("po_save", {"order": {"vendor": "Yonex", "po_no": "X"}, "lines": [], "invoices": [inv]})
+    assert call("invoice_move", {"invoice_id": other["invoice_ids"][0], "order_id": ph})
+    cur.execute("select variant_id, qty_ordered, unit_cost, dest from jt.prep_order_lines where order_id = %s", (ph,))
+    assert cur.fetchall() == [(998, 10, 5, "shopify")]          # guesses wait for a confirmed match
+    cur.execute("select status, category from jt.prep_orders where id = %s", (ph,)); assert cur.fetchone() == ("invoiced", "Racquets")
+
+
+def test_placeholder_takes_received_invoice(conn):
+    """A received invoice moved onto a placeholder: lines made from the invoice, receipts land on them (162)."""
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor) values (1001, 99, 5, 'Head')")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    ph = call("po_placeholder_create", {"vendor": "Head", "category": "Racquets", "budget": 1000})
+    inv = {"vendor": "Head", "invoice_no": "H-9", "invoice_date": "2026-10-20", "subtotal": 50,
+           "lines": [{"item_code": "a", "description": "A", "qty": 10, "unit_cost": 5, "amount": 50, "variant_id": 1001, "match_how": "sku"}]}
+    other = call("po_save", {"order": {"vendor": "Head", "po_no": "Y"}, "lines": [{"variant_id": 1001, "dest": "shopify", "qty": 10}], "invoices": [inv]})
+    call("po_receive_invoice", {"id": other["order_id"], "invoice_id": other["invoice_ids"][0], "lines": [{"variant_id": 1001, "dest": "shopify", "qty": 4}]})
+    assert call("invoice_move", {"invoice_id": other["invoice_ids"][0], "order_id": ph})
+    cur.execute("select qty_ordered, qty_received, qty_pushed, unit_cost from jt.prep_order_lines where order_id = %s", (ph,))
+    assert cur.fetchall() == [(10, 4, 4, 5)]
+    cur.execute("select status from jt.prep_orders where id = %s", (ph,)); assert cur.fetchone()[0] == "partial"

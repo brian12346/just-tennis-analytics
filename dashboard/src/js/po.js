@@ -100,7 +100,22 @@
       approvedAt: x[38] || "", approvedBy: x[39] || "", nQB: +x[40] || 0,
       invs: (x[41] || "").split("|").filter(Boolean).map(t => { const [id, f, ...no] = t.split(":"); return { id, recv: f[0] === "1", qb: f[1] === "1", no: no.join(":") }; }) }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+    // category / budget / placeholder (migration 162; empty until it's in)
+    const pl = await JT.rows(["id::text", "category", "budget::text", "placeholder::text"], "from jt.prep_orders where category <> '' or budget is not null or placeholder", refresh).catch(() => null);
+    S.planOn = !!pl;
+    const pm = new Map((pl || []).map(x => [x[0], x]));
+    for (const o of S.orders) { const x = pm.get(o.id); o.category = x ? x[1] || "" : ""; o.budget = x && x[2] != null ? +x[2] : null; o.placeholder = !!x && x[3] === "true"; }
   }
+  // what a PO is missing for its plan: shown as flags (only the vendor is required)
+  const planGaps = (o) => [!o.category && "no category", o.budget == null && "no budget"].filter(Boolean);
+  async function planCall(fn, sqlFn, p) {
+    const W = window.JTWeb || null;
+    if (W) { const r = await W.write(fn, { p }); return typeof r === "string" ? JSON.parse(r) : r; }
+    const out = await JT.run(`select ${sqlFn}(${JT.q(JSON.stringify({ ...p, by: "Claude dashboard" }))}::jsonb)::text as r`, true);
+    return out[0] && out[0].r != null ? JSON.parse(out[0].r) : null;
+  }
+  const CATS = ["Racquets", "Shoes", "Bags", "Strings", "Balls", "Grips & accessories", "Apparel", "Pickleball", "Padel", "Booking"];
+  const catOptions = () => [...new Set([...CATS, ...(S.orders || []).map(o => o.category).filter(Boolean)])].sort().map(c => `<option value="${esc(c)}">`).join("");
   // Shopify catalog, remembered vendor codes and Amazon listings: for matching invoice lines and adding products.
   function catalog(refresh) {
     if (S.cat && !refresh) return Promise.resolve(S.cat);
@@ -449,6 +464,8 @@
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       await fillInvoices(ed, ivs);
+      { const pl = await JT.rows(["category", "budget::text", "placeholder::text"], `from jt.prep_orders where id = ${JT.int(id)}`, true).catch(() => null);
+        ed.planOn = !!pl; ed.category = pl && pl[0] ? pl[0][0] || "" : ""; ed.budget = pl && pl[0] && pl[0][1] != null ? +pl[0][1] : null; ed.placeholder = !!(pl && pl[0] && pl[0][2] === "true"); }
       // store units received here and on the Shopify PO too (migration 161): {variant_id: units Shopify counted twice}
       ed.recvDouble = await JT.rows(["recv_double::text"], `from jt.prep_orders where id = ${JT.int(id)}`, true).then(r => { try { return JSON.parse((r[0] || [])[0] || "{}"); } catch (_) { return {}; } }).catch(() => ({}));
       const dests = new Set(ed.lines.map(l => l.dest));
@@ -1052,6 +1069,7 @@
     const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received);
     const hint = k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
       : k === "ordered" && o.status === "draft" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
+      : k === "ordered" && !o.nLines ? `<span class="pill other" title="Placeholder — fills out from the invoices put on it${planGaps(o).length ? "; " + planGaps(o).join(", ") : ""}">${o.category ? esc(o.category) : "placeholder"}</span>${planGaps(o).length ? ` <span class="pill warn" title="${esc(planGaps(o).join(", "))}">!</span>` : ""}`
       : k === "ordered" ? `<span class="dim">${o.expected ? "exp " + esc(shortDate(o.expected)) : n0(o.units) + " units"}</span>`
       : k === "invoiced" || k === "invshop" ? (o.received > 0 ? `<span class="pill manual">${n0(o.received)}/${n0(o.units)} in</span>` : `<span class="dim">${n0(left)} to come</span>`)
       : k === "received" ? (o.nInv ? `<span class="pill warn" title="Bills to enter in QuickBooks">${o.nInv - o.nQB} for QB</span>` : '<span class="pill pos">no invoice</span>')
@@ -1061,7 +1079,7 @@
       ? (k === "invoiced" || k === "invshop" ? o.invs.find(v => !v.recv) : k === "received" ? o.invs.find(v => !v.qb) : null) || o.invs[o.invs.length - 1] : null;
     const ivChip = iv ? `<button class="oc-inv" type="button" data-inv-open="${esc(iv.id)}" title="Open invoice ${esc(iv.no)}${o.invs.length > 1 ? ` (${o.invs.length} invoices on this order)` : ""}">${o.invs.length > 1 ? `${o.invs.length} inv` : "Inv"} ${esc(String(iv.no).replace(/^#/, "").slice(-6))} →</button>` : "";
     return `<div class="il-card oc" role="button" tabindex="0" data-po-open="${esc(o.id)}" title="Open ${esc(o.vendor || "")} ${name}${o.shopifyUrl ? " (linked to a Shopify PO)" : ""}">
-      <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span><span class="il-amt">${m0(o.cost)}</span></span>
+      <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span><span class="il-amt" ${o.budget != null ? `title="Budget ${m0(o.budget)}${o.cost ? ` · ordered ${m0(o.cost)}` : ""}"` : ""}>${!o.cost && o.budget != null ? `<span class="dim">budget</span> ${m0(o.budget)}` : m0(o.cost)}</span></span>
       <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${hint}</span></span></div>`;
   }
   function renderOLanes(all) {
@@ -1103,7 +1121,7 @@
     if (hadFocus) { const i = ph.querySelector('[data-ps="q"]'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
     const all = S.orders || [];
     const isOpen = (o) => o.status !== "complete";
-    const needsShop = (o) => isOpen(o) && !o.shopifyUrl && !shopOffO(o);
+    const needsShop = (o) => isOpen(o) && !o.shopifyUrl && !shopOffO(o) && o.nLines > 0;
     const isLane = (st) => OLANE_N.has(st);
     const inStage = (o, st) => st === "open" ? isOpen(o) : st === "noshop" ? needsShop(o) : st === "all" ? true : isLane(st) ? laneOfO(o) === st : o.status === st;
     // a PO linked to a Shopify PO lives on the Shopify POs view (Brian, Oct 13); a search still finds it here
@@ -1296,7 +1314,7 @@
         <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
         <div class="po-head"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor order")}</button> · <button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}</button>` : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ' <span class="pill warn">Ready to approve</span>') : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
-        ${headStrip(ed, ro, both)}${doubleHtml(ed)}
+        ${headStrip(ed, ro, both)}${planHtml(ed, ro)}${doubleHtml(ed)}
         ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
       </div>
       ${!ed.id || ed.editHead ? `<section class="panel po-headedit">${ed.id ? `<div class="panel-head"><h2>PO details</h2><span class="dbtns right"><button class="btn" data-pact="head-done">Done</button></span></div>` : ""}
@@ -1486,6 +1504,31 @@
       }
       setTimeout(() => f.remove(), 60000);
     }, 250);
+  }
+  // category and budget (migration 162): saved as soon as they're changed; what's ordered and invoiced against the budget
+  function planHtml(ed, ro) {
+    if (!ed.id || !ed.planOn) return "";
+    const ordered = ed.lines.reduce((a, l) => a + (Number(l.qty) || 0) * (Number(l.cost) || 0), 0);
+    const invoiced = ed.invoices.filter(v => v.id && !v.isNew).reduce((a, v) => a + (v.total != null ? v.total : v.subtotal || 0), 0);
+    const b = ed.budget, used = Math.max(ordered, invoiced), pct = b ? Math.min(100, Math.round(used / b * 100)) : 0;
+    const gaps = [!ed.category && "No category", b == null && "No budget"].filter(Boolean);
+    return `<div class="po-plan">
+      ${ed.placeholder && !ed.lines.length ? '<span class="pill other" title="Made as a placeholder: put invoices on it and their products fill it out">Placeholder</span>' : ""}
+      <label class="small">Category <input class="inp sm" id="pe-cat" list="pe-cats" value="${esc(ed.category)}" placeholder="add a category" ${ro ? "disabled" : ""} style="width:150px"><datalist id="pe-cats">${catOptions()}</datalist></label>
+      <label class="small">Budget $<input class="inp sm num" id="pe-budget" value="${b == null ? "" : esc(String(b))}" placeholder="add a budget" inputmode="decimal" ${ro ? "disabled" : ""} style="width:100px"></label>
+      ${b != null ? `<span class="po-bud" title="Ordered ${m0(ordered)} · invoiced ${m0(invoiced)}"><span class="po-bar"><span style="width:${pct}%" class="${used > b ? "over" : ""}"></span></span>
+        <span class="small">${ordered ? `${m0(ordered)} ordered · ` : ""}${m0(invoiced)} invoiced · <b class="${used > b ? "neg" : ""}">${used > b ? `${m0(used - b)} over` : `${m0(b - used)} left`}</b> of ${m0(b)}</span></span>` : ""}
+      ${gaps.map(g => `<span class="pill warn">${g}</span>`).join("")}</div>`;
+  }
+  async function savePlan(ed, field, val) {
+    const p = { id: Number(ed.id) };
+    if (field === "category") p.category = val.trim();
+    else { const b = val.replace(/[$,\s]/g, ""); if (b !== "" && !(Number(b) >= 0)) { note("warn", "The budget needs to be a number, like 10000."); return; } p.budget = b; }
+    try { await planCall("jt_po_plan_set", "jt.po_plan_set", p);
+      if (field === "category") ed.category = p.category; else ed.budget = p.budget === "" ? null : Number(p.budget);
+      const o = (S.orders || []).find(x => x.id === ed.id); if (o) { o.category = ed.category; o.budget = ed.budget; }
+      render();
+    } catch (e) { note("bad", "Couldn't save it: " + esc(JT.message(e))); }
   }
   // received in Seller Sage and on the Shopify PO as well: Shopify has those units twice (migration 161)
   function doubleHtml(ed) {
@@ -2459,9 +2502,15 @@
         <label class="ps-f" title="Days of stock to hold (90 = 3 months)">Hold <input id="ps-days" class="inp num" value="${esc(st.days)}" inputmode="numeric" style="width:56px"> days</label>
         <label class="ps-f" title="Quantities round up to this (e.g. Head racquets ship 20 to a case); remembered for this vendor">Case pack <input id="ps-pack" class="inp num" value="${esc(st.pack)}" inputmode="numeric" style="width:52px"></label>
         <button class="btn primary sm" type="button" data-ps-go ${st.loading ? "disabled" : ""}>${st.loading ? "Looking…" : st.rows ? "Recalculate" : "What to reorder"}</button>
-        <span class="ps-or">or <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <button class="linkbtn" type="button" data-lv-go>from a Shopify PO</button> · <label class="linkbtn" for="po-shopnew">from a PDF</label></span>
+        <span class="ps-or">or <button class="linkbtn" type="button" data-ps-ph title="Just the vendor, a category and a budget — it fills out from the invoices you put on it">placeholder</button> · <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <button class="linkbtn" type="button" data-lv-go>from a Shopify PO</button> · <label class="linkbtn" for="po-shopnew">from a PDF</label></span>
         <button class="mini ps-x" type="button" data-ps-close title="Close" aria-label="Close">✕</button>
       </div>
+      ${st.ph ? `<div class="ps-row ps-ph"><b>Placeholder order</b>
+          <label class="ps-f">Category <input id="ps-cat" class="inp" list="ps-cats" value="${esc(st.phCat || "")}" placeholder="e.g. Shoes" style="width:150px"><datalist id="ps-cats">${catOptions()}</datalist></label>
+          <label class="ps-f">Budget $<input id="ps-budget" class="inp num" value="${esc(st.phBudget || "")}" inputmode="decimal" placeholder="0" style="width:90px"></label>
+          <label class="ps-f">Name <input id="ps-phname" class="inp" value="${esc(st.phName || "")}" placeholder="optional, e.g. Fall shoes" style="width:150px"></label>
+          <button class="btn primary sm" type="button" data-ps-phgo ${S.busy ? "disabled" : ""}>Create placeholder</button>
+          <span class="small muted">Only the vendor is needed; anything left blank is flagged on the order. Put invoices on it (Change PO / Add to a PO) and their products fill it out.</span></div>` : ""}
       ${st.err ? `<div class="note bad">Couldn't work out the reorder list: ${esc(JT.message(st.err))}</div>` : ""}
       ${st.rows ? `<div class="ps-row small">
           <span><b>${n0(want.length)}</b> of ${n0(rows.length)} ${esc(st.vendor)} products below ${n0(st.days)} days of stock${rows.length && !want.length ? " — nothing to reorder" : ""}</span>
@@ -2482,6 +2531,18 @@
     if (st.focus) { st.focus = false; const i = $(st.vendor ? "ps-days" : "ps-vendor"); if (i && !st.vendor) i.focus(); }
     else if (keep && keep.id) { const el = $(keep.id); if (el) { el.focus(); try { el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
   }
+  async function createPlaceholder(st) {
+    if (!st.vendor) { note("warn", "Pick the vendor for the placeholder."); const v = $("ps-vendor"); if (v) v.focus(); return; }
+    const b = String(st.phBudget || "").replace(/[$,\s]/g, "");
+    if (b !== "" && !(Number(b) >= 0)) { note("warn", "The budget needs to be a number, like 10000."); return; }
+    S.busy = "Creating the placeholder…"; render();
+    try {
+      const id = await planCall("jt_po_placeholder_create", "jt.po_placeholder_create", { vendor: st.vendor, category: (st.phCat || "").trim(), budget: b, po_no: (st.phName || "").trim() });
+      S.busy = ""; S.start = null; renderStart(); await loadOrders(true); await openPO(String(id));
+      const gaps = [!(st.phCat || "").trim() && "category", b === "" && "budget"].filter(Boolean);
+      note(gaps.length ? "warn" : "info", `Placeholder for ${esc(st.vendor)} created.${gaps.length ? ` Missing: ${gaps.join(" and ")} — add ${gaps.length > 1 ? "them" : "it"} on the order.` : ""} Put invoices on it and their products fill it out.`);
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't create it: " + esc(JT.message(e))); }
+  }
   function readStart() {
     const st = S.start; if (!st) return;
     const v = $("ps-vendor"), d = $("ps-days"), k = $("ps-pack"), nm = $("ps-name");
@@ -2489,6 +2550,8 @@
     if (d) st.days = Math.max(1, Math.round(+d.value) || 90);
     if (k) st.pack = Math.max(1, Math.round(+k.value) || 1);
     if (nm) st.name = nm.value;
+    const pc = $("ps-cat"), pb = $("ps-budget"), pn = $("ps-phname");
+    if (pc) st.phCat = pc.value; if (pb) st.phBudget = pb.value; if (pn) st.phName = pn.value;
   }
   function createFromStart() {
     readStart(); const st = S.start; if (!st || !st.rows) return;
@@ -2507,6 +2570,8 @@
       const st = S.start; if (!st) return; const t = e.target;
       if (t.closest("[data-ps-close]")) { S.start = null; renderStart(); return; }
       if (t.closest("[data-ps-go]")) { readStart(); const pr = startPrefs(); if (!st.packTouched) st.pack = (pr.packs || {})[st.vendor.toLowerCase()] || st.pack; keepStart(p => { p.vendor = st.vendor; p.days = st.days; }); loadPlan(); return; }
+      if (t.closest("[data-ps-ph]")) { readStart(); st.ph = !st.ph; renderStart(); const c = $("ps-cat"); if (c) c.focus(); return; }
+      if (t.closest("[data-ps-phgo]")) { readStart(); createPlaceholder(st); return; }
       if (t.closest("[data-ps-empty]")) { readStart(); const v = st.vendor; S.start = null; openPO(null, v ? { vendor: v } : {}); return; }
       if (t.closest("[data-ps-all]")) { readStart(); st.all = !st.all; renderStart(); return; }
       if (t.closest("[data-ps-create]")) { createFromStart(); return; }
@@ -2591,6 +2656,7 @@
     box.addEventListener("change", (e) => {
       const ed = S.ed, t = e.target; if (!ed) return;
       const iv = cur(ed);
+      if (t.id === "pe-cat" || t.id === "pe-budget") { savePlan(ed, t.id === "pe-cat" ? "category" : "budget", t.value); return; }
       if (t.id === "pe-file") { const f = t.files[0]; t.value = ""; readPdf(f); return; }
       if (t.id === "pe-shopfile") { const f = t.files[0]; t.value = ""; readShopPdf(f); return; }
       if (t.dataset.f === "spick" && ed.shopCheck) { const sl = ed.shopCheck.lines[+t.dataset.i]; if (sl && t.value) { sl.variant_id = t.value; sl.how = "picked";
