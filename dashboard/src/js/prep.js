@@ -307,7 +307,7 @@
       { c: "cost", l: "Prep center at cost", v: m0(t.cost), s: t.noCost ? `${t.noCost} without a Shopify cost` : "units × Shopify cost" },
       { c: "sales", l: "Value at Amazon price", v: m0(t.amz), s: "earmarked listing, or the only listing mapped to the product" },
       (() => { const op = d.shipments.filter(x => x.status !== "shipped"); const u = op.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.qty, 0), 0);
-        return { l: "In open shipments", v: n0(u), s: op.length ? `units · ${op.filter(x => x.status === "open").length} open, ${op.filter(x => x.status === "started").length} started` : "no shipments in progress" }; })(),
+        return { l: "In open shipments", v: n0(u), s: op.length ? `units · ${op.filter(x => x.status === "open").length} to count, ${op.filter(x => x.status === "started").length} started` : "no shipments in progress" }; })(),
       (() => { const iv = d.invoicesOpen || []; const u = iv.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.left, 0), 0);
         const c = iv.reduce((a, x) => a + x.lines.reduce((b, l) => b + l.left * (l.cost || 0), 0), 0);
         return { l: "Incoming on invoices", v: n0(u), s: iv.length ? `units · ${m0(c)} at cost · ${iv.length} invoice${iv.length === 1 ? "" : "s"} not received yet` : "no invoices waiting to arrive" }; })(),
@@ -357,7 +357,8 @@
     renderMoves();
     renderModal();
   }
-  const STATUS = { open: ["Open", "pos"], started: ["Started", "web"], shipped: ["Shipped", "ok"] };
+  // "open" is shown as To count (Brian, Oct 20): a placeholder waiting for its products to be counted; counting starts it
+  const STATUS = { open: ["To count", "warn"], started: ["Started", "web"], shipped: ["Shipped", "ok"] };
   const SPREV = { started: "open", shipped: "started" };
   const statusPill = (st) => `<span class="pill ${STATUS[st][1]}">${STATUS[st][0]}</span>`;
   const shipTitle = (sh) => sh.name || (sh.amz && sh.amz.length ? planKey(sh.amz[0]) : `Shipment #${sh.id}`);
@@ -422,7 +423,7 @@
     if (s.status === "started" && !amzL.length && !String(s.name || "").trim()) out.push({ lvl: "warn", kind: "noid", title: "No Amazon shipment ID", text: "Add the shipment ID from Seller Central (FBA…) so this can be matched to what Amazon receives.", fixes: [{ label: "Add the ID", fix: "focus", arg: "pm-ship" }] });
     const ds = daysSince(s.started), dc = daysSince(s.created);
     if (s.status === "started" && ds != null && ds >= LATE_DAYS) out.push({ lvl: "warn", kind: "late", title: `Started ${ds} days ago and not shipped`, text: "If it went out, mark it shipped so the prep center count is right. If it's on hold, move it back to open.",
-      fixes: [{ label: "Mark shipped", act: "ship-go" }, { label: "Back to open", act: "save-reopen" }] });
+      fixes: [{ label: "Mark shipped", act: "ship-go" }, { label: "Back to To count", act: "save-reopen" }] });
     if (s.status === "open" && s.id && dc != null && dc >= STALE_DAYS) out.push({ lvl: "info", kind: "stale", title: `Open for ${dc} days`, text: "Its units are held back from other shipments while it's open. Start it, or delete it if it isn't going.",
       fixes: [{ label: "Start", act: "save-start" }, { label: "Delete", act: "del" }] });
     const rank = { bad: 0, warn: 1, info: 2 };
@@ -619,7 +620,8 @@
   const FLOW_STEPS = ["asin", "count", "method", "combine", "sc", "link", "ship", "close"];
   function flowOf(sh) {
     const lines = sh.lines.filter(l => l.qty > 0), ck = sh.checks || {}, amz = sh.amz || [], shipped = sh.status === "shipped";
-    const t0 = (msOf(sh.created) || 0) - 3 * 864e5;
+    // counts since the shipment was set up — or since it was put back to To count (checks.to_count, migration 164)
+    const t0 = Math.max((msOf(sh.created) || 0) - 3 * 864e5, ck.to_count ? msOf(ck.to_count.at) || 0 : 0);
     const countedAt = (vid) => cache.moves.some(m => m[2] === vid && m[1] === "adjust" && (msOf(m[0]) || 0) >= t0);
     const counted = !!ck.counted || (lines.length > 0 && lines.every(l => countedAt(l.vid)));
     const noAsin = lines.filter(l => !l.asku).length;
@@ -707,6 +709,7 @@
       if (lines.length) await JT.prep.adjust({ lines });
       P.busy = false; M.cnt = null; M.cntNote = "";
       await flowDo(M.id, { check: { counted: true } }, lines.length ? `Count saved: ${lines.length} product${lines.length === 1 ? "" : "s"} changed.` : "Marked counted.");
+      await countedStart(M.id);
       refreshTotals();
     } catch (e) { P.busy = false; renderModal(); note("bad", "Couldn't save the count: " + esc(JT.message(e))); }
   }
@@ -718,9 +721,22 @@
       if (msg) note("info", msg);
     } catch (e) { note("bad", "Couldn't update the shipment: " + esc(JT.message(e))); }
   }
+  // counted in the To Count lane: it moves on to Started (Brian, Oct 20)
+  // back to To count: the count starts over (checks.to_count marks when; before migration 164 just the counted mark goes)
+  async function recount(sid) {
+    try { await JT.prep.shipFlow({ id: Number(sid), check: { counted: false, to_count: true } }); }
+    catch (_) { try { await JT.prep.shipFlow({ id: Number(sid), check: { counted: false } }); } catch (_) {} }
+  }
+  async function countedStart(sid) {
+    const sh = cache.shipments.find(x => x.id === String(sid)); if (!sh || sh.status !== "open") return;
+    try { await JT.prep.setShipmentStatus(Number(sid), "started"); await load(true); render();
+      if (P.modal && P.modal.kind === "ship" && P.modal.id === String(sid)) { P.modal.sh = cache.shipments.find(x => x.id === String(sid)) || P.modal.sh; P.modal.status = P.modal.sh.status; renderModal(); }
+      note("info", `Counted — <b>${esc(sh.name || "the shipment")}</b> moved from To Count to <b>Started</b>.`); }
+    catch (e) { note("warn", "Counted, but it couldn't be started: " + esc(JT.message(e))); }
+  }
   function flowClick(M, b) {
     const f = b.dataset.flow, [a, k] = f.split(":");
-    if (a === "check") return flowDo(M.id, { check: { [k]: true } });
+    if (a === "check") return flowDo(M.id, { check: { [k]: true } }).then(() => k === "counted" ? countedStart(M.id) : null);
     if (a === "uncheck") return flowDo(M.id, { check: { [k]: false } });
     if (a === "close") return flowDo(M.id, { close: true }, "Shipment closed.");
     if (a === "reopen") return flowDo(M.id, { close: false });
@@ -790,13 +806,14 @@
     const lanes = P.shipView === "open";
     el.classList.toggle("shipgrid", !lanes); el.classList.toggle("shiplanes", lanes);
     if (lanes) {
-      // In progress = lanes, left to right: Analyze (products set aside to look at before shipping) · Open · Started ·
+      // In progress = lanes, left to right: Analyze (products set aside to look at before shipping) · To Count (open
+      // placeholders still to be counted; counting starts them) · Started ·
       // Ready to label (linked to a Seller Central shipment, not shipped yet)
       const linked = (x) => (x.amz || []).length > 0;
       const ana = anaCards(), open = list.filter(x => !linked(x) && x.status !== "started"), started = list.filter(x => !linked(x) && x.status === "started"), label = list.filter(linked);
       const lane = (title, hint, n, body) => `<div class="lane"><div class="lane-h"><b>${title}</b> <span class="cnt">${n}</span><span class="dim small">${hint}</span></div><div class="lane-b">${body}</div></div>`;
       el.innerHTML = lane("Analyze", "look at before shipping", ana.length, ana.map(anaCard).join("") || '<div class="muted small lane-empty">Nothing set aside. Use <b>Analyze</b> on a product in Incoming shipments.</div>')
-        + lane("Open", "placeholders", open.length, `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">A placeholder for the ASINs you're sending</span></button>` + open.map(card).join(""))
+        + lane("To Count", "count, then it starts", open.length, `<button class="shipcard newcard" data-sact="new"><span class="plus">+</span><b>New shipment</b><span class="dim small">A placeholder for the ASINs you're sending — count it to start it</span></button>` + open.map(card).join(""))
         + lane("Started", "being packed", started.length, started.map(card).join("") || '<div class="muted small lane-empty">None started.</div>')
         + lane("Ready to label", "linked in Seller Central", label.length, label.map(card).join("") || '<div class="muted small lane-empty">Shipments move here once they\'re linked to a Seller Central shipment.</div>');
       return;
@@ -1774,7 +1791,7 @@
             ${M.id ? '<button class="btn" data-act="del">Delete</button>' : ""}
             <button class="btn" data-act="save" ${bad || P.busy ? "disabled" : ""}>Save</button>
             ${M.status === "open" ? `<button class="btn primary" data-act="save-start" ${!lines || bad || P.busy ? "disabled" : ""}>Save &amp; start</button>` : ""}
-            ${M.status === "started" ? `<button class="btn" data-act="save-reopen" ${bad || P.busy ? "disabled" : ""}>Back to open</button><button class="btn primary" data-act="ship-go" ${!lines || bad || blocked || P.busy ? "disabled" : ""}>Mark shipped</button>` : ""}`}</span></div>`;
+            ${M.status === "started" ? `<button class="btn" data-act="save-reopen" ${bad || P.busy ? "disabled" : ""} title="Back to the To Count lane: it needs a fresh count before it starts again">Back to To count</button><button class="btn primary" data-act="ship-go" ${!lines || bad || blocked || P.busy ? "disabled" : ""}>Mark shipped</button>` : ""}`}</span></div>`;
     }
     $("prep-mcard").innerHTML = html; $("prep-mcard").classList.toggle("prod-card", M.kind === "prod");
     if (keep) { const el = keep.id ? $(keep.id) : keep.k ? box.querySelector(`input[data-k="${CSS.escape(keep.k)}"]`) : keep.c ? box.querySelector(`input[data-cnt="${CSS.escape(keep.c)}"]`) : keep.iv ? box.querySelector(`input[data-iv="${CSS.escape(keep.iv)}"]`) : null; if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
@@ -1820,6 +1837,7 @@
       }
       const id = await JT.prep.saveShipment({ id: M.id ? Number(M.id) : null, name: M.shipment.trim(), dest: M.dest, note: M.note || "", lines, ...(M.orderId ? { order_id: Number(M.orderId) } : {}) });
       if (next) await JT.prep.setShipmentStatus(id, next);
+      if (next === "open") await recount(id);
       // made from the Analyze lane: it's on a shipment now, so it leaves the lane
       if (M.anaKey && lines.some(l => l.variant_id + "|" + (l.amazon_sku || "") === M.anaKey)) {
         const i = M.anaKey.indexOf("|"); await JT.prep.analyzeSet({ variant_id: Number(M.anaKey.slice(0, i)), amazon_sku: M.anaKey.slice(i + 1), on: false }).catch(() => {});
@@ -1827,7 +1845,7 @@
       const u = lines.reduce((a, l) => a + l.qty, 0), nm = M.shipment.trim() || "Shipment #" + id;
       closeModal();
       note("info", next === "shipped" ? `<b>${esc(nm)}</b> marked shipped to ${esc(M.dest)}: ${n0(u)} units taken out of the prep center.`
-        : next === "started" ? `<b>${esc(nm)}</b> started.` : next === "open" ? `<b>${esc(nm)}</b> moved back to open.` : `<b>${esc(nm)}</b> saved.`);
+        : next === "started" ? `<b>${esc(nm)}</b> started.` : next === "open" ? `<b>${esc(nm)}</b> is back in <b>To Count</b> — count it to start it again.` : `<b>${esc(nm)}</b> saved.`);
       if (next === "shipped") P.shipView = "open";
       await load(true); render(); refreshTotals();
     } catch (e) { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't save the shipment: " + esc(JT.message(e))); }
@@ -1843,7 +1861,7 @@
     } catch (e) { P.busy = false; M.confirm = false; renderModal(); note("bad", "Couldn't move it back: " + esc(JT.message(e))); }
   }
   async function quickStatus(id, next) {
-    try { await JT.prep.setShipmentStatus(Number(id), next); note("info", next === "started" ? "Shipment started." : next === "open" ? "Shipment moved back to open." : ""); await load(true); render(); }
+    try { await JT.prep.setShipmentStatus(Number(id), next); if (next === "open") await recount(id); note("info", next === "started" ? "Shipment started." : next === "open" ? "Shipment is back in To Count." : ""); await load(true); render(); }
     catch (e) { note("bad", "Couldn't update the shipment: " + esc(JT.message(e))); }
   }
   async function deleteShipment() {
