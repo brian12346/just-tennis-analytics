@@ -1275,3 +1275,9 @@ table.sz-t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-num
 .sz-t .sz-tot{border-left:1px solid var(--line);font-weight:600}
 .sz-t tfoot td{font-weight:700;border-top:2px solid var(--line);background:var(--panel)}
 .sz-t .sz-s{display:block;font-size:10px;color:var(--muted);font-weight:400;line-height:1}
+
+/* open POs ranked for an invoice (v0.23.0) */
+.po-rank{display:grid;gap:6px;margin:8px 0}
+.po-rank-row{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:6px 10px;border:1px solid var(--line, #ddd);border-radius:8px;background:var(--panel, #fff)}
+.po-rank-row.best{border-color:var(--sales, #2a78d6)}
+.po-rank-row .mini{margin-left:auto}

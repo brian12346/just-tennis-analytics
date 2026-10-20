@@ -654,10 +654,38 @@ def test_invoice_move(conn):
     cur.execute("select id, invoice_id from jt.prep_orders where id in (%s, %s) order by id", (a["order_id"], b["order_id"]))
     assert cur.fetchall() == [(a["order_id"], None), (b["order_id"], iid)]
     call("po_receive_invoice", {"id": b["order_id"], "invoice_id": iid, "lines": [{"variant_id": 995, "dest": "shopify", "qty": 2}]})
-    cur.execute("savepoint s")
-    with pytest.raises(Exception, match="already received"):
-        call("invoice_move", {"invoice_id": iid, "order_id": a["order_id"]})
-    cur.execute("rollback to savepoint s")
+    # received here: the units go into Shopify (migration 161)
+    cur.execute("select delta, kind from jt.shopify_stock_moves where order_id = %s", (b["order_id"],)); assert cur.fetchall() == [(2, "receive")]
+    # moving it back after receiving (161): the receipts go along, Shopify stock stays as it is
+    assert call("invoice_move", {"invoice_id": iid, "order_id": a["order_id"]})
+    cur.execute("select order_id, qty_received, qty_pushed from jt.prep_order_lines where order_id in (%s, %s) order by order_id", (a["order_id"], b["order_id"]))
+    assert cur.fetchall() == [(a["order_id"], 2, 2), (b["order_id"], 0, 0)]
+    cur.execute("select id, status from jt.prep_orders where id in (%s, %s) order by id", (a["order_id"], b["order_id"]))
+    assert [r[1] for r in cur.fetchall()] == ["partial", "ordered"]
+    cur.execute("select count(*) from jt.shopify_stock_moves"); assert cur.fetchone()[0] == 1
+    # un-receiving on the PO it's on now takes them back out of Shopify
+    call("prep_order_unreceive_line", {"id": a["order_id"], "variant_id": 995, "dest": "shopify", "qty": 2})
+    cur.execute("select delta, kind from jt.shopify_stock_moves where order_id = %s", (a["order_id"],)); assert cur.fetchall() == [(-2, "unreceive")]
+
+
+def test_received_twice_shopify_and_here(conn):
+    """Store units received in Seller Sage and then on the linked Shopify PO too: flagged, and the fix takes them out (161)."""
+    cur = conn.cursor()
+    cur.execute("insert into jt.variants (variant_id, product_id, unit_cost, vendor, inventory_item_id) values (997, 99, 5, 'Head', 7997)")
+    call = lambda fn, body: (cur.execute(f"select jt.{fn}(%s::jsonb)", (json.dumps(body),)), cur.fetchone()[0])[1]
+    a = call("po_save", {"order": {"vendor": "Head", "po_no": "D1", "status": "ordered"}, "lines": [{"variant_id": 997, "dest": "shopify", "qty": 6}], "invoices": []})
+    oid = a["order_id"]
+    cur.execute("update jt.prep_orders set status = 'ordered', shopify_po_url = 'https://admin.shopify.com/store/x/purchase_orders/555' where id = %s", (oid,))
+    call("prep_order_receive", {"id": oid, "lines": [{"variant_id": 997, "dest": "shopify", "qty": 6}]})
+    cur.execute("insert into jt.shopify_pos (id, name, status) values (555, '#PO1', 'ORDERED')")
+    cur.execute("insert into jt.shopify_po_lines (po_id, line_id, variant_id, qty, qty_received) values (555, '1', 997, 6, 0)")
+    cur.execute("update jt.shopify_po_lines set qty_received = 4 where po_id = 555")
+    cur.execute("select recv_double from jt.prep_orders where id = %s", (oid,)); assert cur.fetchone()[0] == {"997": 4}
+    cur.execute("select sum(qty_received) from jt.prep_order_lines where order_id = %s", (oid,)); assert cur.fetchone()[0] == 6   # not received again
+    assert call("po_fix_double", {"id": oid}) == 4
+    cur.execute("select delta, kind from jt.shopify_stock_moves where order_id = %s order by id", (oid,)); assert cur.fetchall() == [(6, "receive"), (-4, "double_fix")]
+    cur.execute("select recv_double, (select qty_pushed from jt.prep_order_lines where order_id = %s) from jt.prep_orders where id = %s", (oid, oid))
+    assert cur.fetchone() == ({}, 2)
 
 
 def test_receive_without_invoice_counts_on_invoice(conn):

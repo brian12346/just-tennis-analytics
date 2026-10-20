@@ -514,7 +514,7 @@ def _fbm_location_setting(conn) -> str | None:
     return row[0] if row and row[0] else None
 
 
-def _adjust_available(shop: "Shopify", item, delta: int, loc_setting, names: dict, key: str, ref: str):
+def _adjust_available(shop: "Shopify", item, delta: int, loc_setting, names: dict, key: str, ref: str, reason: str = "correction"):
     """Change Shopify's "available" quantity of one inventory item by `delta` at the store's location (the FBM
     location setting, else the item's only location). Returns (quantity before, location id); raises on any problem."""
     lv = shop.graphql(LEVELS_Q, {"item": f"gid://shopify/InventoryItem/{item}"})["inventoryItem"]
@@ -543,7 +543,7 @@ def _adjust_available(shop: "Shopify", item, delta: int, loc_setting, names: dic
     for with_from, with_key in attempts:
         ch = dict(change, **({"changeFromQuantity": before} if with_from and before is not None else {}))
         q = ADJUST_M.replace("{IDEM}", ", $key: String!" if with_key else "").replace("{IDEMUSE}", " @idempotent(key: $key)" if with_key else "")
-        vars_ = {"input": {"reason": "correction", "name": "available", "referenceDocumentUri": ref, "changes": [ch]}}
+        vars_ = {"input": {"reason": reason, "name": "available", "referenceDocumentUri": ref, "changes": [ch]}}
         if with_key:
             vars_["key"] = key
         try:
@@ -570,7 +570,7 @@ def apply_stock_moves(shop: "Shopify", conn) -> int:
     """Units put back into Shopify's available stock (or taken out) from the dashboard: jt.shopify_stock_moves, status
     pending (e.g. units a Seller Central shipment didn't take, migration 087)."""
     with conn.cursor() as cur:
-        cur.execute("""select m.id, m.variant_id, v.inventory_item_id, m.delta from jt.shopify_stock_moves m
+        cur.execute("""select m.id, m.variant_id, v.inventory_item_id, m.delta, m.kind from jt.shopify_stock_moves m
                        left join jt.variants v on v.variant_id = m.variant_id where m.status = 'pending' order by m.id""")
         todo = cur.fetchall()
     if not todo:
@@ -578,12 +578,14 @@ def apply_stock_moves(shop: "Shopify", conn) -> int:
     names = _fbm_save_locations(shop, conn)
     loc_setting = _fbm_location_setting(conn)
     done = 0
-    for mid, vid, item, delta in todo:
+    for mid, vid, item, delta, kind in todo:
         before, err, loc = None, "", None
         try:
             if not item:
                 raise RuntimeError(f"variant {vid} has no Shopify inventory item (not in the catalog sync)")
-            before, loc = _adjust_available(shop, item, int(delta), loc_setting, names, f"jt-stock-{mid}", f"gid://just-tennis/StockMove/{mid}")
+            # units received against an invoice show in Shopify's inventory history as "Received" (migration 161)
+            before, loc = _adjust_available(shop, item, int(delta), loc_setting, names, f"jt-stock-{mid}", f"gid://just-tennis/StockMove/{mid}",
+                                            "received" if kind == "receive" and int(delta) > 0 else "correction")
         except Exception as e:  # noqa: BLE001 - record it on the move and carry on
             err = str(e)[:500]
         with conn.cursor() as cur:

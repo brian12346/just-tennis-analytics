@@ -449,6 +449,8 @@
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       await fillInvoices(ed, ivs);
+      // store units received here and on the Shopify PO too (migration 161): {variant_id: units Shopify counted twice}
+      ed.recvDouble = await JT.rows(["recv_double::text"], `from jt.prep_orders where id = ${JT.int(id)}`, true).then(r => { try { return JSON.parse((r[0] || [])[0] || "{}"); } catch (_) { return {}; } }).catch(() => ({}));
       const dests = new Set(ed.lines.map(l => l.dest));
       ed.dest = dests.size > 1 || ed.into === "both" ? "both" : dests.size === 1 ? [...dests][0] : ed.into || "shopify";
       ed.showPdf = window.innerWidth >= 1100 && !!(cur(ed) && cur(ed).parts);
@@ -546,6 +548,7 @@
     const same = all.filter(o => o.vendor.toLowerCase() === (ed.vendor || "").toLowerCase()), rest = all.filter(o => !same.includes(o));
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     return `<div class="note warn">Put this invoice on a purchase order:
+      ${ed.moveRank ? rankHtml(ed.moveRank.rk, ed.moveRank.n, 'data-pact="alone-link-go" data-k') : ""}
       <select id="pe-alonepo" class="inp sm" style="width:auto;max-width:320px">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
       <span class="dbtns"><button class="mini primary" data-pact="alone-link-go" ${all.length ? "" : "disabled"}>Add it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
@@ -645,22 +648,36 @@
     choosePO(pend);
   }
   // no PO matched: pick one of the vendor's open POs, or start a new PO
-  function choosePO(pend) {
+  async function choosePO(pend) {
     S.mode = "inv"; S.invOpen = false; S.pend = pend; goInvTab();
     const inv = pend.inv, vend = (inv.vendor || "").toLowerCase();
+    // the vendor's open orders that already have these products: the likely home for this invoice
+    const vids = [...new Set((inv.lines || []).map(l => { const g = guessLine(l, inv.vendor); return SURE.has(g.how) ? g.vid : null; }).filter(Boolean))];
+    const rk = inv.vendor ? await rankOpenPOs(inv.vendor, vids).catch(() => []) : [];
+    const best = rk.find(x => x.shared > 0 && x.shared * 2 >= vids.length);
     const open = (S.orders || []).filter(o => o.status !== "complete");
     const same = open.filter(o => vend && o.vendor.toLowerCase() === vend), rest = open.filter(o => !same.includes(o));
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     note("warn", `<b>Which purchase order is invoice ${esc(inv.invoice_no || file0(pend))} from ${esc(inv.vendor || "this vendor")} for?</b>${inv.po_no ? ` It says PO # <span class="mono">${esc(inv.po_no)}</span>, which doesn't match an open PO.` : " No PO # was found on it."}
+      ${best ? `<div class="small"><b>There's an open order with these products</b> — add the invoice to it rather than starting another PO:</div>` : ""}${rankHtml(rk, vids.length, 'data-pend="pick" data-o')}
       <div class="row">${open.length ? `<select id="pe-pendpo" class="inp sm" style="width:auto;max-width:340px">${same.length ? `<optgroup label="${esc(inv.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="${same.length ? "Other vendors" : "Open purchase orders"}">${rest.map(opt).join("")}</optgroup>` : ""}</select><button class="mini primary" data-pend="pick">Add it to this PO</button>` : ""}
-      <button class="mini" data-pend="new">Start a new PO from it</button><button class="mini ${open.length ? "" : "primary"}" data-pend="alone" title="Keep the invoice on its own for now: check its lines, build the Shopify PO from it (Shopify import CSV), and it goes onto that PO when it syncs in">Save the invoice only — no PO yet</button><button class="mini" data-pend="cancel">Cancel</button></div>`);
+      <button class="mini" data-pend="new" ${best ? `title="${esc(best.o.vendor)} ${esc(best.o.po ? poLabel(best.o.po) : "#" + best.o.id)} already has ${best.shared} of these products"` : ""}>Start a new PO from it${best ? " anyway" : ""}</button><button class="mini ${open.length ? "" : "primary"}" data-pend="alone" title="Keep the invoice on its own for now: check its lines, build the Shopify PO from it (Shopify import CSV), and it goes onto that PO when it syncs in">Save the invoice only — no PO yet</button><button class="mini" data-pend="cancel">Cancel</button></div>`);
   }
   const file0 = (pend) => pend.f.name;
-  async function pendGo(how) {
+  async function fixDouble(ed) {
+    S.busy = "Taking the extra units out of Shopify…"; render();
+    try {
+      const n = WEBW() ? Number(await WEBW().write("jt_po_fix_double", { p: { id: Number(ed.id) } }))
+        : Number(((await JT.run(`select jt.po_fix_double(${JT.q(JSON.stringify({ id: Number(ed.id), by: "Claude dashboard" }))}::jsonb) as n`, true))[0] || {}).n || 0);
+      S.busy = ""; ed.recvDouble = {}; render(); note("info", `${n0(n)} unit${n === 1 ? "" : "s"} will come out of Shopify's stock in a minute (Inventory sync).`);
+    } catch (e) { S.busy = ""; render(); note("bad", "Couldn't fix it: " + esc(JT.message(e))); }
+  }
+  const WEBW = () => window.JTWeb || null;
+  async function pendGo(how, oid) {
     const pend = S.pend; if (!pend) return;
     if (how === "cancel") { S.pend = null; note("", ""); render(); return; }
     // the PO picker is inside the note: read it before the note is cleared
-    const pick = how === "pick" ? ($("pe-pendpo") || {}).value : "";
+    const pick = how === "pick" ? (oid || ($("pe-pendpo") || {}).value) : "";
     if (how === "pick" && !pick) return;
     note("", "");
     if (how === "pick") { await openPO(pick); if (!S.ed) return; return attach(pend, S.ed, ""); }
@@ -1266,7 +1283,7 @@
           <span class="dbtns right">${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
             ? `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Save${left ? ` (${n0(left)} units)` : ""}</button>`
             : `<button class="btn primary" data-pact="rq-start" title="Open receiving for this invoice">Receive</button>`) : ""}</span></div>
-        ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived and press a product's Receive, or Save to receive everything entered. Cancel leaves without receiving the rest.</div>` : ""}
+        ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived and press a product's Receive, or Save to receive everything entered. Cancel leaves without receiving the rest.${all.some(l => l.dest === "shopify") ? " Shopify-store units go into Shopify's stock when you receive them here — don't receive them on the Shopify PO as well." : ""}</div>` : ""}
         ${c.check ? `<div class="note warn">${c.check} guessed product${c.check === 1 ? "" : "s"} on this invoice ${c.check === 1 ? "needs" : "need"} confirming on the invoice before ${c.check === 1 ? "it" : "they"} can be received. <button class="mini" data-pact="open-inv">Open the invoice</button></div>` : ""}
         ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
       </div>`;
@@ -1279,7 +1296,7 @@
         <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All orders</button>${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
           <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
         <div class="po-head"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor order")}</button> · <button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}</button>` : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ' <span class="pill warn">Ready to approve</span>') : ""}${shopOff(ed) ? ' <span class="pill pos" title="No Shopify PO for this order">Seller Sage only</span>' : shopBadge(ed, ro)}</h2><span class="steps six seven">${steps}</span></div>
-        ${headStrip(ed, ro, both)}
+        ${headStrip(ed, ro, both)}${doubleHtml(ed)}
         ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
       </div>
       ${!ed.id || ed.editHead ? `<section class="panel po-headedit">${ed.id ? `<div class="panel-head"><h2>PO details</h2><span class="dbtns right"><button class="btn" data-pact="head-done">Done</button></span></div>` : ""}
@@ -1384,7 +1401,7 @@
     const ro = false, pdfOn = !!(ed.showPdf && (iv.file || iv.parts));
     const t = invTot(iv), others = ed.invoices.length - 1;
     const poName = ed.id ? `${esc(ed.vendor || "Vendor")} · ${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}` : `New PO · ${esc(ed.vendor || "vendor")}${ed.po ? " " + esc(poLabel(ed.po)) : ""}`;
-    const canMove = ed.id && iv.id && !iv.isNew && !ro && !(t.g > 0);
+    const canMove = ed.id && iv.id && !iv.isNew && !ro;
     // name the PO right here when the invoice starts a new one (or its PO has no name yet); stays a field while typing
     const nameIn = !ed.alone && (!ed.id || !ed.po || ed.nameIn); if (nameIn) ed.nameIn = true;
     const saved = ed.alone ? !!iv.id : !!ed.id;
@@ -1412,12 +1429,38 @@
     { const bar = document.querySelector(".appbar"), top = box.querySelector(".po-top"), st = document.documentElement.style;
       if (bar) st.setProperty("--appbar-h", bar.offsetHeight + "px"); if (top) st.setProperty("--potop-h", top.offsetHeight + "px"); }
   }
+  // received in Seller Sage and on the Shopify PO as well: Shopify has those units twice (migration 161)
+  function doubleHtml(ed) {
+    const d = Object.entries(ed.recvDouble || {}).filter(([, n]) => +n > 0); if (!d.length) return "";
+    const name = (vid) => { const v = S.byVid && S.byVid.get(vid); return v ? (v.title || v.sku) : "product " + vid; };
+    const units = d.reduce((a, [, n]) => a + +n, 0);
+    return `<div class="note bad"><b>Received twice:</b> ${n0(units)} unit${units === 1 ? " was" : "s were"} received here and on the Shopify PO too, so Shopify counted ${units === 1 ? "it" : "them"} twice — ${d.slice(0, 4).map(([v, n]) => `${esc(name(v))} ×${n0(n)}`).join(", ")}${d.length > 4 ? "…" : ""}.
+      Receive in Seller Sage only (the Shopify PO is just the record). <button class="mini primary" data-pact="fix-double" ${S.busy ? "disabled" : ""}>Take the extra out of Shopify</button></div>`;
+  }
+  // the vendor's open POs ranked by how many of these products they have still to come (to spot the open order
+  // before starting another PO — Brian, Oct 20). vids = the invoice's matched products. -> [{o, shared, open}]
+  async function rankOpenPOs(vendor, vids, skipId) {
+    const want = new Set((vids || []).filter(Boolean).map(String));
+    const open = (S.orders || []).filter(o => o.status !== "complete" && o.id !== skipId && (!vendor || o.vendor.toLowerCase() === vendor.toLowerCase()));
+    if (!want.size || !open.length) return open.map(o => ({ o, shared: 0, open: 0 }));
+    const r = await JT.rows(["order_id::text", "variant_id::text", "sum(qty_ordered)", "sum(qty_received)"],
+      `from jt.prep_order_lines where order_id in (${open.map(o => JT.int(o.id)).join(",")}) group by 1, 2`, true).catch(() => []);
+    const by = new Map(open.map(o => [o.id, { o, shared: 0, open: 0 }]));
+    for (const [oid, vid, qo, qr] of r) { const x = by.get(oid); if (x && want.has(vid)) { x.shared++; x.open += Math.max(0, (+qo || 0) - (+qr || 0)); } }
+    return [...by.values()].sort((a, b) => b.shared - a.shared || b.open - a.open);
+  }
+  const rankHtml = (rk, nWant, act) => { const top = rk.filter(x => x.shared > 0).slice(0, 3); if (!top.length) return "";
+    return `<div class="po-rank">${top.map((x, i) => `<div class="po-rank-row ${i === 0 && x.shared * 2 >= nWant ? "best" : ""}"><b>${esc(x.o.vendor)} ${esc(x.o.po ? poLabel(x.o.po) : "#" + x.o.id)}</b>
+      <span class="small muted">${esc(STAGE.get(x.o.status))} · ${n0(x.shared)} of ${n0(nWant)} products on this invoice${x.open ? ` · ${n0(x.open)} unit${x.open === 1 ? "" : "s"} still to come` : " · nothing left to come"}</span>
+      <button class="mini ${i === 0 ? "primary" : ""}" ${act}="${esc(x.o.id)}">Use this PO</button></div>`).join("")}</div>`; };
   // picking another PO for a saved invoice (open POs, same vendor first)
   function moveHtml(ed) {
     const all = (S.orders || []).filter(o => o.id !== ed.id && o.status !== "complete");
     const same = all.filter(o => o.vendor.toLowerCase() === (ed.vendor || "").toLowerCase()), rest = all.filter(o => !same.includes(o));
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
-    return `<div class="note warn">Move this invoice to another purchase order. Products the PO got from this invoice stay on this PO.
+    const iv = cur(ed), got = iv ? invTot(iv).g : 0;
+    return `<div class="note warn">Move this invoice to another purchase order.${got ? ` The ${n0(got)} unit${got === 1 ? "" : "s"} received against it move with it (stock doesn't change; this PO keeps the rest).` : ""}${iv && iv.qbo ? " Its QuickBooks bill isn't changed." : ""}
+      ${ed.moveRank ? rankHtml(ed.moveRank.rk, ed.moveRank.n, 'data-pact="inv-move-to" data-k') : ""}
       <select id="pe-movepo" class="inp sm" style="width:auto;max-width:320px">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
       <span class="dbtns"><button class="mini primary" data-pact="inv-move-go" ${all.length ? "" : "disabled"}>Move it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
@@ -1761,7 +1804,13 @@
     if (a === "open-inv") return showInvoicePage();
     if (a === "open-unpaid") { const i = ed.invoices.findIndex(v => !v.paidOn); ed.confirm = false; note("", ""); if (i >= 0) ed.cur = i; return showInvoicePage(); }
     if (a === "open-po") { S.invOpen = false; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); return; }
-    if (a === "inv-move") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.confirm = "inv-move"; render(); return; }
+    if (a === "inv-move") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; }
+      const ivm = cur(ed), vids = ivm ? [...new Set((ivm.rows || []).filter(r => r.vid && isSure(r)).map(r => r.vid))] : [];
+      ed.moveRank = null; ed.confirm = "inv-move"; render();
+      rankOpenPOs(ed.vendor, vids, ed.id).then(rk => { if (S.ed === ed && ed.confirm === "inv-move") { ed.moveRank = { rk, n: vids.length }; render(); } });
+      return; }
+    if (a === "fix-double") { fixDouble(ed); return; }
+    if (a === "inv-move-to" && iv && k) { moveInvoice(iv, k); return; }
     if (a === "inv-move-go" && iv) { const to = ($("pe-movepo") || {}).value; if (to) moveInvoice(iv, to); return; }
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
     if (a === "discard") { ed.leaveOk = true; return leave(); }
@@ -1770,8 +1819,11 @@
     if (a === "alone-csv" && iv) return aloneCsv(ed, iv);
     if (a === "alone-newpo" && iv) { ed.alone = false; ed.confirm = false; ed.nameIn = true; syncLines(ed); ed.dirty = true; render();
       note("info", `A new purchase order starts from this invoice, with its ${n0(ed.lines.length)} matched product${ed.lines.length === 1 ? "" : "s"}. Name it, then Save.`); setTimeout(() => { const i = $("pe-po"); if (i) i.focus(); }, 0); return; }
-    if (a === "alone-link" && iv) { if (ed.dirty || !iv.id) { note("warn", "Save the invoice first, then add it to a PO."); return; } ed.confirm = "alone-link"; render(); return; }
-    if (a === "alone-link-go" && iv) { const to = ($("pe-alonepo") || {}).value; if (!to) return; S.busy = "Adding it to the PO…"; render();
+    if (a === "alone-link" && iv) { if (ed.dirty || !iv.id) { note("warn", "Save the invoice first, then add it to a PO."); return; } ed.confirm = "alone-link"; ed.moveRank = null; render();
+      { const vids = [...new Set((iv.rows || []).filter(r => r.vid && isSure(r)).map(r => r.vid))];
+        rankOpenPOs(ed.vendor, vids).then(rk => { if (S.ed === ed && ed.confirm === "alone-link") { ed.moveRank = { rk, n: vids.length }; render(); } }); }
+      return; }
+    if (a === "alone-link-go" && iv) { const to = k || ($("pe-alonepo") || {}).value; if (!to) return; S.busy = "Adding it to the PO…"; render();
       JT.po.moveInvoice(Number(iv.id), Number(to)).then(async () => { S.busy = ""; ed.leaveOk = true; S.ed = null; note("", ""); await loadOrders(true); await loadInvList(true); await openInvoice(iv.id); note("info", `Invoice ${esc(iv.no || "")} is on ${esc((S.ed && S.ed.vendor) || "")} ${esc(S.ed && S.ed.po ? poLabel(S.ed.po) : "")} now.`); })
         .catch(err => { S.busy = ""; render(); note("bad", "Couldn't add it: " + esc(JT.message(err))); }); return; }
     if (a === "save-next" || a === "next-stage") return goStage(NEXT[ed.status][0]);
@@ -2470,7 +2522,7 @@
     itab.addEventListener("click", (e) => {
       const g = e.target.closest("[data-po-go]"); if (g) { e.stopPropagation(); S.invOpen = false; S.mode = "po"; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(g.dataset.poGo); return; }
       const o = e.target.closest("[data-inv-open]"); if (o && !e.target.closest("a")) { openInvoice(o.dataset.invOpen); return; }
-      const pb = e.target.closest("[data-pend]"); if (pb) { pendGo(pb.dataset.pend); return; }
+      const pb = e.target.closest("[data-pend]"); if (pb) { pendGo(pb.dataset.pend, pb.dataset.o); return; }
     });
     $("inv-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-inv-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openInvoice(o.dataset.invOpen); } });
     itab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); itab.classList.add("filedrop"); } });
