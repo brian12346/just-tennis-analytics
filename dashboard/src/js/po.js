@@ -2510,7 +2510,7 @@
         <label class="ps-f" title="Days of stock to hold (90 = 3 months)">Hold <input id="ps-days" class="inp num" value="${esc(st.days)}" inputmode="numeric" style="width:56px"> days</label>
         <label class="ps-f" title="Quantities round up to this (e.g. Head racquets ship 20 to a case); remembered for this vendor">Case pack <input id="ps-pack" class="inp num" value="${esc(st.pack)}" inputmode="numeric" style="width:52px"></label>
         <button class="btn primary sm" type="button" data-ps-go ${st.loading ? "disabled" : ""}>${st.loading ? "Looking…" : st.rows ? "Recalculate" : "What to reorder"}</button>
-        <span class="ps-or">or <button class="linkbtn" type="button" data-ps-ph title="Just the vendor, a category and a budget — it fills out from the invoices you put on it">placeholder</button> · <button class="linkbtn" type="button" data-ps-mi title="Stuff arrived and there's nothing in the system for it: start an order to receive it, flagged until the invoice comes">missing invoice</button> · <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <button class="linkbtn" type="button" data-lv-go>from a Shopify PO</button> · <label class="linkbtn" for="po-shopnew">from a PDF</label></span>
+        <span class="ps-or">or <button class="linkbtn" type="button" data-ps-ph title="Just the vendor, a category and a budget — it fills out from the invoices you put on it">placeholder</button> · <button class="linkbtn" type="button" data-ps-mi title="Stuff arrived and there's nothing in the system for it: start an order to receive it, flagged until the invoice comes">missing invoice</button> · <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <button class="linkbtn" type="button" data-lv-go>from a Shopify PO</button> · <label class="linkbtn" for="po-shopnew">from a PDF</label> · <label class="linkbtn" for="ps-xlsx" title="An order sheet (Excel or CSV): products by Shopify SKU, UPC, Amazon seller SKU or ASIN, with quantities">from Excel</label><input type="file" id="ps-xlsx" accept=".xlsx,.xls,.csv" hidden></span>
         <button class="mini ps-x" type="button" data-ps-close title="Close" aria-label="Close">✕</button>
       </div>
       ${st.ph ? `<div class="ps-row ps-ph"><b>Placeholder order</b>
@@ -2519,6 +2519,7 @@
           <label class="ps-f">Name <input id="ps-phname" class="inp" value="${esc(st.phName || "")}" placeholder="optional, e.g. Fall shoes" style="width:150px"></label>
           <button class="btn primary sm" type="button" data-ps-phgo ${S.busy ? "disabled" : ""}>Create placeholder</button>
           <span class="small muted">Only the vendor is needed; anything left blank is flagged on the order. Put invoices on it (Change PO / Add to a PO) and their products fill it out.</span></div>` : ""}
+      ${st.xl ? xlHtml(st.xl) : ""}
       ${st.mi ? `<div class="ps-row ps-ph"><b>Missing invoice</b>
           <label class="ps-f">What arrived <input id="ps-minote" class="inp" value="${esc(st.miNote || "")}" placeholder="optional, e.g. 3 boxes of shoes, tracking #" style="width:260px"></label>
           <button class="btn primary sm" type="button" data-ps-migo ${S.busy ? "disabled" : ""}>Start it</button>
@@ -2542,6 +2543,103 @@
     </section>`;
     if (st.focus) { st.focus = false; const i = $(st.vendor ? "ps-days" : "ps-vendor"); if (i && !st.vendor) i.focus(); }
     else if (keep && keep.id) { const el = $(keep.id); if (el) { el.focus(); try { el.setSelectionRange(keep.s, keep.s); } catch (_) {} } }
+  }
+  // ---------- an order from an Excel order sheet (Brian, Oct 20: "import an excel order and turn it into a seller sage
+  // order") ----------
+  // Each row's products are found by Shopify SKU, UPC, Amazon seller SKU or ASIN, with the quantity in the column next to
+  // it (a row can name two listings, e.g. Tecnifibre's sheet: SKU + Qty, second SKU + Qty). A "Total" column, when there
+  // is one, is what's ordered (the sheet takes stock already on hand off): 0 or less = covered from stock, not ordered.
+  // Amazon seller SKUs go to the prep center for that listing; Shopify SKUs / UPCs to the Shopify store. Opens as a new
+  // order (unsaved) to check and Save.
+  const XL_URL = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+  async function xlLib() {
+    if (window.XLSX) return window.XLSX;
+    await new Promise((ok, bad) => { const sc = document.createElement("script"); sc.src = XL_URL; sc.onload = ok; sc.onerror = () => bad(new Error("Couldn't load the spreadsheet reader.")); document.head.appendChild(sc); });
+    return window.XLSX;
+  }
+  function xlId(v) {
+    const t = String(v ?? "").trim(); if (!t || t.length < 3 || /^\d{1,3}$/.test(t)) return null;
+    const a = S.byAmz.get(t.toLowerCase()); if (a) return { vid: a.vid, asku: a.asku, dest: "prep", how: a.asku ? "Amazon SKU" : "ASIN" };
+    const k = norm(t), sk = S.bySku.get(k); if (sk && sk.length === 1) return { vid: sk[0].vid, asku: "", dest: "shopify", how: "SKU" };
+    const bc = S.byBar.get(k.replace(/^0+/, "")); if (/^\d{8,14}$/.test(t) && bc && bc.length === 1) return { vid: bc[0].vid, asku: "", dest: "shopify", how: "UPC" };
+    return null;
+  }
+  const xlNum = (v) => { if (v == null || v === "") return null; const n = Number(String(v).replace(/[$,\s]/g, "")); return isFinite(n) ? n : null; };
+  function xlSheet(name, grid) {
+    let h = 0; for (let i = 0; i < Math.min(12, grid.length); i++) if ((grid[i] || []).filter(c => /qty|quantity|sku|description|cost|total|units|order/i.test(String(c || ""))).length >= 2) { h = i; break; }
+    const hd = (grid[h] || []).map(c => String(c ?? "").trim());
+    const totC = hd.findIndex(x => /^total$/i.test(x)), costC = hd.findIndex(x => /cost|price/i.test(x) && !/extend|ext\.?$/i.test(x));
+    const qtyHead = hd.findIndex(x => /^(qty|quantity|order qty|units|order)$/i.test(x));
+    const out = { name, lines: [], covered: [], unmatched: [], units: 0 };
+    for (const r of grid.slice(h + 1)) {
+      if (!r || !r.some(c => c !== "" && c != null)) continue;
+      const pairs = [];
+      for (let c = 0; c < r.length; c++) { const id = xlId(r[c]); if (!id) continue;
+        let q = xlNum(r[c + 1]); if (q == null && qtyHead >= 0 && !pairs.length) q = xlNum(r[qtyHead]);
+        pairs.push({ ...id, code: String(r[c]).trim(), qty: Math.max(0, Math.round(q || 0)) }); }
+      const desc = String(r[0] ?? "").trim();
+      if (!pairs.length) { const looksItem = r.slice(1).some(c => xlNum(c) > 0) && desc && !/^[A-Z\s]+$/.test(desc); if (looksItem) out.unmatched.push({ desc, row: r.filter(c => c !== "" && c != null).slice(0, 4).join(" · ") }); continue; }
+      let want = pairs.reduce((a, x) => a + x.qty, 0); if (!want) continue;
+      const tot = totC >= 0 ? xlNum(r[totC]) : null;
+      if (tot != null && tot < want) {
+        if (tot <= 0) { out.covered.push({ desc, want }); continue; }
+        let cut = want - tot; for (let i = pairs.length - 1; i >= 0 && cut > 0; i--) { const d = Math.min(cut, pairs[i].qty); pairs[i].qty -= d; cut -= d; }
+        want = tot;
+      }
+      const cost = costC >= 0 ? xlNum(r[costC]) : null;
+      for (const x of pairs) if (x.qty > 0) out.lines.push({ ...x, desc, cost: cost && cost > 0 ? cost : null });
+      out.units += want;
+    }
+    return out;
+  }
+  async function xlRead(st, f) {
+    st.xl = { file: f.name, sheets: null, pick: 0, err: null }; renderStart();
+    try {
+      await catalog();
+      let grids;
+      if (/\.csv$/i.test(f.name)) grids = [{ name: "CSV", grid: (await f.text()).split(/\r?\n/).map(l => l.split(",")) }];
+      else { const X = await xlLib(); const wb = X.read(await f.arrayBuffer(), { type: "array" });
+        grids = wb.SheetNames.map(n => ({ name: n, grid: X.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: "" }) })); }
+      st.xl.sheets = grids.map(g => xlSheet(g.name, g.grid));
+      // the last sheet with something to order (order sheets are usually added at the end; a template is skipped)
+      const ok = st.xl.sheets.map((x, i) => [x, i]).filter(([x]) => x.lines.length && !/template/i.test(x.name));
+      st.xl.pick = ok.length ? ok[ok.length - 1][1] : 0;
+      if (!st.vendor) { const vs = new Map(); for (const l of (st.xl.sheets[st.xl.pick] || { lines: [] }).lines) { const v = (variant(l.vid) || {}).vendor; if (v) vs.set(v, (vs.get(v) || 0) + 1); }
+        st.vendor = [...vs.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0])[0] || ""; }
+    } catch (e) { st.xl.err = e.message || String(e); }
+    renderStart();
+  }
+  function xlHtml(x) {
+    if (x.err) return `<div class="ps-row ps-ph"><span class="neg">Couldn't read ${esc(x.file)}: ${esc(x.err)}</span> <button class="linkbtn" data-ps-xlx>Close</button></div>`;
+    if (!x.sheets) return `<div class="ps-row ps-ph small">Reading ${esc(x.file)}…</div>`;
+    const sh = x.sheets[x.pick] || { lines: [], covered: [], unmatched: [], units: 0 };
+    const v = (vid) => variant(vid) || {};
+    const cost = sh.lines.reduce((a, l) => a + l.qty * (l.cost != null ? l.cost : v(l.vid).cost || 0), 0);
+    return `<div class="ps-ph ps-xl"><div class="ps-row"><b>From Excel</b> <span class="small mono">${esc(x.file)}</span>
+        ${x.sheets.length > 1 ? `<span class="seg sm" role="group" aria-label="Sheet">${x.sheets.map((s2, i) => `<button type="button" data-ps-xlsheet="${i}" aria-pressed="${i === x.pick}" title="${n0(s2.lines.length)} lines · ${n0(s2.units)} units">${esc(s2.name)}</button>`).join("")}</span>` : ""}
+        <button class="linkbtn small" data-ps-xlx>Close</button></div>
+      <div class="small">${n0(sh.lines.length)} line${sh.lines.length === 1 ? "" : "s"} · <b>${n0(sh.units)}</b> units · ${m0(cost)} at cost${sh.covered.length ? ` · ${n0(sh.covered.length)} covered from stock (not ordered)` : ""}${sh.unmatched.length ? ` · <span class="warnt">${n0(sh.unmatched.length)} not matched</span>` : ""}</div>
+      ${sh.lines.length ? `<div class="tbl-wrap ps-xltbl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">From the sheet</th><th class="l">For</th><th>Qty</th><th>Cost</th></tr></thead><tbody>${sh.lines.map(l =>
+        `<tr><td class="l">${esc(v(l.vid).title || "variant " + l.vid)} <span class="mono dim small">${esc(v(l.vid).sku || "")}</span></td><td class="l small">${esc(l.desc)} <span class="mono dim">${esc(l.code)}</span></td>
+         <td class="l small">${l.dest === "prep" ? `Prep center${l.asku ? ` · <span class="mono">${esc(l.asku)}</span>` : ""}` : "Shopify store"}</td><td>${n0(l.qty)}</td><td>${l.cost != null ? m(l.cost) : `<span class="dim">${m(v(l.vid).cost)}</span>`}</td></tr>`).join("")}</tbody></table></div>` : '<div class="small muted">Nothing to order on this sheet.</div>'}
+      ${sh.covered.length ? `<div class="small muted">Covered from stock: ${sh.covered.map(c => `${esc(c.desc)} (${n0(c.want)})`).join(", ")}</div>` : ""}
+      ${sh.unmatched.length ? `<div class="small warnt">Not matched to a product: ${sh.unmatched.slice(0, 12).map(u => esc(u.desc)).join(", ")}${sh.unmatched.length > 12 ? "…" : ""}</div>` : ""}
+      <div class="ps-row"><button class="btn primary sm" data-ps-xlgo ${sh.lines.length ? "" : "disabled"}>Open as a new order</button><span class="small muted">Opens unsaved for you to check, then Save. Vendor: ${esc(S.start && S.start.vendor || "pick above")}.</span></div></div>`;
+  }
+  function xlOpen(st) {
+    const x = st.xl, sh = x.sheets[x.pick]; if (!sh || !sh.lines.length) return;
+    if (!st.vendor) { note("warn", "Pick the vendor first."); return; }
+    const by = new Map();
+    for (const l of sh.lines) { const k = l.vid + "|" + l.asku + "|" + l.dest; const a = by.get(k) || { ...l, qty: 0 }; a.qty += l.qty; by.set(k, a); }
+    const lines = [...by.values()].map(l => ({ id: newId(), vid: l.vid, asku: l.asku, dest: l.dest, qty: String(l.qty), cost: fmtCost(l.cost != null ? l.cost : (variant(l.vid) || {}).cost),
+      received: 0, backorder: false, eta: "", auto: false }));
+    const dests = new Set(lines.map(l => l.dest));
+    const m2 = /(\d{1,2})\s*([A-Za-z]{3})[a-z]*.*?(\d{4})/.exec(sh.name), nm = m2 ? `${m2[2]} ${m2[1]} ${m2[3]}` : sh.name;
+    const extra = [sh.covered.length ? `covered from stock: ${sh.covered.map(c => `${c.desc} ${c.want}`).join(", ")}` : "", sh.unmatched.length ? `not matched: ${sh.unmatched.map(u => u.desc).join(", ")}` : ""].filter(Boolean).join("; ");
+    S.start = null; renderStart();
+    openPO(null, { vendor: st.vendor, po: nm, note: `From ${x.file} (sheet ${sh.name})${extra ? " — " + extra : ""}`, lines, dirty: true,
+      dest: dests.size > 1 ? "both" : [...dests][0], into: dests.size > 1 ? "both" : [...dests][0] });
+    note("info", `New ${esc(st.vendor)} order from <b>${esc(sh.name)}</b>: ${n0(lines.length)} lines, ${n0(sh.units)} units. Check it, then <b>Save</b>.`);
   }
   async function createMissing(st) {
     if (!st.vendor) { note("warn", "Pick the vendor the goods came from."); const v = $("ps-vendor"); if (v) v.focus(); return; }
@@ -2595,6 +2693,9 @@
       if (t.closest("[data-ps-go]")) { readStart(); const pr = startPrefs(); if (!st.packTouched) st.pack = (pr.packs || {})[st.vendor.toLowerCase()] || st.pack; keepStart(p => { p.vendor = st.vendor; p.days = st.days; }); loadPlan(); return; }
       if (t.closest("[data-ps-ph]")) { readStart(); st.ph = !st.ph; renderStart(); const c = $("ps-cat"); if (c) c.focus(); return; }
       if (t.closest("[data-ps-phgo]")) { readStart(); createPlaceholder(st); return; }
+      const xs = t.closest("[data-ps-xlsheet]"); if (xs && st.xl) { st.xl.pick = +xs.dataset.psXlsheet; renderStart(); return; }
+      if (t.closest("[data-ps-xlgo]") && st.xl) { readStart(); xlOpen(st); return; }
+      if (t.closest("[data-ps-xlx]")) { st.xl = null; renderStart(); return; }
       if (t.closest("[data-ps-mi]")) { readStart(); st.mi = !st.mi; renderStart(); const c = $("ps-minote"); if (c) c.focus(); return; }
       if (t.closest("[data-ps-migo]")) { readStart(); createMissing(st); return; }
       if (t.closest("[data-ps-empty]")) { readStart(); const v = st.vendor; S.start = null; openPO(null, v ? { vendor: v } : {}); return; }
@@ -2612,6 +2713,7 @@
     host.addEventListener("keydown", (e) => { if (e.key === "Enter" && ["ps-vendor", "ps-days", "ps-pack"].includes(e.target.id)) { e.preventDefault(); host.querySelector("[data-ps-go]").click(); }
       if (e.key === "Escape") { S.start = null; renderStart(); } });
     host.addEventListener("change", (e) => { const st = S.start; if (!st) return;
+      if (e.target.id === "ps-xlsx" && e.target.files && e.target.files[0]) { readStart(); const f = e.target.files[0]; e.target.value = ""; xlRead(st, f); return; }
       if (e.target.id === "ps-pack" || e.target.id === "ps-days") { readStart(); if (st.rows) { planQty(st); renderStart(); } } });
   }
 
