@@ -1288,3 +1288,9 @@ table.sz-t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-num
 .po-bar>span{display:block;height:100%;background:var(--sales, #2a78d6);border-radius:4px}
 .po-bar>span.over{background:var(--neg, #c2362f)}
 .ps-ph{flex-wrap:wrap;gap:8px 12px;border-top:1px dashed var(--line, #ddd);padding-top:8px}
+
+/* shoes: price / cost / margin / profit columns (v0.24.2) */
+.sz-t th.sz-m,.sz-t td.sz-m{text-align:right;white-space:nowrap;padding-left:10px;min-width:64px}
+.sz-t td.sz-m .sz-s{display:block}
+.sz-t .sz-m1{border-left:1px solid var(--line,#ddd)}
+.sz-t th.sz-m:nth-of-type(5),.sz-t td.sz-m:nth-of-type(5){border-right:1px solid var(--line,#ddd);padding-right:10px}
