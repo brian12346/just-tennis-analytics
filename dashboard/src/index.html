@@ -820,16 +820,13 @@
         <span class="status" id="po-status" aria-live="polite">Loading orders…</span>
       </div>
       <div class="controls">
-        <div class="seg sm" id="po-listview" role="group" aria-label="Which purchase orders"><button data-lv="ss" aria-pressed="true">Seller Sage</button><button data-lv="shop" aria-pressed="false">Shopify POs</button></div>
         <button class="btn icon" id="po-refresh" title="Refresh" aria-label="Refresh">↻</button>
         <button class="btn primary" id="po-new" title="Start an order: pick the vendor and see what to reorder">+ New order</button>
-        <input type="file" id="po-shopnew" accept=".pdf,application/pdf" hidden>
       </div>
     </header>
     <div id="po-notes-host"><div class="note info" id="po-busy" hidden aria-live="polite"></div>
     <div id="po-note" hidden></div></div>
     <div id="po-list-view">
-      <div id="po-pickshop-host"></div>
       <div id="po-start-host"></div>
       <section class="il-lanes po-lanes" id="po-lanes" aria-label="Orders by status"></section>
       <section class="panel" id="po-sslist">
