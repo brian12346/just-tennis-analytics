@@ -1314,7 +1314,7 @@
         : !ro && t.g > 0 ? '<button class="mini" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : "";
       return `<div class="po-recv ${ivNow.recvAt ? "done" : ""}"><div class="panel-head"><h3 class="h3">${ivNow.recvAt ? "✓ Received in full" : `Receive this invoice ${recvPill(ivNow)}`}</h3>
           <span class="muted small">${ivNow.recvAt ? `All ${n0(t.b)} units are in.` : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
-          <span class="dbtns right"><button class="btn" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
+          <span class="dbtns right"><button class="btn" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${ivNow.parts || ivNow.file ? '<button class="btn" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}<button class="btn" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
             ? `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Save${left ? ` (${n0(left)} units)` : ""}</button>`
             : `<button class="btn primary" data-pact="rq-start" title="Open receiving for this invoice">Receive</button>`) : ""}</span></div>
         ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived and press a product's Receive, or Save to receive everything entered. Cancel leaves without receiving the rest.${all.some(l => l.dest === "shopify") ? " Shopify-store units go into Shopify's stock when you receive them here — don't receive them on the Shopify PO as well." : ""}</div>` : ""}
@@ -1449,7 +1449,7 @@
         <div class="po-head inv-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2>${ed.alone ? "" : invStepsHtml(ed, iv)}</div>
         ${ed.alone ? aloneSum() : `
         <div class="po-sum"><span>Purchase order ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b> <label class="po-name">PO name <input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off" style="width:180px"></label>` : `<b>${poName}</b>`}${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
-          <span class="dbtns">${ed.id && iv.id && !iv.isNew ? `<button class="mini" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>`}
+          <span class="dbtns">${iv.id && !iv.isNew ? `<button class="mini" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? '<button class="mini" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}` : ""}${ed.id && iv.id && !iv.isNew ? `<button class="mini" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>`}
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
       <section class="panel po-inv" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>
@@ -1468,13 +1468,13 @@
   // store and the prep center has two), still-to-come first; lines not matched to a product listed at the end.
   function slipHtml(ed, iv) {
     const sh = invShares(ed, iv), V = (vid) => (S.byVid && S.byVid.get(vid)) || {};
-    const code = (vid) => { const r = iv.rows.find(x => x.vid === vid); return r ? { item: r.item_code || "", upc: r.upc || "" } : { item: "", upc: "" }; };
+    const code = (vid) => { const r = iv.rows.find(x => x.vid === vid); return r ? { item: r.src.item_code || "", upc: r.src.upc || "" } : { item: "", upc: "" }; };
     const rows = ed.lines.filter(l => sh.has(l.id) && sh.get(l.id).billed > 0).map(l => {
       const x = sh.get(l.id), v = V(l.vid), c = code(l.vid);
       return { l, v, c, billed: x.billed, got: x.got, left: x.left, st: x.left <= 0 ? "Received" : x.got > 0 ? "Partly received" : "Still to come" };
     });
     const open = rows.filter(r => r.left > 0).sort((a, b) => (a.v.title || "").localeCompare(b.v.title || "")), done = rows.filter(r => r.left <= 0).sort((a, b) => (a.v.title || "").localeCompare(b.v.title || ""));
-    const other = iv.rows.filter(r => !r.vid && !r.skip && (r.description || r.item_code));
+    const other = iv.rows.filter(r => !r.vid && !r.skip && (r.src.description || r.src.item_code)).map(r => ({ item_code: r.src.item_code, description: r.src.description, qty: r.qty }));
     const sum = (k) => rows.reduce((a, r) => a + r[k], 0);
     const e = (x) => String(x ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const tr = (r) => `<tr class="${r.left <= 0 ? "done" : ""}"><td class="box">${r.left <= 0 ? "✓" : ""}</td>
@@ -1491,7 +1491,7 @@
       h1{font-size:18px;margin:0}h2{font-size:13px;margin:14px 0 4px}h2 span{color:#666;font-weight:400}
       .hd{display:flex;justify-content:space-between;gap:16px;border-bottom:2px solid #111;padding-bottom:6px;margin-bottom:8px}
       .hd .r{text-align:right}.k{color:#555}.sum{display:flex;gap:18px;margin:6px 0 2px;font-size:12px}.sum b{font-size:14px}
-      table{width:100%;border-collapse:collapse;page-break-inside:auto}table.t{table-layout:fixed}tr{page-break-inside:avoid}
+      table{width:100%;border-collapse:collapse;page-break-inside:auto;font-size:inherit}table.t{table-layout:fixed}tr{page-break-inside:avoid}
       th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:#444;border-bottom:1px solid #111;padding:4px 5px}
       td{border-bottom:1px solid #ccc;padding:5px;vertical-align:top}.n{text-align:right;white-space:nowrap}.m{color:#555;font-size:10px}
       td.box{width:18px;font-size:13px;text-align:center}td.box::before{content:"";}tr:not(.done) td.box{border:1px solid #111;border-bottom-color:#111}
@@ -1508,7 +1508,74 @@
   }
   function printSlip(ed, iv) {
     if (!iv || !iv.id) { note("warn", "Save the invoice first."); return; }
-    const html = slipHtml(ed, iv);
+    printHtml(slipHtml(ed, iv));
+  }
+  // ---------- print the invoice (Brian, Oct 20: "print the seller sage invoice or the attached vendor pdf") ----------
+  // The Seller Sage invoice: header, every line as saved (with the product it's matched to), totals, paid / received /
+  // QuickBooks status. The vendor PDF: its pages drawn with pdf.js and printed as images, so it prints the same in every
+  // browser (a PDF in a frame doesn't print reliably, e.g. Safari).
+  function invPrintHtml(ed, iv) {
+    const e = (x) => String(x ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const V = (vid) => (S.byVid && S.byVid.get(vid)) || {};
+    const money = (x) => x == null || x === "" || !isFinite(Number(x)) ? "" : Number(x).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    const rows = iv.rows.filter(r => r.src.description || r.src.item_code || r.vid || r.qty !== "");
+    const amt = (r) => { const q = Number(r.qty), c = Number(r.cost); return r.qty !== "" && r.cost !== "" && isFinite(q) && isFinite(c) ? q * c : r.src.amount; };
+    const linesSum = rows.filter(r => !r.skip).reduce((a, r) => a + (Number(amt(r)) || 0), 0);
+    const units = rows.filter(r => !r.skip && r.account === "inventory").reduce((a, r) => a + (Number(r.qty) || 0), 0);
+    const recvd = iv.recvAt ? `Received in full ${e(shortDate(String(iv.recvAt).slice(0, 10)))}` : "Not received in full";
+    const paid = iv.paidOn ? `Paid ${e(shortDate(iv.paidOn))}${iv.paidAmount != null ? " · " + money(iv.paidAmount) : ""}${iv.payMethod ? " · " + e(iv.payMethod) : ""}${iv.payRef ? " " + e(iv.payRef) : ""}` : "Not paid";
+    const qb = iv.qbo ? `In QuickBooks${iv.qbo.doc ? " · bill " + e(iv.qbo.doc) : ""}` : "Not in QuickBooks";
+    const now = new Date().toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+    const tr = (r, i) => { const v = r.vid ? V(r.vid) : null;
+      return `<tr class="${r.skip ? "skip" : ""}"><td class="n m">${i + 1}</td><td class="mono">${e(r.src.item_code)}${r.src.upc ? `<div class="m">UPC ${e(r.src.upc)}</div>` : ""}</td>
+        <td>${e(r.src.description)}${v ? `<div class="m">→ ${e(v.title || "")}${v.sku ? " · " + e(v.sku) : ""}</div>` : r.skip ? '<div class="m">not a product (skipped)</div>' : r.account && r.account !== "inventory" ? `<div class="m">${e(r.account)}</div>` : '<div class="m">not matched</div>'}</td>
+        <td class="n">${e(r.qty)}</td><td class="n">${money(r.cost === "" ? r.src.unit_cost : r.cost)}</td><td class="n">${money(amt(r))}</td></tr>`; };
+    const tot = [["Lines", linesSum], ["Subtotal", iv.subtotal], ["Total", iv.total]].filter(x => x[1] != null && x[1] !== "");
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Invoice ${e(iv.no || "")} · ${e(ed.vendor || "")}</title><style>
+      @page{size:letter;margin:12mm}*{box-sizing:border-box}body{font:11px/1.35 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#111;margin:0}
+      h1{font-size:18px;margin:0}.hd{display:flex;justify-content:space-between;gap:16px;border-bottom:2px solid #111;padding-bottom:6px;margin-bottom:8px}
+      .hd .r{text-align:right}.k{color:#555}.grid{display:grid;grid-template-columns:repeat(4,auto);gap:2px 18px;justify-content:start;margin:6px 0 10px}
+      .grid div span{display:block;color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.03em}
+      table{width:100%;border-collapse:collapse;font-size:inherit}tr{page-break-inside:avoid}th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:#444;border-bottom:1px solid #111;padding:4px 5px}
+      td{border-bottom:1px solid #ccc;padding:5px;vertical-align:top}.n{text-align:right;white-space:nowrap}.m{color:#555;font-size:10px}.mono{font-family:ui-monospace,Menlo,monospace;font-size:10px}
+      tr.skip td{color:#777}.tot{margin:8px 0 0 auto;width:260px}.tot td{border:0;padding:2px 5px}.tot tr:last-child td{border-top:1px solid #111;font-weight:700;font-size:12px}
+      .st{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;padding-top:6px;border-top:1px solid #ccc}.notes{margin-top:8px;white-space:pre-wrap}.foot{margin-top:12px;color:#666;font-size:10px}
+    </style></head><body>
+      <div class="hd"><div><h1>Invoice ${e(iv.no || "(no number)")}</h1><div><b>${e(ed.vendor || "")}</b></div></div>
+        <div class="r"><div class="k">Printed ${e(now)} · Seller Sage</div>${iv.fileName ? `<div class="k">Vendor PDF: ${e(iv.fileName)}</div>` : ""}</div></div>
+      <div class="grid"><div><span>Invoice date</span>${e(iv.date ? shortDate(iv.date) : "—")}</div><div><span>Due</span>${e(iv.due ? shortDate(iv.due) : "—")}</div>
+        <div><span>Terms</span>${e(iv.terms || "—")}</div><div><span>Purchase order</span>${ed.id ? e((ed.po ? poLabel(ed.po) : "PO") + " · #" + ed.id) : "—"}</div></div>
+      <table><thead><tr><th class="n">#</th><th>Item</th><th>Description</th><th class="n">Qty</th><th class="n">Unit cost</th><th class="n">Amount</th></tr></thead>
+        <tbody>${rows.map(tr).join("") || '<tr><td colspan="6" class="m">No lines.</td></tr>'}</tbody></table>
+      <table class="tot"><tbody><tr><td class="k">Units</td><td class="n">${n0(units)}</td></tr>${tot.map(([k, x]) => `<tr><td class="k">${k}</td><td class="n">${money(x)}</td></tr>`).join("")}</tbody></table>
+      <div class="st"><span>${recvd}</span><span>${paid}</span><span>${qb}</span></div>
+      ${iv.notes ? `<div class="notes"><span class="k">Notes:</span> ${e(iv.notes)}</div>` : ""}
+    </body></html>`;
+  }
+  function printInvoice(ed, iv) {
+    if (!iv || !iv.id) { note("warn", "Save the invoice first."); return; }
+    printHtml(invPrintHtml(ed, iv));
+  }
+  async function printVendorPdf(ed, iv) {
+    if (!iv) return;
+    if (!iv.file && !iv.parts) { note("warn", "There's no vendor PDF on this invoice."); return; }
+    S.busy = "Getting the PDF ready to print…"; renderBusy();
+    try {
+      const bytes = iv.file ? iv.file.bytes : await loadFile(iv);
+      const lib = await IP.pdfLib(), doc = await lib.getDocument({ data: bytes.slice(), isEvalSupported: false }).promise, imgs = [];
+      for (let p = 1; p <= doc.numPages; p++) {
+        S.busy = `Getting the PDF ready to print… page ${p} of ${doc.numPages}`; renderBusy();
+        const page = await doc.getPage(p), vp = page.getViewport({ scale: 2 });
+        const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+        await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+        imgs.push(c.toDataURL("image/png"));
+      }
+      S.busy = ""; renderBusy();
+      const t = `Invoice ${iv.no || ""} · ${ed.vendor || ""}`.replace(/[&<>"]/g, "");
+      printHtml(`<!doctype html><html><head><meta charset="utf-8"><title>${t}</title><style>@page{margin:0}body{margin:0}img{display:block;width:100%;height:auto;page-break-after:always}img:last-child{page-break-after:auto}</style></head><body>${imgs.map(u => `<img src="${u}" alt="">`).join("")}</body></html>`, 600);
+    } catch (e) { S.busy = ""; renderBusy(); note("bad", "Couldn't print the PDF: " + esc(JT.message ? JT.message(e) : (e && e.message) || "unknown error")); }
+  }
+  function printHtml(html, wait) {
     const f = document.createElement("iframe");
     f.setAttribute("aria-hidden", "true"); f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
     document.body.appendChild(f);
@@ -1519,7 +1586,7 @@
         const w = window.open("", "_blank"); if (w) { w.document.write(html); w.document.close(); w.focus(); w.print(); } else note("warn", "Your browser blocked printing from this page.");
       }
       setTimeout(() => f.remove(), 60000);
-    }, 250);
+    }, wait || 250);
   }
   // category and budget (migration 162): saved as soon as they're changed; what's ordered and invoiced against the budget
   function planHtml(ed, ro) {
@@ -1930,6 +1997,8 @@
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
     if (a === "print-slip") { printSlip(ed, cur(ed)); return; }
+    if (a === "print-inv") { printInvoice(ed, cur(ed)); return; }
+    if (a === "print-pdf") { printVendorPdf(ed, cur(ed)); return; }
     if (a === "copy-link") { const iv2 = cur(ed);
       if (S.mode === "inv" && iv2 && iv2.id) copyLink("#invoices/" + iv2.id, "invoice " + (iv2.no || iv2.id));
       else if (ed.id) copyLink("#po/" + ed.id, `${ed.vendor} ${ed.po ? poLabel(ed.po) : "PO #" + ed.id}`);
@@ -2942,7 +3011,9 @@
   { const h = window.__bootHash != null ? window.__bootHash : (location.hash || ""), mp = /^#po\/(\d+)/.exec(h), mi = /^#invoices\/(\d+)/.exec(h);
     const go = (fn) => (window.JTWeb ? window.JTWeb.ready : Promise.resolve()).then(() => setTimeout(fn, 0));
     if (mi) go(() => { window.JTInvoices.open(mi[1]); });
+    else if (h === "#invoices") setTimeout(() => window.invShow(), 0);   // the tab code ran before this page was loaded
     if (mp) go(() => { window.JTPO.open(mp[1]); });
+    else if (h === "#po") setTimeout(() => window.poShow(), 0);
     // a link pasted into a tab that already has Seller Sage open
     window.addEventListener("hashchange", () => {
       const h2 = location.hash || "", p2 = /^#po\/(\d+)/.exec(h2), i2 = /^#invoices\/(\d+)/.exec(h2);
