@@ -1702,6 +1702,7 @@
   function renderModal() {
     const box = $("prep-modal"), M = P.modal;
     box.hidden = !M; document.body.classList.toggle("modal-open", !!M);
+    navSync();
     if (!M) { $("prep-mcard").innerHTML = ""; return; }
     const keep = document.activeElement && box.contains(document.activeElement) ? { id: document.activeElement.id, k: document.activeElement.dataset.k, c: document.activeElement.dataset.cnt, iv: document.activeElement.dataset.iv, s: document.activeElement.selectionStart } : null;
     let html = "";
@@ -2051,6 +2052,30 @@
   window.addEventListener("jt:catalog", () => { cat = null; if (!$("tab-prep").hidden) refresh(true); else P.shown = false; });
   // saved somewhere else (a PO received, an invoice, a count): reload when the Prep page is opened next
   window.addEventListener("jt:changed", () => { if ($("tab-prep").hidden) P.stale = true; });
+  // Back / Forward / Recent: a shipment and a product are places of their own (#prep/ship/7, #prep/product/<variant>)
+  function navSync() {
+    const N = window.JTNav, M = P.modal; if (!N) return;
+    const tab = $("tab-prep"); if (!tab || tab.hidden) return;
+    if (M && M.kind === "ship" && M.id) N.at("#prep/ship/" + M.id, "Shipment " + (M.shipment || "#" + M.id));
+    else if (M && M.kind === "prod") { const r = cache && (cache.rows.find(x => x.vid === M.vid) || null), v = M.info && M.info.title;
+      N.at("#prep/product/" + M.vid, v || (r && r.title) || "Product " + M.vid); }
+    else if (!M && /^#prep\//.test(location.hash)) N.at("#prep");
+  }
+  if (window.JTNav) {
+    window.JTNav.onClose((page) => { if (page !== "prep" && P.modal) { P.modal = null; P.busy = false; renderModal(); } });
+    window.JTNav.on("prep", async (rest) => {
+      const s = /^ship\/(\d+)/.exec(rest), pr = /^product\/(\d+)/.exec(rest);
+      if (s || pr) {
+        await load(false);
+        if (s && !(P.modal && P.modal.kind === "ship" && P.modal.id === s[1])) openShipment(s[1]);
+        else if (pr && !(P.modal && P.modal.kind === "prod" && P.modal.vid === pr[1])) openProduct(pr[1]);
+        else window.JTNav.done();
+        if (s && !(P.modal && P.modal.id === s[1])) window.JTNav.done();          // that shipment is gone
+        return;
+      }
+      if (P.modal) { closeModal(); if (P.modal) { window.JTNav.done(); navSync(); } }
+    });
+  }
   window.prepShow = () => { if (!P.shown || P.stale) { P.shown = true; P.stale = false; refresh(true); } else render(); };
   window.JTPrepTab = { _state: P,
     // from the Purchase orders tab: an Amazon Outgoing shipment made from a received order

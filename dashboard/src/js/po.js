@@ -1035,7 +1035,10 @@
   function syncHash() {
     const iv = S.ed && S.invOpen ? cur(S.ed) : null;
     const want = S.mode === "inv" ? (iv && iv.id && !iv.isNew ? "#invoices/" + iv.id : "#invoices") : S.ed && S.ed.id ? "#po/" + S.ed.id : "#po";
-    if (location.hash !== want) try { history.replaceState(null, "", want); } catch (_) {}
+    // only while this page is the one showing (the other pages redraw it in the background)
+    const tabEl = $(S.mode === "inv" ? "tab-invoices" : "tab-po"); if (!tabEl || tabEl.hidden) return;
+    const title = S.mode === "inv" ? (iv && iv.id && !iv.isNew ? `Invoice ${iv.no || "#" + iv.id} · ${S.ed.vendor || ""}` : "") : S.ed && S.ed.id ? `${S.ed.vendor || "PO"} · ${S.ed.po ? poLabel(S.ed.po) : "#" + S.ed.id}` : "";
+    if (window.JTNav) window.JTNav.at(want, title); else if (location.hash !== want) try { history.replaceState(null, "", want); } catch (_) {}
   }
   const APP_URL = "https://dashboard.andersenlifestyle.com/";
   const shareUrl = (h) => (window.JTWeb ? location.origin + location.pathname : APP_URL) + h;
@@ -3014,10 +3017,19 @@
     else if (h === "#invoices") setTimeout(() => window.invShow(), 0);   // the tab code ran before this page was loaded
     if (mp) go(() => { window.JTPO.open(mp[1]); });
     else if (h === "#po") setTimeout(() => window.poShow(), 0);
-    // a link pasted into a tab that already has Seller Sage open
-    window.addEventListener("hashchange", () => {
-      const h2 = location.hash || "", p2 = /^#po\/(\d+)/.exec(h2), i2 = /^#invoices\/(\d+)/.exec(h2);
-      if (p2 && !(S.ed && String(S.ed.id) === p2[1])) window.JTPO.open(p2[1]);
-      else if (i2) window.JTInvoices.open(i2[1]);
-    }); }
+  }
+  // Back / Forward / Recent / a pasted link land here (nav.js has already switched to the page)
+  if (window.JTNav) {
+    const stay = () => { window.JTNav.done(); syncHash(); };              // unsaved changes kept the view: keep its address
+    window.JTNav.on("po", (rest) => {
+      const id = (/^(\d+)/.exec(rest) || [])[1];
+      if (id) { if (!(S.ed && String(S.ed.id) === id && !S.invOpen)) openPO(id); else stay(); return; }
+      if (S.ed) { leave(); if (S.ed) stay(); }
+    });
+    window.JTNav.on("invoices", (rest) => {
+      const id = (/^(\d+)/.exec(rest) || [])[1];
+      if (id) { const iv = S.ed && S.invOpen && cur(S.ed); if (!(iv && String(iv.id) === id)) openInvoice(id); else stay(); return; }
+      if (S.invOpen) { leave(); if (S.invOpen) stay(); }
+    });
+  }
 })();
