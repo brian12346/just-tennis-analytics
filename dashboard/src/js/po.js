@@ -3,7 +3,7 @@
   // Vendor orders (jt.prep_orders — the same orders Incoming Inventory shows on the Prep center tab), full page.
   // A PO can have several invoices (jt.invoices.order_id): the vendor ships and bills in parts. Receiving is against
   // the PO's lines; anything ordered and not yet invoiced is on order or backordered (with an expected date).
-  // A PO is built by hand, from On The List, or from the vendor's invoice PDF: the PDF is read in the browser
+  // A PO is built by hand, or from the vendor's invoice PDF: the PDF is read in the browser
   // (window.JTInvParse), every line gets a best guess at the Shopify product, and you confirm or change the guesses.
   // Saved through jt.po_save: the order's lines are the matched products; the invoice keeps every line as read
   // (unmatched ones too) and the PDF itself (jt.invoice_files). Confirmed matches are remembered per vendor item code.

@@ -205,8 +205,7 @@
           <td>${cell(u.prep, vc)}</td><td>${cell(u.fba, vc)}</td><td>${cell(u.awd, vc)}</td>
           <td><b>${tu ? Math.round(tu).toLocaleString() : '<span class="dim">0</span>'}</b></td>
           <td><b>${!tu ? '<span class="dim">—</span>' : noCost(vc) ? '<span class="dim">no cost</span>' : m0(tu * vc)}</b></td>
-          <td class="l">${pill}${!window.JTPrep ? "" : window.JTPrep.listed(r.vid, "", "shopify") ? ' <span class="pill ok" title="On The List (Prep center tab)">On list</span>'
-            : ` <button class="mini" data-list="${esc(r.vid)}" title="Put on On The List (Prep center tab) to re-order for the Shopify store">+ List</button>`}</td></tr>`;
+          <td class="l">${pill}</td></tr>`;
       }).join("") || `<tr><td class="l muted" colspan="10">No products match these filters.</td></tr>`}</tbody>${rows.length ? `<tfoot><tr>
           <td class="l"><b>Total · ${rows.length.toLocaleString()} in view</b></td><td></td><td></td>
           ${LOCS.map(([l]) => `<td><b>${Math.round(vt[l].units).toLocaleString()}</b><div class="meta">${m0(vt[l].cost)}</div></td>`).join("")}
@@ -294,11 +293,6 @@
     on("pc-save", "click", () => { P.confirm = true; render(); });
     t.addEventListener("click", (e) => {
       const g = e.target.closest("button[data-go]"); if (g) { const b = document.querySelector(`.tabs button[data-tab="${g.dataset.go}"]`); if (b) b.click(); return; }
-      const b = e.target.closest("button[data-list]"); if (!b || !window.JTPrep) return;
-      const r = P.rows.find(x => x.vid === b.dataset.list); b.disabled = true;
-      window.JTPrep.addToList({ variant_id: Number(r.vid), amazon_sku: "", dest: "shopify", source: "inventory" })
-        .then((x) => { note("info", `Added ${esc(r.title)} (for the Shopify store) to ${x && x.where || "On The List"}.`); render(); },
-              (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); });
     });
     $("pc-inv").addEventListener("click", (e) => {
       if (e.target.closest("[data-extra]")) { P.issue = "extra"; P.where = "stock"; P.page = 0; $("pc-issue").value = "extra"; $("pc-where").value = "stock"; render(); $("pc-table").scrollIntoView({ block: "start" }); return; }

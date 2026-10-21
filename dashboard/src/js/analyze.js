@@ -123,7 +123,7 @@
         ${sendView ? `<td><input class="inp num sm an-send" data-ansend="${esc(c.sku)}" value="${send}" inputmode="numeric" aria-label="Units to send for ${esc(c.sku)}"><div class="meta">${c.fromStore ? `${n0(c.fromStore)} from store` : "prep center"}</div></td>` : ""}
         <td class="l"><span class="rbtns">${sendView ? `<button class="mini primary" data-anship="${esc(c.sku)}">Ship</button><button class="mini" data-anign="${esc(c.sku)}" title="Leave it out of the next 30 days of runs">Ignore</button>`
           : A.view === "ignored" ? `<span class="small muted">${c.ignored.until ? "until " + esc(c.ignored.until) : "until cleared"}</span> <button class="mini" data-anunign="${esc(c.sku)}">Un-ignore</button>`
-          : `<button class="mini" data-anlist="${esc(c.sku)}" title="Put it on On The List to re-order">+ List</button><button class="mini" data-anign="${esc(c.sku)}">Ignore</button>`}</span></td></tr>`;
+          : `<button class="mini" data-anign="${esc(c.sku)}">Ignore</button>`}</span></td></tr>`;
     };
     const head = `<thead><tr>${sendView ? `<th><input type="checkbox" id="an-all" aria-label="Select all" ${list.length && list.every(c => A.sel.has(c.sku)) ? "checked" : ""}></th>` : ""}<th class="l">Product · Amazon listing</th><th title="Units sold on this listing, last 30 days">Sold 30d</th><th title="FBA available; inbound, AWD and open prep shipments under it">At Amazon</th><th title="Amazon stock (FBA + inbound + AWD + open shipments) ÷ daily sales">Cover</th><th title="Amazon units to reach the target days of cover">Need</th>${A.view === "ignored" ? "" : `<th title="Amazon units the prep center can make (earmarked + not earmarked, less open shipments)">Prep center</th><th title="Amazon units the Shopify store can spare (keeping ${A.keep} in the store)">Store</th>`}${sendView ? "<th>Send</th>" : ""}<th class="l"></th></tr></thead>`;
     t.innerHTML = head + `<tbody>${list.map(row).join("") || `<tr><td class="l muted" colspan="11">${{ send: "Nothing to send right now — every selling listing has enough cover, or there's no stock to send.", short: "No listings are low without stock on hand.", ignored: "Nothing ignored." }[A.view]}</td></tr>`}</tbody>`;
@@ -176,9 +176,6 @@
       if (b.dataset.anship) ship([b.dataset.anship]);
       if (b.dataset.anign) ignore([b.dataset.anign]);
       if (b.dataset.anunign) ignore([b.dataset.anunign], true);
-      if (b.dataset.anlist) { const c = A.short.find(x => x.sku === b.dataset.anlist); if (!c) return; b.disabled = true;
-        window.JTPrep.addToList({ variant_id: Number(c.vid), amazon_sku: c.sku, dest: "prep", source: "analyze" })
-          .then(r => note("info", `Added ${esc(c.v.title)} to ${r.where}.`), err => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); }); }
     });
   }
   bind();

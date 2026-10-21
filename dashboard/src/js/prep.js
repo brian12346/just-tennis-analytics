@@ -38,7 +38,7 @@
           where ${linked ? "l.amazon_id is not null or" : ""} (coalesce(i.created_at, i.first_seen) > now() - interval '45 days' and i.status not in ('CANCELLED', 'DELETED'))`, refresh);
       // products set aside to analyze (migration 107; empty until it's applied)
       const anaQ = JT.rows(["variant_id::text", "amazon_sku", "note", "added_at", "added_by"], "from jt.prep_analyze where done_at is null", refresh).catch(() => []);
-      const [items, moves, maps, lst, seed, ships, slines, ords, olines, list, ordship, amz, invl] = await Promise.all([
+      const [items, moves, maps, lst, seed, ships, slines, ords, olines, ordship, amz, invl] = await Promise.all([
         JT.rows(["i.variant_id::text", "i.amazon_sku", "i.qty", "i.note", "i.updated_at", "v.product_id::text", "v.sku", "coalesce(nullif(v.display_name, ''), v.product_title)",
           "v.vendor", "v.product_type", "v.unit_cost", "v.price", "v.inventory_qty"],
           "from jt.prep_items i left join jt.variants v on v.variant_id = i.variant_id order by i.updated_at desc", refresh),
@@ -63,10 +63,6 @@
           `from jt.prep_orders o left join jt.invoices i on i.id = o.invoice_id ${ORDWHERE} order by o.updated_at desc`, refresh),
         JT.rows(["l.order_id::text", "l.variant_id::text", "l.amazon_sku", "l.qty_ordered", "l.qty_received", "l.unit_cost", "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.unit_cost", "v.vendor", "v.product_id::text", "l.dest", "l.eta::text", "l.incoming_hidden_qty"],
           `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id left join jt.variants v on v.variant_id = l.variant_id ${ORDWHERE}`, refresh),
-        // On The List: products marked for re-order (open ones, and ones received in the last 60 days)
-        JT.rows(["i.id::text", "i.variant_id::text", "i.amazon_sku", "i.dest", "i.qty", "i.note", "i.source", "i.order_id::text", "i.added_at", "i.added_by", "i.closed_at",
-          "coalesce(nullif(v.display_name, ''), v.product_title)", "v.sku", "v.vendor", "v.unit_cost", "v.inventory_qty", "v.product_id::text"],
-          `from jt.prep_list i left join jt.variants v on v.variant_id = i.variant_id where i.closed_at is null or ${la("i.closed_at")} order by i.added_at desc`, refresh),
         // Amazon shipments made from open vendor orders (any date), so Incoming products can count down
         JT.rows(["s.order_id::text", "s.status", "l.variant_id::text", "l.amazon_sku", "l.qty"],
           `from jt.prep_shipment_lines l join jt.prep_shipments s on s.id = l.shipment_id join jt.prep_orders o on o.id = s.order_id where o.status in ('ordered', 'invoiced', 'partial', 'received', 'qb_ready', 'complete')`, refresh),
@@ -126,9 +122,6 @@
       // Amazon seller SKU / ASIN -> Shopify variant, for adding products to an order by Amazon code
       const byAmz = new Map();
       for (const [vid, ls] of byVariant) for (const l of ls) { byAmz.set(l.sku.toLowerCase(), { vid, asku: l.sku }); if (l.asin) byAmz.set(l.asin.toLowerCase(), { vid, asku: "" }); }
-      const listItems = list.map(x => ({ id: x[0], vid: x[1], asku: x[2] || "", dest: x[3], qty: x[4] == null ? null : +x[4], note: x[5] || "", source: x[6] || "", orderId: x[7] || null,
-        added: x[8], addedBy: x[9] || "", closed: x[10] || null, title: x[11] || `variant ${x[1]}`, sku: x[12] || "", vendor: x[13] || "", cost: x[14] == null ? null : +x[14], shopQty: x[15] == null ? null : +x[15], pid: x[16] || "" }));
-      for (const it of listItems) it.order = it.orderId ? oById.get(it.orderId) || null : null;
       // Units still to come on placed vendor orders, by prep row (product + listing): the shipment editor counts these
       // as available when planning, and flags lines that are waiting on them.
       const incoming = new Map();
@@ -188,7 +181,7 @@
       const invoicesOpen = [...invMap.values()].filter(iv => iv.lines.some(l => l.left > 0));
       for (const iv of invoicesOpen) { const o = iv.oid ? oById.get(iv.oid) : null; iv.order = o || null; iv.when = iv.arrival || (o && o.expected) || ""; }
       const analyze = new Map((await anaQ).map(([v, k, nt, at, by]) => [v + "|" + (k || ""), { note: nt || "", at, by: by || "" }]));
-      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, poRows, list: listItems, amzShips, skuUnits, invoicesOpen, analyze, loadedAt: Date.now() };
+      cache = { rows, moves, byVariant, byAmz, unloaded, shipments, alloc, orders, incoming, poRows, amzShips, skuUnits, invoicesOpen, analyze, loadedAt: Date.now() };
       cache.amzSuggest = amzSuggest(cache);
       return cache;
     })();
@@ -210,17 +203,6 @@
   const listingLabel = (l) => [l.asin || "no ASIN", (l.units || 1) !== 1 ? (l.units + "-pack") : "", l.sku].filter(Boolean).join(" · ");
   window.JTListingLabel = listingLabel;
   const okey = (vid, asku, dest) => vid + "|" + (asku || "") + "|" + (dest || "prep");
-  // On The List, shared with the Inventory value and Amazon inventory tabs ("+ List" buttons)
-  const listed = (vid, asku, dest) => cache && cache.list ? cache.list.find(i => !i.closed && i.vid === String(vid) && i.asku === (asku || "") && i.dest === (dest || "prep")) || null : null;
-  // Adds to On The List, which puts it on the vendor's draft PO (migration 089). Returns {item, where}: where is
-  // e.g. "the Wilson draft PO (Order #61)" for messages.
-  async function addToList(body) {
-    await JT.prep.listAdd(body);
-    await load(true);
-    if (!$("tab-prep").hidden) render();
-    const item = listed(body.variant_id, body.amazon_sku, body.dest), o = item && item.order;
-    return { item, where: o ? `the ${o.vendor ? esc(o.vendor) + " " : ""}draft PO (${esc(orderTitle(o))})` : "On The List" };
-  }
   // A new placeholder shipment with these lines (Shopify units), opened in the editor on the Prep page — used by
   // Prep center › Analyze. lines: [{vid, asku, qty, title, sku, vendor, cost}]
   async function startShipment({ lines, note: nt, dest }) {
@@ -238,7 +220,7 @@
     for (const [k, sku] of rk) rekeyLine(P.modal, k, sku);
     renderModal();
   }
-  window.JTPrep = { load, totals, listed, addToList, startShipment, get data() { return cache; } };
+  window.JTPrep = { load, totals, startShipment, get data() { return cache; } };
 
   // ---------- catalog for the product picker ----------
   let cat = null;
@@ -256,7 +238,7 @@
   }
 
   // ---------- tab state ----------
-  const P = { shown: false, loading: false, err: null, vendor: "all", q: "", modal: null, busy: false, moveKind: "all", shipView: "open", oView: "open", oStage: "all", lView: "todo", lAdd: "", lSel: new Set() };
+  const P = { shown: false, loading: false, err: null, vendor: "all", q: "", modal: null, busy: false, moveKind: "all", shipView: "open", oView: "open", oStage: "all" };
   const HIST_DAYS = 90;
   let FLOW = null;     // migration 090 applied (checklist columns, invoice arrival dates)
 
@@ -313,7 +295,6 @@
         return { l: "Incoming on invoices", v: n0(u), s: iv.length ? `units · ${m0(c)} at cost · ${iv.length} invoice${iv.length === 1 ? "" : "s"} not received yet` : "no invoices waiting to arrive" }; })(),
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     renderShipments();
-    renderList();
     renderIncoming();
     // vendor filter
     const vs = [...new Set(all.map(r => r.vendor))].sort((a, b) => a.localeCompare(b));
@@ -346,7 +327,7 @@
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
             <td>${r.amzPrice == null ? dash : m(r.amzPrice)}</td><td>${r.amzValue == null ? dash : m0(r.amzValue)}</td>
             <td class="l small">${when(r.upd)}${r.note ? `<div class="meta">${esc(r.note)}</div>` : ""}</td>
-            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}${listed(r.vid, r.asku, "prep") ? (listed(r.vid, r.asku, "prep").order ? `<span class="pill ok" title="On ${esc(orderTitle(listed(r.vid, r.asku, "prep").order))}">On PO</span>` : '<span class="pill ok" title="On The List">On list</span>') : `<button class="mini" data-act="list" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Put on On The List to re-order">+ List</button>`}</span></td></tr>`;
+            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}</span></td></tr>`;
         }).join("") || `<tr><td class="l muted" colspan="9">No products match.</td></tr>`}</tbody>
         <tfoot><tr><td class="l">Total · ${rows.length.toLocaleString()} products</td><td></td><td>${n0(t.units)}</td><td></td><td>${m0(t.cost)}</td><td></td><td>${m0(t.amz)}</td><td></td><td></td></tr></tfoot></table></div>`;
     }
@@ -648,6 +629,29 @@
     const next = steps.find(s => !s.ok) || null;
     return { steps, next, doneN: steps.filter(s => s.ok).length };
   }
+  // the card's next step as a button that does it (Brian, Oct 20: "less clicks to do the existing workflows"):
+  // count, mark a step done, pick how it ships, link the Seller Central match, mark shipped, close — without opening
+  // the shipment first. Steps that need a choice or a check (listings, shipping) open the shipment where that's done.
+  const SHORT_PLACE = { optimized: "FBA · optimized splits", fees_ok: "FBA · fees OK", awd: "AWD", other: "Other" };
+  function nextHtml(sh, f) {
+    const n = f.next, id = esc(sh.id);
+    const b = (act, label, title, primary) => `<button class="mini ${primary ? "primary" : ""}" type="button" data-sact="${act}" data-sid="${id}" title="${esc(title || "")}">${label}</button>`;
+    const wrap = (label, btns) => `<div class="sc-next"><span class="small">Next: ${esc(label)}</span>${btns ? `<span class="rbtns">${btns}</span>` : ""}</div>`;
+    if (!n) return sh.status === "shipped" ? wrap("close it", b("close", "Close", "Amazon has it all", true)) : `<span class="small">Ready to close</span>`;
+    const txt = String(n.text || "").replace(/<[^>]+>/g, "");
+    switch (n.k) {
+      case "asin": return wrap(n.label, b("fix", "Pick listings", txt, true));
+      case "count": return wrap(n.label, b("count", "Count", "Enter what's on the shelf for each product", true) + b("counted", "Mark counted", "The numbers are right as they are"));
+      case "method": return wrap(n.label, `<select class="inp sm sc-place" data-sid="${id}" aria-label="How it ships"><option value="">Choose…</option>${PLACEMENTS.map(([v, l]) => `<option value="${v}">${esc(SHORT_PLACE[v] || l)}</option>`).join("")}</select>`);
+      case "combine": return wrap(n.label, b("check:combined", "Mark combined", txt, true));
+      case "sc": return wrap(n.label, `<a class="mini btnlink" href="https://sellercentral.amazon.com/fba/sendtoamazon" target="_blank" rel="noopener" title="Open Send to Amazon in Seller Central">Send to Amazon ↗</a>` + b("check:sc_created", "Mark created", "Created in Seller Central"));
+      case "link": { const sg = cache.amzSuggest && cache.amzSuggest.get(sh.id);
+        return wrap(n.label, sg ? b("amzlink", "Link " + (sg.g.ships.length > 1 ? sg.g.ships.length + " shipments" : esc(sg.g.ships[0].id)), "Link the Seller Central shipment that matches", sg.how !== "close") : b("fix", "Link…", "Pick the Seller Central shipment")); }
+      case "ship": return wrap(n.label, b("ship", "Mark shipped", "The boxes left: takes the units out of the prep center", true));
+      case "close": return wrap(n.ready ? "close it" : "Amazon receiving", n.ready ? b("close", "Close", "Amazon has it all", true) : "");
+    }
+    return wrap(n.label, b("fix", "Open", ""));
+  }
   const flowBar = (f) => `<div class="flowbar" title="${f.doneN} of ${f.steps.length} steps">${f.steps.map(s => `<span class="${s.ok ? "on" : ""}"></span>`).join("")}</div>`;
   function flowHtml(M) {
     const sh = cache.shipments.find(x => x.id === String(M.id)); if (!sh) return "";
@@ -799,7 +803,7 @@
         <div class="sc-meta">${sh.closed ? '<span class="pill ok">Closed</span>' : statusPill(sh.status)}<span class="pill ${sh.dest === "AWD" ? "manual" : "web"}">${esc(sh.dest)}</span><span class="mono">${esc(shipTitle(sh))}</span></div>
         ${amzLine(sh)}
         ${sh.exception ? `<div class="sc-issue"><span aria-hidden="true">●</span><span>Exception: ${esc(sh.exception)}</span></div>` : sum ? `<div class="sc-issue"><span aria-hidden="true">${lvl === "bad" ? "●" : "▲"}</span><span>${esc(sum)}</span></div>` : ""}
-        ${FLOW && !sh.closed ? `<div class="sc-flow">${flowBar(f)}<span class="small">${f.next ? "Next: " + esc(f.next.label) : "Ready to close"}</span></div>` : ""}
+        ${FLOW && !sh.closed ? `<div class="sc-flow">${flowBar(f)}${nextHtml(sh, f)}</div>` : ""}
         <div class="sc-foot"><span class="dim small">${when2}</span></div>
       </div>`;
     };
@@ -881,7 +885,7 @@
     }
     const zero = o.lines.filter(l => !(l.ordered > 0) && !(l.received > 0));
     if (zero.length && at < OORDER.indexOf("partial")) out.push({ lvl: at >= 1 ? "warn" : "info", kind: "noqty", title: `No quantity for ${zero.length} product${zero.length === 1 ? "" : "s"}`,
-      text: zero.slice(0, 4).map(l => esc(l.title)).join(" · ") + (zero.length > 4 ? " · …" : "") + " — added from On The List without a quantity.", fixes: [{ label: "Enter quantities", fix: "focuskq", k: zero[0].key }] });
+      text: zero.slice(0, 4).map(l => esc(l.title)).join(" · ") + (zero.length > 4 ? " · …" : "") + " — on the order without a quantity.", fixes: [{ label: "Enter quantities", fix: "focuskq", k: zero[0].key }] });
     if (at >= 1 && !o.po) out.push({ lvl: "info", kind: "nopo", title: "No PO number", text: "Add the PO # so the invoice and packing slip can be matched to this order.", fixes: [{ label: "Add PO #", fix: "focus", arg: "po-po" }] });
     for (const l of lines) if (lineCost(l) == null) out.push({ lvl: "warn", kind: "nocost", title: `No cost for ${esc(l.title)}`,
       text: "Enter the unit cost from the invoice on this order, or set a cost in Shopify.", fixes: [...(l.pid ? [{ label: "Open in Shopify", href: `${ADMIN}/products/${l.pid}/variants/${l.vid}` }] : []), { label: "Enter the cost", fix: "focuskc", k: l.key }] });
@@ -1138,112 +1142,8 @@
     return false;
   }
 
-  // ===================== On The List: products to re-order =====================
-  // Marked from the prep center, Amazon inventory, Inventory value or the search box here; each item is for the prep
-  // center (Amazon) or the Shopify store. Tick items and put them on the vendor's in-flight draft order or a booking
-  // order (Incoming Inventory). Its status follows that order.
-  const listStage = (i) => i.closed ? "done" : !i.order ? "need" : i.order.status === "draft" ? "draft" : OGOT.includes(i.order.status) ? "done" : "onorder";
-  function listStatus(i) {
-    const st = listStage(i), o = i.order;
-    if (st === "need") return '<span class="pill miss">Needs an order</span>';
-    const lbl = `${o.kind === "booking" ? "Booking" : "Draft"} · ${esc(orderTitle(o))}`;
-    if (st === "draft") return `<button class="linkbtn small" data-lord="${o.id}">${lbl}</button>${o.kind === "booking" && o.placeBy ? `<div class="meta">place by ${shortDate(o.placeBy)}</div>` : ""}`;
-    if (st === "onorder") return `<span class="pill manual">${OSTAGE.get(o.status)}</span> <button class="linkbtn small" data-lord="${o.id}">${esc(orderTitle(o))}</button>${o.expected ? `<div class="meta">expected ${shortDate(o.expected)}</div>` : ""}`;
-    return `<span class="pill ok">Received</span>${o ? ` <button class="linkbtn small" data-lord="${o.id}">${esc(orderTitle(o))}</button>` : ""}`;
-  }
-  // on an order, the order line's quantity is the one that counts
-  const listQty = (i) => { const l = i.order && i.order.lines.find(x => x.vid === i.vid && x.asku === i.asku && x.dest === i.dest); return l ? l.ordered : i.qty; };
-  function stockOf(i) {
-    const parts = [];
-    if (i.dest === "prep") {
-      const pr = cache.rows.filter(r => r.vid === i.vid && (!i.asku || r.asku === i.asku || !r.asku)).reduce((a, r) => a + r.qty, 0);
-      parts.push(`prep ${n0(pr)}`);
-      const fd = JT.fba && JT.fba.data;
-      if (fd) {
-        const skus = i.asku ? [i.asku] : (cache.byVariant.get(i.vid) || []).map(l => l.sku);
-        const its = fd.items.filter(x => skus.includes(x.sku));
-        if (its.length) parts.push(`Amazon ${n0(its.reduce((a, x) => a + JT.fba.unitsOf(x, true), 0))}`);
-        const sold = its.reduce((a, x) => a + (x.t30 || 0), 0); if (sold) parts.push(`${n0(sold)} sold/30d`);
-      }
-    }
-    parts.push(`Shopify ${i.shopQty == null ? "—" : n0(i.shopQty)}`);
-    return parts.join(" · ");
-  }
-  // On The List: products to re-order. "To order" is what isn't on a PO yet; "Add to PO" puts a row on its
-  // vendor's draft PO (no quantity needed — whoever places the order sets it) and it moves to "On a PO".
-  function renderList() {
-    const d = cache, el = $("prep-list");
-    const by = { todo: [], onorder: [], done: [] };
-    for (const i of d.list) { const st = listStage(i); (st === "need" ? by.todo : st === "draft" || st === "onorder" ? by.onorder : by.done).push(i); }
-    document.querySelectorAll("#prep-lview button").forEach(b => { b.setAttribute("aria-pressed", String(b.dataset.v === P.lView)); b.querySelector("span").textContent = by[b.dataset.v].length; });
-    const items = by[P.lView];
-    const found = P.lAdd.trim() && cat ? findProducts(P.lAdd).slice(0, 8) : [];
-    $("prep-lres").innerHTML = P.lAdd.trim() ? (!cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((v, k) => `<button data-ladd="${k}"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.sku)} · ${esc(v.vendor)}${v.asku ? " · for " + esc(v.asku) : ""}</span></button>`).join("") || '<span class="muted small">No products match.</span>') : "";
-    if (!items.length) { el.innerHTML = `<div class="muted small" style="padding:6px 2px">${P.lView === "todo" ? "Nothing to order. Add products with the box above, or with “+ List” on Prep center stock, Amazon inventory and Inventory value." : P.lView === "onorder" ? "Nothing from the list is on a PO." : "Nothing received from the list in the last 90 days."}</div>`; return; }
-    const groups = new Map();
-    for (const i of items) { const k = i.vendor || "(no vendor)"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); }
-    const todo = P.lView === "todo";
-    el.innerHTML = [...groups].sort((a, b) => a[0].localeCompare(b[0])).map(([v, list]) => {
-      const dr = todo ? d.orders.find(o => o.status === "draft" && o.kind === "order" && (o.vendor || "").toLowerCase() === (v === "(no vendor)" ? "" : v.toLowerCase())) : null;
-      return `<div class="lgroup"><div class="lghead"><b>${esc(v)}</b><span class="muted small">${list.length} product${list.length === 1 ? "" : "s"}${todo && dr ? ` · draft PO <button class="linkbtn small" data-lord="${dr.id}">${esc(orderTitle(dr))}</button>` : ""}</span></div>
-        <div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">For</th>${todo ? "" : "<th>Qty</th>"}<th class="l">Stock now</th><th class="l">${todo ? "" : "PO"}</th><th></th></tr></thead><tbody>${
-        list.map(i => `<tr>
-          <td class="l">${i.pid ? `<a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>` : esc(i.title)}<div class="meta"><span class="mono">${esc(i.sku)}</span>${i.source ? " · from " + esc({ prep: "prep center", amazon: "Amazon inventory", inventory: "inventory value", search: "search" }[i.source] || i.source) : ""}${i.addedBy ? " · " + esc(i.addedBy) : ""}${i.added ? " · " + shortDate(String(i.added).slice(0, 10)) : ""}</div></td>
-          <td class="l small">${i.dest === "shopify" ? '<span class="pill pos">Shopify store</span>' : `<span class="pill web">Prep / Amazon</span>${i.asku ? `<div class="meta mono">${esc(i.asku)}</div>` : ""}`}</td>
-          ${todo ? "" : `<td>${(() => { const q = listQty(i); return q ? n0(q) : '<span class="dim">not set</span>'; })()}</td>`}
-          <td class="l small">${stockOf(i)}</td>
-          <td class="l small">${todo ? `<button class="mini primary" data-lpo="${i.id}" title="Put it on a draft PO">Add to PO</button>` : listStatus(i)}</td>
-          <td>${listStage(i) === "done" ? "" : `<button class="linkbtn small" data-lrm="${i.id}" title="Take off the list${listStage(i) === "draft" ? " (and off its draft PO)" : ""}" aria-label="Remove ${esc(i.title)}">✕</button>`}</td></tr>`).join("")}</tbody></table></div></div>`;
-    }).join("");
-  }
-  async function listAssign(vendor) {
-    const sel = document.querySelector(`#prep-list select[data-lput="${CSS.escape(vendor)}"]`), val = sel ? sel.value : "new";
-    const ids = cache.list.filter(i => (i.vendor || "(no vendor)") === vendor && P.lSel.has(i.id)).map(i => Number(i.id));
-    if (!ids.length) return;
-    try {
-      const body = { ids, ...(val === "new" || val === "booking" ? { new: { vendor: vendor === "(no vendor)" ? "" : vendor, kind: val === "booking" ? "booking" : "order" } } : { order_id: Number(val) }) };
-      const oid = await JT.prep.listAssign(body);
-      ids.forEach(i => P.lSel.delete(String(i)));
-      await load(true); render();
-      const o = cache.orders.find(x => x.id === String(oid));
-      note("info", `Put ${ids.length} product${ids.length === 1 ? "" : "s"} on ${o && o.kind === "booking" ? "booking order" : "draft order"} <button class="linkbtn" data-lord="${oid}">${esc(o ? (o.vendor + " " + orderTitle(o)) : "#" + oid)}</button>.${val === "booking" ? " Set its place-by date in the order." : ""}`);
-    } catch (e) { note("bad", "Couldn't put them on the order: " + esc(JT.message(e))); }
-  }
-  function bindList() {
-    $("prep-lview").addEventListener("click", (e) => { const b = e.target.closest("button[data-v]"); if (b) { P.lView = b.dataset.v; renderList(); } });
-    const add = $("pl-add");
-    add.addEventListener("focus", () => { catalog().then(() => renderList()).catch(() => {}); });
-    add.addEventListener("input", () => { P.lAdd = add.value; clearTimeout(add._t); add._t = setTimeout(renderList, 150); });
-    const doAdd = async (v) => {
-      if (!v) return;
-      const dest = $("pl-dest").value;
-      try {
-        const r = await addToList({ variant_id: Number(v.vid), amazon_sku: dest === "prep" ? v.asku || "" : "", dest, source: "search" });
-        add.value = ""; P.lAdd = ""; P.lView = "todo"; render(); note("info", `Added ${esc(v.title)} to ${r.where}.`); add.focus();
-      } catch (e) { note("bad", "Couldn't add it: " + esc(JT.message(e))); }
-    };
-    add.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(findProducts(P.lAdd)[0]); } });
-    $("prep-lres").addEventListener("click", (e) => { const b = e.target.closest("button[data-ladd]"); if (b) doAdd(findProducts(P.lAdd)[+b.dataset.ladd]); });
-    const el = $("prep-list");
-    el.addEventListener("change", async (e) => {
-      const t = e.target;
-      if (t.dataset.lsel) { if (t.checked) P.lSel.add(t.dataset.lsel); else P.lSel.delete(t.dataset.lsel); renderList(); }
-      else if (t.dataset.lall != null) { for (const i of cache.list) if ((i.vendor || "(no vendor)") === t.dataset.lall && listStage(i) !== "done" && listStage(i) !== "onorder") { if (t.checked) P.lSel.add(i.id); else P.lSel.delete(i.id); } renderList(); }
-      else if (t.dataset.lqty) {
-        const i = cache.list.find(x => x.id === t.dataset.lqty), v = t.value.trim();
-        if (v && !(Number.isInteger(Number(v)) && Number(v) >= 0)) { t.classList.add("bad"); return; }
-        try { await JT.prep.listAdd({ variant_id: Number(i.vid), amazon_sku: i.asku, dest: i.dest, qty: v === "" ? null : Number(v) }); await load(true); render(); }
-        catch (err) { note("bad", "Couldn't save the quantity: " + esc(JT.message(err))); }
-      }
-    });
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.dataset.lqty) e.target.blur(); });
-    el.addEventListener("click", async (e) => {
-      const b = e.target.closest("button"); if (!b) return;
-      if (b.dataset.lgo) return listAssign(b.dataset.lgo);
-      if (b.dataset.lpo) { openToPo(b.dataset.lpo); return; }
-      if (b.dataset.lrm) { try { await JT.prep.listRemove(Number(b.dataset.lrm)); P.lSel.delete(b.dataset.lrm); await load(true); render(); } catch (err) { note("bad", "Couldn't remove it: " + esc(JT.message(err))); } return; }
-    });
-    // order links anywhere on the tab (list rows, notes)
+  // order links anywhere on the tab (notes, cards)
+  function bindLinks() {
     $("tab-prep").addEventListener("click", (e) => { const b = e.target.closest("[data-lord]"); if (b && !b.closest("#prep-modal")) openOrder(b.dataset.lord); });
   }
 
@@ -1667,38 +1567,6 @@
     M.rekey = M.rekey || {}; const from = M.rekey[k] != null ? M.rekey[k] : oldSku; delete M.rekey[k]; if (from !== (sku || "")) M.rekey[nk] = from;
     M.confirm = false;
   }
-  // On The List -> Add to PO: pick any draft PO (this vendor's first) or start a new draft PO for the vendor
-  function openToPo(id) {
-    const i = cache.list.find(x => x.id === String(id)); if (!i) return;
-    P.modal = { kind: "topo", id: i.id, pick: "" };
-    const ven = (i.vendor || "").toLowerCase(), ds = cache.orders.filter(o => o.status === "draft");
-    const mine = ds.find(o => (o.vendor || "").toLowerCase() === ven && o.kind === "order");
-    P.modal.pick = mine ? mine.id : "new";
-    renderModal();
-  }
-  function toPoHtml(M) {
-    const i = cache.list.find(x => x.id === M.id); if (!i) return "";
-    const ven = (i.vendor || "").toLowerCase();
-    const ds = cache.orders.filter(o => o.status === "draft").sort((a, b) => ((b.vendor || "").toLowerCase() === ven) - ((a.vendor || "").toLowerCase() === ven) || String(b.updated).localeCompare(String(a.updated)));
-    const opt = (v, main, sub) => `<label class="poopt ${M.pick === v ? "on" : ""}"><input type="radio" name="topo" data-topo="${esc(v)}" ${M.pick === v ? "checked" : ""}><span><b>${main}</b>${sub ? `<span class="dim small"> · ${sub}</span>` : ""}</span></label>`;
-    return `<div class="panel-head"><h2>Add to PO</h2><button class="mini" data-act="close">Close</button></div>
-      <div class="pickbox"><b>${esc(i.title)}</b> <span class="mono dim">${esc(i.sku)}</span> · ${esc(i.vendor || "no vendor")}${i.asku ? ` · for <span class="mono">${esc(i.asku)}</span>` : ""}</div>
-      <div class="poopts">${ds.map(o => opt(o.id, `${esc(o.vendor || "(no vendor)")} ${esc(orderTitle(o))}`, `${o.kind === "booking" ? "booking order" + (o.placeBy ? ", place by " + shortDate(o.placeBy) : "") : "draft"} · ${o.lines.length} product${o.lines.length === 1 ? "" : "s"}${(o.vendor || "").toLowerCase() !== ven ? ' · <span class="warnt">different vendor</span>' : ""}`)).join("")}
-        ${opt("new", "Create new draft PO", esc(i.vendor || "no vendor"))}</div>
-      <p class="muted small" style="margin:0">No quantity needed — whoever places the order sets it. The product leaves the To order list.</p>
-      <div class="row"><span class="dbtns right"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="topo-go" ${M.pick && !P.busy ? "" : "disabled"}>${P.busy ? "Adding…" : "Add to PO"}</button></span></div>`;
-  }
-  async function toPoGo() {
-    const M = P.modal; if (!M || M.kind !== "topo" || !M.pick) return;
-    const i = cache.list.find(x => x.id === M.id); if (!i) return;
-    P.busy = true; renderModal();
-    try {
-      const oid = await JT.prep.listAssign({ ids: [Number(i.id)], ...(M.pick === "new" ? { new: { vendor: i.vendor || "", kind: "order" } } : { order_id: Number(M.pick) }) });
-      P.busy = false; P.modal = null; renderModal(); await load(true); render();
-      const o = cache.orders.find(x => x.id === String(oid));
-      note("info", `${esc(i.title)} is on <button class="linkbtn" data-lord="${oid}">${esc(o ? (o.vendor ? o.vendor + " " : "") + orderTitle(o) : "order #" + oid)}</button> (draft) — it's off the To order list.`);
-    } catch (err) { P.busy = false; renderModal(); note("bad", "Couldn't add it to a PO: " + esc(JT.message(err))); }
-  }
   function renderModal() {
     const box = $("prep-modal"), M = P.modal;
     box.hidden = !M; document.body.classList.toggle("modal-open", !!M);
@@ -1729,8 +1597,6 @@
           <span class="dbtns right"><button class="btn" data-act="close">${M.back ? "Back to shipment" : "Cancel"}</button><button class="btn primary" data-act="save-count" ${want == null || bad || want === cur || P.busy ? "disabled" : ""}>${P.busy ? "Saving…" : M.plus ? "Add to stock" : "Save count"}</button></span></div>` : ""}`;
     } else if (M.kind === "assign") {
       html = assignHtml(M);
-    } else if (M.kind === "topo") {
-      html = toPoHtml(M);
     } else if (M.kind === "newship") {
       html = newShipHtml(M);
     } else if (M.kind === "prod") {
@@ -1886,15 +1752,19 @@
       const b = e.target.closest("button[data-sact]");
       if (b) { e.stopPropagation(); if (b.dataset.sact === "new") return openNewShip(); if (b.dataset.sact === "started") return quickStatus(b.dataset.sid, "started");
         if (b.dataset.sact === "fix") return openShipment(b.dataset.sid);
+        if (b.dataset.sact === "count") { openShipment(b.dataset.sid); if (P.modal) flowClick(P.modal, { dataset: { flow: "cnt-open" } }); return; }
+        if (b.dataset.sact === "counted") { b.disabled = true; const sid = b.dataset.sid; return flowDo(sid, { check: { counted: true } }).then(() => countedStart(sid)); }
+        if (b.dataset.sact.startsWith("check:")) { b.disabled = true; const k = b.dataset.sact.slice(6); return flowDo(b.dataset.sid, { check: { [k]: true } }, k === "combined" ? "Marked combined." : "Marked created in Seller Central."); }
         if (b.dataset.sact === "close") { b.disabled = true; return flowDo(b.dataset.sid, { close: true }, "Shipment closed."); }
         if (b.dataset.sact === "amzlink") { const sg = cache.amzSuggest.get(b.dataset.sid); if (sg) amzLinkAsk(b.dataset.sid, sg.g.ships.map(a => a.id), sg.how === "id" ? "id" : "match"); return; }
         if (b.dataset.sact === "back") { const sh = cache.shipments.find(x => x.id === b.dataset.sid);
           if (sh.status === "shipped") { openShipment(sh.id); P.modal.confirm = "unship"; renderModal(); } else quickStatus(sh.id, SPREV[sh.status]); return; }
         if (b.dataset.sact === "ship") { openShipment(b.dataset.sid); P.modal.confirm = "ship"; renderModal(); } return; }
-      if (e.target.closest("a")) return;   // links on the card (Seller Central SKU) open on their own
+      if (e.target.closest("a, select")) return;   // links on the card (Seller Central SKU) open on their own
       const c = e.target.closest(".shipcard[data-sid]"); if (c) openShipment(c.dataset.sid);
     });
-    on("prep-ships", "keydown", (e) => { if (e.target.closest("a")) return; const c = e.target.closest(".shipcard[data-sid]"); if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openShipment(c.dataset.sid); } });
+    on("prep-ships", "change", (e) => { const sel = e.target.closest("select.sc-place"); if (sel && sel.value) { sel.disabled = true; flowDo(sel.dataset.sid, { placement: sel.value }, "How it ships: saved."); } });
+    on("prep-ships", "keydown", (e) => { if (e.target.closest("a, button, select")) return; const c = e.target.closest(".shipcard[data-sid]"); if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openShipment(c.dataset.sid); } });
     on("prep-mkind", "click", (e) => { const b = e.target.closest("button[data-k]"); if (b) { P.moveKind = b.dataset.k; renderMoves(); } });
     $("tab-prep").addEventListener("change", async (e) => {
       const t = e.target; if (!t.dataset || t.dataset.arrival == null || t.closest("#prep-modal")) return;
@@ -1932,8 +1802,6 @@
           .catch(err => { b.disabled = false; note("bad", "Couldn't update the list: " + esc(JT.message(err))); });
       }
       if (b.dataset.act === "assign") openAssign(b.dataset.vid, b.dataset.sku);
-      if (b.dataset.act === "list") { b.disabled = true; addToList({ variant_id: Number(b.dataset.vid), amazon_sku: b.dataset.sku || "", dest: "prep", source: "prep" })
-        .then((r) => note("info", `Added to ${r.where}.`), (err) => { b.disabled = false; note("bad", "Couldn't add it: " + esc(JT.message(err))); }); }
     });
     const box = $("prep-modal");
     box.addEventListener("mousedown", (e) => { if (e.target === box && !P.busy) closeModal(); });
@@ -1962,7 +1830,6 @@
     box.addEventListener("change", (e) => {
       const M = P.modal; if (!M) return;
       if (e.target.id === "pm-sku") { M.asku = e.target.value; renderModal(); }
-      if (e.target.dataset && e.target.dataset.topo != null && M.kind === "topo") { M.pick = e.target.dataset.topo; renderModal(); }
       if (e.target.id === "pm-amz") { M.amzPick = e.target.value; renderModal(); }
       if (M.kind === "prod" && (e.target.id === "iv-md" || e.target.id === "iv-ms")) { const E = invState(M); if (e.target.id === "iv-md") E.mv.dir = e.target.value; else E.mv.sku = e.target.value; renderModal(); }
       if (e.target.dataset && e.target.dataset.lsku != null && M.kind === "ship") { rekeyLine(M, e.target.dataset.lsku, e.target.value); renderModal(); }
@@ -1993,7 +1860,6 @@
     box.addEventListener("click", (e) => {
       const M = P.modal, b = e.target.closest("button"); if (!M || !b) return;
       if (b.dataset.act === "close") return closeModal();
-      if (M.kind === "topo") { if (b.dataset.act === "topo-go") toPoGo(); return; }
       if (M.kind === "newship") { if (b.dataset.pickship != null) { const c = skuCandidates(M.q).list[+b.dataset.pickship]; if (c) pickNewShip(c); } return; }
       if (M.kind === "prod") {
         if (b.dataset.act === "gotoorder") { P.modal = null; renderModal(); openOrder(b.dataset.oid); return; }
@@ -2048,7 +1914,7 @@
   }
 
   bind();
-  bindList();
+  bindLinks();
   window.addEventListener("jt:catalog", () => { cat = null; if (!$("tab-prep").hidden) refresh(true); else P.shown = false; });
   // saved somewhere else (a PO received, an invoice, a count): reload when the Prep page is opened next
   window.addEventListener("jt:changed", () => { if ($("tab-prep").hidden) P.stale = true; });

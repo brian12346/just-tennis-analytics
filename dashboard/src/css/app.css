@@ -401,6 +401,8 @@ table.prept tr.picked td{background:var(--sales-soft)}
 .flowbar span{width:14px;height:6px;border-radius:3px;background:var(--line)}
 .flowbar span.on{background:var(--ok,#2e8b57)}
 .sc-flow{display:flex;flex-direction:column;align-items:flex-start;gap:3px}
+.sc-next{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;width:100%}.sc-next .rbtns{margin-left:auto;display:inline-flex;gap:4px;flex-wrap:wrap}
+.sc-next .sc-place{min-width:150px;max-width:100%}a.mini.btnlink{text-decoration:none;display:inline-flex;align-items:center}
 .flowbox{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .flowbox .lanehead{display:flex;align-items:center;gap:10px}
 .flowbox .right{margin-left:auto}
