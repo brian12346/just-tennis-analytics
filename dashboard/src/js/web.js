@@ -102,17 +102,58 @@
   }
   // Reads are kept for 30 minutes (data syncs hourly), also across page reloads (js/cache.js); Refresh or any save
   // clears them.
-  const cache = new Map(), TTL = 1800000, PC = () => window.JTCache;
-  async function sql(q, refresh, ttl) {
-    let hit = cache.get(q);
-    if (!refresh && !hit && PC()) { hit = await PC().get("q:" + q); if (hit) cache.set(q, hit); }
-    if (!refresh && hit && Date.now() - hit.t < (ttl || TTL)) return hit.v;
+  // Speed (Brian, Oct 23: "pre-load the dashboards … cache that very frequently so all my main pages are super fast"):
+  //   * a page opening asks for fresh data, but anything fetched in the last FRESH (3 min) is served from the cache —
+  //     the Refresh buttons still go to the database;
+  //   * a warmer keeps the queries you use (remembered in this browser) topped up every 90 seconds while the tab is
+  //     visible, and right after sign-in, so your main pages open from a cache that's a minute or two old.
+  const cache = new Map(), TTL = 1800000, FRESH = 180000, PC = () => window.JTCache;
+  let gen = 0, forceUntil = 0;          // gen: bumped by every save, so nothing cached before a save counts as fresh
+  const used = new Map();                // query -> {at: last asked, ms: how long the database took}
+  const USED_KEY = "jt-warm-queries", USED_MAX = 80;
+  try { for (const [q, x] of JSON.parse(localStorage.getItem(USED_KEY) || "[]")) used.set(q, x); } catch (_) {}
+  let saveT = 0;
+  const saveUsed = () => { clearTimeout(saveT); saveT = setTimeout(() => {
+    try { localStorage.setItem(USED_KEY, JSON.stringify([...used].sort((a, b) => b[1].at - a[1].at).slice(0, USED_MAX))); } catch (_) {} }, 2000); };
+  async function fetchQ(q) {
+    const t0 = Date.now(), g = gen;
     const v = await rpc("jt_sql", { q });
-    const e = { t: Date.now(), v }; cache.set(q, e);
-    if (PC()) PC().put("q:" + q, v);
+    const u = used.get(q) || { at: 0 }; u.ms = Date.now() - t0; used.set(q, u);
+    if (g === gen) { const e = { t: Date.now(), v, g }; cache.set(q, e); if (PC()) PC().put("q:" + q, v); }
     return v;
   }
-  const clearAll = () => { cache.clear(); if (PC()) PC().clear("q:"); };
+  async function sql(q, refresh, ttl) {
+    const u = used.get(q) || { ms: 0 }; u.at = Date.now(); used.set(q, u); saveUsed();
+    let hit = cache.get(q);
+    if (!hit && PC()) { hit = await PC().get("q:" + q); if (hit) { hit.g = gen; cache.set(q, hit); } }
+    const age = hit ? Date.now() - hit.t : Infinity;
+    if (hit && hit.g === gen && (refresh ? age < FRESH && Date.now() > forceUntil : age < (ttl || TTL))) return hit.v;
+    return fetchQ(q);
+  }
+  // the page's Refresh buttons really go to the database
+  document.addEventListener("click", (e) => { const b = e.target.closest && e.target.closest('[id$="refresh"], #refresh'); if (b) forceUntil = Date.now() + 4000; }, true);
+  // ---------- the warmer ----------
+  let warming = false, lastSave = 0;
+  async function warm(all) {
+    if (warming || !sb || document.visibilityState !== "visible") return;
+    if (Date.now() - lastSave < 5000) return;                                // let a save settle first
+    warming = true;
+    try {
+      const now = Date.now(), list = [...used].filter(([, x]) => now - x.at < (all ? 3 * 864e5 : 45 * 60000))
+        .sort((a, b) => b[1].at - a[1].at).slice(0, all ? 60 : 40);
+      for (const [q, x] of list) {
+        if (document.visibilityState !== "visible") break;
+        const hit = cache.get(q), age = hit && hit.g === gen ? Date.now() - hit.t : Infinity;
+        const every = (x.ms || 0) > 4000 ? 300000 : 75000;                    // heavy queries every 5 min, the rest every ~90 s
+        if (age < every) continue;
+        try { await fetchQ(q); } catch (_) {}
+        await new Promise(r => setTimeout(r, 150));                           // one at a time, gently
+      }
+    } finally { warming = false; }
+  }
+  ready.then(() => { setTimeout(() => warm(true), 2500); setInterval(() => warm(false), 90000); });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") setTimeout(() => warm(false), 1000); });
+  const clearAll = () => { gen++; lastSave = Date.now(); cache.clear(); if (PC()) PC().clear("q:"); };
   async function write(fn, args) { try { return await rpc(fn, args); } finally { clearAll(); window.dispatchEvent(new CustomEvent("jt:changed")); } }
   // a Supabase edge function (e.g. qbo); its JSON answer, also when it answers with an error status
   async function fn(name, body) {
