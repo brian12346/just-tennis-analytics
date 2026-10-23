@@ -167,6 +167,13 @@
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
 
+  // move stock between the store, the prep center and Amazon (stockmove.js); nothing in the store but stock in the
+  // prep center gets the one-click "→ Store" (Brian, Oct 23)
+  function moveBtn(r, u) {
+    if (!window.JTMove || !(u.shop > 0 || u.prep > 0)) return "";
+    const empty = !(r.qty > 0) && u.prep > 0;
+    return ` <button class="mini ${empty ? "primary" : ""}" type="button" data-move="${esc(r.vid)}" title="${empty ? "Nothing in the Shopify store — move some from the prep center so it sells online" : "Move units between the Shopify store, the prep center and Amazon"}">${empty ? "→ Store" : "Move"}</button>`;
+  }
   let pageRows = [];
   function render() {
     if ($("tab-costs").hidden) return;
@@ -205,7 +212,7 @@
           <td>${cell(u.prep, vc)}</td><td>${cell(u.fba, vc)}</td><td>${cell(u.awd, vc)}</td>
           <td><b>${tu ? Math.round(tu).toLocaleString() : '<span class="dim">0</span>'}</b></td>
           <td><b>${!tu ? '<span class="dim">—</span>' : noCost(vc) ? '<span class="dim">no cost</span>' : m0(tu * vc)}</b></td>
-          <td class="l">${pill}</td></tr>`;
+          <td class="l">${pill}${moveBtn(r, u)}</td></tr>`;
       }).join("") || `<tr><td class="l muted" colspan="10">No products match these filters.</td></tr>`}</tbody>${rows.length ? `<tfoot><tr>
           <td class="l"><b>Total · ${rows.length.toLocaleString()} in view</b></td><td></td><td></td>
           ${LOCS.map(([l]) => `<td><b>${Math.round(vt[l].units).toLocaleString()}</b><div class="meta">${m0(vt[l].cost)}</div></td>`).join("")}
@@ -293,6 +300,7 @@
     on("pc-save", "click", () => { P.confirm = true; render(); });
     t.addEventListener("click", (e) => {
       const g = e.target.closest("button[data-go]"); if (g) { const b = document.querySelector(`.tabs button[data-tab="${g.dataset.go}"]`); if (b) b.click(); return; }
+      const mv = e.target.closest("button[data-move]"); if (mv && window.JTMove) { window.JTMove.open(mv.dataset.move); return; }
     });
     $("pc-inv").addEventListener("click", (e) => {
       if (e.target.closest("[data-extra]")) { P.issue = "extra"; P.where = "stock"; P.page = 0; $("pc-issue").value = "extra"; $("pc-where").value = "stock"; render(); $("pc-table").scrollIntoView({ block: "start" }); return; }
@@ -307,6 +315,9 @@
   bind();
   window.pcRender = () => render();
   window.addEventListener("jt:catalog", () => { if (!$("tab-costs").hidden) load(true); else P.shown = false; });
+  // a move made here: show the store number right away (Shopify itself updates in a minute or two)
+  window.addEventListener("jt:stockmoved", (e) => { const d = e.detail || {}, r = P.rows && P.rows.find(x => x.vid === String(d.vid));
+    if (r && d.shop) r.qty = (r.qty || 0) + d.shop; render(); });
   window.addEventListener("jt:changed", () => { if ($("tab-costs").hidden) P.stale = true; });
   window.pcShow = () => { if (!P.shown || P.stale) { P.shown = true; P.stale = false; load(true); } else render(); };
   window.JTCosts = { _state: P };

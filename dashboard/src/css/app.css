@@ -1313,3 +1313,13 @@ table.sz-t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-num
 .sz-t td.sz-m .sz-s{display:block}
 .sz-t .sz-m1{border-left:1px solid var(--line,#ddd)}
 .sz-t th.sz-m:nth-of-type(5),.sz-t td.sz-m:nth-of-type(5){border-right:1px solid var(--line,#ddd);padding-right:10px}
+
+/* move stock between silos (stockmove.js) */
+.mv-card{width:min(640px,100%)}
+.mv-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.mv-tile{border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;display:flex;flex-direction:column;gap:2px}
+.mv-tile .num{font-size:20px}.mv-tile.low{border-color:var(--critical);background:var(--critical-bg)}
+.mv-routes{flex-wrap:wrap}.mv-routes button[disabled]{opacity:.45;cursor:not-allowed}
+.mv-row{align-items:flex-end;flex-wrap:wrap;gap:10px}.mv-quick{align-self:flex-end;padding-bottom:4px}
+.mv-toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:95;background:var(--ink);color:var(--panel);padding:10px 16px;border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px;max-width:min(560px,calc(100% - 32px))}
+@media (max-width:700px){ .mv-tiles{grid-template-columns:repeat(2,minmax(0,1fr))} }

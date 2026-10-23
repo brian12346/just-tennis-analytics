@@ -327,7 +327,7 @@
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
             <td>${r.amzPrice == null ? dash : m(r.amzPrice)}</td><td>${r.amzValue == null ? dash : m0(r.amzValue)}</td>
             <td class="l small">${when(r.upd)}${r.note ? `<div class="meta">${esc(r.note)}</div>` : ""}</td>
-            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}</span></td></tr>`;
+            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button><button class="mini" data-act="move" data-vid="${esc(r.vid)}" title="Move units to the Shopify store (or back)">Move</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}</span></td></tr>`;
         }).join("") || `<tr><td class="l muted" colspan="9">No products match.</td></tr>`}</tbody>
         <tfoot><tr><td class="l">Total · ${rows.length.toLocaleString()} products</td><td></td><td>${n0(t.units)}</td><td></td><td>${m0(t.cost)}</td><td></td><td>${m0(t.amz)}</td><td></td><td></td></tr></tfoot></table></div>`;
     }
@@ -1802,6 +1802,7 @@
           .catch(err => { b.disabled = false; note("bad", "Couldn't update the list: " + esc(JT.message(err))); });
       }
       if (b.dataset.act === "assign") openAssign(b.dataset.vid, b.dataset.sku);
+      if (b.dataset.act === "move" && window.JTMove) window.JTMove.open(b.dataset.vid);
     });
     const box = $("prep-modal");
     box.addEventListener("mousedown", (e) => { if (e.target === box && !P.busy) closeModal(); });
@@ -1942,6 +1943,7 @@
       if (P.modal) { closeModal(); if (P.modal) { window.JTNav.done(); navSync(); } }
     });
   }
+  window.addEventListener("jt:stockmoved", () => { if (!$("tab-prep").hidden && cache) render(); });
   window.prepShow = () => { if (!P.shown || P.stale) { P.shown = true; P.stale = false; refresh(true); } else render(); };
   window.JTPrepTab = { _state: P,
     // from the Purchase orders tab: an Amazon Outgoing shipment made from a received order
