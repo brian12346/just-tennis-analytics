@@ -2134,6 +2134,7 @@
         <label class="ps-f" title="Days of stock to hold (90 = 3 months)">Hold <input id="ps-days" class="inp num" value="${esc(st.days)}" inputmode="numeric" style="width:56px"> days</label>
         <label class="ps-f" title="Quantities round up to this (e.g. Head racquets ship 20 to a case); remembered for this vendor">Case pack <input id="ps-pack" class="inp num" value="${esc(st.pack)}" inputmode="numeric" style="width:52px"></label>
         <button class="btn primary sm" type="button" data-ps-go ${st.loading ? "disabled" : ""}>${st.loading ? "Looking…" : st.rows ? "Recalculate" : "What to reorder"}</button>
+        <button class="btn sm" type="button" data-ps-ofx ${st.ofBusy ? "disabled" : ""} title="Excel workbook for the vendor's Amazon listings: an order form filled in with suggested quantities, a vendor view by SKU, Amazon inventory (FBA and AWD) and Amazon sales by week">${st.ofBusy ? "Building…" : "Amazon order form (Excel)"}</button>
         <span class="ps-or">or <button class="linkbtn" type="button" data-ps-ph title="Just the vendor, a category and a budget — it fills out from the invoices you put on it">placeholder</button> · <button class="linkbtn" type="button" data-ps-mi title="Stuff arrived and there's nothing in the system for it: start an order to receive it, flagged until the invoice comes">missing invoice</button> · <button class="linkbtn" type="button" data-ps-empty>empty order</button> · <label class="linkbtn" for="ps-xlsx" title="An order sheet (Excel or CSV): products by Shopify SKU, UPC, Amazon seller SKU or ASIN, with quantities">from Excel</label><input type="file" id="ps-xlsx" accept=".xlsx,.xls,.csv" hidden></span>
         <button class="mini ps-x" type="button" data-ps-close title="Close" aria-label="Close">✕</button>
       </div>
@@ -2195,6 +2196,16 @@
     const totC = hd.findIndex(x => /^total$/i.test(x)), costC = hd.findIndex(x => /cost|price/i.test(x) && !/extend|ext\.?$/i.test(x));
     const qtyHead = hd.findIndex(x => /^(qty|quantity|order qty|units|order)$/i.test(x));
     const out = { name, lines: [], covered: [], unmatched: [], units: 0 };
+    // Seller Sage's own Amazon order form (orderform.js): just the Amazon SKU and Order qty columns count
+    const aC = hd.findIndex(x => /^amazon sku$/i.test(x)), oC = hd.findIndex(x => /^order qty$/i.test(x)), ucC = hd.findIndex(x => /^unit cost$/i.test(x));
+    if (aC >= 0 && oC >= 0) {
+      for (const r of grid.slice(h + 1)) {
+        const id = r && xlId(r[aC]); const q = Math.max(0, Math.round(xlNum(r && r[oC]) || 0)); if (!id || !q) continue;
+        const cost = ucC >= 0 ? xlNum(r[ucC]) : null;
+        out.lines.push({ ...id, code: String(r[aC]).trim(), qty: q, desc: String(r[aC + 3] ?? r[aC] ?? ""), cost: cost && cost > 0 ? cost : null }); out.units += q;
+      }
+      return out;
+    }
     for (const r of grid.slice(h + 1)) {
       if (!r || !r.some(c => c !== "" && c != null)) continue;
       const pairs = [];
@@ -2227,7 +2238,8 @@
       st.xl.sheets = grids.map(g => xlSheet(g.name, g.grid));
       // the last sheet with something to order (order sheets are usually added at the end; a template is skipped)
       const ok = st.xl.sheets.map((x, i) => [x, i]).filter(([x]) => x.lines.length && !/template/i.test(x.name));
-      st.xl.pick = ok.length ? ok[ok.length - 1][1] : 0;
+      const of = st.xl.sheets.findIndex(x => /^order form$/i.test(x.name));
+      st.xl.pick = of >= 0 ? of : ok.length ? ok[ok.length - 1][1] : 0;
       if (!st.vendor) { const vs = new Map(); for (const l of (st.xl.sheets[st.xl.pick] || { lines: [] }).lines) { const v = (variant(l.vid) || {}).vendor; if (v) vs.set(v, (vs.get(v) || 0) + 1); }
         st.vendor = [...vs.entries()].sort((a, b) => b[1] - a[1]).map(x => x[0])[0] || ""; }
     } catch (e) { st.xl.err = e.message || String(e); }
@@ -2314,6 +2326,13 @@
     host.addEventListener("click", (e) => {
       const st = S.start; if (!st) return; const t = e.target;
       if (t.closest("[data-ps-close]")) { S.start = null; renderStart(); return; }
+      if (t.closest("[data-ps-ofx]")) { readStart(); if (!window.JTOrderForm) return;
+        st.ofBusy = true; renderStart();
+        window.JTOrderForm.download({ vendor: st.vendor, days: st.days })
+          .then(r => note("info", `Downloaded <b>${esc(r.name)}</b>: ${n0(r.listings)} Amazon listing${r.listings === 1 ? "" : "s"}, ${n0(r.skus)} SKU${r.skus === 1 ? "" : "s"}, ${n0(r.suggested)} units suggested for ${esc(st.days)} days. Edit Order qty, then bring it back with <b>from Excel</b>.`))
+          .catch(e => note("bad", "Couldn't build the order form: " + esc(JT.message ? JT.message(e) : (e && e.message) || String(e))))
+          .finally(() => { st.ofBusy = false; renderStart(); });
+        return; }
       if (t.closest("[data-ps-go]")) { readStart(); const pr = startPrefs(); if (!st.packTouched) st.pack = (pr.packs || {})[st.vendor.toLowerCase()] || st.pack; keepStart(p => { p.vendor = st.vendor; p.days = st.days; }); loadPlan(); return; }
       if (t.closest("[data-ps-ph]")) { readStart(); st.ph = !st.ph; renderStart(); const c = $("ps-cat"); if (c) c.focus(); return; }
       if (t.closest("[data-ps-phgo]")) { readStart(); createPlaceholder(st); return; }
