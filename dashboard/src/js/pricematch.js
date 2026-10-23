@@ -13,7 +13,7 @@
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const P = { chan: (() => { try { return localStorage.getItem("pm-chan") === "amazon" ? "amazon" : "shopify"; } catch (_) { return "shopify"; } })(), view: "proposed", src: "all", q: "", sel: new Set(), data: null, err: null, busy: "", note: null, mapBrand: "all", csv: "", loaded: false, req: 0,
     amz: null, amzErr: null, amzLoading: false, aq: "", af: "lost", asort: "gap", aVendor: "all", pushes: {}, offers: {}, aEdit: "", aBusy: "",
-    mapUp: null, mapCh: "all", mapDone: false };
+    mapUp: null, mapCh: "all", mapDone: false, flf: "todo", notice: null, wf: "watch" };
 
   const JT = () => window.JT, WEB = () => window.JTWeb || null;
   async function call(fn, sqlFn, p) {
@@ -37,7 +37,7 @@
   async function load(refresh) {
     const id = ++P.req; P.err = null; render();
     try {
-      const [ch, runs, src, set, maps, st, mq, mf] = await Promise.all([
+      const [ch, runs, src, set, maps, st, mq, mf, fl, nt, wt] = await Promise.all([
         JT().rows(CH.map(c => c + "::text"), "from jt.pm_changes where status in ('proposed', 'approved', 'failed', 'rollback') or (status in ('applied', 'rolled_back', 'rejected') and created_at > now() - interval '45 days') order by id desc limit 3000", refresh),
         JT().rows(["id::text", "started_at::text", "finished_at::text", "mode", "status", "summary::text", "error", "started_by"], "from jt.pm_runs order by id desc limit 60", refresh),
         JT().rows(["name", "kind", "base_url", "array_to_string(vendors, ', ')", "sku_prefix::text", "enabled::text", "status", "last_error", "last_count::text", "checked_at::text", "match"], "from jt.pm_sources order by sort, name", refresh),
@@ -46,6 +46,13 @@
         JT().rows(["count(*)::text"], "from jt.pm_state where active", refresh),
         JT().rows(MQ.map(c => c + "::text"), "from jt.v_pm_map_queue where status <> 'replaced' and effective_from > current_date - 45 order by effective_from, channel, title, sku limit 4000", refresh).catch(() => []),
         JT().rows(["id::text", "brand", "file_name", "array_to_string(dates, ',')", "items::text", "uploaded_by", "uploaded_at::text"], "from jt.pm_map_files order by id desc limit 30", refresh).catch(() => []),
+        // MAP watch (migration 166): Amazon floors, MAP notices, storefront watchers
+        JT().rows(["brand", "sku", "asin", "description", "item_sku", "map_now::text", "next_map::text", "next_on::text", "our_price::text", "min_price::text", "floor_status", "price_below::text", "checked_at::text"],
+          "from jt.v_pm_map_floor order by price_below desc, floor_status, brand, sku", refresh).catch(() => []),
+        JT().rows(["id::text", "brand", "sent_on::text", "caught_at::text", "channel", "url", "product", "upc", "sku", "product_id", "policy_price::text", "advertised::text", "added_at::text", "added_by"],
+          "from jt.map_notices order by caught_at desc nulls last limit 1000", refresh).catch(() => []),
+        JT().rows(["ip", "host", "ua", "bot::text", "views::text", "products::text", "days::text", "first_at::text", "last_at::text", "direct_product_views::text", "array_to_string(recent_paths, ' | ')"],
+          "from jt.v_site_watchers order by products desc, views desc limit 300", refresh).catch(() => []),
       ]);
       if (id !== P.req) return;
       P.data = {
@@ -56,6 +63,11 @@
         maps: maps.map(r => ({ id: r[0], brand: r[1], prefix: r[2], price: +r[3], from: r[4], source: r[5] })),
         lowered: +((st[0] || [])[0] || 0),
         mapq: mq.map(r => { const o = Object.fromEntries(MQ.map((c, i) => [c, r[i]])); for (const k of ["old_map", "new_map", "price_now", "new_price", "price_shopify", "price_amazon"]) o[k] = o[k] == null ? null : +o[k]; return o; }),
+        floors: fl.map(r => ({ brand: r[0], sku: r[1], asin: r[2], desc: r[3] || "", item: r[4] || "", map: r[5] == null ? null : +r[5], next: r[6] == null ? null : +r[6], nextOn: r[7] || "",
+          price: r[8] == null ? null : +r[8], min: r[9] == null ? null : +r[9], st: r[10], below: r[11] === "true", checked: r[12] || "" })),
+        notices: nt.map(r => ({ id: r[0], brand: r[1] || "", sent: r[2] || "", caught: r[3] || "", ch: r[4] || "", url: r[5] || "", product: r[6] || "", upc: r[7] || "", sku: r[8] || "", pid: r[9] || "",
+          map: r[10] == null ? null : +r[10], adv: r[11] == null ? null : +r[11], added: r[12] || "", by: r[13] || "" })),
+        watchers: wt.map(r => ({ ip: r[0], host: r[1] || "", ua: r[2] || "", bot: r[3] === "true", views: +r[4] || 0, products: +r[5] || 0, days: +r[6] || 0, first: r[7], last: r[8], direct: +r[9] || 0, paths: r[10] || "" })),
         mapFiles: mf.map(r => ({ id: r[0], brand: r[1], file: r[2], dates: (r[3] || "").split(",").filter(Boolean), items: +r[4], by: r[5], at: r[6] })),
       };
       P.loaded = true;
@@ -99,8 +111,9 @@
       { l: "Last run", v: last ? `${n0(tot.lowered)} ↓ · ${n0(tot.restored)} ↑` : "—", s: last ? `${n0(tot.variants)} products checked${tot.big ? ` · ${n0(tot.big)} big drops` : ""}` : "" },
       { l: "Not covered", v: n0((tot.not_covered || []).length), s: (tot.not_covered || []).join(", ") || "every source read", c: (tot.not_covered || []).length ? "warn" : "" },
     ].map(x => `<div class="kpi ${x.c || ""}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${esc(x.s)}</span></div>`).join("");
-    const cnt = { proposed: prop.length, applied: applied.length, history: D.runs.length, map: D.mapq.filter(q => q.status === "queued").length };
-    $("pm-views").innerHTML = [["proposed", "Proposed"], ["applied", "Applied"], ["history", "History"], ["map", "MAP files"], ["settings", "Settings"]]
+    const cnt = { proposed: prop.length, applied: applied.length, history: D.runs.length, map: D.mapq.filter(q => q.status === "queued").length,
+      floors: D.floors.filter(f => f.st !== "ok" || f.below).length, notices: D.notices.length, watchers: D.watchers.filter(suspect).length };
+    $("pm-views").innerHTML = [["proposed", "Proposed"], ["applied", "Applied"], ["history", "History"], ["map", "MAP files"], ["floors", "Amazon MAP floors"], ["notices", "MAP notices"], ["watchers", "Site watchers"], ["settings", "Settings"]]
       .map(([k, n]) => `<button type="button" data-pmv="${k}" aria-pressed="${P.view === k}">${n}${cnt[k] != null ? ` <span class="cnt">${n0(cnt[k])}</span>` : ""}</button>`).join("");
     $("pm-run").disabled = !!P.busy || (last && last.status === "running");
     $("pm-run").textContent = last && last.status === "running" ? "Running…" : "Run now";
@@ -109,6 +122,9 @@
     else if (P.view === "applied") body.innerHTML = appliedHtml(applied);
     else if (P.view === "history") body.innerHTML = historyHtml();
     else if (P.view === "map") body.innerHTML = mapHtml();
+    else if (P.view === "floors") body.innerHTML = floorsHtml();
+    else if (P.view === "notices") body.innerHTML = noticesHtml();
+    else if (P.view === "watchers") body.innerHTML = watchersHtml();
     else body.innerHTML = settingsHtml();
   }
 
@@ -523,6 +539,122 @@
       ${files}`;
   }
 
+  // ================= MAP watch (Brian, Oct 23: Wilson scrapes and reports a couple of days after a violation; others too)
+  // ---- Amazon MAP floors: minimum price = MAP on every listing of a product on a MAP file (pm-amazon "map_floor")
+  const FLST = { ok: ["Floor set", "ok"], no_min: ["No minimum", "miss"], min_below: ["Minimum under MAP", "miss"], min_above: ["Minimum over MAP", "warn"], unknown: ["Not read yet", "pos"], off: ["MAP off", "pos"] };
+  function floorsHtml() {
+    const D = P.data, F = D.floors, cnt = (f) => F.filter(f).length;
+    const todo = F.filter(f => f.st !== "ok" || f.below), list = P.flf === "all" ? F : P.flf === "below" ? F.filter(f => f.below) : todo;
+    const k = (l, v, sub, c) => `<div class="kpi ${c || ""}"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${sub}</span></div>`;
+    return `<section class="kpis">${k("Amazon MAP listings", n0(F.length), `${n0(new Set(F.map(f => f.brand)).size)} brands · listings of products on a MAP file`)}
+        ${k("Floor set", n0(cnt(f => f.st === "ok")), "minimum price = MAP", "")}
+        ${k("Need a floor", n0(todo.length), `${n0(cnt(f => f.st === "no_min"))} no minimum · ${n0(cnt(f => f.st === "min_below"))} under MAP · ${n0(cnt(f => f.st === "unknown"))} not read yet`, todo.length ? "warn" : "")}
+        ${k("Priced under MAP now", n0(cnt(f => f.below)), "Amazon price below the MAP in force — what a notice catches", cnt(f => f.below) ? "neg" : "")}</section>
+      <div class="pm-bar"><button class="btn primary" data-pm="floor-run" ${P.busy || !todo.length ? "disabled" : ""}>${P.busy === "floor" ? "Setting floors on Amazon…" : `Set ${n0(Math.min(todo.length, 150))} floor${todo.length === 1 ? "" : "s"} on Amazon`}</button>
+        <span class="small muted">Each listing's minimum price becomes the MAP, and a price under the MAP goes up to it. After the first time it runs every morning, and the floors follow the MAP file's dates.</span></div>
+      <div class="pm-bar"><span class="seg sm" role="group">${[["todo", `Need a floor ${n0(todo.length)}`], ["below", `Under MAP now ${n0(cnt(f => f.below))}`], ["all", `All ${n0(F.length)}`]].map(([v, l]) => `<button type="button" data-pm="flf" data-v="${v}" aria-pressed="${P.flf === v}">${l}</button>`).join("")}</span></div>
+      <div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Listing</th><th class="l">Brand</th><th>MAP now</th><th>Next MAP</th><th>Our price</th><th>Minimum</th><th class="l">Floor</th></tr></thead><tbody>${
+        list.slice(0, 600).map(f => { const [sn, sc] = FLST[f.st] || [f.st, ""];
+          return `<tr><td class="l"><a class="olink" href="https://www.amazon.com/dp/${esc(f.asin)}" target="_blank" rel="noopener">${esc(f.desc || f.sku)}</a><div class="meta"><span class="mono">${esc(f.sku)}</span> · ${esc(f.asin)}${f.item ? ` · ${esc(f.item)}` : ""}</div></td>
+            <td class="l small">${esc(f.brand)}</td><td><b>${m2(f.map)}</b></td><td class="small">${f.next != null ? `${m2(f.next)}<div class="meta">${esc(dayLabel(f.nextOn))}</div>` : '<span class="dim">—</span>'}</td>
+            <td class="${f.below ? "neg" : ""}">${m2(f.price)}</td><td>${m2(f.min)}</td><td class="l small"><span class="pill ${sc}">${sn}</span>${f.below ? ' <span class="pill miss">under MAP</span>' : ""}</td></tr>`; }).join("")
+        || '<tr><td class="l muted" colspan="7">Nothing here.</td></tr>'}</tbody></table></div>
+      <p class="muted small">Listings come from the MAP files (Price match › MAP files) matched to our Amazon listings by UPC. "Not read yet" = Seller Sage hasn't read that listing's minimum price (out of stock); the floor is set anyway.</p>`;
+  }
+  async function floorRun() {
+    P.busy = "floor"; render();
+    try {
+      const r = await pmAmazon({ action: "map_floor" });
+      P.busy = "";
+      if (!r || r.ok === false) throw { message: (r && r.error) || "no answer" };
+      P.note = { kind: r.failed ? "warn" : "info", html: `Amazon floors: ${n0(r.set)} set${r.raised ? ` (${n0(r.raised)} price${r.raised === 1 ? "" : "s"} raised to MAP)` : ""} · ${n0(r.unchanged)} already right${r.failed ? ` · <b>${n0(r.failed)} failed</b>: ${esc((r.errors || []).slice(0, 3).map(x => x.sku + " — " + x.error).join("; "))}` : ""}${r.left ? ` · ${n0(r.left)} left for the next run` : ""}. Daily runs are on.` };
+      await load(true);
+    } catch (e) { P.busy = ""; note("bad", "Couldn't set the floors: " + esc(msg(e))); }
+  }
+
+  // ---- MAP notices: paste the notice (the email's table) and it's read into rows
+  const money = (t) => { const x = /\$?\s*(-?[\d,]+\.\d{2})/.exec(t || ""); return x ? +x[1].replace(/,/g, "") : null; };
+  function parseNotice(text, brand0) {
+    const T = String(text || "");
+    const brand = brand0 || (/\bwilson\b/i.test(T) ? "Wilson" : /\bhead\b/i.test(T) ? "Head" : /\bbabolat\b/i.test(T) ? "Babolat" : /\byonex\b/i.test(T) ? "Yonex" : /\bselkirk\b/i.test(T) ? "Selkirk" : /\bjoola\b/i.test(T) ? "JOOLA" : "");
+    const sent = (/\b(20\d\d-\d\d-\d\d)\b/.exec(T) || [])[1] || "";
+    const rows = [];
+    for (const line of T.split(/\r?\n/)) {
+      const m = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}:\d{2}(?::\d{2})?)\s+(.*)$/.exec(line); if (!m) continue;
+      const rest = m[5], cells = rest.split(/\t+|\s{2,}/).map(x => x.trim()).filter(Boolean);
+      const upc = (/\b(\d{11,14})\b/.exec(rest) || [])[1] || "";
+      const pid = (/\b(B0[A-Z0-9]{8})\b/.exec(rest) || [])[1] || "";
+      const monies = [...rest.matchAll(/\$\s*-?[\d,]+\.\d{2}/g)].map(x => money(x[0]));
+      const url = (/(https?:\/\/\S+|[\w.-]+\.(?:com|net|org)\b\S*)/i.exec(rest.replace(/\$\s*[\d,.]+/g, "")) || [])[1] || "";
+      const ch = /amazon/i.test(url + rest) ? "amazon" : /justtennis/i.test(url) ? "justtennis" : /acenrally/i.test(url) ? "acenrally" : url ? "other" : "";
+      const name = (/\t/.test(rest) && cells[0] && !/^\d{11,14}$/.test(cells[0]) ? cells[0] : upc ? rest.split(upc)[0] : cells[0] || "").trim();
+      let sku = ""; { const after = upc ? rest.slice(rest.indexOf(upc) + upc.length) : rest; const t = after.split(/\s+/).filter(Boolean); sku = (t.find(x => /^[A-Z0-9][A-Z0-9-]{3,}$/i.test(x) && x !== pid && !/^\$/.test(x)) || ""); }
+      const n = monies.length;
+      rows.push({ caught_at: `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")} ${m[4].length === 5 ? m[4] + ":00" : m[4]}`, channel: ch, url, product: name.slice(0, 300), upc, sku, product_id: pid,
+        policy_price: n >= 2 ? monies[n - 2] : null, advertised: n >= 1 ? monies[n - 1] : null });
+    }
+    return { brand, sent, rows };
+  }
+  function noticesHtml() {
+    const D = P.data, N = D.notices, X = P.notice;
+    const box = `<section class="panel pm-mapup"><div class="row"><b>Add a MAP notice</b>
+        <label class="small">Brand <input class="inp sm" id="pm-ntbrand" value="${esc(X && X.brand || "")}" placeholder="from the notice" style="width:120px"></label>
+        <span class="small muted">Open the notice email, select everything from the date line down through the table, copy, and paste it here.</span></div>
+      <textarea id="pm-nttext" class="inp" rows="5" style="width:100%" placeholder="Paste the notice (its table rows: date, time, name, UPC, SKU, product ID, retail, policy price, advertised price, URL)">${esc(X && X.text || "")}</textarea>
+      ${X && X.parsed ? (X.parsed.rows.length ? `<div class="small">${n0(X.parsed.rows.length)} violation${X.parsed.rows.length === 1 ? "" : "s"} read${X.parsed.sent ? ` · notice dated ${esc(X.parsed.sent)}` : ""}:</div>
+        <div class="tbl-wrap"><table class="prept pm-t"><thead><tr><th class="l">Caught</th><th class="l">Where</th><th class="l">Product</th><th class="l">UPC · SKU · ID</th><th>MAP</th><th>Advertised</th></tr></thead><tbody>${X.parsed.rows.map(r =>
+          `<tr><td class="l small">${esc(r.caught_at)}</td><td class="l small">${esc(r.channel || "?")}</td><td class="l small">${esc(r.product)}</td><td class="l small mono">${esc([r.upc, r.sku, r.product_id].filter(Boolean).join(" · "))}</td><td>${m2(r.policy_price)}</td><td class="neg">${m2(r.advertised)}</td></tr>`).join("")}</tbody></table></div>
+        <div class="row"><button class="btn primary" data-pm="nt-save" ${P.busy ? "disabled" : ""}>Save ${n0(X.parsed.rows.length)} to the log</button><button class="linkbtn small" data-pm="nt-clear">Clear</button></div>`
+        : '<div class="note warn small">No violation rows found — paste the table rows too (each starts with a date like 01/11/2026 and a time).</div>') : ""}
+      <div class="row"><button class="btn sm" data-pm="nt-read">Read it</button></div></section>`;
+    if (!N.length) return box + '<div class="muted small" style="padding:10px 2px">No notices yet. Each one you add shows who watches which products, on which channel, and at what time of day.</div>';
+    const by = (key) => { const m = new Map(); for (const n of N) { const k = key(n); m.set(k, (m.get(k) || 0) + 1); } return [...m].sort((a, b) => b[1] - a[1]); };
+    const hours = Array.from({ length: 24 }, (_, h) => N.filter(n => n.caught && +n.caught.slice(11, 13) === h).length), hmax = Math.max(1, ...hours);
+    const lag = N.filter(n => n.sent && n.caught).map(n => Math.round((new Date(n.sent + "T12:00:00") - new Date(n.caught.slice(0, 10) + "T12:00:00")) / 864e5));
+    const lagAvg = lag.length ? (lag.reduce((a, x) => a + x, 0) / lag.length).toFixed(1) : "—";
+    const repeat = by(n => n.sku || n.upc || n.pid).filter(x => x[1] > 1).slice(0, 10);
+    return box + `<section class="kpis">
+        <div class="kpi"><span class="eyebrow">Notices logged</span><span class="v">${n0(N.length)}</span><span class="s">${by(n => n.brand || "?").map(([b, c]) => `${esc(b)} ${c}`).join(" · ")}</span></div>
+        <div class="kpi"><span class="eyebrow">Where they look</span><span class="v">${esc((by(n => n.ch || "?")[0] || ["—"])[0])}</span><span class="s">${by(n => n.ch || "?").map(([b, c]) => `${esc(b)} ${c}`).join(" · ")}</span></div>
+        <div class="kpi"><span class="eyebrow">Caught → emailed</span><span class="v">${lagAvg} days</span><span class="s">average from the price they caught to the notice date</span></div>
+        <div class="kpi"><span class="eyebrow">Repeat products</span><span class="v">${n0(repeat.length)}</span><span class="s">${repeat.slice(0, 4).map(([k, c]) => `${esc(k)} ×${c}`).join(" · ") || "none caught twice"}</span></div></section>
+      <div class="small"><b>Time of day they catch prices</b> (their clock)</div>
+      <div class="pm-hours">${hours.map((c, h) => `<div title="${h}:00 — ${c}"><span style="height:${Math.round(c / hmax * 100)}%"></span><i>${h % 6 === 0 ? h : ""}</i></div>`).join("")}</div>
+      <div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Caught</th><th class="l">Notice</th><th class="l">Brand</th><th class="l">Where</th><th class="l">Product</th><th class="l">UPC · SKU · ID</th><th>MAP</th><th>Advertised</th></tr></thead><tbody>${
+        N.map(n => `<tr><td class="l small">${esc(n.caught.slice(0, 16))}</td><td class="l small">${esc(n.sent)}</td><td class="l small">${esc(n.brand)}</td><td class="l small">${n.url ? `<a class="olink" href="${esc(/^https?:/.test(n.url) ? n.url : "https://" + n.url)}" target="_blank" rel="noopener">${esc(n.ch || n.url)}</a>` : esc(n.ch)}</td>
+          <td class="l small">${esc(n.product)}</td><td class="l small mono">${n.pid ? `<a class="olink" href="https://www.amazon.com/dp/${esc(n.pid)}" target="_blank" rel="noopener">${esc(n.pid)}</a> · ` : ""}${esc([n.upc, n.sku].filter(Boolean).join(" · "))}</td>
+          <td>${m2(n.map)}</td><td class="neg">${m2(n.adv)}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  // ---- storefront watchers: who reads a lot of product pages (Shopify custom pixel -> edge function "visit")
+  const CLOUD = /amazonaws|googleusercontent|google\.com|azure|cloudapp|microsoft|digitalocean|linode|akamai|ovh|hetzner|vultr|oracle|contabo|choopa|leaseweb|colocrossing|scaleway|alibaba|tencent|hosting|server|datacenter|vps/i;
+  function suspect(w) { return w.bot || CLOUD.test(w.host) || w.products >= 40 || (w.direct >= 15 && w.direct / Math.max(1, w.products) > 0.8); }
+  const PIXEL = `analytics.subscribe("page_viewed", (event) => {
+  const d = event.context.document;
+  fetch("https://ppmzrlqvrhzfxobvnlon.supabase.co/functions/v1/visit", {
+    method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ store: "justtennis", path: d.location.href, referrer: d.referrer, ua: event.context.navigator.userAgent })
+  }).catch(() => {});
+});`;
+  function watchersHtml() {
+    const W = P.data.watchers, sus = W.filter(suspect), list = P.wf === "all" ? W : sus;
+    const setup = `<details class="pm-run" ${W.length ? "" : "open"}><summary class="small"><b>Set up</b> — a custom pixel in Shopify logs each storefront page view here</summary>
+      <ol class="small"><li>Shopify admin › Settings › Customer events › <b>Add custom pixel</b>, name it "Seller Sage watch".</li>
+        <li>Permission: <b>Not required</b>; data sale: <b>Data collected does not qualify as data sale</b>.</li>
+        <li>Paste this as the code, Save, then <b>Connect</b>. For Ace n Rally, do the same in its admin with <code>store: "acenrally"</code>.</li></ol>
+      <pre class="qbpre">${esc(PIXEL)}</pre>
+      <p class="muted small">It only sees visitors whose browser runs the page's scripts (people, and monitors that use a real browser); scrapers that just download the HTML aren't visible to any Shopify store. Page views are kept 90 days.</p></details>`;
+    return `<section class="kpis">
+        <div class="kpi"><span class="eyebrow">Visitors (30 days)</span><span class="v">${n0(W.length)}</span><span class="s">${n0(W.reduce((a, w) => a + w.views, 0))} page views</span></div>
+        <div class="kpi ${sus.length ? "warn" : ""}"><span class="eyebrow">Look like monitors</span><span class="v">${n0(sus.length)}</span><span class="s">bot browsers, cloud servers, or 40+ product pages</span></div></section>
+      <div class="pm-bar"><span class="seg sm" role="group"><button type="button" data-pm="wf" data-v="watch" aria-pressed="${P.wf !== "all"}">Look like monitors ${n0(sus.length)}</button><button type="button" data-pm="wf" data-v="all" aria-pressed="${P.wf === "all"}">Everyone ${n0(W.length)}</button></span></div>
+      ${list.length ? `<div class="tbl-wrap tall"><table class="prept pm-t"><thead><tr><th class="l">Visitor</th><th>Product pages</th><th>Views</th><th>Days</th><th>Straight to product</th><th class="l">Last seen</th><th class="l">Recent pages</th></tr></thead><tbody>${
+        list.map(w => `<tr><td class="l"><span class="mono">${esc(w.ip)}</span>${w.bot ? ' <span class="pill miss">bot</span>' : ""}${CLOUD.test(w.host) ? ' <span class="pill warn">server</span>' : ""}<div class="meta">${esc(w.host || "no network name")}</div><div class="meta" title="${esc(w.ua)}">${esc(w.ua.slice(0, 70))}</div></td>
+          <td><b>${n0(w.products)}</b></td><td>${n0(w.views)}</td><td>${n0(w.days)}</td><td>${n0(w.direct)}</td><td class="l small">${esc(when(w.last))}</td><td class="l small">${esc(w.paths.slice(0, 160))}</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="muted small" style="padding:10px 2px">${W.length ? "Nobody looks like a monitor yet." : "No page views logged yet — set up the pixel below."}</div>`}
+      ${setup}`;
+  }
+
   function historyHtml() {
     const D = P.data;
     if (!D.runs.length) return '<div class="muted small" style="padding:10px 2px">No runs yet.</div>';
@@ -611,6 +743,13 @@
     else if (a === "amz-set") pushPrice(b.dataset.sku);
     else if (a === "amz-mins") readMins();
     else if (a === "map-save") saveMapUpload();
+    else if (a === "floor-run") floorRun();
+    else if (a === "flf") { P.flf = b.dataset.v; render(); }
+    else if (a === "wf") { P.wf = b.dataset.v; render(); }
+    else if (a === "nt-read") { const t = ($("pm-nttext") || {}).value || "", br = (($("pm-ntbrand") || {}).value || "").trim(); const parsed = parseNotice(t, br); P.notice = { text: t, brand: parsed.brand, parsed }; render(); }
+    else if (a === "nt-clear") { P.notice = null; render(); }
+    else if (a === "nt-save" && P.notice && P.notice.parsed) { const X = P.notice, br = (($("pm-ntbrand") || {}).value || X.brand || "").trim();
+      act("notice", () => call("jt_map_notice_save", "jt.map_notice_save", { brand: br, sent_on: X.parsed.sent, rows: X.parsed.rows }), (n) => { P.notice = null; return `Saved ${n0(n)} violation${n === 1 ? "" : "s"} to the MAP notice log${n < X.parsed.rows.length ? ` (${n0(X.parsed.rows.length - n)} were already in it)` : ""}.`; }); }
     else if (a === "map-cancel") { P.mapUp = null; render(); }
     else if (a === "map-skip" || a === "map-unskip") act("map", () => call("jt_pm_map_skip", "jt.pm_map_skip", { ids: [Number(b.dataset.id)], skip: a === "map-skip" }), () => a === "map-skip" ? "Skipped — that price won't change." : "Back in the queue.");
     else if (a === "map-skipday") {

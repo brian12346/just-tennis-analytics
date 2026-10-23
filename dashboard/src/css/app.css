@@ -1323,3 +1323,8 @@ table.sz-t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-num
 .mv-row{align-items:flex-end;flex-wrap:wrap;gap:10px}.mv-quick{align-self:flex-end;padding-bottom:4px}
 .mv-toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:95;background:var(--ink);color:var(--panel);padding:10px 16px;border-radius:var(--radius);box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:13px;max-width:min(560px,calc(100% - 32px))}
 @media (max-width:700px){ .mv-tiles{grid-template-columns:repeat(2,minmax(0,1fr))} }
+/* MAP notices: time of day they catch prices */
+.pm-hours{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;height:70px;align-items:end;margin:4px 0 12px;max-width:640px}
+.pm-hours div{position:relative;height:100%;display:flex;align-items:flex-end;border-bottom:1px solid var(--border)}
+.pm-hours span{display:block;width:100%;background:var(--positive);border-radius:2px 2px 0 0;min-height:1px}
+.pm-hours i{position:absolute;bottom:-16px;left:0;font-size:10px;font-style:normal;color:var(--muted)}
