@@ -15,7 +15,13 @@
   const wkDay = (ds) => new Date(ds + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
   const CH = [["justtennis", "Just Tennis", "Shopify"], ["acenrally", "Ace n Rally", "Shopify"], ["amazon", "Amazon", "US + MX"]];
   const CHNAME = Object.fromEntries(CH.map(c => [c[0], c[1]]));
-  const P = { start: null, end: null, preset: "today", days: null, prods: null, err: null, loading: false, reqId: 0, q: "", sort: "net", limit: 50 };
+  const P = { start: null, end: null, preset: "today", days: null, prods: null, err: null, loading: false, reqId: 0, q: "", sort: "net", limit: 50,
+    all: null, at: 0, more: false, prodKey: "" };
+  // Speed (Brian, Oct 23: "this data is what is important to be fast"): every day of jt.mv_sales_channels_daily is
+  // read once (a few thousand small rows) and every range is added up here, so Today / 7d / YTD switch instantly.
+  // The last few days are re-read every minute while the page is open (the database refreshes them every 5 min), the
+  // whole table every 10 minutes. Products by channel (a slower query) only load when "Show … products" is open.
+  try { P.more = localStorage.getItem("jt-ps-more") === "1"; } catch (_) {}
 
   window.JTRange.seg("ps-rangeseg", "r");
   function setRange(r) {
@@ -23,20 +29,38 @@
     $("ps-start").value = P.start; $("ps-end").value = P.end;
     document.querySelectorAll("#ps-rangeseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.r === r)));
   }
+  const COLS = ["day::text", "channel", "orders", "units", "net_sales", "cogs", "gross_profit", "sales_no_cost", "ship_charged", "labels", "amz_fees", "fba_fees", "other_fees", "profit", "pay_fees", "ad_spend", "as_of::text"];
+  const rowOf = (x) => ({ day: x[0], ch: x[1], orders: +x[2] || 0, units: +x[3] || 0, net: +x[4] || 0, cogs: +x[5] || 0, gp: +x[6] || 0, nocost: +x[7] || 0,
+    shipIn: +x[8] || 0, labels: +x[9] || 0, refFees: +x[10] || 0, fbaFees: +x[11] || 0, other: +x[12] || 0, profit: +x[13] || 0, payFees: +x[14] || 0, ads: +x[15] || 0, asOf: x[16] || "" });
+  // all days, or (recent) just the last 3 days merged into what's here; ttl: how old a cached answer may be
+  async function loadDays(refresh, recent) {
+    const JT = window.JT;
+    const from = recent && P.all ? addDays(today(), -3) : null;
+    const rows = await JT.rows(COLS, `from jt.mv_sales_channels_daily${from ? ` where day >= ${JT.day(from)}` : ""} order by day`, refresh, recent ? 50000 : 540000);
+    const got = rows.map(rowOf);
+    if (from) P.all = P.all.filter(r => r.day < from).concat(got); else P.all = got;
+    P.at = Date.now();
+    P.asOf = P.all.reduce((a, x) => x.asOf > a ? x.asOf : a, "");
+  }
+  function pick() { P.days = P.all ? P.all.filter(r => r.day >= P.start && r.day <= P.end) : null; }
   async function load(refresh) {
-    const JT = window.JT, id = ++P.reqId; P.loading = true; P.err = null; render();
+    const id = ++P.reqId; P.err = null;
+    if (!P.all) { P.loading = true; render(); }
+    try { if (!P.all || refresh) await loadDays(refresh, false); }
+    catch (e) { if (id === P.reqId && !P.all) P.err = e; }
+    if (id !== P.reqId) return;
+    P.loading = false; pick(); render();
+    if (P.more) loadProds(refresh);
+  }
+  async function loadProds(refresh) {
+    const JT = window.JT, key = P.start + "|" + P.end;
+    if (!refresh && P.prodKey === key && P.prods) return;
+    P.prodKey = key; P.prods = null; renderProducts();
     const W = `where day between ${JT.day(P.start)} and ${JT.day(P.end)}`;
     try {
-      const [days, prods] = await Promise.all([
-        JT.rows(["day::text", "channel", "orders", "units", "net_sales", "cogs", "gross_profit", "sales_no_cost", "ship_charged", "labels", "amz_fees", "fba_fees", "other_fees", "profit", "pay_fees", "ad_spend", "as_of::text"],
-          `from jt.mv_sales_channels_daily ${W} order by day`, refresh),
-        JT.rowsSplit(["coalesce(product_id::text, '')", "max(title)", "max(vendor)", "channel", "sum(units)", "sum(net_sales)", "sum(cogs)", "sum(gross_profit)", "sum(amz_fees)"],
-          `from jt.v_sales_products_daily ${W} group by coalesce(product_id::text, title), coalesce(product_id::text, ''), channel`, "coalesce(product_id::text, title)", 2, refresh),
-      ]);
-      if (id !== P.reqId) return;
-      P.asOf = days.reduce((a, x) => x[16] && x[16] > a ? x[16] : a, "");
-      P.days = days.map(x => ({ day: x[0], ch: x[1], orders: +x[2] || 0, units: +x[3] || 0, net: +x[4] || 0, cogs: +x[5] || 0, gp: +x[6] || 0, nocost: +x[7] || 0,
-        shipIn: +x[8] || 0, labels: +x[9] || 0, refFees: +x[10] || 0, fbaFees: +x[11] || 0, other: +x[12] || 0, profit: +x[13] || 0, payFees: +x[14] || 0, ads: +x[15] || 0 }));
+      const prods = await JT.rowsSplit(["coalesce(product_id::text, '')", "max(title)", "max(vendor)", "channel", "sum(units)", "sum(net_sales)", "sum(cogs)", "sum(gross_profit)", "sum(amz_fees)"],
+        `from jt.v_sales_products_daily ${W} group by coalesce(product_id::text, title), coalesce(product_id::text, ''), channel`, "coalesce(product_id::text, title)", 2, refresh);
+      if (P.prodKey !== key) return;
       const pm = new Map();
       for (const [pid, title, vendor, ch, units, net, cogs, gp, fee] of prods) {
         const k = pid || "t:" + title; let p = pm.get(k);
@@ -46,9 +70,14 @@
         if (!p.vendor && vendor) p.vendor = vendor;
       }
       P.prods = [...pm.values()];
-    } catch (e) { if (id === P.reqId) { P.err = e; P.days = null; P.prods = null; } }
-    if (id === P.reqId) { P.loading = false; render(); }
+    } catch (e) { if (P.prodKey === key) P.prods = []; }
+    renderProducts();
   }
+  // keep it current while the page is open: recent days every minute, everything every 10 minutes
+  setInterval(async () => {
+    if ($("tab-psales").hidden || document.visibilityState !== "visible" || !P.all) return;
+    try { await loadDays(false, Date.now() - P.at < 600000); pick(); render(); } catch (_) {}
+  }, 60000);
 
   function totals() {
     const F = ["orders", "units", "net", "cogs", "gp", "nocost", "shipIn", "labels", "refFees", "fbaFees", "other", "payFees", "ads", "profit"], z = () => Object.fromEntries(F.map(f => [f, 0]));
@@ -134,6 +163,7 @@
       <tbody>${rows.map(r => `<tr><td class="l">${wkDay(r.day)} ${shortDay(r.day)}</td>${CH.map(([k]) => `<td>${r[k] ? m(r[k]) : '<span class="dim">—</span>'}</td>`).join("")}<td><b>${m(r.net)}</b></td><td>${n0(r.orders)}</td><td class="${r.gp < 0 ? "neg" : ""}">${m(r.gp)}<div class="meta">${pct(marginOf(r))}</div></td><td>${r.labels ? m(r.labels) : '<span class="dim">—</span>'}</td><td>${r.fees ? m(r.fees) : '<span class="dim">—</span>'}</td><td>${r.ads ? m(r.ads) : '<span class="dim">—</span>'}</td><td class="${r.profit < 0 ? "neg" : ""}"><b>${m(r.profit)}</b></td></tr>`).join("") || '<tr><td class="l dim" colspan="11">No sales in this range.</td></tr>'}</tbody>`;
   }
   function renderProducts() {
+    if (!P.prods) { $("ps-prods").innerHTML = '<tbody><tr><td class="l muted">Loading products…</td></tr></tbody>'; $("ps-more").innerHTML = ""; return; }
     const q = P.q.trim().toLowerCase(), key = { net: (p) => p.net, gp: (p) => p.gp, profit: (p) => p.gp - p.fees, units: (p) => p.units }[P.sort] || ((p) => p.net);
     const list = (P.prods || []).filter(p => !q || (p.title + " " + p.vendor).toLowerCase().includes(q)).sort((a, b) => key(b) - key(a));
     const tot = (P.prods || []).reduce((t, p) => t + p.net, 0) || 1;
@@ -156,7 +186,8 @@
     if (!P.days) { st.textContent = "Loading sales…"; return; }
     st.textContent = `${window.JTRange.label(P.start, P.end)} · Amazon by order date, after Amazon fees (unshipped orders estimated) · Ace n Rally at Just Tennis cost${P.asOf ? ` · totals as of ${(() => { const d = window.JTDate.parseTime(P.asOf); return isNaN(d) ? "" : d.toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit" }); })()} (updated every 5 min)` : ""}${P.loading ? " · refreshing…" : ""}`;
     const T = totals();
-    renderKpis(T); renderChannels(T); renderChart(); renderDays(); renderProducts();
+    renderKpis(T); renderChannels(T);
+    if (P.more) { renderChart(); renderDays(); renderProducts(); }
   }
   // ---------- cost watch ----------
   const ADM = "https://admin.shopify.com/store/justtennis-822/";
@@ -199,7 +230,7 @@
       ? `<div class="histbar on"><span><b>Cost history is on for edits made from ${dshort(hs)}.</b> Those changes keep the old cost for earlier Amazon sales. Edits before that date count as corrections, so Amazon history uses the corrected Shopify cost.</span><span class="dbtns"><button class="mini" data-hist="today">Restart from tomorrow</button><button class="mini" data-hist="off">Turn off</button></span></div>`
       : `<div class="histbar"><span><b>Cleanup mode:</b> every cost edit counts as a correction, so Amazon profit uses today's Shopify cost for all past sales. When your costs are clean, turn on cost history so future price changes only apply from the day they happen.</span><span class="dbtns"><button class="mini primary" data-hist="today" ${CW.saving ? "disabled" : ""}>Costs are clean — track changes from tomorrow</button></span></div>`;
     const rows = [];
-    for (const d of CW.log) for (const c of d.changes || []) rows.push({ ...c, date: d.date });
+    for (const d of CW.log) if (d) for (const c of d.changes || []) rows.push({ ...c, date: d.date });
     $("cw-hist").innerHTML = status;
     tbl.innerHTML = `<thead><tr><th class="l">Date</th><th class="l">Product</th><th class="l">SKU</th><th>Old cost</th><th>New cost</th><th>Change</th><th class="l">Treated as</th><th class="l"></th></tr></thead><tbody>${rows.slice(0, 300).map(c => { const real = isReal(c.date, c.vid); const ov = (CW.set.overrides || {})[c.date + "|" + c.vid]; return `<tr><td class="l">${dshort(c.date)}</td><td class="l">${prodLink(c.pid, c.vid, c.title)}</td><td class="l mono dim small">${esc(c.sku || "")}</td><td>${c.old == null ? "—" : m(c.old)}</td><td><b>${c.new == null ? "—" : m(c.new)}</b></td><td class="${c.pct > 0 ? "neg" : c.pct < 0 ? "pos" : "dim"}">${c.pct == null ? "—" : (c.pct > 0 ? "+" : "") + pct(c.pct)}</td><td class="l"><button class="pill ${real ? "web" : "pos"} tog" data-ov="${esc(c.date + "|" + c.vid)}" data-real="${real ? 1 : 0}" title="${real ? "Earlier Amazon sales keep the old cost. Click to treat as a correction instead." : "Applies to all past Amazon sales. Click to treat as a real price change instead."}">${real ? "Real change" : "Correction"}${ov ? " ·" : ""}</button></td><td class="l">${c.flag ? `<span class="pill miss">${esc(c.flag)}</span>` : ""}</td></tr>`; }).join("") || `<tr><td class="l dim" colspan="8">No cost changes recorded yet.</td></tr>`}</tbody>`;
   }
@@ -212,6 +243,9 @@
 
   // ---------- events ----------
   document.querySelectorAll("#ps-rangeseg button").forEach(b => b.addEventListener("click", () => { setRange(b.dataset.r); load(false); }));
+  $("ps-moretoggle").addEventListener("click", () => { P.more = !P.more; try { localStorage.setItem("jt-ps-more", P.more ? "1" : "0"); } catch (_) {} moreUi(); if (P.more) { startCW(); render(); loadProds(false); } });
+  function moreUi() { const b = $("ps-moretoggle"); $("ps-morebox").hidden = !P.more; b.setAttribute("aria-expanded", String(P.more)); b.textContent = P.more ? "Hide sales by day, products and cost watch" : "Show sales by day, products and cost watch"; }
+  moreUi();
   const onDate = () => { const s = $("ps-start").value, e = $("ps-end").value; if (!s || !e || s > e) return; P.start = s; P.end = e; document.querySelectorAll("#ps-rangeseg button").forEach(b => b.setAttribute("aria-pressed", "false")); load(false); };
   $("ps-start").addEventListener("change", onDate); $("ps-end").addEventListener("change", onDate);
   $("ps-refresh").addEventListener("click", () => load(true));
@@ -221,6 +255,9 @@
   let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { if (!$("tab-psales").hidden && P.days) renderChart(); }, 150); });
 
   setRange("today");
+  let cwOn = false;
+  function startCW() {
+  if (cwOn) return; cwOn = true;
   window.JT.docStore().then(db => {
     CW.db = db; if (!db) { renderCW(); return; }
     let n = 0; const done = () => { if (++n >= 3) CW.ready = true; renderCW(); };
@@ -229,5 +266,7 @@
     db.collection("costalerts").orderBy("date", "desc").limit(14).onSnapshot(s => { CW.alerts = s.docs.map(d => d.data()); done(); }, done);
     db.collection("costlog").orderBy("date", "desc").limit(90).onSnapshot(s => { CW.log = s.docs.map(d => d.data()); done(); }, done);
   }).catch(() => {});
+  }
+  if (P.more) startCW();
   window.JT.getMcp().then(() => load(false)).catch(() => load(false));
 })();
