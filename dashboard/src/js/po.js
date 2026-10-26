@@ -120,6 +120,7 @@
   function catalog(refresh) {
     if (S.cat && !refresh) return Promise.resolve(S.cat);
     if (S.catP && !refresh) return S.catP;
+    refresh = refresh || !S.catOnce; S.catOnce = true;   // first load of the page: fresh (at most 3 min old), not the cached copy
     S.catP = (async () => {
       const [cat, rem, maps] = await Promise.all([
         JT.rowsSplit(["variant_id::text", "product_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "status", "product_type", "price", "unit_cost",
@@ -442,6 +443,17 @@
     render();
   }
 
+  // unmatched invoice lines (and guesses) get another try against the catalog. sure: only certain matches (on open)
+  function rematch(ed, sure) {
+    let n = 0;
+    if (ed) for (const iv of ed.invoices) for (const r of iv.rows) {
+      if (!r.src || r.skip || r.how === "manual" || r.confirmed || isSure(r)) continue;       // not-matched lines and guesses
+      const g = guessLine(r.src, ed.vendor);
+      if (g.vid && (!sure || SURE.has(g.how)) && (g.vid !== r.vid || g.how !== r.how)) { Object.assign(r, g); n++; }
+    }
+    return n;
+  }
+  const rematchMsg = (n) => `${n} invoice line${n === 1 ? " was" : "s were"} matched to products added in Shopify since the invoice was saved. Check them and Save.`;
   // the saved invoices of a PO (or the one invoice of an invoice saved without a PO): header, lines, receipts
   const INV_COLS = ["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
     "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id"];
@@ -461,6 +473,9 @@
         qty: l[5] == null ? "" : String(+l[5]), cost: fmtCost(l[6]) });
     }
     for (const iv of ed.invoices) for (const r of iv.rows) if (needsCheck(r)) r.alts = guessLine(r.src, ed.vendor).alts;
+    // lines saved before their product existed in Shopify: match them now (SKU / barcode / remembered code), then Save
+    const n = rematch(ed, true);
+    if (n) { ed.dirty = true; setTimeout(() => { if (S.ed !== ed) return; syncLines(ed); render(); note("info", rematchMsg(n)); }, 60); }
     const rc = await JT.rows(["invoice_id::text", "variant_id::text", "qty"], `from jt.invoice_receipts where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")})`, true).catch(() => []);
     for (const [iid, vid, q] of rc) { const iv = byId.get(iid); if (iv) iv.got.set(vid, +q || 0); }
     ed.cur = ed.invoices.length - 1;
@@ -2417,7 +2432,15 @@
     // ---- the Invoices tab ----
     const itab = $("tab-invoices");
     $("inv-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; S.mode = "inv"; readPdf(f); });
-    $("inv-refresh").addEventListener("click", async () => { await Promise.all([loadInvList(true), loadOrders(true)]); if (S.ed && S.ed.id && !S.ed.dirty && S.invOpen) await openInvoice(cur(S.ed).id); render(); });
+    $("inv-refresh").addEventListener("click", async () => {
+      await Promise.all([loadInvList(true), loadOrders(true), catalog(true)]);
+      if (S.ed && S.invOpen) {
+        const n = rematch(S.ed, false);    // new Shopify products: the open invoice's unmatched lines get another try
+        if (n) { syncLines(S.ed); S.ed.dirty = true; render(); note("info", rematchMsg(n)); return; }
+        if (S.ed.id && !S.ed.dirty) await openInvoice(cur(S.ed).id);
+      }
+      render();
+    });
     $("inv-q").addEventListener("input", (e) => { S.invQ = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderInvList, 150); });
     $("inv-seg").addEventListener("click", (e) => { const b = e.target.closest("button[data-invf]"); if (b) { S.invF = b.dataset.invf; renderInvList(); } });
     $("inv-lanes").addEventListener("click", (e) => { const b = e.target.closest("[data-lane]"); if (!b) return; e.stopPropagation();
@@ -2543,12 +2566,8 @@
     S.cat = null; S.catP = null;
     if (!shown()) return;
     catalog(true).then(() => {
-      const ed = S.ed; let n = 0;
-      if (ed) for (const iv of ed.invoices) for (const r of iv.rows) {
-        if (!r.src || r.skip || r.how === "manual" || r.confirmed || isSure(r)) continue;       // not-matched lines and guesses
-        const g = guessLine(r.src, ed.vendor); if (g.vid && (g.vid !== r.vid || g.how !== r.how)) { Object.assign(r, g); n++; }
-      }
-      if (n) { syncLines(ed); ed.dirty = true; note("info", `Shopify products updated: ${n} invoice line${n === 1 ? " was" : "s were"} matched again with the new products. Check them and Save.`); }
+      const ed = S.ed, n = rematch(ed, false);
+      if (n) { syncLines(ed); ed.dirty = true; note("info", rematchMsg(n)); }
       render();
     }).catch(() => {});
     refresh(true).catch(() => {});
