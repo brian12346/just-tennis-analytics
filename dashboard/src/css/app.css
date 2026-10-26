@@ -287,6 +287,7 @@ pre.invraw{max-height:280px;overflow:auto;font-size:11px;background:var(--ground
 @media (max-width:760px){.lane{grid-template-columns:1fr}}
 /* invoice popup */
 .modal{position:fixed;inset:0;z-index:80;background:rgba(10,14,12,.45);display:flex;align-items:flex-start;justify-content:center;padding:28px 16px;overflow:auto}
+.modal[hidden]{display:none!important}  /* a hidden modal stays hidden (display:flex above would win over [hidden]) */
 .modal-card{background:var(--panel);color:var(--ink);border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.35);width:min(1320px,100%);padding:18px 20px;display:flex;flex-direction:column;gap:10px}
 body.modal-open{overflow:hidden}
 .invhead textarea.inp{width:100%;min-height:34px;resize:vertical;font:inherit}
