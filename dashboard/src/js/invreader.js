@@ -51,30 +51,40 @@
   }
 
   // wait for a read already sent (also "Try again": no re-upload). kick: re-queue a failed read / restart the reader first.
+  // While the reader is loading (its GitHub run was started and is installing its tools) this keeps waiting and says
+  // "still loading"; it only gives up — so the page offers Try again — when the read failed, the reader stopped loading
+  // without picking it up, or it's been reading for 4 minutes. maxMs: hard cap (default 10 min).
   async function wait(readId, opts = {}) {
-    const timeoutMs = opts.timeoutMs || 150000, onWait = opts.onWait || (() => {});
+    const maxMs = opts.timeoutMs || 600000, onWait = opts.onWait || (() => {});
+    const clock = (ms) => { const t = Math.round(ms / 1000); return t < 60 ? `${t}s` : `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
     skipNow = false;
     try {
-      let r = null, gap = 1200;
+      let r = null, gap = 1200, readingAt = 0, why = "";
       if (opts.kick) { r = await call("invoice_read_kick", readId, "id"); if (typeof r === "string") r = JSON.parse(r); gap = 400; }
       const t0 = Date.now();
-      while (Date.now() - t0 < timeoutMs) {
+      while (true) {
+        const el = Date.now() - t0;
+        if (el > maxMs) { why = r && r.status === "reading" ? "it's still reading the PDF" : "the reader didn't finish loading"; break; }
         for (let s = 0; s < gap && !skipNow; s += 250) await sleep(250);
         if (skipNow) return { ok: false, outcome: "skipped", message: "", readId, retry: true };
         gap = Math.min(gap * 1.4, 3000);
         try { r = await call("invoice_read_get", readId, "id"); }
         catch (e) { console.warn("[JTReader] poll", e); continue; }   // one slow answer isn't the end of the read
         if (typeof r === "string") r = JSON.parse(r);
-        if (!r) break;
-        if (r.status === "done" || r.status === "failed") break;
-        const secs = Math.round((Date.now() - t0) / 1000);
-        onWait(r.status === "reading" ? `Reading the invoice with the vendor template… ${secs}s (a scan takes 10–30 seconds)` : `Starting the invoice reader… ${secs}s (usually under a minute)`);
+        if (!r) { why = "the read was lost"; break; }
+        if (r.status === "done" || r.status === "failed") return outcomeOf(r, readId);
+        const rd = r.reader || {};
+        if (r.status === "reading") {
+          readingAt = readingAt || Date.now();
+          if (Date.now() - readingAt > 240000) { why = "it's been reading for 4 minutes"; break; }
+          onWait(`Reading the invoice with the vendor template… ${clock(Date.now() - readingAt)} (a scan takes 10–30 seconds)`);
+        } else if (rd.up) {
+          onWait(`The invoice reader is up — your PDF is next… ${clock(el)}`);
+        } else if (rd.loading || el < 20000 || r.status === "uploading") {
+          onWait(`The system is still loading the invoice reader… ${clock(el)}. It reads your PDF the moment it's ready (usually under a minute).`);
+        } else { why = "the reader stopped loading without reading it"; break; }
       }
-      if (!r || (r.status !== "done" && r.status !== "failed")) {
-        const msg = r && r.status === "reading" ? "it's still reading the PDF" : "it hasn't started yet";
-        return { ok: false, outcome: "timeout", message: msg, readId, retry: true };
-      }
-      return outcomeOf(r, readId);
+      return { ok: false, outcome: "timeout", message: why, readId, retry: true };
     } catch (e) {
       console.warn("[JTReader]", e);
       return { ok: false, outcome: "error", message: (e && e.message) || String(e), readId, retry: true };

@@ -575,7 +575,7 @@
       let over = false;
       const finish = (v) => { if (over) return; over = true; clearInterval(t); S.busyRetry = null; done(v); };
       const t = setInterval(async () => { const r = await window.JTReader.peek(rr.readId); if (r) finish(r); }, 5000);
-      S.busy = (rr.outcome === "timeout" ? "The invoice reader didn't finish in time" + (rr.message ? " (" + rr.message + ")." : ".")
+      S.busy = (rr.outcome === "timeout" ? "The invoice reader didn't finish" + (rr.message ? " — " + rr.message + "." : ".")
         : "The invoice reader hit an error" + (rr.message ? ": " + rr.message : ".")) + " ";
       S.busyRetry = finish; renderBusy();
     });
