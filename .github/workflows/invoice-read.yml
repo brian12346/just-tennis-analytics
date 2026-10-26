@@ -2,7 +2,10 @@ name: Read invoices
 
 # Started by Supabase when a dropped invoice PDF is queued for reading (migration 100, jt.dispatch_invoice_read).
 # Reads everything in jt.invoice_reads with the vendor templates (pdftotext, tesseract OCR for scans), keeps listening
-# for 150 s in case more invoices are dropped, then stops. Run by hand from the Actions tab any time.
+# for 10 minutes in case more invoices are dropped, then stops. Run by hand from the Actions tab any time.
+# The page also starts it when the Invoices tab opens or a PDF is dragged in (migration 167), so it's up by the drop.
+# The PDF/OCR packages come from the Actions cache: installing them from apt took 3-4 minutes a run (Oct 26), which is
+# why reads timed out on the page.
 on:
   workflow_dispatch: {}
 
@@ -19,14 +22,26 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
-      - run: pip install -r requirements.txt
+      - run: pip install -q "psycopg[binary]==3.3.6"     # all the reader needs
+      - id: os
+        run: echo "v=$(lsb_release -rs)-$(uname -m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/ocr-debs
+          key: ocr-debs-${{ steps.os.outputs.v }}-v1
       - name: PDF and OCR tools
         run: |
-          which pdftotext tesseract || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-eng; }
+          PKGS="poppler-utils tesseract-ocr tesseract-ocr-eng"
+          if which pdftotext tesseract >/dev/null; then exit 0; fi
+          # from the cache: no apt-get update (the slow part)
+          if ls ~/ocr-debs/*.deb >/dev/null 2>&1 && sudo apt-get install -y -qq --no-install-recommends ~/ocr-debs/*.deb; then exit 0; fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends --download-only $PKGS
+          mkdir -p ~/ocr-debs && cp /var/cache/apt/archives/*.deb ~/ocr-debs/
+          sudo apt-get install -y -qq --no-install-recommends $PKGS
       - name: Read queued invoices
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           WORKER_NAME: github-actions
           OCR_CACHE: /tmp/ocr_cache
-        run: python sync/invoice_reader/worker.py --idle 150
+        run: python sync/invoice_reader/worker.py --idle 600

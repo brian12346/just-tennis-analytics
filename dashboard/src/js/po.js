@@ -568,6 +568,18 @@
   // ---------- reading an invoice PDF ----------
   // Reading an invoice PDF. From the Invoices tab it finds its PO (same vendor + the PO # on the invoice), or asks
   // which PO it belongs to; from a PO's "Upload invoice PDF" it goes on that PO. Either way it then opens on the Invoices tab.
+  // the reader timed out or failed: "Try again" / "Use the quick reader". Resolves "retry", "quick", or the read's
+  // result when it finishes on its own while the question is up (checked every 5 s).
+  function askRetry(rr) {
+    return new Promise((done) => {
+      let over = false;
+      const finish = (v) => { if (over) return; over = true; clearInterval(t); S.busyRetry = null; done(v); };
+      const t = setInterval(async () => { const r = await window.JTReader.peek(rr.readId); if (r) finish(r); }, 5000);
+      S.busy = (rr.outcome === "timeout" ? "The invoice reader didn't finish in time" + (rr.message ? " (" + rr.message + ")." : ".")
+        : "The invoice reader hit an error" + (rr.message ? ": " + rr.message : ".")) + " ";
+      S.busyRetry = finish; renderBusy();
+    });
+  }
   async function readPdf(file, orderId) {
     if (!file) return;
     if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { note("warn", "That isn't a PDF. Choose the invoice's PDF file."); return; }
@@ -583,8 +595,18 @@
       let inv = null, readNote = "", readId = null;
       if (window.JTReader) {
         S.busySkip = true;
-        const rr = await window.JTReader.read(bytes, file.name, { onWait: (t) => { S.busy = t; renderBusy(); } });
-        S.busySkip = false; readId = rr.readId || null;
+        const onWait = (t) => { S.busy = t; renderBusy(); };
+        let rr = await window.JTReader.read(bytes, file.name, { onWait });
+        // timed out or failed: ask — try the reader again (same file, no re-upload) or go on with the quick reader
+        while (!rr.ok && rr.retry && rr.outcome !== "skipped" && rr.readId) {
+          S.busySkip = false;
+          const late = await askRetry(rr);
+          if (late === "quick") break;
+          if (late && late !== "retry") { rr = late; break; }   // it finished while we were asking
+          S.busySkip = true; S.busy = "Trying the invoice reader again…"; renderBusy();
+          rr = await window.JTReader.wait(rr.readId, { kick: true, onWait });
+        }
+        S.busySkip = false; S.busyRetry = null; readId = rr.readId || null;
         if (rr.ok) {
           inv = rr.inv;
           if (rr.others.length) readNote += `This PDF holds ${rr.others.length + 1} invoices (${[inv, ...rr.others].map(x => esc(x.invoice_no)).join(", ")}); this is the first. `;
@@ -592,7 +614,7 @@
           else readNote += `Read with the ${esc(inv.vendor)} template${inv.read.status === "auto_ok" ? " (lines and totals tie out)" : ""}. `;
         } else if (rr.outcome === "unknown_vendor") readNote = "No vendor template knows this invoice yet, so the quick reader was used (it's queued for Claude to learn). ";
         else if (rr.outcome === "unsupported") readNote = `${esc(rr.message || "This doesn't look like an invoice")}. `;
-        else if (rr.outcome === "timeout") readNote = "The invoice reader didn't answer in time, so the quick reader was used. ";
+        else if (rr.outcome === "timeout" || rr.outcome === "error") readNote = "The invoice reader didn't finish, so the quick reader was used. ";
       }
       if (!inv) inv = IP.parseInvoice(rows, { vendors: S.vendors, known: (t, vendor) => S.bySku.has(norm(t)) || (!!vendor && S.remembered.has(vendor.toLowerCase() + "|" + norm(t))) });
       pend = { inv, rows, f: { bytes, name: file.name, type: file.type || "application/pdf" }, readId, readNote };
@@ -966,6 +988,14 @@
   }
   function renderBusy() {
     const b = $("po-busy"); if (!b) return; b.hidden = !S.busy; b.textContent = S.busy || "";
+    if (S.busy && S.busyRetry) {                     // the reader timed out / failed: try again, or the quick reader
+      const go = S.busyRetry;
+      const a = document.createElement("button"); a.className = "mini primary"; a.style.marginLeft = "10px"; a.textContent = "Try again";
+      a.addEventListener("click", () => go("retry")); b.appendChild(a);
+      const k = document.createElement("button"); k.className = "mini"; k.style.marginLeft = "6px"; k.textContent = "Use the quick reader";
+      k.addEventListener("click", () => go("quick")); b.appendChild(k);
+      return;
+    }
     if (S.busy && S.busySkip && window.JTReader) {   // waiting on the template reader: let them use the quick reader now
       const k = document.createElement("button"); k.className = "mini"; k.style.marginLeft = "10px"; k.textContent = "Don't wait — use the quick reader";
       k.addEventListener("click", () => window.JTReader.skip()); b.appendChild(k);
@@ -2381,7 +2411,7 @@
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     // a PDF dropped anywhere on the tab
     const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
-    tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (S.ed) tab.classList.add("filedrop"); } });
+    tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (window.JTReader) window.JTReader.warm(); if (S.ed) tab.classList.add("filedrop"); } });
     tab.addEventListener("dragleave", (e) => { if (!tab.contains(e.relatedTarget)) tab.classList.remove("filedrop"); });
     tab.addEventListener("drop", (e) => { if (!isFile(e)) return; e.preventDefault(); tab.classList.remove("filedrop"); readPdf(e.dataTransfer.files[0]); });
     // ---- the Invoices tab ----
@@ -2399,7 +2429,7 @@
       const pb = e.target.closest("[data-pend]"); if (pb) { pendGo(pb.dataset.pend, pb.dataset.o); return; }
     });
     $("inv-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-inv-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openInvoice(o.dataset.invOpen); } });
-    itab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); itab.classList.add("filedrop"); } });
+    itab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (window.JTReader) window.JTReader.warm(); itab.classList.add("filedrop"); } });
     itab.addEventListener("dragleave", (e) => { if (!itab.contains(e.relatedTarget)) itab.classList.remove("filedrop"); });
     itab.addEventListener("drop", (e) => { if (!isFile(e)) return; e.preventDefault(); itab.classList.remove("filedrop"); S.mode = "inv"; readPdf(e.dataTransfer.files[0]); });
     $("po-note").addEventListener("click", (e) => { const b = e.target.closest("[data-pact]"); if (b) act(b.dataset.pact); });
@@ -2530,7 +2560,11 @@
     S.mode = "inv";
     if (!S.invShown) { S.invShown = true; catalog().catch(() => {}); if (!S.orders) loadOrders(false).catch(() => {}); }
     render(); loadInvList(false).then(render).catch(e => note("bad", esc(JT.message(e))));
+    // wake the invoice reader now, so it's running by the time a PDF is dropped (it starts in ~30 s, stays up 10 min)
+    if (window.JTReader) (window.JTWeb ? window.JTWeb.ready : Promise.resolve()).then(() => window.JTReader.warm());
   };
+  // choosing a PDF with a file button: wake the reader while the file picker is open
+  document.addEventListener("click", (e) => { const t = e.target; if (t && t.matches && t.matches('#inv-file, #pe-file, label[for="inv-file"], label[for="pe-file"]') && window.JTReader) window.JTReader.warm(); }, true);
   window.JTPO = { _state: S, render: () => render(), open: (id) => { const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); openPO(id); }, openInvoice, guessLine, merge, progress };
   // the Prep center (and tests) open invoices this way
   window.JTInvoices = { open: (id) => { const b = document.querySelector('.tabs button[data-tab="invoices"]'); if (b && $("tab-invoices").hidden) b.click(); openInvoice(id); } };

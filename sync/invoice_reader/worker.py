@@ -9,7 +9,7 @@ and writes the result back for the page to pick up. One engine for every vendor;
 
   python worker.py                      # run forever: LISTEN invoice_reads + poll every POLL_SECONDS
   python worker.py --once               # read whatever is queued, then exit
-  python worker.py --idle 150           # read what's queued, keep listening until 150 s without a new read (the workflow)
+  python worker.py --idle 600           # read what's queued, keep listening until 600 s without a new read (the workflow)
   python worker.py --file a.pdf [--templates templates/]   # read one local PDF and print the result (no database)
   python worker.py --fetch READ_ID out.pdf          # save the PDF of a read (e.g. from jt.invoices_to_learn) to learn from
 

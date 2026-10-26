@@ -4,10 +4,13 @@
    Uses JT.run / JT.q (connector) or JTWeb.write (web version). Migrations 097-100: a queued read starts the GitHub
    Actions reader (invoice-read.yml); a cold start takes about a minute, then reads take seconds while it's running.
    skip(): stop waiting for the read in progress (the page uses the quick in-browser reader instead).
+   wait(readId, {kick}): wait again for a read already sent: "Try again" after a time-out or a failed read (migration 167).
+   warm(): start the reader before a PDF is dropped (Invoices tab opened, a file dragged in).
 
    JTReader.read(bytes, name, opts) resolves to
      { ok: true,  inv, others, outcome, readId, templ }   template read: outcome auto_ok (totals tie) | needs_review
-     { ok: false, outcome, message, readId }              unknown_vendor | unsupported | error | timeout | off
+     { ok: false, outcome, message, readId, retry }       unknown_vendor | unsupported | error | timeout | skipped
+                                                          (retry: true when wait(readId, {kick: true}) can try again)
    It never throws; on anything but ok, fall back to the in-browser reader (IP.parseInvoice).
 */
 (() => {
@@ -21,47 +24,79 @@
     const out = await JT.run(`select jt.${fn}(${arg}) as r`, true);
     return out[0] && out[0].r;
   }
-  // The reader service turns `off` here when it hasn't answered anything for a while, so drops don't wait for nothing.
-  let offUntil = 0, skipNow = false;
+  let skipNow = false, warmAt = 0;
+
+  // wake the reader (a GitHub Actions run) before a PDF arrives: Invoices tab opened, a file dragged in. Throttled.
+  function warm() {
+    if (Date.now() - warmAt < 120000) return;
+    warmAt = Date.now();
+    (WEB ? WEB.write("jt_invoice_reader_warm", { p: {} }) : JT.run("select jt.invoice_reader_warm() as r", true)).catch(() => {});
+  }
 
   async function read(bytes, name, opts = {}) {
-    const timeoutMs = opts.timeoutMs || 150000, onWait = opts.onWait || (() => {});
     skipNow = false;
-    if (Date.now() < offUntil) return { ok: false, outcome: "off", message: "The invoice reader isn't answering right now." };
     let readId = null;
     try {
       const n = Math.max(1, Math.ceil(bytes.length / PART));
       readId = Number(await call("invoice_read_start", { name, parts: n }));
       for (let k = 0; k < n; k++) {
-        onWait(n > 1 ? `Sending the PDF to the invoice reader… ${k + 1} of ${n}` : "Sending the PDF to the invoice reader…");
+        (opts.onWait || (() => {}))(n > 1 ? `Sending the PDF to the invoice reader… ${k + 1} of ${n}` : "Sending the PDF to the invoice reader…");
         await call("invoice_read_put", { read_id: readId, part: k, data: toB64(bytes.subarray(k * PART, (k + 1) * PART)) });
       }
-      const t0 = Date.now(); let r = null, wait = 1200;
+    } catch (e) {
+      console.warn("[JTReader]", e);
+      return { ok: false, outcome: "error", message: (e && e.message) || String(e), readId, retry: false };
+    }
+    return wait(readId, opts);
+  }
+
+  // wait for a read already sent (also "Try again": no re-upload). kick: re-queue a failed read / restart the reader first.
+  async function wait(readId, opts = {}) {
+    const timeoutMs = opts.timeoutMs || 150000, onWait = opts.onWait || (() => {});
+    skipNow = false;
+    try {
+      let r = null, gap = 1200;
+      if (opts.kick) { r = await call("invoice_read_kick", readId, "id"); if (typeof r === "string") r = JSON.parse(r); gap = 400; }
+      const t0 = Date.now();
       while (Date.now() - t0 < timeoutMs) {
-        for (let s = 0; s < wait && !skipNow; s += 250) await sleep(250);
-        if (skipNow) return { ok: false, outcome: "skipped", message: "", readId };
-        wait = Math.min(wait * 1.4, 3000);
-        r = await call("invoice_read_get", readId, "id");
+        for (let s = 0; s < gap && !skipNow; s += 250) await sleep(250);
+        if (skipNow) return { ok: false, outcome: "skipped", message: "", readId, retry: true };
+        gap = Math.min(gap * 1.4, 3000);
+        try { r = await call("invoice_read_get", readId, "id"); }
+        catch (e) { console.warn("[JTReader] poll", e); continue; }   // one slow answer isn't the end of the read
         if (typeof r === "string") r = JSON.parse(r);
         if (!r) break;
         if (r.status === "done" || r.status === "failed") break;
         const secs = Math.round((Date.now() - t0) / 1000);
-        onWait(r.status === "reading" ? `Reading the invoice with the vendor template… ${secs}s (a scan takes 10–30 seconds)` : `Starting the invoice reader… ${secs}s (about a minute when it hasn't run lately)`);
+        onWait(r.status === "reading" ? `Reading the invoice with the vendor template… ${secs}s (a scan takes 10–30 seconds)` : `Starting the invoice reader… ${secs}s (usually under a minute)`);
       }
       if (!r || (r.status !== "done" && r.status !== "failed")) {
-        if (!r || r.status === "queued") offUntil = Date.now() + 5 * 60000;      // nobody picked it up: stop waiting for a while
-        return { ok: false, outcome: "timeout", message: "The invoice reader didn't answer in time.", readId };
+        const msg = r && r.status === "reading" ? "it's still reading the PDF" : "it hasn't started yet";
+        return { ok: false, outcome: "timeout", message: msg, readId, retry: true };
       }
-      const res = r.result || {};
-      if (r.status === "failed" || r.outcome === "error") return { ok: false, outcome: "error", message: r.error || "The invoice reader failed.", readId };
-      if (r.outcome === "unknown_vendor" || r.outcome === "unsupported" || !(res.invoices || []).length)
-        return { ok: false, outcome: r.outcome, message: res.message || "", readId };
-      const [inv, ...others] = res.invoices.map(shape);
-      return { ok: true, inv, others, outcome: r.outcome, readId, templ: r.vendor };
+      return outcomeOf(r, readId);
     } catch (e) {
       console.warn("[JTReader]", e);
-      return { ok: false, outcome: "error", message: (e && e.message) || String(e), readId };
+      return { ok: false, outcome: "error", message: (e && e.message) || String(e), readId, retry: true };
     }
+  }
+
+  // one look at a read: its result when it's finished, else null (the retry prompt checks in the background)
+  async function peek(readId) {
+    try {
+      let r = await call("invoice_read_get", readId, "id");
+      if (typeof r === "string") r = JSON.parse(r);
+      return r && (r.status === "done" || r.status === "failed") ? outcomeOf(r, readId) : null;
+    } catch (_) { return null; }
+  }
+
+  function outcomeOf(r, readId) {
+    const res = r.result || {};
+    if (r.status === "failed" || r.outcome === "error") return { ok: false, outcome: "error", message: r.error || "The invoice reader failed.", readId, retry: true };
+    if (r.outcome === "unknown_vendor" || r.outcome === "unsupported" || !(res.invoices || []).length)
+      return { ok: false, outcome: r.outcome, message: res.message || "", readId };
+    const [inv, ...others] = res.invoices.map(shape);
+    return { ok: true, inv, others, outcome: r.outcome, readId, templ: r.vendor };
   }
 
   // reader result -> JTInvParse.parseInvoice shape (+ extras the page may show: status, issues, early_pay, template)
@@ -91,5 +126,5 @@
     else JT.run(`select jt.invoice_read_link(${JT.q(JSON.stringify({ read_id: readId, invoice_id: Number(invoiceId) }))}::jsonb) as r`, true).catch(() => {});
   }
 
-  window.JTReader = { read, link, shape, skip: () => { skipNow = true; } };
+  window.JTReader = { read, wait, peek, warm, link, shape, skip: () => { skipNow = true; } };
 })();
