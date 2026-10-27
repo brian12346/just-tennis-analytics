@@ -1840,6 +1840,105 @@
     try { await JT.prep.invoiceReceived(iv.id, on); S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); } note("info", on ? `Invoice ${esc(iv.no || iv.id)} marked received.` : `Invoice ${esc(iv.no || iv.id)} reopened.`); }
     catch (e) { S.busy = ""; render(); note("bad", "Couldn't change the invoice: " + esc(JT.message(e))); }
   }
+  // ---------- receiving popup (Brian, Oct 27: "move to a pop up when you go to receive ... input a number / receive
+  // each row individually as well as a receive all button ... a save button that asks to save/discard then commits") ----
+  // Nothing is written while the popup is open: rows are filled in (a number, the row's "All", or "Receive all"), and
+  // Save receives everything entered in one go — into Shopify's stock / the prep center — then the PO reloads once.
+  // S.rm = { inv: invoice id | null, rows: [{ k, lid, title, sku, dest, asku, billed, got, left, val }], ask: false }
+  function rmHost() {
+    let d = $("rcv-modal"); if (d) return d;
+    d = document.createElement("div"); d.className = "modal"; d.id = "rcv-modal"; d.hidden = true;
+    d.innerHTML = '<div class="modal-card rcv-card" id="rcv-card" role="dialog" aria-modal="true" aria-label="Receive"></div>';
+    document.body.appendChild(d);
+    d.addEventListener("click", (e) => {
+      if (e.target === d) return rmClose();
+      const b = e.target.closest("button"); if (!b || !S.rm) return;
+      const a = b.dataset.rm, r = S.rm.rows[Number(b.dataset.i)];
+      if (a === "close") return rmClose();
+      if (a === "one" && r) { r.val = String(r.left); S.rm.ask = false; rmPaint(); rmFocus(Number(b.dataset.i) + 1); return; }
+      if (a === "zero" && r) { r.val = ""; S.rm.ask = false; rmPaint(); return; }
+      if (a === "all") { S.rm.rows.forEach(x => { x.val = String(x.left); }); S.rm.ask = false; rmPaint(); return; }
+      if (a === "clear") { S.rm.rows.forEach(x => { x.val = ""; }); S.rm.ask = false; rmPaint(); return; }
+      if (a === "save") { if (rmBad()) return rmPaint(); if (!rmUnits()) { S.rm.msg = "Enter how many arrived, or press Receive all."; return rmPaint(); } S.rm.ask = "save"; rmPaint(); return; }
+      if (a === "back") { S.rm.ask = false; rmPaint(); return; }
+      if (a === "discard") { S.rm = null; d.hidden = true; document.body.classList.remove("modal-open"); return; }
+      if (a === "commit") return rmCommit();
+    });
+    d.addEventListener("input", (e) => {
+      const t = e.target; if (!S.rm || t.dataset.rmq == null) return;
+      const r = S.rm.rows[Number(t.dataset.rmq)]; if (!r) return;
+      r.val = t.value.trim(); S.rm.ask = false; S.rm.msg = "";
+      rmFoot(); t.classList.toggle("bad", rmRowBad(r));
+      const tr = t.closest("tr"); if (tr) tr.classList.toggle("on", Number(r.val) > 0);
+    });
+    d.addEventListener("keydown", (e) => {
+      if (!S.rm) return;
+      if (e.key === "Escape") { e.preventDefault(); return rmClose(); }
+      if (e.key === "Enter" && e.target.dataset.rmq != null) { e.preventDefault(); rmFocus(Number(e.target.dataset.rmq) + 1); }
+    });
+    return d;
+  }
+  const rmRowBad = (r) => r.val !== "" && !(Number.isInteger(Number(r.val)) && Number(r.val) >= 0);
+  const rmBad = () => { const b = S.rm.rows.find(rmRowBad); if (b) S.rm.msg = `Check the number for ${b.title}: whole units only.`; return !!b; };
+  const rmUnits = () => S.rm.rows.reduce((a, r) => a + (rmRowBad(r) ? 0 : Number(r.val) || 0), 0);
+  const rmDirty = () => S.rm && S.rm.rows.some(r => (Number(r.val) || 0) > 0);
+  function rmFocus(i) { setTimeout(() => { const el = document.querySelector(`#rcv-modal [data-rmq="${i}"]`); if (el) { el.focus(); el.select(); } else { const b = document.querySelector('#rcv-modal [data-rm="save"]'); if (b) b.focus(); } }, 0); }
+  function rmClose() { if (!S.rm) return; if (rmDirty()) { S.rm.ask = "close"; rmPaint(); return; } S.rm = null; $("rcv-modal").hidden = true; document.body.classList.remove("modal-open"); }
+  function openRecv(invId) {
+    const ed = S.ed; if (!ed) return;
+    const iv = invId ? ed.invoices.find(v => String(v.id) === String(invId)) : null;
+    const rows = [];
+    if (iv) {
+      if (count(iv).check) { note("warn", `Confirm the guessed products on invoice ${esc(iv.no || "")} before receiving it, so the right stock comes in. <button class="mini" data-pact="open-inv">Open the invoice</button>`); return; }
+      const sh = invShares(ed, iv);
+      for (const l of ed.lines) { const y = sh.get(l.id); if (y && y.billed > 0) rows.push({ l, billed: y.billed, got: y.got, left: y.left }); }
+    } else {
+      const pr = progress(ed), anyInv = ed.invoices.length > 0;
+      for (const l of ed.lines) { const p = pr.get(l.id), left = anyInv ? Math.min(p.open, Math.max(0, p.ordered - p.received)) : Math.max(0, p.ordered - p.received);
+        if (left > 0 || !anyInv) rows.push({ l, billed: p.ordered, got: p.received, left }); }
+    }
+    S.rm = { inv: iv ? iv.id : null, invNo: iv ? iv.no || "" : "", ask: false, msg: "",
+      rows: rows.map(({ l, billed, got, left }) => { const v = variant(l.vid) || {};
+        return { k: keyOf(l), lid: l.id, title: v.title || l.title || "variant " + l.vid, sku: v.sku || "", dest: l.dest || "prep", asku: l.asku || "", billed, got, left, val: "" }; })
+        .sort((a, b) => (b.left > 0) - (a.left > 0)) };
+    rmHost().hidden = false; document.body.classList.add("modal-open"); rmPaint(); rmFocus(0);
+  }
+  function rmFoot() {
+    const f = $("rcv-foot"); if (!f || !S.rm) return;
+    const u = rmUnits(), rows = S.rm.rows.filter(r => (Number(r.val) || 0) > 0 && !rmRowBad(r)).length;
+    f.querySelector(".rcv-sum").textContent = u ? `${n0(u)} unit${u === 1 ? "" : "s"} on ${rows} product${rows === 1 ? "" : "s"} to receive` : "Nothing entered yet";
+    const b = f.querySelector('[data-rm="save"]'); if (b) b.textContent = u ? `Save — receive ${n0(u)} unit${u === 1 ? "" : "s"}` : "Save";
+  }
+  function rmPaint() {
+    const c = $("rcv-card"); if (!c || !S.rm) return;
+    const R = S.rm, ed = S.ed, left = R.rows.reduce((a, r) => a + r.left, 0), u = rmUnits();
+    const over = R.rows.filter(r => !rmRowBad(r) && Number(r.val) > r.left);
+    const dests = [...new Set(R.rows.filter(r => Number(r.val) > 0).map(r => r.dest))].map(d => DESTN[d] || d);
+    const row = (r, i) => `<tr class="${Number(r.val) > 0 ? "on" : ""}"><td class="l"><b>${esc(r.title)}</b><div class="meta mono">${esc(r.sku || "no SKU")}${r.dest === "prep" && r.asku ? " · " + esc(r.asku) : ""}</div></td>
+      <td class="l small">${esc(DESTN[r.dest] || r.dest)}</td><td>${n0(r.billed)}</td><td>${r.got ? n0(r.got) : '<span class="dim">—</span>'}</td><td>${r.left ? n0(r.left) : '<span class="pill ok">All in</span>'}</td>
+      <td class="rcv"><input class="inp num sm ${rmRowBad(r) ? "bad" : ""}" data-rmq="${i}" value="${esc(r.val)}" inputmode="numeric" placeholder="0" style="width:68px" aria-label="Arrived now: ${esc(r.title)}">${Number(r.val) > r.left && !rmRowBad(r) ? `<div class="meta warnt">more than ${R.inv ? "the invoice" : "ordered"}</div>` : ""}</td>
+      <td class="l nowrap">${r.left > 0 ? `<button class="mini" data-rm="one" data-i="${i}" title="Receive all ${n0(r.left)} still to come">All ${n0(r.left)}</button>` : ""}${r.val !== "" ? ` <button class="linkbtn small" data-rm="zero" data-i="${i}" title="Clear this row">clear</button>` : ""}</td></tr>`;
+    const ask = R.ask ? `<div class="note ${R.ask === "close" ? "warn" : "info"} rcv-ask"><b>${R.ask === "close" ? "You've entered units that aren't received yet." : `Receive ${n0(u)} unit${u === 1 ? "" : "s"}?`}</b>
+        ${R.ask === "save" ? ` They go into ${esc(dests.join(" and ") || "stock")} now${dests.includes("Shopify store") ? " (Shopify updates in a minute)" : ""}.${over.length ? ` ${over.length} product${over.length === 1 ? " is" : "s are"} over what's ${R.inv ? "on the invoice" : "ordered"}.` : ""}` : " Save receives them; Discard closes without receiving."}
+        <span class="dbtns"><button class="btn primary" data-rm="commit" ${S.busy ? "disabled" : ""}>${S.busy === "Receiving…" ? "Receiving…" : "Save"}</button><button class="btn" data-rm="discard">Discard</button><button class="btn" data-rm="back">Keep editing</button></span></div>` : "";
+    c.innerHTML = `<div class="panel-head"><h2>${R.inv ? `Receive invoice ${esc(R.invNo)}` : "Receive"} <span class="muted small">· ${esc(ed.vendor || "")} ${esc(ed.po ? poLabel(ed.po) : "")}</span></h2><button class="mini" data-rm="close">Close</button></div>
+      <div class="row small"><span class="muted">${n0(left)} unit${left === 1 ? "" : "s"} still to come${R.inv ? " on this invoice" : ""}. Enter what arrived on each row, or receive everything at once. Nothing is received until you Save.</span>
+        <span class="dbtns right"><button class="btn" data-rm="all" ${left ? "" : "disabled"}>Receive all (${n0(left)})</button><button class="btn" data-rm="clear">Clear</button></span></div>
+      ${R.msg ? `<div class="note warn small">${esc(R.msg)}</div>` : ""}
+      <div class="tbl-wrap rcv-wrap"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>${R.inv ? "On invoice" : "Ordered"}</th><th>Received</th><th>Still to come</th><th>Arrived now</th><th></th></tr></thead>
+        <tbody>${R.rows.map(row).join("") || `<tr><td colspan="7" class="l muted">Nothing left to receive.</td></tr>`}</tbody></table></div>
+      ${ask}
+      <div class="row rcv-foot" id="rcv-foot"><span class="rcv-sum small"></span><span class="dbtns right"><button class="btn" data-rm="close">Cancel</button><button class="btn primary" data-rm="save" ${S.busy ? "disabled" : ""}>Save</button></span></div>`;
+    rmFoot();
+  }
+  async function rmCommit() {
+    const R = S.rm; if (!R || S.busy) return;
+    if (rmBad()) { R.ask = false; return rmPaint(); }
+    const obj = {}; for (const r of R.rows) if ((Number(r.val) || 0) > 0) obj[r.k] = String((Number(obj[r.k]) || 0) + Number(r.val));
+    if (!Object.keys(obj).length) { R.ask = false; return rmPaint(); }
+    S.rm = null; $("rcv-modal").hidden = true; document.body.classList.remove("modal-open");
+    await receiveNow(obj, R.inv, false);
+  }
   async function receiveNow(obj, invId, stay) {
     const ed = S.ed; obj = obj || (ed && ed.recv); if (!ed || !obj) return;
     const lines = [];
@@ -2016,14 +2115,11 @@
     if (a === "recv") {
       const n = allChecks(ed);
       if (n && !ed.invoices.length) { note("warn", `Confirm or change the ${n} guessed product${n === 1 ? "" : "s"} on the invoices before receiving, so the right stock comes in.`); const i = ed.invoices.findIndex(v => count(v).check); if (i >= 0) { ed.cur = i; ed.invoices[i].filter = "check"; } render(); return; }
-      const pr = progress(ed), anyInv = ed.invoices.length > 0; ed.recv = {};
-      for (const x of ed.lines) { const p = pr.get(x.id); ed.recv[keyOf(x)] = String(anyInv ? 0 : Math.max(0, p.ordered - p.received)); }
-      render(); return;
+      return openRecv(null);
     }
     if (a === "recv-cancel") { ed.recv = null; render(); return; }
-    if (a === "rq-start" && iv && iv.id) { ed.recvInv = iv.id; render(); return; }
-    if (a === "recv-inv") { const v = ed.invoices[Number(k)]; if (!v) return; ed.cur = Number(k); ed.view = "inv"; ed.recvInv = v.id; render();
-      setTimeout(() => { const el = document.querySelector("#po-edit-view .po-recv"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 0); return; }
+    if (a === "rq-start" && iv && iv.id) return openRecv(iv.id);
+    if (a === "recv-inv") { const v = ed.invoices[Number(k)]; if (!v) return; ed.cur = Number(k); ed.view = "inv"; render(); return openRecv(v.id); }
     if (a === "rq-stop") { if (ed.rq && iv) for (const kk of Object.keys(ed.rq)) if (kk.startsWith(iv.id + "#")) delete ed.rq[kk]; ed.recvInv = null; render(); return; }
     if (a === "rq-go" && l && iv && iv.id) { const sh = invShares(ed, iv).get(l.id); return receiveNow({ [keyOf(l)]: rqVal(ed, iv, l, sh) }, iv.id, true); }
     if (a === "rq-all" && iv && iv.id) {
