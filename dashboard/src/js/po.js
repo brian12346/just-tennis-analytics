@@ -1614,6 +1614,14 @@
     } else if (mode === "notinv") flLeft = chip("Not on an invoice") + `<span class="muted small">${n0(vw.notInv)} units</span>`;
     else if (mode === "left") flLeft = chip("Still to receive") + `<span class="muted small">${n0(vw.left)} units</span>`;
     else flLeft = `<b>All lines</b> <span class="muted small">${n0(tot.ordered)} units${anyInv && vw.openInv ? " · pick an invoice on the right to receive it" : ""}</span>`;
+    // receiving with no invoice, from the row over the table too (Oct 29: "i don't see where you can receive against an
+    // order without an invoice"); what comes in shows as a "no invoice yet" card until the invoice is put on the PO
+    const BOXI = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>';
+    if (!flBtn && canRecv && ed.status !== "draft" && ed.lines.length && (mode === "all" || mode === "notinv")) {
+      const t2 = "Receive what came in with no invoice: it counts on the invoice once that's added to this PO";
+      if (!anyInv) flBtn = `<button class="btn primary po2-recv" data-pact="recv" ${S.busy ? "disabled" : ""} title="${t2}">${BOXI} Receive (no invoice)</button>`;
+      else if (mode === "notinv" || vw.notInv > 0) flBtn = `<button class="btn ${mode === "notinv" ? "primary " : ""}po2-recv" data-pact="recv" ${S.busy ? "disabled" : ""} title="${t2}">${mode === "notinv" ? BOXI + " " : ""}Receive without invoice</button>`;
+    }
     const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && mode === "all" && ed.lines.length > 1 ? `<select id="po-arrange" class="inp sm" aria-label="Reorganize the lines" title="Put the lines in an order — or drag them by the handle"><option value="">Reorganize lines…</option>${ed.invoices.filter(v => v.rows && v.rows.length).map((v, i) => `<option value="inv:${ed.invoices.indexOf(v)}">Match vendor invoice ${esc(v.no || "#" + (i + 1))}</option>`).join("")}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
     box.innerHTML = `
       <div class="po-top po2-top">
