@@ -1577,7 +1577,7 @@
             <div class="po2-title"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po || "#" + ed.id)}</button>` : "New purchase order"}</h2>${ed.id ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this PO" title="Copy a link to this PO (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${appr}</div>
           </div>
           <div class="po2-hr"><span class="steps six seven">${steps}</span>
-            <span class="dbtns">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}${ed.dirty && ed.id ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="Throw away the changes since the last save">Discard changes</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
+            <span class="dbtns">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}${ed.dirty ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="${ed.id ? "Throw away the changes since the last save" : "Throw away this new order"}">${ed.id ? "Discard changes" : "Discard"}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
         </div>
         ${ed.id ? "" : headStrip(ed, ro, both)}
       </div>
@@ -1606,6 +1606,7 @@
           : ed.lines.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>Ordered</th>${mode === "notinv" ? "<th>Invoiced</th><th>Not invoiced</th>" : mode === "left" ? "<th>Received</th><th>Still to come</th>" : `${anyInv ? "<th>Invoiced</th>" : ""}<th>Received</th>`}${ed.recv ? "<th>Arrived now</th>" : ""}<th class="l">${mode === "all" ? "Status · backorder" : "Backorder · ETA"}</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>`
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
         ${!ro && !ed.recv && mode !== "left" ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
+          ${ed.status === "draft" ? `<div class="row small addcsv"><span class="muted">or from a spreadsheet:</span><button class="btn sm" type="button" data-pact="csv-up" title="A CSV or Excel file of products (Shopify SKU, UPC or Amazon SKU) and quantities: added to this order">Upload CSV</button><button class="linkbtn small" type="button" data-pact="csv-tmpl" title="A blank CSV to fill in: Shopify SKU, UPC or Amazon SKU, Qty, and optionally Unit cost">Download template</button></div>` : ""}
           ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}`}
         ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order and its draft invoices? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
@@ -1741,7 +1742,7 @@
             <div class="po2-title"><h2>${esc(iv.no || "(no number)")}</h2>${iv.id && !iv.isNew ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this invoice" title="Copy a link to this invoice (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</div>
           </div>
           <div class="po2-hr"><span class="steps">${stepHtml}</span>
-            <span class="dbtns">${ed.dirty && saved ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="Throw away the changes since the last save">Discard changes</button>` : ""}<button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
+            <span class="dbtns">${ed.dirty ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="${saved ? "Throw away the changes since the last save" : "Throw away this new invoice"}">${saved ? "Discard changes" : "Discard"}</button>` : ""}<button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
         </div>
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
@@ -2128,7 +2129,6 @@
     const out = [];
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
-    out.push(`<button class="btn ${ed.dirty && !NEXT[ed.status] ? "primary" : ""}" data-pact="save" ${busy}>Save</button>`);
     // a draft is approved (Ready to approve → Ordered: approving marks it ordered)
     if (ed.status === "draft" && !ed.approvedAt) out.push(`<button class="btn primary" data-pact="save-approve" ${busy} title="Approve this order: it's marked ordered and moves to Ordered">Save &amp; approve</button>`);
     else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
@@ -2442,10 +2442,13 @@
       const ivId = S.mode === "inv" && S.invOpen && cur(ed) && cur(ed).id && !cur(ed).isNew ? cur(ed).id : null, poId = ed.id, view = ed.view, curI = ed.cur;
       ed.dirty = false; ed.leaveOk = true; S.ed = null; note("", "");
       if (ivId) return openInvoice(ivId).then(() => note("info", "Changes discarded."));
+      if (S.mode === "inv" && S.invOpen) return leave();     // a new invoice: back to the list
       if (poId) return openPO(poId).then(() => { if (S.ed) { if (view) S.ed.view = view; if (curI != null && S.ed.invoices[curI]) S.ed.cur = curI; render(); } note("info", "Changes discarded."); });
       return leave();
     }
     if (a === "save") return save(null);
+    if (a === "csv-up") { $("po-sheet").click(); return; }
+    if (a === "csv-tmpl") return orderTemplate();
     // an invoice without a PO
     if (a === "alone-newpo" && iv) { ed.alone = false; ed.confirm = false; ed.nameIn = true; syncLines(ed); ed.dirty = true; render();
       note("info", `A new purchase order starts from this invoice, with its ${n0(ed.lines.length)} matched product${ed.lines.length === 1 ? "" : "s"}. Name it, then Save.`); setTimeout(() => { const i = $("pe-po"); if (i) i.focus(); }, 0); return; }
@@ -2761,8 +2764,9 @@
   }
   async function sheetOrder(f) {
     if (!f) return;
-    if (S.ed && S.ed.dirty) return leave();
-    const st = { vendor: "", xl: null };
+    const into = S.ed && S.mode !== "inv" && S.ed.status === "draft" ? S.ed : null;   // from inside an order: add to it
+    if (!into && S.ed && S.ed.dirty) return leave();
+    const st = { vendor: into ? into.vendor : "", xl: null };
     S.busy = `Reading ${esc(f.name)}…`; render();
     await xlRead(st, f);
     S.busy = ""; render();
@@ -2773,7 +2777,26 @@
       note("warn", `Nothing in ${esc(f.name)} matched a product with a quantity.${sh && sh.unmatched.length ? ` ${n0(sh.unmatched.length)} row${sh.unmatched.length === 1 ? "" : "s"} didn't match (e.g. ${sh.unmatched.slice(0, 3).map(u => esc(u.desc)).join(", ")}).` : ""} The file needs a column of Shopify SKUs, UPCs or Amazon SKUs and a quantity column (Qty / Quantity / Units / Order).`);
       return;
     }
+    if (into && S.ed === into) return xlMerge(into, st);
     xlOpen(st, true);
+  }
+  // a spreadsheet's products added to the open order: same product and destination adds to the quantity
+  function xlMerge(ed, st) {
+    const x = st.xl, sh = x.sheets[x.pick];
+    let added = 0, more = 0;
+    for (const l of sh.lines) {
+      const have = ed.lines.find(y => y.vid === l.vid && y.dest === l.dest && (y.asku || "") === (l.asku || ""));
+      if (have) { have.qty = String((Number(have.qty) || 0) + l.qty); if (l.cost != null) have.cost = fmtCost(l.cost); more++; continue; }
+      ed.lines.push({ id: newId(), vid: l.vid, asku: l.asku, dest: l.dest, qty: String(l.qty), cost: fmtCost(l.cost != null ? l.cost : (variant(l.vid) || {}).cost), received: 0, backorder: false, eta: "", auto: false });
+      added++;
+    }
+    if (!ed.vendor && st.vendor) ed.vendor = st.vendor;
+    const dests = new Set(ed.lines.map(l => l.dest)); if (dests.size > 1) { ed.dest = "both"; ed.into = "both"; }
+    const miss = sh.unmatched.length ? `not matched: ${sh.unmatched.map(u => u.row || u.desc).join("; ")}` : "";
+    ed.note = [ed.note, `From ${x.file}${miss ? " — " + miss : ""}`].filter(Boolean).join(" · ");
+    ed.dirty = true; ed.add = "";
+    render();
+    note(sh.unmatched.length ? "warn" : "info", `Added from <b>${esc(x.file)}</b>: ${n0(added)} new line${added === 1 ? "" : "s"}${more ? `, ${n0(more)} added to lines already here` : ""} · ${n0(sh.units)} units.${sh.unmatched.length ? ` <b>${n0(sh.unmatched.length)} row${sh.unmatched.length === 1 ? "" : "s"} didn't match a product</b> (listed in the note) — add ${sh.unmatched.length === 1 ? "it" : "them"} with Add product.` : ""}${ed.vendor ? "" : " <b>Fill in the vendor.</b>"} Check it, then <b>Save</b>.`);
   }
   function xlId(v) {
     const t = String(v ?? "").trim(); if (!t || t.length < 3 || /^\d{1,3}$/.test(t)) return null;
@@ -2974,8 +2997,6 @@
   function bind() {
     const tab = $("tab-po"), box = $("po-edit-view");
     $("po-new").addEventListener("click", () => newOrder());
-    $("po-upload").addEventListener("click", () => $("po-sheet").click());
-    $("po-tmpl").addEventListener("click", () => orderTemplate());
     $("po-sheet").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sheetOrder(f); });
     bindStart();
     $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), S.cat ? catalog(true) : null]); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
@@ -3002,7 +3023,7 @@
     tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (window.JTReader) window.JTReader.warm(); if (S.ed) tab.classList.add("filedrop"); } });
     tab.addEventListener("dragleave", (e) => { if (!tab.contains(e.relatedTarget)) tab.classList.remove("filedrop"); });
     tab.addEventListener("drop", (e) => { if (!isFile(e)) return; e.preventDefault(); tab.classList.remove("filedrop"); const f = e.dataTransfer.files[0];
-      if (f && /\.(csv|tsv|xlsx|xls)$/i.test(f.name) && !(S.ed && S.ed.id)) sheetOrder(f); else readPdf(f); });
+      if (f && /\.(csv|tsv|xlsx|xls)$/i.test(f.name) && (!S.ed || S.ed.status === "draft")) sheetOrder(f); else readPdf(f); });
     // ---- the Invoices tab ----
     const itab = $("tab-invoices");
     $("inv-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; S.mode = "inv"; readPdf(f); });
