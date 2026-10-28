@@ -302,6 +302,27 @@
     if (ed.splitTot) for (const vid of Object.keys(ed.splitTot)) if (out.filter(l => l.vid === vid).length < 2) delete ed.splitTot[vid];
   }
   const keyOf = (l) => l.vid + "|" + (l.dest === "prep" ? l.asku || "" : "") + "|" + (l.dest || "prep");
+  // line order (saved as prep_order_lines.pos, migration 170): move one line before/after another
+  function moveLine(ed, fromId, toId, after) {
+    const a = ed.lines.findIndex(x => x.id === fromId); if (a < 0) return false;
+    const [l] = ed.lines.splice(a, 1); let b = ed.lines.findIndex(x => x.id === toId);
+    if (b < 0) { ed.lines.splice(a, 0, l); return false; }
+    ed.lines.splice(after ? b + 1 : b, 0, l); return true;
+  }
+  // a whole new order: like an invoice (its line order; what isn't on it stays after, as it was), grouped by product, or by SKU
+  function arrange(ed, how) {
+    const v = (l) => variant(l.vid) || {}, at = new Map(ed.lines.map((l, i) => [l.id, i]));
+    let key;
+    if (how.startsWith("inv:")) { const iv = ed.invoices[Number(how.slice(4))]; if (!iv) return false;
+      const pos = new Map(); (iv.rows || []).forEach((r, i) => { if (r.vid && !pos.has(String(r.vid))) pos.set(String(r.vid), i); });
+      key = (l) => [pos.has(String(l.vid)) ? pos.get(String(l.vid)) : 1e6]; }
+    else if (how === "name") key = (l) => [(v(l).product || v(l).title || "").toLowerCase(), (v(l).variant || "").toLowerCase()];
+    else if (how === "sku") key = (l) => [(v(l).sku || "~").toLowerCase()];
+    else return false;
+    const cmp = (x, y) => { const a = key(x), b = key(y); for (let i = 0; i < a.length; i++) { if (a[i] < b[i]) return -1; if (a[i] > b[i]) return 1; } return at.get(x.id) - at.get(y.id); };
+    const before = ed.lines.map(l => l.id).join(); ed.lines.sort(cmp);
+    return ed.lines.map(l => l.id).join() !== before;
+  }
   const variant = (vid) => vid && S.byVid ? S.byVid.get(String(vid)) : null;
   const cur = (ed) => ed.cur >= 0 ? ed.invoices[ed.cur] || null : null;
   // Saved POs: the details as a line of chips under the title; click one to edit (opens the details form at that field)
@@ -414,7 +435,7 @@
           "(select max(seen_at) from jt.variants)::text", "o.shopify_po_status", "o.shopify_po_status_at::text",
           "(select value::text from jt.settings where key = 'shopify_po_api')", "o.approved_at::text", "o.approved_by", "o.no_shopify_po"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
-        JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by variant_id, dest desc, amazon_sku`, true),
+        JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by coalesce(pos, 1000000), variant_id, dest desc, amazon_sku`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
         JT.rows(INV_COLS, `from jt.invoices i where i.order_id = ${JT.int(id)} or i.id = (select invoice_id from jt.prep_orders where id = ${JT.int(id)}) order by i.id`, true),
         // how this vendor was paid last time (for Mark paid)
@@ -1184,7 +1205,9 @@
       const recvCell = `<td>${p.received ? n0(p.received) : '<span class="dim">—</span>'}${canUnrecv(l) ? `<div><button class="linkbtn small" data-pact="unrecv1" data-k="${l.id}" title="Take some or all of these back off the received count">un-receive</button></div>` : ""}</td>`;
       const still = mode === "notinv" ? p.open : mode === "left" ? leftOf(l) : 0;
       const boCell = (open) => `<td class="l small">${open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && open > 0 ? shortDate(l.eta) : mode === "all" ? `<span class="pill ${p.st[1]}">${esc(p.st[0])}</span>` : '<span class="dim">—</span>'}</td>`;
-      return `<tr data-line="${l.id}">${prodCell(l, v)}${forCell(l)}
+      const canDrag = !ro && !ed.recv && ed.lines.length > 1;
+      const handle = canDrag ? `<button type="button" class="dragh" id="drag-${l.id}" draggable="true" data-drag="${l.id}" aria-label="Move ${esc(v ? v.title : "this line")}: drag it, or Alt+Up / Alt+Down" title="Drag to reorder (or Alt+↑ / Alt+↓)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>` : "";
+      return `<tr data-line="${l.id}" class="${canDrag ? "dragrow" : ""}">${handle ? prodCell(l, v).replace('<td class="l">', '<td class="l"><div class="dragcell">' + handle + '<div>').replace(/<\/td>$/, "</div></div></td>") : prodCell(l, v)}${forCell(l)}
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badQ || p.ordered < p.received ? "bad" : ""}" data-f="qty" data-k="${l.id}" value="${esc(l.qty)}" inputmode="numeric" placeholder="0" style="width:64px">` : n0(p.ordered)}</td>
         ${mode === "notinv" ? `<td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td><td><b class="num">${n0(p.open)}</b></td>`
           : mode === "left" ? `${recvCell}<td><b class="num">${n0(still)}</b></td>`
@@ -1250,7 +1273,9 @@
     const recvHtml = (() => {
       if (!ivNow) return "";
       if (!ivNow.id || ivNow.isNew) return '<div class="note info">Save to start receiving against this invoice.</div>';
-      const all = ed.lines.filter(l => ivSh.has(l.id)), c = count(ivNow), t = invTot(ivNow);
+      // in the invoice's own line order, so the table reads like the paper invoice
+      const ivPos = new Map(); ivNow.rows.forEach((r, i) => { if (r.vid && !ivPos.has(String(r.vid))) ivPos.set(String(r.vid), i); });
+      const all = ed.lines.filter(l => ivSh.has(l.id)).map((l, i) => [l, i]).sort((a, b) => ((ivPos.get(String(a[0].vid)) ?? 1e6) - (ivPos.get(String(b[0].vid)) ?? 1e6)) || a[1] - b[1]).map(x => x[0]), c = count(ivNow), t = invTot(ivNow);
       const anyLeft = all.some(l => ivSh.get(l.id).left > 0);
       // while receiving, only the products still to come on this invoice
       const ls = (recvOn && canRecv && anyLeft ? all.filter(l => ivSh.get(l.id).left > 0) : all).filter(findOk);
@@ -1315,7 +1340,7 @@
     } else if (mode === "notinv") flLeft = chip("Not on an invoice") + `<span class="muted small">${n0(vw.notInv)} units</span>`;
     else if (mode === "left") flLeft = chip("Still to receive") + `<span class="muted small">${n0(vw.left)} units</span>`;
     else flLeft = `<b>All lines</b> <span class="muted small">${n0(tot.ordered)} units${anyInv && vw.openInv ? " · pick an invoice on the right to receive it" : ""}</span>`;
-    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
+    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && mode === "all" && ed.lines.length > 1 ? `<select id="po-arrange" class="inp sm" aria-label="Arrange the lines" title="Put the lines in an order — or drag them by the handle"><option value="">Arrange lines…</option>${ed.invoices.filter(v => v.rows && v.rows.length).map((v, i) => `<option value="inv:${ed.invoices.indexOf(v)}">Like invoice ${esc(v.no || "#" + (i + 1))}</option>`).join("")}<option value="name">Group by product</option><option value="sku">By SKU</option></select>` : ""}${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
     box.innerHTML = `
       <div class="po-top po2-top">
         <div class="po2-headrow">
@@ -2612,6 +2637,7 @@
       const ed = S.ed, t = e.target; if (!ed) return;
       const iv = cur(ed);
       if (t.id === "pe-cat" || t.id === "pe-budget") { savePlan(ed, t.id === "pe-cat" ? "category" : "budget", t.value); return; }
+      if (t.id === "po-arrange") { const how = t.value; t.value = ""; if (how && arrange(ed, how)) { ed.dirty = true; render(); note("info", "Lines rearranged. Save to keep the order."); } return; }
       if (t.id === "pe-file") { const f = t.files[0]; t.value = ""; readPdf(f); return; }
       if (t.id === "pe-vendor") { ed.vendor = t.value.trim(); ed.dirty = true; reguess(ed); render(); return; }
       if (t.id === "pe-exp") { ed.expected = t.value; ed.dirty = true; render(); return; }
@@ -2669,8 +2695,34 @@
       if (t.dataset.f === "iqty" && r) { r.qty = t.value.trim(); syncLines(ed); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "icost" && r) { r.cost = t.value.trim().replace(/^\$/, ""); syncLines(ed); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
     });
+    // ---- reordering lines: drag a row by its handle, or Alt+Up / Alt+Down on the handle (v0.34.0) ----
+    const dropClear = () => box.querySelectorAll("tr.drop-above, tr.drop-below, tr.dragging").forEach(x => x.classList.remove("drop-above", "drop-below", "dragging"));
+    box.addEventListener("dragstart", (e) => {
+      const h = e.target.closest && e.target.closest("[data-drag]"); if (!h || !S.ed) return;
+      box._drag = h.dataset.drag; e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", h.dataset.drag); } catch (_) {}
+      const tr = h.closest("tr"); if (tr) { tr.classList.add("dragging"); try { e.dataTransfer.setDragImage(tr, 20, 20); } catch (_) {} }
+    });
+    box.addEventListener("dragover", (e) => {
+      if (!box._drag) return; const tr = e.target.closest && e.target.closest("tr[data-line]"); if (!tr) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      const r = tr.getBoundingClientRect(), below = e.clientY > r.top + r.height / 2;
+      box.querySelectorAll("tr.drop-above, tr.drop-below").forEach(x => { if (x !== tr) x.classList.remove("drop-above", "drop-below"); });
+      tr.classList.toggle("drop-below", below); tr.classList.toggle("drop-above", !below);
+    });
+    box.addEventListener("drop", (e) => {
+      if (!box._drag || !S.ed) return; const tr = e.target.closest && e.target.closest("tr[data-line]"); e.preventDefault();
+      const from = box._drag; box._drag = null; const below = tr && tr.classList.contains("drop-below"); dropClear();
+      if (tr && tr.dataset.line !== from && moveLine(S.ed, from, tr.dataset.line, below)) { S.ed.dirty = true; render(); }
+    });
+    box.addEventListener("dragend", () => { box._drag = null; dropClear(); });
     box.addEventListener("keydown", (e) => {
       const ed = S.ed; if (!ed) return;
+      if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && e.target.dataset && e.target.dataset.drag) {
+        e.preventDefault(); const id = e.target.dataset.drag;
+        const rows = [...box.querySelectorAll("tr[data-line]")].map(x => x.dataset.line), i = rows.indexOf(id), j = e.key === "ArrowUp" ? i - 1 : i + 1;
+        if (i >= 0 && j >= 0 && j < rows.length && moveLine(ed, id, rows[j], e.key === "ArrowDown")) { ed.dirty = true; render(); }
+        return;
+      }
       if (e.target.id === "po-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.add); if (f.length) addLine(f[0]); else render(); }
       if (e.target.id === "pe-sq" && e.key === "Enter") { e.preventDefault(); const b = box.querySelector(".mres button[data-ppick]"); if (b) b.click(); }
       if (e.target.id === "pe-sq" && e.key === "Escape") { ed.search = null; render(); }

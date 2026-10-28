@@ -1402,3 +1402,14 @@ table.sz-t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-num
 .po2-inv.attn{border-color:var(--attention);background:var(--attention-bg)}
 .po2-inv.attn.on{border:2px solid var(--primary)}
 .po2-inv.attn .muted{color:var(--attention-ink)}
+/* v0.34: the PO's tables grow with the page (the window scrolls, not a box inside it) */
+.po2-main .tbl-wrap,.po2-main .tbl-wrap.xl,.po2-main .tbl-wrap.tall{max-height:none;overflow-y:visible}
+/* reordering lines */
+.dragcell{display:flex;align-items:flex-start;gap:6px}
+.dragh{flex:0 0 auto;width:22px;height:28px;margin-left:-6px;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:grab;display:inline-flex;align-items:center;justify-content:center;padding:0}
+.dragh:hover,.dragh:focus-visible{background:var(--line-soft);color:var(--ink)}
+.dragh:active{cursor:grabbing}
+tr.dragging{opacity:.45}
+tr.drop-above>td{box-shadow:inset 0 2px 0 var(--founders-rock)}
+tr.drop-below>td{box-shadow:inset 0 -2px 0 var(--founders-rock)}
+#po-arrange{width:auto}
