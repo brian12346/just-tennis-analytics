@@ -572,7 +572,7 @@
       S.busy = "";
       loadInvList(true).catch(() => {});
       await openAlone(id);
-      if (!quiet) note("info", `Invoice <b>${esc(iv.no || id)}</b> ${first ? "saved" : "saved again"} — no PO yet.${body.remember.length ? " Matches are remembered for this vendor's next invoice." : ""} Start a PO from it or add it to one.`);
+      if (!quiet) note("info", `Invoice <b>${esc(iv.no || id)}</b> ${first ? "saved" : "saved again"} — no PO yet.${body.remember.length ? " Matches are remembered for this vendor's next invoice." : ""} Create PO from invoice or add it to one.`);
       return id;
     } catch (e) {
       S.busy = ""; render();
@@ -1748,7 +1748,7 @@
     const saved = ed.alone ? !!iv.id : !!ed.id;
     // no PO yet: the vendor, and what to do with the invoice — start a PO from it, or put it on one
     const aloneSum = () => `<div class="po-sum alone"><span>Purchase order <b>none yet</b> <label class="po-name">Vendor <input id="pe-vendor" class="inp sm" list="pe-vendors" value="${esc(ed.vendor)}" autocomplete="off" placeholder="Shopify vendor" style="width:160px"><datalist id="pe-vendors">${S.vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label></span>
-          <span class="dbtns"><button class="mini primary" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="mini" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`;
+          <span class="dbtns"><button class="mini primary" data-pact="alone-newpo" title="Make a purchase order with this invoice's products on it — needed to receive them">Create PO from invoice</button><button class="mini" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`;
     // ---------- page layout (v0.35.0, Brian Oct 28): the PO page's look — header, summary band, lines, cards on the right ----------
     const c = count(iv), savedTxt = ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? "All changes saved" : "";
     const matched = iv.rows.length > 0 && !c.check && !c.none;
@@ -1772,7 +1772,7 @@
     const poBlock = ed.alone
       ? `<div class="ivm-po"><span class="eyebrow">Purchase order</span><span class="small">None yet</span>
           <label class="stack small" for="pe-vendor">Vendor<input id="pe-vendor" class="inp sm" list="pe-vendors" value="${esc(ed.vendor)}" autocomplete="off" placeholder="Shopify vendor"><datalist id="pe-vendors">${S.vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>
-          <span class="dbtns"><button class="btn sm primary" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="btn sm" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`
+          <span class="dbtns"><button class="btn sm primary" data-pact="alone-newpo" title="Make a purchase order with this invoice's products on it — needed to receive them">Create PO from invoice</button><button class="btn sm" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`
       : `<div class="ivm-po"><span class="eyebrow">Purchase order</span>
           ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b><label class="stack small" for="pe-po">PO name<input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off"></label>`
             : `<button class="linkbtn ivm-polink" data-pact="open-po" title="Open the purchase order">${esc(ed.po ? ed.po : "#" + ed.id)} →</button><span class="small muted">${ed.id ? esc(STAGE.get(ed.status) || "") : ""}${others > 0 ? ` · ${others + 1} invoices` : ""}${canMove ? ' · <button class="linkbtn small" data-pact="inv-move">Change PO</button>' : iv.isNew && S.pend ? ' · <button class="linkbtn small" data-pact="inv-repick">Wrong PO?</button>' : ""}</span>`}</div>`;
@@ -1805,7 +1805,7 @@
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
       ${band}
-      ${ed.alone ? `<div class="note info">${saved ? "This invoice isn't on a purchase order yet." : "Saving keeps this invoice on its own — no purchase order yet."} Start a PO from it, or add it to an open one.</div>`
+      ${ed.alone ? `<div class="note info">${saved ? "This invoice isn't on a purchase order yet." : "Saving keeps this invoice on its own — no purchase order yet."} Get it right, then <b>Create PO from invoice</b> (to receive it) or <b>Add to a PO</b>. It can also go to QuickBooks as it is.</div>`
         : !ed.id ? '<div class="note info">Saving creates the purchase order with this invoice on it. You can add or change products on the PO afterwards.</div>' : ""}
       ${meta}
       <section class="panel po-inv iv-main" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>`;
@@ -2105,7 +2105,8 @@
   // A bill as it goes into QuickBooks: header fields and one amount per account.
   function qbHtml(ed, iv) {
     if (!iv.rows.length) return "";
-    if (ed.alone) return `<div class="qb"><div class="qb-head"><b>QuickBooks</b><span class="qb-state muted small">Send the bill once the invoice is on its purchase order.</span><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button></div></div>`;
+    // an invoice with no PO can go to QuickBooks too (Oct 29: "if there's never a PO added but the items are received
+    // and pushed to quickbooks we should be OK")
     const ba = byAccount(iv), diff = iv.total != null ? Math.round((iv.total - ba.all) * 100) / 100 : null;
     return `<div class="qb"><div class="qb-head"><b>QuickBooks</b><span class="qb-state">${qbState(ed, iv, ba, diff)}</span><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button></div>${qbPick(ed, iv)}
       <div class="qb-line small" title="Vendor, bill number, dates and terms are the invoice's own (above)">Bill to <b>${esc(ed.vendor || "—")}</b> · no. <span class="mono">${esc(iv.no || "—")}</span>${ed.po ? ` · memo <span class="mono">${esc(ed.po)}</span>` : ""} · ${iv.paidOn ? esc(payTxt(iv)) : "unpaid"}</div>
@@ -2141,6 +2142,11 @@
       <select id="pe-qbovend" class="inp sm" style="width:auto;max-width:260px">${(x.suggestions || []).map(v => `<option value="${esc(v.id)}" ${v.id === x.pick ? "selected" : ""}>${esc(v.name)}</option>`).join("")}${x.suggestions && x.suggestions.length ? '<option disabled>──────────</option>' : '<option value="">Pick the vendor…</option>'}${(x.vendors || []).filter(v => !sug.has(v.id)).map(v => `<option value="${esc(v.id)}" ${v.id === x.pick ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select>
       <span class="dbtns"><button class="mini primary" data-pact="qbo-vend">Send</button><button class="mini" data-pact="qbo-cancel">Cancel</button></span></div>`;
   }
+  // after a QuickBooks step: back on the same invoice (a PO's, or one on its own)
+  async function reopenAt(ed, ivId) {
+    if (ed.alone || !ed.id) return openInvoice(ivId);
+    await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === ivId); if (i >= 0) S.ed.cur = i; render(); }
+  }
   async function qboSend(extra) {
     const ed = S.ed, iv = cur(ed); if (!ed || !iv) return;
     if (ed.dirty || !iv.id) { const id = await save(null, true); if (!id) return; }
@@ -2150,7 +2156,7 @@
       const r = await JT.qbo({ action: "create_bill", invoice_id: Number(iv2.id), ...(extra || {}) });
       S.busy = "";
       if (r && r.ok) {
-        ed2.qbo = null; await openPO(ed2.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv2.id); if (i >= 0) S.ed.cur = i; render(); }
+        ed2.qbo = null; await reopenAt(ed2, iv2.id);
         note(r.duplicate || r.already ? "warn" : "info", esc(r.message || "Sent to QuickBooks."));
         return;
       }
@@ -2162,13 +2168,13 @@
     const ed = S.ed; S.busy = "Attaching the PDF…"; render();
     try {
       const r = await JT.qbo({ action: "attach", invoice_id: Number(iv.id) });
-      S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); }
+      S.busy = ""; await reopenAt(ed, iv.id);
       note(r && r.ok ? "info" : "bad", esc((r && (r.message || r.error)) || "No answer from QuickBooks."));
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't attach the PDF: " + esc(JT.message(e))); }
   }
   async function qboUnlink(iv) {
     const ed = S.ed; S.busy = "Saving…"; render();
-    try { await JT.prep.qboUnlink(iv.id); S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); } note("info", "Unlinked from QuickBooks. Send it again if the bill should be there."); }
+    try { await JT.prep.qboUnlink(iv.id); S.busy = ""; await reopenAt(ed, iv.id); note("info", "Unlinked from QuickBooks. Send it again if the bill should be there."); }
     catch (e) { S.busy = ""; render(); note("bad", "Couldn't unlink: " + esc(JT.message(e))); }
   }
   function qbText(ed, iv) {
@@ -2734,6 +2740,14 @@
   const monthTag = () => new Date().toLocaleDateString("en-US", { month: "short", timeZone: TZ });
   // New order opens a blank PO (Brian, Oct 29: "it should just open a blank new order and not do that pre-fill
   // silliness"). The reorder planner below (openStart) is no longer on a button.
+  // + New invoice (Oct 29: "we need to be able to create an invoice and massage it until it's right before tying to an
+  // order"): a blank invoice on its own, no PO, typed in by hand (or drop its PDF on it)
+  function newInvoice() {
+    if (S.ed && S.ed.dirty) return leave();
+    S.start = null; note("", "");
+    const ed = blankEd(); ed.alone = true; const iv = blankInv(); ed.invoices = [iv]; ed.cur = 0; ed.lineEdit = true;
+    S.ed = ed; showInvoicePage();
+  }
   function newOrder() {
     if (S.ed && S.ed.dirty) return leave();
     S.start = null; note("", "");
@@ -3101,6 +3115,7 @@
   function bind() {
     const tab = $("tab-po"), box = $("po-edit-view");
     $("po-new").addEventListener("click", () => newOrder());
+    $("po-newinv").addEventListener("click", () => newInvoice());
     $("po-sheet").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sheetOrder(f); });
     bindStart();
     $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), loadInvList(true).catch(() => {}), S.cat ? catalog(true) : null]); renderList(); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
