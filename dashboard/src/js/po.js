@@ -2216,9 +2216,17 @@
     }
   }
   // moving to a stage (payments are tracked on the invoices, so completing a PO doesn't check them)
-  function goStage(to) {
+  // Moving an approved order back to Draft takes the approval off too (Oct 29: otherwise it sat in Ordered as an
+  // "approved draft" instead of going back to the first lane), so it needs Approve again.
+  async function goStage(to) {
     const ed = S.ed; if (!ed) return;
-    return save(to);
+    const unapprove = to === "draft" && !!ed.approvedAt;
+    const id = await save(to);
+    if (id && unapprove) {
+      try { await JT.po.approve(id, false); await loadOrders(true); await openPO(id); note("info", "Back to <b>draft</b>. The approval came off, so it needs <b>Approve</b> again."); }
+      catch (e) { note("bad", "Moved to draft, but couldn't take the approval off: " + esc(JT.message(e))); }
+    }
+    return id;
   }
   async function setStatus2(status, msg) {
     const ed = S.ed; S.busy = "Saving…"; render();
