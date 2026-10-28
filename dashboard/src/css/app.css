@@ -1573,3 +1573,10 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ap-t th.sortable{cursor:pointer;user-select:none}
 .ap-t tr.ap-g td{background:var(--line-soft);cursor:pointer;padding-top:8px;padding-bottom:8px}
 .ap-t tr.ap-g:hover td{background:var(--line)}
+.ap-stc{white-space:nowrap}
+.ap-todo{font-size:12px;color:var(--ink-muted);border:1px dashed var(--line);border-radius:var(--radius-pill);padding:1px 8px}
+.ap-quick{display:inline-flex;gap:3px;margin-left:4px}
+.ap-quick .mini{font-size:11px;padding:1px 6px}
+.ap-quick .mini.sug{border-color:var(--good);color:var(--good);font-weight:600}
+.ap-sep{color:var(--line)}
+.kpi .v small{font-size:13px;font-weight:400;color:var(--ink-muted)}
