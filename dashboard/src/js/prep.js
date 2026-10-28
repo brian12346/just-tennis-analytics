@@ -1353,16 +1353,16 @@
         `from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id where l.variant_id = ${v} and o.status <> 'draft'`, true).catch(() => []),
       // Shopify on hand including changes not applied yet, and the inventory change log (migration 150)
       JT.rows(["jt.shopify_qty_now(" + v + ")"], "from (select 1) x", true).catch(() => []),
-      JT.rows(["at::text", "src", "kind", "sku", "chg", "after", "note", "who", "st", "err"],
-        `from (select m.at, 'prep' src, m.kind, m.amazon_sku sku, m.qty_change chg, m.qty_after after, coalesce(nullif(m.note, ''), m.shipment) note, m.by_user who, '' st, '' err
+      JT.rows(["at::text", "src", "kind", "sku", "chg", "after", "note", "who", "st", "err", "ev"],
+        `from (select m.at, 'prep' src, m.kind, m.amazon_sku sku, m.qty_change chg, m.qty_after after, coalesce(nullif(m.note, ''), m.shipment) note, m.by_user who, '' st, '' err, m.event_id::text ev
                  from jt.prep_moves m where m.variant_id = ${v}
-               union all select s.created_at, 'shopify', s.kind, s.amazon_sku, s.delta, null, s.reason, s.created_by, s.status, s.error
-                 from jt.shopify_stock_moves s where s.variant_id = ${v}) t order by at desc limit 12`, true).catch(() => []),
+               union all select s.created_at, 'shopify', s.kind, s.amazon_sku, s.delta, case when s.status = 'done' and s.shopify_before is not null then s.shopify_before + s.delta end, s.reason, s.created_by, s.status, s.error, s.event_id::text
+                 from jt.shopify_stock_moves s where s.variant_id = ${v}) t order by at desc limit 200`, true).catch(() => []),
     ]);
     const x = vr[0] || [];
     return {
       title: x[0] || "", sku: x[1] || "", vendor: x[2] || "", cost: x[3] == null ? null : +x[3], price: x[4] == null ? null : +x[4], shopQty: (shopNow[0] && shopNow[0][0] != null) ? +shopNow[0][0] : x[5] == null ? null : +x[5], pid: x[6] || "", upc: x[7] || "",
-      log: log.map(r => ({ at: r[0], src: r[1], kind: r[2], sku: r[3] || "", chg: +r[4] || 0, after: r[5] == null ? null : +r[5], note: r[6] || "", who: r[7] || "", st: r[8] || "", err: r[9] || "" })),
+      log: log.map(r => ({ at: r[0], src: r[1], kind: r[2], sku: r[3] || "", chg: +r[4] || 0, after: r[5] == null ? null : +r[5], note: r[6] || "", who: r[7] || "", st: r[8] || "", err: r[9] || "", ev: r[10] || "" })),
       sales: new Map(sales.map(r => [r[0], { d7: +r[1], d30: +r[2], d90: +r[3], fba30: +r[4] }])),
       fba: fba.map(r => ({ sku: r[0], asin: r[1], avail: +r[2], inbound: +r[3], reserved: +r[4], unf: +r[5], active: !!r[6] })),
       invs: invs.map(r => ({ id: r[0], no: r[1] || "", vendor: r[2] || "", date: r[3] || "", oid: r[4] || null, billed: +r[5] || 0, cost: r[6] == null ? null : +r[6], got: r[7] == null ? 0 : +r[7], recv: !!r[8], paid: r[9] || "" })),
@@ -1522,11 +1522,11 @@
   function invLogHtml(I) {
     if (!I.log || !I.log.length) return "";
     const K = { adjust: "Count", to_shopify: "To Shopify", from_shopify: "From Shopify", count: "Count", ship: "Shipped to Amazon", receive: "Received", unship: "Unshipped", unreceive: "Unreceived", assign: "Earmarked", reconcile: "Seller Central", seed: "Starting count" };
-    return `<h3 class="psec">Inventory log</h3><div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">When</th><th class="l">Where</th><th class="l">What</th><th>Change</th><th>After</th><th class="l">Note</th><th class="l">By</th></tr></thead><tbody>${I.log.map(r =>
+    return `<h3 class="psec">Inventory log <span class="muted small">· every change, newest first · #N opens it in Orders › Receive log</span></h3><div class="tbl-wrap" style="max-height:420px;overflow:auto"><table class="prept"><thead><tr><th class="l">When</th><th class="l">Where</th><th class="l">What</th><th>Change</th><th>After</th><th class="l">Note</th><th class="l">By</th><th class="l">Log</th></tr></thead><tbody>${I.log.map(r =>
       `<tr><td class="l small">${esc(when(r.at))}</td><td class="l small">${r.src === "shopify" ? "Shopify store" : "Prep center" + (r.sku ? ` · <span class="mono">${esc(r.sku)}</span>` : " · any listing")}</td>
         <td class="l small">${esc(K[r.kind] || r.kind)}${r.src === "shopify" ? (r.st === "pending" ? ' <span class="pill warn" title="Waiting for the sync to apply it in Shopify">pending</span>' : r.st === "failed" ? ` <span class="pill miss" title="${esc(r.err)}">failed</span>` : ' <span class="pill ok">in Shopify</span>') : ""}</td>
         <td class="${r.chg < 0 ? "neg" : "pos"}">${r.chg > 0 ? "+" : "−"}${n0(Math.abs(r.chg))}</td><td>${r.after == null ? '<span class="dim">—</span>' : n0(r.after)}</td>
-        <td class="l small">${esc(r.note)}${r.st === "failed" && r.err ? `<div class="meta neg">${esc(r.err.slice(0, 140))}</div>` : ""}</td><td class="l small">${esc(r.who)}</td></tr>`).join("")}</tbody></table></div>`;
+        <td class="l small">${esc(r.note)}${r.st === "failed" && r.err ? `<div class="meta neg">${esc(r.err.slice(0, 140))}</div>` : ""}</td><td class="l small">${esc(r.who)}</td><td class="l small">${r.ev ? `<button class="linkbtn small" data-act="rlog" data-ev="${esc(r.ev)}" title="Open this entry in Orders › Receive log">#${esc(r.ev)}</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
   }
   async function invSave(M) {
     const I = M.info, E = invState(M), ls = (cache.byVariant.get(M.vid) || []).map(l => l.sku);
@@ -1864,6 +1864,7 @@
       if (M.kind === "newship") { if (b.dataset.pickship != null) { const c = skuCandidates(M.q).list[+b.dataset.pickship]; if (c) pickNewShip(c); } return; }
       if (M.kind === "prod") {
         if (b.dataset.act === "gotoorder") { P.modal = null; renderModal(); openOrder(b.dataset.oid); return; }
+        if (b.dataset.act === "rlog") { P.modal = null; renderModal(); if (window.JTStockLog) window.JTStockLog.go(b.dataset.ev); return; }
         const E = invState(M);
         if (b.dataset.act === "iv-add") { const q = Number(E.mv.qty), sel = $("iv-ms"), sku = E.mv.sku != null ? E.mv.sku : sel ? sel.value : "";
           if (!Number.isInteger(q) || q <= 0) return; E.moves.push({ dir: E.mv.dir, sku, qty: q }); E.mv.qty = ""; E.warn = false; renderModal(); return; }

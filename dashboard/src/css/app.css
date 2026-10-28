@@ -1507,3 +1507,12 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ot-pay .meta{margin-top:3px}
 /* received before the invoice: its own card in Received (v0.45.0) */
 .il-card.oc.ocn{border-left:3px solid var(--warn)}
+/* Orders › Receive log (v0.48.0) */
+.rl-t td{vertical-align:top}
+.rl-row .rl-car{width:18px;color:var(--muted);text-align:center}
+.rl-row.on td{background:var(--line-soft)}
+.rl-row.rl-focus td{box-shadow:inset 0 0 0 9999px color-mix(in srgb,var(--sales) 10%,transparent)}
+.rl-detrow td{background:var(--line-soft);padding-top:0}
+.rl-det{padding:6px 0 10px}
+.rl-dt{background:var(--panel);border-radius:8px}
+.nowrap{white-space:nowrap}
