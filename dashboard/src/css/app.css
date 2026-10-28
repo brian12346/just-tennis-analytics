@@ -1561,3 +1561,13 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ol-warn{font-size:12px;color:var(--bad);background:var(--bad-bg);border-radius:var(--radius-md);padding:4px 8px;margin-top:2px}
 .btn.on{background:var(--ink);color:var(--panel);border-color:var(--ink)}
 @media (max-width:999px){.desk-only,.olrow{display:none!important}}
+/* Inventory › Active products (Oct 28) */
+.ap-kpis{margin:10px 0 14px}
+.ap-head{flex-wrap:wrap;gap:10px}
+.ap-head .filters{display:flex;gap:8px;flex-wrap:wrap}
+.ap-head .filters .inp{width:auto;max-width:200px}
+.ap-bulk{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 2px;min-height:40px}
+.ap-t td{vertical-align:top}
+.ap-t tr.ap-p.on td{background:var(--line-soft)}
+.ap-t tr.ap-v td{background:var(--ground);font-size:13px}
+.ap-t th.sortable{cursor:pointer;user-select:none}

@@ -50,6 +50,7 @@
     <button role="tab" data-tab="amazon" data-group="sales" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="ads" data-group="sales" aria-selected="false">Ads</button>
     <button role="tab" data-tab="pricematch" data-group="sales" aria-selected="false">Price match</button>
+    <button role="tab" data-tab="active" data-group="inventory" aria-selected="false" hidden>Active products</button>
     <button role="tab" data-tab="costs" data-group="inventory" aria-selected="false" hidden>Value</button>
     <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
@@ -470,6 +471,27 @@
     <section class="kpis" id="sz-kpis" aria-label="Shoe totals"></section>
     <div class="pm-bar sz-filters" id="sz-filters"></div>
     <div id="sz-body"></div>
+  </div>
+  <div id="tab-active" hidden>
+    <header class="top">
+      <div class="title">
+        <span class="eyebrow">Everything in stock (Shopify store, prep center, Amazon FBA &amp; AWD) or sold in the last 12 months · cull from here</span>
+        <h1>Active products</h1>
+      </div>
+      <div class="controls"><button class="btn icon" id="ap-refresh" title="Refresh" aria-label="Refresh">↻</button></div>
+    </header>
+    <div class="status" id="ap-status" aria-live="polite"></div>
+    <div class="note info" id="ap-note2" hidden></div>
+    <section class="kpis ap-kpis" id="ap-kpis" aria-label="Active products"></section>
+    <section class="panel">
+      <div class="panel-head ap-head">
+        <div class="seg" id="ap-seg" role="group" aria-label="Show"></div>
+        <div class="filters"><select id="ap-vendor" class="inp" aria-label="Vendor"></select><select id="ap-type" class="inp" aria-label="Product type"></select><input id="ap-q" class="inp" type="search" placeholder="Product, SKU, vendor" aria-label="Search"></div>
+      </div>
+      <div class="ap-bulk" id="ap-bulk"></div>
+      <div class="tbl-wrap xl"><table class="prept po-list ap-t" id="ap-table"></table></div>
+      <div class="row"><button class="btn" id="ap-more" hidden>Show more</button></div>
+    </section>
   </div>
   <div id="tab-discontinued" hidden>
     <header class="top po-hdr">
@@ -1052,6 +1074,7 @@
 </script>
 <script>
 <!-- @inline js/rlog.js -->
+<!-- @inline js/active.js -->
 </script>
 <script>
 <!-- @inline js/todo.js -->
