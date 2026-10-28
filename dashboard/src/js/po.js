@@ -514,9 +514,9 @@
   const rematchMsg = (n) => `${n} invoice line${n === 1 ? " was" : "s were"} matched to products added in Shopify since the invoice was saved. Check them and Save.`;
   // the saved invoices of a PO (or the one invoice of an invoice saved without a PO): header, lines, receipts
   const INV_COLS = ["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
-    "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id", "i.complete_at::text"];
+    "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id", "i.complete_at::text", "i.pdf_url"];
   async function fillInvoices(ed, ivs) {
-    ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft", completeAt: v[24] || "",
+    ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft", completeAt: v[24] || "", pdfUrl: v[25] || "", pdfUrlSaved: v[25] || "",
       notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
       paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "", att: v[23] || "" } : null }));
     if (!ed.invoices.length) return;
@@ -569,6 +569,7 @@
       const id = String(await JT.po.saveInvoiceAlone({ ...body.invoices[ed.cur], remember: body.remember }));
       iv.id = id;
       if (iv.file && !iv.file.saved) { await uploadFile(id, iv.file); iv.file.saved = true; }
+      await savePdfUrls(ed);
       S.busy = "";
       loadInvList(true).catch(() => {});
       await openAlone(id);
@@ -672,7 +673,63 @@
       S.busyRetry = finish; renderBusy();
     });
   }
+  // Invoices from a CSV / Excel file (Brian, Oct 29: "let's use a template. i'll mostly use this when i use claude to parse
+  // an invoice seller sage can't parse. so we'll also want the csv to include a link to a pdf"). One row per invoice line;
+  // the invoice's own fields can be on every row or just the first. Columns (any order, case and spaces don't matter):
+  //   invoice_number, vendor, invoice_date, due_date, terms, po_number, subtotal, total, pdf_url,
+  //   line_type (product | charge), item_code, upc, shopify_sku, description, qty, unit_cost, amount
+  // Charges (freight, fees) go to Inbound Shipping. It's read like a PDF: matched to its PO by po_number (or you pick), or
+  // into the + New invoice that's open.
+  const INV_CSV_COLS = ["invoice_number", "vendor", "invoice_date", "due_date", "terms", "po_number", "subtotal", "total", "pdf_url",
+    "line_type", "item_code", "upc", "shopify_sku", "description", "qty", "unit_cost", "amount"];
+  async function invoiceTemplate() {
+    await saveFile("invoice-template.csv", INV_CSV_COLS.join(",") + "\n", "text/csv");
+  }
+  const isSheet = (f) => !!f && /\.(csv|tsv|txt|xlsx|xls)$/i.test(f.name);
+  const csvDate = (v) => { const t = String(v ?? "").trim(); if (!t) return "";
+    if (/^\d{4}-\d{2}-\d{2}/.test(t)) return t.slice(0, 10);
+    const m2 = /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/.exec(t); if (m2) { const y = m2[3].length === 2 ? "20" + m2[3] : m2[3]; return `${y}-${m2[1].padStart(2, "0")}-${m2[2].padStart(2, "0")}`; }
+    if (/^\d{5}$/.test(t)) { const d = new Date(Date.UTC(1899, 11, 30) + (+t) * 864e5); return d.toISOString().slice(0, 10); }   // an Excel date number
+    const d = new Date(t); return isNaN(d) ? "" : d.toISOString().slice(0, 10); };
+  async function readCsvInvoice(file, orderId) {
+    if (!file) return;
+    const fromPO = S.mode === "po" && S.ed && S.ed.id ? S.ed : null;
+    const intoNew = S.ed && S.ed.alone && S.ed.invoices.length === 1 && !S.ed.invoices[0].id ? S.ed : null;
+    if (S.ed && S.ed.dirty && !fromPO && !intoNew) { note("warn", `Save or discard the open ${S.ed.id ? "purchase order" : "invoice"} first. <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="discard">Discard changes</button></span>`); return; }
+    S.busy = "Reading " + file.name + "…"; render();
+    let pend;
+    try {
+      await catalog();
+      let grid;
+      if (/\.(csv|tsv|txt)$/i.test(file.name)) grid = csvGrid(await file.text());
+      else { const X = await xlLib(); const wb = X.read(await file.arrayBuffer(), { type: "array" }); grid = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" }); }
+      const key = (x) => String(x ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+      const alias = { invoice: "invoice_number", invoice_no: "invoice_number", invoice_num: "invoice_number", date: "invoice_date", due: "due_date", po: "po_number", po_no: "po_number",
+        pdf: "pdf_url", pdf_link: "pdf_url", link: "pdf_url", type: "line_type", sku: "shopify_sku", vendor_sku: "item_code", item: "item_code", quantity: "qty", cost: "unit_cost", unit_price: "unit_cost", price: "unit_cost", ext: "amount", extended: "amount" };
+      const h = grid.findIndex(r => (r || []).some(c => ["qty", "quantity", "invoice_number"].includes(key(c))));
+      if (h < 0) throw new Error("no header row — use the invoice template's column names (download it with CSV template)");
+      const cols = new Map(); grid[h].forEach((c, i) => { const k = alias[key(c)] || key(c); if (INV_CSV_COLS.includes(k) && !cols.has(k)) cols.set(k, i); });
+      const at = (r, k) => cols.has(k) ? String(r[cols.get(k)] ?? "").trim() : "";
+      const num = (v) => { const n = Number(String(v || "").replace(/[$,\s]/g, "")); return v === "" || !isFinite(n) ? null : n; };
+      const body = grid.slice(h + 1).filter(r => r && r.some(c => String(c ?? "").trim() !== ""));
+      const first = (k) => { for (const r of body) { const v = at(r, k); if (v) return v; } return ""; };
+      const inv = { vendor: first("vendor"), invoice_no: first("invoice_number"), invoice_date: csvDate(first("invoice_date")), due_date: csvDate(first("due_date")),
+        terms: first("terms"), po_no: first("po_number"), subtotal: num(first("subtotal")), total: num(first("total")), pdf_url: first("pdf_url"), lines: [], charges: [] };
+      for (const r of body) {
+        const qty = num(at(r, "qty")), cost = num(at(r, "unit_cost")), amt = num(at(r, "amount")), desc = at(r, "description"), code = at(r, "item_code");
+        if (qty == null && amt == null && !desc && !code && !at(r, "shopify_sku")) continue;
+        if (/^charge|^fee|^freight|^shipping/i.test(at(r, "line_type"))) { inv.charges.push({ label: desc || code || "Freight", amount: amt != null ? amt : (qty || 1) * (cost || 0), kind: "inbound_shipping" }); continue; }
+        inv.lines.push({ item_code: code, upc: at(r, "upc"), shopify_sku: at(r, "shopify_sku"), description: desc, qty, unit_cost: cost != null ? cost : (amt != null && qty ? amt / qty : null), amount: amt != null ? amt : (qty != null && cost != null ? qty * cost : null) });
+      }
+      if (!inv.lines.length && !inv.charges.length) throw new Error("no lines with a quantity or amount");
+      pend = { inv, rows: [], f: null, csv: true, readNote: `Read from <b>${esc(file.name)}</b>${inv.pdf_url ? " (PDF linked)" : ""}. ` };
+    } catch (e) { S.busy = ""; render(); note("bad", `Couldn't read ${esc(file.name)}: ${esc(e && e.message || String(e))}`); return; }
+    S.busy = "";
+    return routeRead(pend, orderId, fromPO, intoNew);
+  }
+  window.JTInvCsv = { template: () => invoiceTemplate() };
   async function readPdf(file, orderId) {
+    if (isSheet(file)) return readCsvInvoice(file, orderId);
     if (!file) return;
     if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { note("warn", "That isn't a PDF. Choose the invoice's PDF file."); return; }
     const fromPO = S.mode === "po" && S.ed && S.ed.id ? S.ed : null;
@@ -717,6 +774,10 @@
       note("bad", "Couldn't read that PDF" + (e && e.message ? ": " + esc(e.message) : "") + "."); return;
     }
     S.busy = "";
+    return routeRead(pend, orderId, fromPO, intoNew);
+  }
+  // after an invoice is read (PDF or CSV): onto the open PO, into the new invoice, onto the PO its PO # names, or pick
+  async function routeRead(pend, orderId, fromPO, intoNew) {
     if (fromPO) { S.pend = null; return attach(pend, fromPO, ""); }
     if (intoNew) { S.pend = null; const vendor = intoNew.vendor; intoNew.leaveOk = true; S.ed = Object.assign(blankEd(), { alone: true, vendor });
       return attach(pend, S.ed, "Read into your new invoice — no PO yet. "); }
@@ -772,7 +833,7 @@
   async function attach(pend, ed, msg) {
     const { inv, f, rows } = pend;
     msg = (pend.readNote || "") + (msg || "");
-    const noText = !rows.length && !inv.lines.length;     // a scan the template reader couldn't read either
+    const noText = !pend.csv && !rows.length && !inv.lines.length;     // a scan the template reader couldn't read either
     S.mode = "inv";
     const dupHere = inv.invoice_no ? ed.invoices.findIndex(v => v.no && v.no.toLowerCase() === inv.invoice_no.toLowerCase()) : -1;
     if (dupHere >= 0) { ed.cur = dupHere; S.pend = null; showInvoicePage(); note("warn", `Invoice <b>${esc(inv.invoice_no)}</b> is already on this purchase order — here it is.`); return; }
@@ -794,7 +855,7 @@
     const c = count(iv), open = [...progress(ed).values()].filter((p, i) => p.open > 0 && !ed.lines[i].backorder).length;
     msg += iv.fromPo ? `${noText ? "This PDF has no text in it (probably a scan or photo)" : inv.lines.length ? "None of the lines read from this PDF matched a product" : "No item lines could be read from this PDF"}, so <b>the invoice was filled in from the PO</b>: ${iv.rows.filter(r => r.fromPo).length} product${iv.rows.filter(r => r.fromPo).length === 1 ? "" : "s"} still open on it, at the PO's quantities and costs. Check them against the PDF and change anything the vendor shipped short or billed differently.`
       : noText ? "This PDF has no text in it (it's probably a scan or photo), so no lines could be read. Add them with <b>Add product</b>."
-      : !inv.lines.length ? "No item lines were recognised in this PDF. The PDF is shown alongside; add what's missing by hand."
+      : !inv.lines.length ? (pend.csv ? "No product lines were found in the CSV — add them with Add product." : "No item lines were recognised in this PDF. The PDF is shown alongside; add what's missing by hand.")
       : `Read ${inv.lines.length} line${inv.lines.length === 1 ? "" : "s"}: ${c.sure} matched${c.check ? `, <b>${c.check} guess${c.check === 1 ? "" : "es"} to check</b>` : ""}${c.none ? `, <b>${c.none} not matched</b>` : ""}.`
         + (open && ed.lines.length && ed.id ? ` ${open} product${open === 1 ? " on the PO isn't" : "s on the PO aren't"} on this invoice — mark them backordered on the PO, or leave them on order.` : "")
         + " Nothing is saved until you press Save.";
@@ -1053,14 +1114,23 @@
       || `<tr><td class="l muted" colspan="8">${all.length ? "No invoices match." : "No invoices yet. Upload a vendor invoice PDF — it's matched to its purchase order by the PO # on it."}</td></tr>`}</tbody>`;
   }
   // A parsed invoice becomes one of the PO's invoices; its products are matched and the PO lines follow.
+  // a Shopify SKU / UPC / Amazon SKU given outright (the invoice CSV's shopify_sku column) is a sure match when it's one product
+  function skuGuess(t) { const f = findProducts(t); return f.length === 1 && (norm(f[0].v.sku) === norm(t) || (f[0].v.barcode && norm(f[0].v.barcode).replace(/^0+/, "") === norm(t).replace(/^0+/, "")) || f[0].asku)
+    ? { vid: f[0].v.vid, how: "sku", conf: "sure", alts: [] } : null; }
+  async function savePdfUrls(ed) {
+    for (const v of ed.invoices) if (v.id && (v.pdfUrl || "") !== (v.pdfUrlSaved || "")) {
+      try { await planCall("jt_invoice_set_pdf_url", "jt.invoice_set_pdf_url", { id: Number(v.id), pdf_url: v.pdfUrl || "" }); v.pdfUrlSaved = v.pdfUrl || ""; }
+      catch (e) { note("warn", "Saved, but the PDF link didn't: " + esc(JT.message(e))); }
+    }
+  }
   function merge(ed, p, f, rawRows, reuse) {
     if (!ed.vendor && p.vendor) ed.vendor = p.vendor;
     if (!ed.po && p.po_no) ed.po = p.po_no;
     const iv = { ...blankInv(), id: reuse || null, no: p.invoice_no || "", date: p.invoice_date || "", subtotal: p.subtotal, total: p.total, due: p.due_date || "", terms: p.terms || "",
-      fileName: f.name, file: f, raw: rawRows, isNew: true };
+      fileName: f ? f.name : "", file: f || null, raw: rawRows, isNew: true, pdfUrl: p.pdf_url || "", pdfUrlSaved: "" };
     for (const l of p.lines) {
       const src = { item_code: l.item_code || "", upc: l.upc || "", description: l.description || "", qty: l.qty, unit_cost: l.unit_cost, amount: l.amount };
-      const g = guessLine(src, ed.vendor);
+      const g = (l.shopify_sku && skuGuess(l.shopify_sku)) || guessLine(src, ed.vendor);
       // a guess that lands on a product already on the PO settles it
       const onPO = g.vid && ed.lines.some(x => x.vid === g.vid);
       const skip = !g.vid && NONPRODUCT.test(src.description + " " + src.item_code);
@@ -1696,7 +1766,7 @@
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
           <span class="dbtns right">${footButtons(ed, got, ro)}</span></div>
       </section>${side}</div>
-      <input type="file" id="pe-file" accept=".pdf,application/pdf" hidden>`;
+      <input type="file" id="pe-file" accept=".pdf,application/pdf,.csv,.xlsx,.xls,text/csv" hidden>`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
       if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} }
@@ -1812,7 +1882,7 @@
             <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp sm num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
             <label class="stack" for="pe-invtotal">Total<input id="pe-invtotal" class="inp sm num" value="${iv.total != null ? iv.total.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
           </div>
-          <div class="ivm-acts">${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}${iv.id && !iv.isNew ? `<button class="linkbtn small" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? `<button class="linkbtn small" data-pact="print-pdf" title="Print the vendor's PDF${iv.fileName ? " · " + esc(iv.fileName) : ""}">Print vendor PDF</button>` : ""}` : ""}${!(t.g > 0) && iv.id && !iv.isNew ? `<button class="linkbtn small neg" data-pact="rminv">Delete invoice</button>` : ""}</div>
+          <div class="ivm-acts">${iv.pdfUrl ? `<a class="linkbtn small" href="${esc(iv.pdfUrl)}" target="_blank" rel="noopener" title="${esc(iv.pdfUrl)}">Vendor PDF ↗</a>` : ""}${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}${iv.id && !iv.isNew ? `<button class="linkbtn small" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? `<button class="linkbtn small" data-pact="print-pdf" title="Print the vendor's PDF${iv.fileName ? " · " + esc(iv.fileName) : ""}">Print vendor PDF</button>` : ""}` : ""}${!(t.g > 0) && iv.id && !iv.isNew ? `<button class="linkbtn small neg" data-pact="rminv">Delete invoice</button>` : ""}</div>
         </div>
         ${iv.rows.length ? `<div class="ivm-pq">${qbLine(ed, iv)}</div>` : ""}
         ${iv.paidOn || iv.payMethod || iv.payRef || iv.paidFrom ? `<div class="ivm-pq">${payHtml(ed, iv)}</div>` : ""}
@@ -2098,7 +2168,7 @@
       <div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${tools}${iv.file || iv.parts ? `<button class="btn" data-pact="pdf" aria-pressed="${!!ed.showPdf}">${ed.showPdf ? "Hide PDF" : "Show PDF beside"}</button>` : ""}${iv.rows.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find item or product" value="${esc(ed.find || "")}" aria-label="Find a line on this invoice">` : ""}${canRecvIv ? `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>` : canMoreIv ? `<button class="btn po2-recv" data-pact="rq-start" title="Receive extra units, more than the invoice shows">Receive more</button>` : ""}</span></div>
       <div class="po-body ${pdfOn ? "with-pdf" : ""}">
         <div class="po-ivlines">
-          ${iv.rows.length ? `<div class="tbl-wrap"><table class="prept po-t iv-t"><thead><tr><th class="l">#</th><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || `<tr><td colspan="9" class="l muted small">No lines here.</td></tr>`}</tbody></table></div>` : (ed.alone && !iv.id && !iv.file && !iv.parts ? `${dropZone("Drag and drop the invoice PDF here", "it's read into this invoice — or add products below")}` : '<div class="muted small">No lines yet.</div>')}
+          ${iv.rows.length ? `<div class="tbl-wrap"><table class="prept po-t iv-t"><thead><tr><th class="l">#</th><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || `<tr><td colspan="9" class="l muted small">No lines here.</td></tr>`}</tbody></table></div>` : (ed.alone && !iv.id && !iv.file && !iv.parts ? `${dropZone("Drag and drop the invoice PDF (or invoice CSV) here", "it's read into this invoice — or add products below")}` : '<div class="muted small">No lines yet.</div>')}
           ${!lockL ? `<div class="row">${!ed.alone && poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}${ivAddBox(ed)}<button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
         </div>
         ${pdfOn ? `<aside class="po-pdf"><div class="panel-head"><h3 class="h3">Invoice PDF</h3><button class="mini" data-pact="pdf">Hide</button></div><div id="pe-pdf" class="pdfpages"></div></aside>` : ""}
@@ -2307,6 +2377,7 @@
       const id = String(res.order_id), ids = (res.invoice_ids || []).map(String);
       ed.id = id; ed.invoices.forEach((v, i) => { if (ids[i]) v.id = ids[i]; }); ed.removed = [];     // a retry after a later step fails updates, not duplicates
       for (const v of ed.invoices) if (v.id && v.file && !v.file.saved) { await uploadFile(v.id, v.file); v.file.saved = true; }
+      await savePdfUrls(ed);
       let moved = "";
       const target = next || (firstInvoice && ["draft", "ordered"].includes(ed.status) ? "invoiced" : null);
       if (target && target !== ed.status) { await JT.prep.setOrderStatus(Number(id), target); moved = target; }
@@ -3188,6 +3259,7 @@
     const tab = $("tab-po"), box = $("po-edit-view");
     $("po-new").addEventListener("click", () => newOrder());
     $("po-newinv").addEventListener("click", () => newInvoice());
+    $("inv-tmpl").addEventListener("click", () => invoiceTemplate());
     $("po-sheet").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sheetOrder(f); });
     bindStart();
     $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), S.cat ? catalog(true) : null]); renderList(); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });

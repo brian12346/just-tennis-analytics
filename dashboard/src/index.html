@@ -898,7 +898,7 @@
       <p class="muted small">Open an entry to see each product and where it went: the Shopify store (and whether Shopify took it), the prep center (with its count after), or Not for resale. <b>Roll back</b> undoes a receive (or an un-receive) in one go. Fixes run by Claude show as <i>fix</i>.</p>
     </section>
   </div>
-  <div id="tab-invoices" data-drop="Drop the invoice PDF to read it" hidden>
+  <div id="tab-invoices" data-drop="Drop the invoice PDF or CSV to read it" hidden>
     <header class="top">
       <div class="title">
         <span class="eyebrow">Vendor invoices · upload here, with or without a purchase order</span>
@@ -906,14 +906,15 @@
       </div>
       <div class="controls">
         <button class="btn" id="inv-refresh">Refresh</button>
+        <button class="btn" id="inv-tmpl" title="The CSV layout for an invoice (one row per line; a pdf_url column links the vendor's PDF) — fill it in, then upload or drop it here">CSV template</button>
         <button class="btn" id="po-newinv" title="Start an invoice on its own — no PO yet. Get it right, then create a PO from it or add it to one">+ New invoice</button>
-        <label class="btn primary" for="inv-file">Upload invoice PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
+        <label class="btn primary" for="inv-file">Upload invoice PDF<input type="file" id="inv-file" accept=".pdf,application/pdf,.csv,.xlsx,.xls,text/csv" hidden></label>
       </div>
     </header>
     <div class="status" id="inv-status" aria-live="polite">Loading invoices…</div>
     <div id="inv-notes-host"></div>
     <div id="inv-list-view">
-      <label class="dz dz-row" for="inv-file"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.6 4.6 0 0 1-.9-9.1A6 6 0 0 1 17.7 7.6 4.3 4.3 0 0 1 17.5 18"/><path d="M12 12v9"/><path d="m8.5 15.5 3.5-3.5 3.5 3.5"/></svg><span class="dz-t"><b>Drag and drop a vendor invoice PDF here</b><span>or <u>browse your files</u> · it's read, matched to its PO by the PO # on it, and opened for checking</span></span></label>
+      <label class="dz dz-row" for="inv-file"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.6 4.6 0 0 1-.9-9.1A6 6 0 0 1 17.7 7.6 4.3 4.3 0 0 1 17.5 18"/><path d="M12 12v9"/><path d="m8.5 15.5 3.5-3.5 3.5 3.5"/></svg><span class="dz-t"><b>Drag and drop a vendor invoice PDF (or invoice CSV) here</b><span>or <u>browse your files</u> · it's read, matched to its PO by the PO # on it, and opened for checking</span></span></label>
       <section class="kpis" id="inv-kpis" aria-label="Invoice totals"></section>
       <section class="il-lanes" id="inv-lanes" aria-label="Invoices by status"></section>
       <section class="panel">
