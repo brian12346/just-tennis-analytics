@@ -1516,3 +1516,7 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .rl-det{padding:6px 0 10px}
 .rl-dt{background:var(--panel);border-radius:8px}
 .nowrap{white-space:nowrap}
+/* invoice on its own: vendor is the first field, a wider one (v0.49.1) */
+.ivm-fields.ivm-7{grid-template-columns:minmax(150px,1.6fr) repeat(6,minmax(96px,1fr))}
+@media (max-width:1100px){.ivm-fields.ivm-7{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.iv-empty{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:14px;border:1px dashed var(--line);border-radius:10px}
