@@ -61,7 +61,7 @@
     <button role="tab" data-tab="shipments" data-group="prep" aria-selected="false" hidden>Shipments</button>
     <button role="tab" data-tab="pack" data-group="shipping" aria-selected="false" hidden>Packing photos</button>
     <button role="tab" data-tab="po" data-group="buying" aria-selected="false" hidden>Orders</button>
-    <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" class="navgone" hidden>Invoices</button>
+    <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" hidden>Invoices</button>
     <button role="tab" data-tab="costmap" data-group="setup" aria-selected="false" hidden>Shopify cost mapping</button>
     <button role="tab" data-tab="amzmap" data-group="setup" aria-selected="false" hidden>Amazon mapping</button>
     <button role="tab" data-tab="amzmatch" data-group="setup" aria-selected="false" hidden>Amazon matching</button>
@@ -845,18 +845,6 @@
         </div>
         <div class="tbl-wrap xl"><table class="prept po-list" id="po-table"></table></div>
       </section>
-      <section class="panel" id="po-invpanel">
-        <div class="panel-head">
-          <h2>Invoices <span class="muted small" id="inv-count"></span></h2>
-          <div class="seg" id="inv-seg" role="group" aria-label="Show"></div>
-          <div class="filters">
-            <label for="inv-q">Search <input id="inv-q" class="inp" type="search" placeholder="Vendor, invoice #, PO #"></label>
-            <label class="btn sm" for="inv-file">Upload invoice PDF</label>
-          </div>
-        </div>
-        <div class="tbl-wrap xl"><table class="prept po-list" id="inv-table"></table></div>
-        <p class="muted small">Drop an invoice PDF anywhere on this page. It's read, matched to the vendor's open PO by the PO # on it (or you pick the PO), and opens for checking, payment and QuickBooks.</p>
-      </section>
     </div>
     <div id="po-edit-host"><div id="po-edit-view" hidden></div></div>
   </div>
@@ -898,7 +886,7 @@
       </div>
       <div class="controls">
         <button class="btn" id="inv-refresh">Refresh</button>
-        <input type="file" id="inv-file" accept=".pdf,application/pdf" hidden>
+        <label class="btn primary" for="inv-file">Upload invoice PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
       </div>
     </header>
     <div class="status" id="inv-status" aria-live="polite">Loading invoices…</div>
@@ -906,6 +894,17 @@
     <div id="inv-list-view">
       <section class="kpis" id="inv-kpis" aria-label="Invoice totals"></section>
       <section class="il-lanes" id="inv-lanes" aria-label="Invoices by status"></section>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Invoices <span class="muted small" id="inv-count"></span></h2>
+          <div class="seg" id="inv-seg" role="group" aria-label="Show"></div>
+          <div class="filters">
+            <label for="inv-q">Search <input id="inv-q" class="inp" type="search" placeholder="Vendor, invoice #, PO #"></label>
+          </div>
+        </div>
+        <div class="tbl-wrap xl"><table class="prept po-list" id="inv-table"></table></div>
+        <p class="muted small">Drop an invoice PDF anywhere on this page. It's read, matched to the vendor's open PO with the same PO # (or you pick the PO), and opens here for checking, payment and QuickBooks. Receiving is done on the PO.</p>
+      </section>
     </div>
     <div id="inv-edit-host"></div>
   </div>
