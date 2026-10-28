@@ -73,10 +73,15 @@
     if (fn) try { fn(rest); } catch (_) {}
     setTimeout(() => { if (target === h && location.hash === h && (!rest || !fn)) target = null; }, 1500);
   }
-  function go(h) { if (!h) return; if (h === location.hash) return route(h); at(h); route(h); }
+  // a page with unsaved changes can hold navigation (JTNav.guard(fn): fn() returns true to stay put)
+  let guard = null, undoing = false;
+  const held = () => !!(guard && guard());
+  function go(h) { if (!h) return; if (held()) return; if (h === location.hash) return route(h); at(h); route(h); }
 
   window.addEventListener("popstate", (e) => {
     const n = e.state && e.state.jt, i = n ? stack.findIndex(x => x.n === n) : -1;
+    if (undoing) { undoing = false; return; }
+    if (held()) { undoing = true; if (i > pos) history.back(); else history.forward(); return; }   // the browser's Back/Forward: step back to where we were
     if (i >= 0) pos = i;
     else { const ent = { h: location.hash, t: titleOf(location.hash), n: ++seq }; stack = stack.slice(0, pos + 1); stack.push(ent); pos = stack.length - 1;
       try { history.replaceState({ jt: ent.n }, "", location.hash); } catch (_) {} }
@@ -100,8 +105,8 @@
   function closeRecent() { const m = $("nav-rmenu"); if (m) m.hidden = true; const b = $("nav-recent"); if (b) b.setAttribute("aria-expanded", "false"); }
   document.addEventListener("DOMContentLoaded", () => {
     const back = $("nav-back"), fwd = $("nav-fwd"), rec = $("nav-recent"), menu = $("nav-rmenu");
-    if (back) back.addEventListener("click", () => { if (stack[pos - 1]) history.back(); });
-    if (fwd) fwd.addEventListener("click", () => { if (stack[pos + 1]) history.forward(); });
+    if (back) back.addEventListener("click", () => { if (stack[pos - 1] && !held()) history.back(); });
+    if (fwd) fwd.addEventListener("click", () => { if (stack[pos + 1] && !held()) history.forward(); });
     if (rec) rec.addEventListener("click", (e) => { e.stopPropagation(); const open = menu.hidden; menu.hidden = !open; rec.setAttribute("aria-expanded", String(open)); if (open) menu.innerHTML = recentHtml(); });
     if (menu) menu.addEventListener("click", (e) => { const g = e.target.closest("[data-nav-go]"); if (!g) return; closeRecent(); go(g.dataset.navGo); });
     document.addEventListener("click", (e) => { if (menu && !menu.hidden && !e.target.closest("#nav-rmenu")) closeRecent(); });
@@ -118,6 +123,6 @@
     stack = [{ h, t: titleOf(h || "#todo"), n }]; pos = 0;
     if (/\//.test(h)) { target = h; targetT = Date.now(); } }
 
-  window.JTNav = { at, replace, go, on: (page, fn) => handlers.set(page, fn), onClose: (fn) => closers.push(fn),
+  window.JTNav = { guard: (fn) => { guard = fn; }, at, replace, go, on: (page, fn) => handlers.set(page, fn), onClose: (fn) => closers.push(fn),
     get current() { return stack[pos]; }, get target() { return target; }, done() { target = null; }, _s: () => ({ stack, pos, target }) };
 })();

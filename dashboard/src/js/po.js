@@ -2125,9 +2125,8 @@
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
     if (a === "discard") { ed.leaveOk = true; return leave(); }
     // Discard changes (v0.34.1): reload what's saved and stay on the page
-    if (a === "revert") { note("warn", `Discard the changes since the last save? <span class="dbtns"><button class="mini primary" data-pact="revert-yes">Discard changes</button><button class="mini" data-pact="revert-no">Keep editing</button></span>`); return; }
-    if (a === "revert-no") { note("", ""); return; }
-    if (a === "revert-yes") {
+    // no "are you sure": pressing Discard is the choice (Brian, Oct 28)
+    if (a === "revert" || a === "revert-yes") {
       const ivId = S.mode === "inv" && S.invOpen && cur(ed) && cur(ed).id && !cur(ed).isNew ? cur(ed).id : null, poId = ed.id, view = ed.view, curI = ed.cur;
       ed.dirty = false; ed.leaveOk = true; S.ed = null; note("", "");
       if (ivId) return openInvoice(ivId).then(() => note("info", "Changes discarded."));
@@ -2789,6 +2788,24 @@
   });
   // saved on another tab (received from the Prep center, …): reload the list when this tab is opened next
   window.addEventListener("jt:changed", () => { if ($("tab-po").hidden && $("tab-invoices").hidden) S.stale = true; });
+  // ---- unsaved changes hold the page (Brian, Oct 28: "we should not be able to leave the page if there are changes on
+  // the page and save/discard has not been chosen"): tabs, the Back/Forward/Recent buttons, the browser's Back, and
+  // closing or reloading the window all stop until Save or Discard changes is pressed ----
+  function holdForChanges() {
+    const ed = S.ed;
+    if (!ed || !ed.dirty || ed.leaveOk) return false;
+    const onPO = !$("tab-po").hidden, onInv = !$("tab-invoices").hidden && S.invOpen;
+    if (!onPO && !onInv) return false;
+    note("warn", `<b>Save or discard your changes first.</b> <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="revert">Discard changes</button></span>`);
+    const n = $("po-note"); if (n && n.scrollIntoView) n.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    return true;
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest(".tabs button, #nav-rmenu [data-nav-go]");
+    if (b && holdForChanges()) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
+  { const reg = () => { if (window.JTNav && window.JTNav.guard) window.JTNav.guard(holdForChanges); }; reg(); document.addEventListener("DOMContentLoaded", reg); }
+  window.addEventListener("beforeunload", (e) => { if (S.ed && S.ed.dirty && !S.ed.leaveOk) { e.preventDefault(); e.returnValue = ""; } });
   // the Orders tab is the way back to the swimlanes (v0.33: no "← All orders" link on a PO). Only a person's click:
   // JTPO.open clicks the tab too, then opens a PO.
   document.addEventListener("click", (e) => {
