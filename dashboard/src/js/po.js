@@ -1508,9 +1508,78 @@
   }
 
   // ---------- rendering: editor ----------
+  // ---------- Stock outlook on a PO (desktop only) ----------
+  // Brian, Oct 28: "a button to expand the info of each item - sales velocity across channels, inventory on hand, back
+  // ordered product, etc. basically show the user what will happen to the inventory levels when the order is placed".
+  // Under each product: sales by channel, stock by place, what's coming (this PO, the vendor's other open POs,
+  // backorders), and weeks of cover now / with the other POs / once this order lands. Pace = last 90 days, all channels.
+  // This PO's quantities come from the page (so unsaved edits count); everything else from jt.po_outlook.
+  const OL_KEY = "jt.po.outlook";
+  S.outlook = (() => { try { return localStorage.getItem(OL_KEY) === "1"; } catch (_) { return false; } })();
+  S.olData = new Map(); S.olKey = ""; S.olBusy = ""; S.olErr = null;
+  const OL_ASSUME = 14;   // days to arrival when the PO has no expected date
+  async function loadOutlook(ed) {
+    const vids = [...new Set(ed.lines.map(l => String(l.vid || "")).filter(v => /^\d+$/.test(v)))].sort();
+    const key = (ed.id || 0) + ":" + vids.join(",");
+    if (!vids.length || S.olKey === key || S.olBusy === key) return;
+    S.olBusy = key; S.olErr = null;
+    try {
+      const r = await JT.rows(["o.variant_id::text", "o.shop90", "o.shop30", "o.anr90", "o.anr30", "o.amz90", "o.amz30", "o.store", "o.prep", "o.fba", "o.fba_inbound", "o.awd",
+        "o.other_open", "o.other_bo", "o.other_draft", "o.other_eta::text", "o.other_pos"],
+        `from jt.po_outlook(${/^\d+$/.test(String(ed.id || "")) ? ed.id : 0}, array[${vids.join(",")}]::bigint[]) o`, true);
+      S.olData = new Map(r.map(x => [x[0], { shop90: +x[1] || 0, shop30: +x[2] || 0, anr90: +x[3] || 0, anr30: +x[4] || 0, amz90: +x[5] || 0, amz30: +x[6] || 0,
+        store: +x[7] || 0, prep: +x[8] || 0, fba: +x[9] || 0, inb: +x[10] || 0, awd: +x[11] || 0, oOpen: +x[12] || 0, oBo: +x[13] || 0, oDraft: +x[14] || 0, oEta: x[15] || "", oPos: x[16] || "" }]));
+      S.olKey = key;
+    } catch (e) { S.olErr = e; S.olKey = key; }
+    S.olBusy = "";
+    if (S.ed === ed && S.outlook) renderEditor();
+  }
+  const addDays = (n) => { const d = new Date(today() + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + Math.round(n)); return d.toISOString().slice(0, 10); };
+  const daysTo = (ds) => Math.max(0, Math.round((new Date(ds + "T12:00:00Z") - new Date(today() + "T12:00:00Z")) / 864e5));
+  const wks = (u, perDay) => perDay > 0 ? u / (perDay * 7) : Infinity;
+  const wkTxt = (w) => w === Infinity ? "no recent sales" : w < 0.5 ? "out" : (w < 4 ? w.toFixed(1) : n0(w)) + " wk";
+  function olRow(ed, l, NC) {
+    const d = S.olData.get(String(l.vid));
+    if (!d) return `<tr class="olrow"><td colspan="${NC}" class="l"><div class="ol-box ol-wait">${S.olErr ? `<span class="neg">Couldn't load the stock outlook: ${esc(JT.message(S.olErr))}</span>` : '<span class="muted small">Loading sales and stock…</span>'}</div></td></tr>`;
+    const mine = ed.lines.filter(x => String(x.vid) === String(l.vid));
+    const open = (x) => Math.max(0, (Number(x.qty) || 0) - (x.received || 0));
+    const thisQ = mine.filter(x => !x.backorder).reduce((a, x) => a + open(x), 0), thisBo = mine.filter(x => x.backorder).reduce((a, x) => a + open(x), 0);
+    const boEta = mine.filter(x => x.backorder && x.eta).map(x => x.eta).sort()[0] || "";
+    const s90 = d.shop90 + d.anr90 + d.amz90, s30 = d.shop30 + d.anr30 + d.amz30, pace = s90 / 90, wk = pace * 7;
+    const trend = s90 >= 6 && s30 / 30 > pace * 1.3 ? '<span class="pill warn" title="Last 30 days are selling faster than the 90-day pace">↑ faster lately</span>'
+      : s90 >= 6 && s30 / 30 < pace * 0.6 ? `<span class="pill pos" title="Last 30 days are slower than the 90-day pace${d.store + d.prep + d.fba + d.awd < wk ? " — maybe because it was out of stock" : ""}">↓ slower lately</span>` : "";
+    const have = d.store + d.prep + d.fba + d.inb + d.awd;
+    const arr = ed.expected || "", D = arr ? daysTo(arr) : OL_ASSUME;
+    // the other open POs count before this order lands unless their date is later than this order's
+    const oFirst = !(d.oEta && arr && d.oEta > arr), oD = d.oEta ? daysTo(d.oEta) : 0;
+    const sold = pace * D, atArr = Math.max(0, have - sold) + (oFirst ? d.oOpen : 0);
+    const out0 = pace > 0 ? have / pace : Infinity;               // days until out with what's here
+    const outO = pace > 0 ? (d.oOpen && have / pace < oD ? oD : have / pace) + d.oOpen / pace : Infinity;    // …plus the other open POs
+    const after = atArr + thisQ + (oFirst ? 0 : d.oOpen), outA = pace > 0 ? D + after / pace : Infinity;
+    const firstOut = pace > 0 ? (oFirst ? (have + d.oOpen) / pace : out0) : Infinity;   // runs out before this order lands?
+    const W = [["On hand now", have, out0], [d.oOpen ? "+ other open POs" : "", have + d.oOpen, outO], [thisQ ? "+ this order" : "", have + d.oOpen + thisQ, outA]].filter(x => x[0]);
+    const cap = Math.max(26, ...W.map(x => x[2] === Infinity ? 0 : x[2] / 7));
+    const bar = (lbl, u, days) => { const w = days / 7; return `<div class="ol-bar"><span class="ol-bl">${lbl}</span><span class="ol-track"><span class="ol-fill ${w < D / 7 ? "bad" : w < 8 ? "warn" : "ok"}" style="width:${w === Infinity ? 100 : Math.min(100, w / cap * 100)}%"></span>${D / 7 <= cap ? `<span class="ol-arr" style="left:${Math.min(100, D / 7 / cap * 100)}%" title="This order arrives (${arr ? shortDate(arr) : "assumed " + OL_ASSUME + " days"})"></span>` : ""}</span><span class="ol-bv"><b>${wkTxt(w)}</b>${days !== Infinity && days >= 1 ? ` <span class="dim">· to ${esc(shortDate(addDays(days)))}</span>` : ""}</span></div>`; };
+    const when = arr ? "is expected" : "would arrive (no expected date; assuming " + OL_ASSUME + " days)";
+    const gap = pace > 0 && have < 1 ? `<div class="ol-warn"><b>Out of stock now</b> — about ${n0(wk)} a week of sales missed until this order ${when}${d.oOpen && oFirst ? " or the other open POs land" : ""}.</div>`
+      : pace > 0 && firstOut < D ? `<div class="ol-warn">Runs out around <b>${esc(shortDate(addDays(firstOut)))}</b> — ${n0(D - firstOut)} days before this order ${when}.</div>` : "";
+    const ch = (n, a, b) => `<span>${n} <b>${n0(a)}</b> <span class="dim">(${n0(b)})</span></span>`;
+    const pl = (n, u, t) => u ? `<span title="${t || ""}">${n} <b>${n0(u)}</b></span>` : "";
+    return `<tr class="olrow"><td colspan="${NC}" class="l"><div class="ol-box">
+      <div class="ol-c"><span class="eyebrow">Selling</span><div class="ol-big">${wk >= 1 || wk === 0 ? n0(wk) : wk.toFixed(1)}<span class="dim"> / week</span> ${trend}</div>
+        <div class="ol-list">${ch("Just Tennis", d.shop90, d.shop30)}${ch("Ace n Rally", d.anr90, d.anr30)}${ch("Amazon", d.amz90, d.amz30)}</div><div class="meta">units, last 90 days (last 30)</div></div>
+      <div class="ol-c"><span class="eyebrow">On hand</span><div class="ol-big">${n0(have)}</div>
+        <div class="ol-list">${pl("Store", d.store) + pl("Prep", d.prep) + pl("FBA", d.fba, "Amazon FBA available + transfer") + pl("FBA inbound", d.inb) + pl("AWD", d.awd) || '<span class="dim">none anywhere</span>'}</div></div>
+      <div class="ol-c"><span class="eyebrow">Coming</span><div class="ol-big">${n0(thisQ)}<span class="dim"> this PO${arr ? " · " + esc(shortDate(arr)) : ""}</span></div>
+        <div class="ol-list">${thisBo ? `<span class="warnt">Backordered here <b>${n0(thisBo)}</b>${boEta ? " · ETA " + esc(shortDate(boEta)) : ""}</span>` : ""}${d.oOpen ? `<span title="${esc(d.oPos)}">Other open POs <b>${n0(d.oOpen)}</b>${d.oEta ? " · " + esc(shortDate(d.oEta)) : ""}</span>` : ""}${d.oBo ? `<span class="warnt" title="${esc(d.oPos)}">Backordered on other POs <b>${n0(d.oBo)}</b></span>` : ""}${d.oDraft ? `<span class="dim" title="${esc(d.oPos)}">On other drafts ${n0(d.oDraft)}</span>` : ""}${!thisBo && !d.oOpen && !d.oBo && !d.oDraft ? '<span class="dim">nothing else on order</span>' : ""}</div>${d.oPos ? `<div class="meta" title="${esc(d.oPos)}">${esc(d.oPos.length > 60 ? d.oPos.slice(0, 58) + "…" : d.oPos)}</div>` : ""}</div>
+      <div class="ol-c ol-w"><span class="eyebrow">Weeks of stock</span>${pace > 0 ? W.map(x => bar(x[0], x[1], x[2])).join("") : '<div class="muted small">No sales in the last 90 days — this order adds ' + n0(thisQ) + " units with nothing selling.</div>"}${gap}
+        ${pace > 0 ? `<div class="meta">When this order lands${arr ? "" : " (~" + OL_ASSUME + " days)"}: about ${n0(atArr)} left${sold >= 1 ? ` after selling ~${n0(sold)}` : ""}${d.oOpen && oFirst ? " (other POs in)" : ""}, then ${n0(after)}${d.oOpen && !oFirst ? " once the other POs come too" : " with this order"}${thisBo ? `; ${n0(thisBo)} backordered not counted` : ""}.</div>` : ""}</div>
+    </div></td></tr>`;
+  }
   function renderEditor() {
     const ed = S.ed; if (!ed) return;
     if (S.mode === "inv") return renderInvoicePage();
+    if (S.outlook && ed.lines.length && !ed.recv && window.matchMedia("(min-width: 1000px)").matches) loadOutlook(ed);
     $("po-list-view").hidden = true; $("po-edit-view").hidden = false;
     pageHead(false);
     const box = $("po-edit-view");
@@ -1586,7 +1655,7 @@
         ${boCell(mode === "all" ? p.open : still)}
         <td>${costInp(l, v, chg, "po")}</td>
         <td>${m(mode === "all" ? lineAmt(l) : still * unitOf(l, v))}</td>
-        <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) && !p.invoiced ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${extra}`;
+        <td class="nowrap">${!ro && !ed.recv && !(l.received > 0) && !p.invoiced ? `<button class="linkbtn small" data-pact="rmline" data-k="${l.id}" title="Take off the PO" aria-label="Remove line">✕</button>` : ""}</td></tr>${extra}${S.outlook && !ed.recv && ed.lines.find(x => String(x.vid) === String(l.vid)) === l ? olRow(ed, l, NC) : ""}`;
     };
     // one invoice's products: receive them here, once Receive is pressed for this invoice
     const recvOn = !!(ivNow && ivNow.id && ed.recvInv === ivNow.id);
@@ -1720,7 +1789,7 @@
       if (!anyInv) flBtn = `<button class="btn primary po2-recv" data-pact="recv" ${S.busy ? "disabled" : ""} title="${t2}">${BOXI} Receive (no invoice)</button>`;
       else if (mode === "notinv" || vw.notInv > 0) flBtn = `<button class="btn ${mode === "notinv" ? "primary " : ""}po2-recv" data-pact="recv" ${S.busy ? "disabled" : ""} title="${t2}">${mode === "notinv" ? BOXI + " " : ""}Receive without invoice</button>`;
     }
-    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && mode === "all" && ed.lines.length > 1 ? `<select id="po-arrange" class="inp sm" aria-label="Reorganize the lines" title="Put the lines in an order — or drag them by the handle"><option value="">Reorganize lines…</option>${ed.invoices.filter(v => v.rows && v.rows.length).map((v, i) => `<option value="inv:${ed.invoices.indexOf(v)}">Match vendor invoice ${esc(v.no || "#" + (i + 1))}</option>`).join("")}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
+    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && mode === "all" && ed.lines.length > 1 ? `<select id="po-arrange" class="inp sm" aria-label="Reorganize the lines" title="Put the lines in an order — or drag them by the handle"><option value="">Reorganize lines…</option>${ed.invoices.filter(v => v.rows && v.rows.length).map((v, i) => `<option value="inv:${ed.invoices.indexOf(v)}">Match vendor invoice ${esc(v.no || "#" + (i + 1))}</option>`).join("")}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length && !ed.recv ? `<button class="btn desk-only ${S.outlook ? "on" : ""}" data-pact="outlook" aria-pressed="${S.outlook}" title="Under each product: sales by channel, stock on hand, what's on order or backordered, and how many weeks of stock you'll have once this order lands">${S.outlook ? "Hide stock outlook" : "Stock outlook"}</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
     box.innerHTML = `
       <div class="po-top po2-top">
         <div class="po2-headrow">
@@ -2673,6 +2742,7 @@
     if (a === "save") return save(null);
     if (a === "csv-up") { $("po-sheet").click(); return; }
     if (a === "csv-tmpl") return orderTemplate();
+    if (a === "outlook") { S.outlook = !S.outlook; try { localStorage.setItem(OL_KEY, S.outlook ? "1" : "0"); } catch (_) {} return renderEditor(); }
     // an invoice without a PO
     if (a === "alone-newpo" && iv) { ed.alone = false; ed.confirm = false; ed.nameIn = true; syncLines(ed); ed.dirty = true; render();
       note("info", `A new purchase order starts from this invoice, with its ${n0(ed.lines.length)} matched product${ed.lines.length === 1 ? "" : "s"}. Name it, then Save.`); setTimeout(() => { const i = $("pe-po"); if (i) i.focus(); }, 0); return; }
