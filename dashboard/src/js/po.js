@@ -1175,6 +1175,8 @@
     // the PO's products, in one of three views: "all" (the entire PO), "notinv" (what isn't on an invoice yet) and
     // "left" (what's still to be received, once every invoice is in)
     const leftOf = (l) => { const p = pr.get(l.id); return Math.max(0, p.ordered - p.received); };
+    const fq = (ed.find || "").trim().toLowerCase();
+    const findOk = (l) => { if (!fq) return true; const v = variant(l.vid) || {}; return [v.title, v.sku, v.barcode, l.asku].join(" ").toLowerCase().includes(fq); };
     const lineRow = (l, mode) => {
       const v = variant(l.vid), p = pr.get(l.id), badQ = l.qty !== "" && !(Number.isInteger(Number(l.qty)) && Number(l.qty) >= 0);
       const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
@@ -1234,7 +1236,8 @@
           <span class="dbtns"><button class="mini primary" data-pact="split-go">Split</button><button class="mini" data-pact="split-no">Cancel</button></span></div></div></td></tr>`;
     };
     const viewLines = (mode === "notinv" ? topLines : mode === "left" ? ed.lines.filter(l => leftOf(l) > 0) : ed.lines)
-      .filter(l => !ed.recv || leftOf(l) > 0);   // receiving: only what isn't received yet
+      .filter(l => !ed.recv || leftOf(l) > 0)   // receiving: only what isn't received yet
+      .filter(findOk);
     const unitsOf = (l) => mode === "notinv" ? pr.get(l.id).open : mode === "left" ? leftOf(l) : Number(l.qty) || 0;
     const amtOf = (l) => mode === "all" ? lineAmt(l) : unitsOf(l) * unitOf(l, variant(l.vid));
     const bucket = (d) => {
@@ -1250,31 +1253,75 @@
       const all = ed.lines.filter(l => ivSh.has(l.id)), c = count(ivNow), t = invTot(ivNow);
       const anyLeft = all.some(l => ivSh.get(l.id).left > 0);
       // while receiving, only the products still to come on this invoice
-      const ls = recvOn && canRecv && anyLeft ? all.filter(l => ivSh.get(l.id).left > 0) : all;
+      const ls = (recvOn && canRecv && anyLeft ? all.filter(l => ivSh.get(l.id).left > 0) : all).filter(findOk);
       const back = ed.lines.filter(l => l.backorder && pr.get(l.id).open > 0).length;
       const left = ls.reduce((a, l) => { const x = Number(rqVal(ed, ivNow, l, ivSh.get(l.id))); return a + (ivSh.get(l.id).left > 0 && Number.isInteger(x) && x > 0 ? x : 0); }, 0);
       const btn = ivNow.recvAt ? (ivNow.recvManual && !ro ? '<button class="mini" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "")
         : !ro && t.g > 0 ? '<button class="mini" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : "";
-      return `<div class="po-recv ${ivNow.recvAt ? "done" : ""}"><div class="panel-head"><h3 class="h3">${ivNow.recvAt ? "✓ Received in full" : `Receive this invoice ${recvPill(ivNow)}`}</h3>
-          <span class="muted small">${ivNow.recvAt ? `All ${n0(t.b)} units are in.` : `${n0(t.g)} of ${n0(t.b)} units in.`}${back ? ` The PO stays open for ${back} backordered product${back === 1 ? "" : "s"}.` : ""}</span>
-          <span class="dbtns right"><button class="btn" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${ivNow.parts || ivNow.file ? '<button class="btn" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}<button class="btn" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>${btn}${canRecv && !ivNow.recvAt && ls.length && anyLeft ? (recvOn
-            ? `<button class="btn" data-pact="rq-stop">Cancel</button><button class="btn primary" data-pact="rq-all" ${S.busy || !left ? "disabled" : ""}>Save${left ? ` (${n0(left)} units)` : ""}</button>`
-            : `<button class="btn primary" data-pact="rq-start" title="Open receiving for this invoice">Receive</button>`) : ""}</span></div>
-        ${recvOn && canRecv && anyLeft ? `<div class="note info small">Receiving invoice <b>${esc(ivNow.no || "")}</b>: enter what arrived and press a product's Receive, or Save to receive everything entered. Cancel leaves without receiving the rest.${all.some(l => l.dest === "shopify") ? " Shopify-store units go into Shopify's stock when you receive them here." : ""}</div>` : ""}
+      return `<div class="po-recv ${ivNow.recvAt ? "done" : ""}">
         ${c.check ? `<div class="note warn">${c.check} guessed product${c.check === 1 ? "" : "s"} on this invoice ${c.check === 1 ? "needs" : "need"} confirming on the invoice before ${c.check === 1 ? "it" : "they"} can be received. <button class="mini" data-pact="open-inv">Open the invoice</button></div>` : ""}
-        ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>Receive</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
+        ${ls.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">Product</th><th class="l">For</th><th>On invoice</th><th>Received</th><th>To come</th><th>Unit cost</th><th>Ext.</th><th></th></tr></thead><tbody>${ls.map(invRow).join("")}</tbody></table></div>` : '<div class="muted small">No matched products on this invoice yet.</div>'}
       </div>`;
     })();
     const destTot = (d) => { const ls = ed.lines.filter(l => l.dest === d); return [ls.reduce((a, l) => a + (Number(l.qty) || 0), 0), ls.reduce((a, l) => a + lineAmt(l), 0)]; };
     const iv = cur(ed);
     const pdfOn = !!(iv && ed.showPdf && (iv.file || iv.parts));
+    // ---------- page layout (v0.33.0, Brian Oct 27, option A): receiving first; invoices, details and totals on the right ----------
+    const savedTxt = ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? "All changes saved" : "";
+    const appr = ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ' <span class="pill warn">Ready to approve</span>') : "";
+    const recvBy = (d) => { let o = 0, r = 0; for (const l of ed.lines) if (l.dest === d) { const p = pr.get(l.id); o += p.ordered; r += p.received; } return [r, o]; };
+    const bandDests = both ? ["prep", "shopify"] : [ed.lines.some(l => l.dest === "prep") ? "prep" : "shopify"];
+    const destBar = (d) => { const [r, o] = recvBy(d), pct = o ? Math.min(100, Math.round(r / o * 100)) : 0;
+      return `<div class="po2-bar"><div class="po2-barl"><span>→ ${DESTN[d]}</span><span class="muted">${n0(r)} of ${n0(o)}</span></div><span class="po2-track"><span style="width:${pct}%"></span></span></div>`; };
+    const savedInv = ed.invoices.some(v => v.id && !v.isNew);
+    const band = ed.id && ed.lines.length ? `<section class="panel po2-band" aria-label="Receiving">
+        <div class="po2-big"><span class="eyebrow">Received</span><span class="po2-metric num">${n0(tot.received)} <small>of ${n0(tot.ordered)} units</small></span></div>
+        <div class="po2-bars">${bandDests.map(destBar).join("")}</div>
+        ${savedInv ? `<span class="dbtns"><button class="btn" data-pact="print-slip" title="This invoice's products with what's been received and what's still open">Print packing slip</button></span>` : ""}</section>` : "";
+    // the invoices list on the right is the filter for the table (All lines · each invoice · Not on an invoice)
+    const ivCard = (v, i) => { const t = invTot(v), c = count(v), bad = c.check + c.none, pct = t.b ? Math.round(t.g / t.b * 100) : 0, on = mode === "inv" && i === ed.cur;
+      const rp = v.isNew || !v.id ? '<span class="pill warn">not saved</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : v.recvAt ? '<span class="pill ok">✓ Received</span>' : t.b > t.g ? `<span class="pill warn">${n0(t.b - t.g)} to come</span>` : "";
+      const meta = [v.date && shortDate(v.date), v.due && "due " + shortDate(v.due), t.b ? `${n0(t.g)} of ${n0(t.b)} in` : ""].filter(Boolean).map(esc).join(" · ");
+      return `<button class="po2-inv ${on ? "on" : ""}" data-inv="${i}" aria-pressed="${on}" title="Show invoice ${esc(v.no || "")}"><span class="po2-ih"><b>${esc(v.no || "(no number)")}</b><span class="num">${v.total != null ? m(v.total) : ""}</span></span>
+        ${meta ? `<span class="small muted">${meta}</span>` : ""}${t.b ? `<span class="po2-track sm"><span style="width:${pct}%"></span></span>` : ""}<span class="po2-pills">${rp}${v.id && !v.isNew ? (invClosed(v) ? closedPill : qbPill(v)) : ""}</span></button>`; };
+    const flat = (k, label, n, cls) => `<button class="po2-inv flat ${cls || ""} ${mode === k ? "on" : ""}" data-pview="${k}" aria-pressed="${mode === k}"><span class="po2-ih"><span>${label}</span><span class="muted num">${n0(n)}</span></span></button>`;
+    const selIv = mode === "inv" && ivNow && ivNow.id && !ivNow.isNew ? ivNow : null;
+    const selActs = selIv ? `<div class="po2-ivact"><button class="btn sm" data-pact="print-inv">Print invoice</button>${selIv.parts || selIv.file ? '<button class="btn sm" data-pact="print-pdf">Vendor PDF</button>' : ""}${selIv.recvAt ? (selIv.recvManual && !ro ? '<button class="btn sm" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "") : !ro && invTot(selIv).g > 0 ? '<button class="btn sm" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : ""}<button class="btn sm" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></div>${invStepsHtml(ed, selIv)}` : "";
+    const dd = (id, k, v, empty) => `<dt>${k}</dt><dd><button class="hfield2" data-hedit="${id}" title="Edit ${k.toLowerCase()}">${v ? esc(v) : `<span class="dim">${empty}</span>`}</button></dd>`;
+    const invSum = ed.invoices.filter(v => v.id && !v.isNew).reduce((a, v) => a + (v.total != null ? v.total : v.subtotal || 0), 0);
+    const trow = (k, u, c, mu) => `<span class="${mu ? "muted" : ""}">${k}</span><span class="num ${mu ? "muted" : ""}">${u}</span><span class="num ${mu ? "muted" : ""}">${c}</span>`;
+    const side = ed.id ? `<aside class="po2-side" aria-label="Invoices and order details">
+        <section class="panel po2-card"><div class="po2-ch"><h2>Invoices${ed.invoices.length ? " · " + ed.invoices.length : ""}</h2>${!ro ? `<label class="btn sm" for="pe-file" title="Read the vendor's invoice PDF and put it on this PO">+ Add invoice</label>` : ""}</div>
+          ${flat("all", "All lines", tot.ordered)}${ed.invoices.map(ivCard).join("")}${vw.showLeft ? flat("left", "Still to receive", vw.left) : ""}${anyInv ? flat("notinv", "Not on an invoice", vw.notInv, "dashed") : ""}
+          ${selActs}</section>
+        <section class="panel po2-card"><div class="po2-ch"><h2>Order details</h2></div>
+          <dl class="po2-dl">${dd("pe-vendor", "Vendor", ed.vendor, "not set")}${dd("pe-po", "PO #", ed.po, "not set")}${dd("pe-kind", "Type", ed.kind === "booking" ? "Booking" : "Order", "")}${ed.kind === "booking" ? dd("pe-placeby", "Place by", ed.placeBy ? shortDate(ed.placeBy) : "", "not set") : ""}${dd("pe-exp", "Expected", ed.expected ? shortDate(ed.expected) : "", "not set")}${dd("pe-dest", "Receive into", both ? "Both" : ed.dest === "prep" ? "Prep center" : "Shopify store", "")}${dd("pe-note", "Note", ed.note, "add a note")}</dl>
+          ${planHtml(ed, ro)}</section>
+        ${ed.lines.length ? `<section class="panel po2-card"><div class="po2-ch"><h2>Totals</h2></div><div class="po2-tot">
+          ${trow("Ordered", n0(tot.ordered), m(tot.cost))}${both ? ["prep", "shopify"].map(d => { const [u, c] = destTot(d); return trow(DESTN[d], n0(u), m(c), true); }).join("") : ""}
+          ${trow("Invoiced", n0(tot.invoiced), anyInv ? m(invSum) : "")}${trow("Received", n0(tot.received), "")}${trow("On order", n0(tot.open - tot.back), "")}${tot.back ? trow("Backordered", n0(tot.back), "") : ""}</div></section>` : ""}
+      </aside>` : "";
+    // the row over the table: what it shows (an invoice as a chip, × back to all lines), Find, and Receive for that invoice
+    const chip = (label) => `<span class="po2-chip">${label}<button data-pview="all" aria-label="Show all lines" title="Show all lines"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span>`;
+    let flLeft = "", flBtn = "";
+    if (mode === "inv" && ivNow) { const t = invTot(ivNow);
+      flLeft = chip("Invoice " + esc(ivNow.no || "(no number)")) + `<span class="muted small">${[ivNow.date && shortDate(ivNow.date), ivNow.total != null && m(ivNow.total), ivNow.due && "due " + shortDate(ivNow.due), t.b && `${n0(t.g)} of ${n0(t.b)} received`].filter(Boolean).join(" · ")}</span>`;
+      if (canRecv && ivNow.id && !ivNow.isNew && !ivNow.recvAt && t.b > t.g) flBtn = `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>`;
+    } else if (mode === "notinv") flLeft = chip("Not on an invoice") + `<span class="muted small">${n0(vw.notInv)} units</span>`;
+    else if (mode === "left") flLeft = chip("Still to receive") + `<span class="muted small">${n0(vw.left)} units</span>`;
+    else flLeft = `<b>All lines</b> <span class="muted small">${n0(tot.ordered)} units${anyInv && vw.openInv ? " · pick an invoice on the right to receive it" : ""}</span>`;
+    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
     box.innerHTML = `
-      <div class="po-top">
-        <div class="po-crumb"><button class="linkbtn" data-pact="back-list">← All orders</button>${ed.id ? `<button class="linkbtn small" data-pact="copy-link" title="Copy a link to this PO to share (needs a Seller Sage sign-in)">🔗 Copy link</button>` : ""}${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? '<span class="muted small">All changes saved</span>' : ""}
-          <span class="dbtns right">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
-        <div class="po-head"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor order")}</button> · <button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po ? poLabel(ed.po) : "#" + ed.id)}</button>` : "New purchase order"}${ed.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}${ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ' <span class="pill warn">Ready to approve</span>') : ""}</h2><span class="steps six seven">${steps}</span></div>
-        ${headStrip(ed, ro, both)}${planHtml(ed, ro)}${doubleHtml(ed)}
-        ${ed.lines.length ? `<div class="po-sum">${[["Ordered", tot.ordered], ["Invoiced", tot.invoiced], ["Received", tot.received], ["On order", tot.open - tot.back], ["Backordered", tot.back]].map(([k, v]) => `<span><b class="num">${n0(v)}</b> ${k.toLowerCase()}</span>`).join("")}<span><b class="num">${m(tot.cost)}</b> at cost</span>${both ? ["shopify", "prep"].map(d => { const [u, c] = destTot(d); return `<span class="dchip ${d}">→ ${DESTN[d]} <b class="num">${n0(u)}</b> · ${m(c)}</span>`; }).join("") : ""}</div>` : ""}
+      <div class="po-top po2-top">
+        <div class="po2-headrow">
+          <div class="po2-tb">
+            <span class="eyebrow">${ed.id ? `<button class="hlink" data-hedit="pe-vendor" title="Edit the vendor">${esc(ed.vendor || "Vendor")}</button>` : esc(ed.vendor || "New")} · ${ed.kind === "booking" ? "Booking" : "Purchase order"}${savedTxt ? ` · <span class="po2-saved">${savedTxt}</span>` : ""}</span>
+            <div class="po2-title"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po || "#" + ed.id)}</button>` : "New purchase order"}</h2>${ed.id ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this PO" title="Copy a link to this PO (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${appr}</div>
+          </div>
+          <div class="po2-hr"><span class="steps six seven">${steps}</span>
+            <span class="dbtns">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
+        </div>
+        ${ed.id ? "" : headStrip(ed, ro, both)}
       </div>
       ${!ed.id || ed.editHead ? `<section class="panel po-headedit">${ed.id ? `<div class="panel-head"><h2>PO details</h2><span class="dbtns right"><button class="btn" data-pact="head-done">Done</button></span></div>` : ""}
         <div class="pmgrid">
@@ -1287,10 +1334,12 @@
           <label class="stack" for="pe-note" style="grid-column:1 / -1">Note<input id="pe-note" class="inp" value="${esc(ed.note)}" ${ro ? "disabled" : ""} placeholder="e.g. ships in two drops"></label>
         </div>
       </section>` : ""}
+      ${band}${doubleHtml(ed)}
       ${iss.length ? `<section class="po-issues">${window.JTIssues.issuesHtml(iss)}</section>` : ""}
-      <section class="panel po-lines po-inv" id="pe-drop">
-        ${vendorBar(ed)}${S.vview && ed.lines.length ? vendorHtml(ed) : viewSeg(ed, vw, ro)}
-        ${S.vview && ed.lines.length ? "" : mode === "inv" ? invBarHtml(ed) + (recvHtml || "") : `
+      <div class="po2-cols">
+      <section class="panel po-lines po-inv po2-main" id="pe-drop">
+        ${vendorBar(ed)}${S.vview && ed.lines.length ? vendorHtml(ed) : filterRow}
+        ${S.vview && ed.lines.length ? "" : mode === "inv" ? (recvHtml || "") : `
         ${openLines.length && !ro && !ed.recv && ed.invoices.length && mode !== "all" ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
@@ -1306,7 +1355,7 @@
         ${ro ? `<div class="note info">This PO is complete, so its products and invoice lines are locked. Invoice payments can still be changed. Step it back to QB ready to change anything else.</div>` : ""}
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
           <span class="dbtns right">${footButtons(ed, got, ro)}</span></div>
-      </section>
+      </section>${side}</div>
       <input type="file" id="pe-file" accept=".pdf,application/pdf" hidden>`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
@@ -1756,7 +1805,7 @@
     else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
     // receive table has its own buttons)
-    if (ed.id && true)
+    if (false)
       ed.invoices.forEach((iv, i) => { if (!iv.id || iv.isNew || iv.recvAt || (ed.view === "inv" && i === ed.cur)) return; const t = invTot(iv); if (!(t.b > t.g)) return;
         out.push(`<button class="btn primary" data-pact="recv-inv" data-k="${i}" ${busy}>Receive invoice ${esc(iv.no || "#" + (i + 1))}</button>`); });
     // invoiced products are received on their invoice; this receives what isn't on one
@@ -2604,6 +2653,7 @@
       if (t.dataset.f === "qty" && l) { rebalance(ed, l, t.value.trim()); l.auto = false; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "cost" && l) { l.cost = t.value.trim().replace(/^\$/, ""); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "recv" && l) { ed.recv[keyOf(l)] = t.value.trim(); }
+      if (t.id === "po-find") { ed.find = t.value; clearTimeout(box._ft); box._ft = setTimeout(render, 200); return; }
       if (t.dataset.f === "rq" && l && cur(ed)) { ed.rq = ed.rq || {}; ed.rq[rqKey(cur(ed), l)] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 500); }
       if (t.dataset.f === "unrq" && ed.unrecv) { ed.unrecv.n = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "spq" && ed.split) { const x = ed.split.parts[Number(t.dataset.k)]; if (x) x.q = t.value.trim();
@@ -2670,6 +2720,12 @@
   });
   // saved on another tab (received from the Prep center, …): reload the list when this tab is opened next
   window.addEventListener("jt:changed", () => { if ($("tab-po").hidden && $("tab-invoices").hidden) S.stale = true; });
+  // the Orders tab is the way back to the swimlanes (v0.33: no "← All orders" link on a PO). Only a person's click:
+  // JTPO.open clicks the tab too, then opens a PO.
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest('.tabs button[data-tab="po"]');
+    if (b && e.isTrusted) setTimeout(() => { if (S.ed && S.mode === "po") leave(); }, 0);
+  }, true);
   window.poShow = () => { S.mode = "po"; S.invOpen = false; if (!S.shown) { S.shown = true; refresh(false); catalog().catch(() => {}); } else if (S.stale && !S.ed) { S.stale = false; refresh(true); } render(); };
   window.invShow = () => {
     S.mode = "inv";

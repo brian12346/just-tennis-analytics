@@ -1335,3 +1335,67 @@ table.sz-t{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-num
 .rcv-card tr.on td{background:rgba(59,130,246,.07)}
 .rcv-card .rcv-foot{position:sticky;bottom:0;background:var(--panel);padding-top:8px;border-top:1px solid var(--line);align-items:center}
 .rcv-card .rcv-ask .dbtns{margin-left:8px}
+/* ---------- PO page layout v0.33 (option A): receiving first, invoices/details/totals on the right ---------- */
+.po2-top{gap:8px}
+.po2-headrow{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:flex-end;justify-content:space-between}
+.po2-tb{display:flex;flex-direction:column;gap:4px;min-width:0}
+.po2-tb .eyebrow .hlink{font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit}
+.po2-saved{text-transform:none;letter-spacing:0;font-weight:400}
+.po2-title{display:flex;align-items:flex-end;gap:2px;flex-wrap:wrap}
+.po2-title h2{margin:0;font-size:28px;line-height:34px;letter-spacing:-0.02em;overflow-wrap:anywhere}
+.po2-title .hlink{font:inherit;letter-spacing:inherit}
+.po2-link{width:22px;height:22px;margin:0 6px 4px 2px;border:0;border-radius:6px;background:transparent;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer}
+.po2-link:hover{background:var(--line-soft);color:var(--primary)}
+.po2-hr{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:flex-end}
+.po2-band{display:flex;flex-wrap:wrap;gap:16px 32px;align-items:center;padding:20px 24px}
+.po2-big{display:flex;flex-direction:column;gap:2px;min-width:200px}
+.po2-metric{font-size:36px;line-height:42px;font-weight:600;letter-spacing:-0.02em;font-variant-numeric:tabular-nums}
+.po2-metric small{font-size:18px;font-weight:400;color:var(--muted);letter-spacing:0}
+.po2-bars{flex:1 1 320px;display:flex;flex-direction:column;gap:10px}
+.po2-barl{display:flex;justify-content:space-between;font-size:13px}
+.po2-track{display:block;height:8px;border-radius:999px;background:var(--line-soft);overflow:hidden}
+.po2-track>span{display:block;height:100%;border-radius:999px;background:var(--founders-rock)}
+.po2-track.sm{height:6px}
+.po2-cols{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+.po2-main{flex:999 1 640px;min-width:0}
+.po2-side{flex:1 1 300px;max-width:380px;display:flex;flex-direction:column;gap:16px}
+@media (max-width:980px){.po2-side{max-width:none}}
+.po2-card{display:flex;flex-direction:column;gap:10px;padding:16px}
+.po2-ch{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.po2-ch h2{margin:0;font-size:17px;line-height:24px}
+.po2-inv{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font:inherit;cursor:pointer}
+.po2-inv:hover{border-color:var(--founders-rock)}
+.po2-inv.on{border:2px solid var(--primary);padding:9px 11px}
+.po2-inv.flat{padding:9px 12px}.po2-inv.flat.on{padding:8px 11px}
+.po2-inv.dashed{border-style:dashed}.po2-inv.dashed.on{border-style:solid}
+.po2-ih{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.po2-ih b{font-weight:600;min-width:0;overflow-wrap:anywhere}
+.po2-ih .num{white-space:nowrap}
+.po2-pills{display:flex;gap:6px;flex-wrap:wrap}
+.po2-pills:empty{display:none}
+.po2-ivact{display:flex;gap:6px;flex-wrap:wrap;padding-top:4px;border-top:1px solid var(--line)}
+.po2-card .ivsteps{font-size:13px}
+.po2-dl{margin:0;display:grid;grid-template-columns:100px minmax(0,1fr);row-gap:4px;font-size:14px;align-items:start}
+.po2-dl dt{padding-top:2px}
+.po2-dl dt{color:var(--muted)}
+.po2-dl dd{margin:0;min-width:0}
+.hfield2{border:0;background:none;padding:2px 4px;margin-left:-4px;border-radius:6px;font:inherit;color:var(--ink);text-align:left;cursor:pointer;overflow-wrap:anywhere}
+.hfield2:hover{background:var(--line-soft)}
+.po2-card .po-plan{flex-wrap:wrap}
+.po2-tot{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px 14px;font-size:14px}
+.po2-tot .num{text-align:right;font-variant-numeric:tabular-nums}
+.po2-filter{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.po2-fl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.po2-fr{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-left:auto}
+.po2-fr #po-find{width:200px}
+.po2-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 4px 3px 10px;border-radius:999px;background:var(--good-bg);color:var(--ink);font-weight:600;font-size:14px;overflow-wrap:anywhere}
+.po2-chip button{width:22px;height:22px;border:0;border-radius:999px;background:transparent;color:inherit;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer}
+.po2-chip button:hover{background:rgba(0,38,118,.1)}
+.po2-recv{display:inline-flex;align-items:center;gap:8px;min-height:44px;white-space:nowrap}
+.panel.po2-band{flex-direction:row}
+.po2-top .hlink{border:0;background:none;padding:0;margin:0;color:inherit;font:inherit;cursor:pointer;text-align:left;border-radius:4px}
+.po2-top .hlink:hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+.po2-main .po-recv{border:0;padding:0;background:none;margin:0}
+.po2-main .po-recv.done{background:none}
+.po2-barl{gap:12px}
+.po2-hr{max-width:100%;min-width:0}.po2-hr .steps{flex-wrap:wrap;max-width:100%}
