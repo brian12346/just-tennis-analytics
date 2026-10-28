@@ -1043,7 +1043,7 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 @media (max-width:560px){.il-lanes{grid-template-columns:1fr}}
 
 /* Orders tab: six lanes (Ready to approve · Ordered · Invoiced · Seller Sage · Invoiced · Shopify · Received · Recorded) */
-.il-lanes.po-lanes{grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+.il-lanes.po-lanes{grid-template-columns:repeat(5,minmax(250px,1fr));gap:10px;overflow-x:auto;padding-bottom:4px}
 .po-lanes .il-lane{padding:8px}
 .il-lane.ol-approve{border-top-color:var(--warn)}
 .il-lane.ol-ordered,.il-lane.ol-invoiced,.il-lane.ol-invshop{border-top-color:var(--sales)}
@@ -1051,9 +1051,8 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 .il-lane.ol-recorded{border-top-color:var(--good);opacity:.92}
 .il-acts{display:flex;gap:6px;margin-top:4px}
 .po-lanes .il-hint{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
-@media (max-width:1300px){.il-lanes.po-lanes{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media (max-width:760px){.il-lanes.po-lanes{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:480px){.il-lanes.po-lanes{grid-template-columns:1fr}}
+@media (max-width:1300px){.il-lanes.po-lanes{grid-template-columns:repeat(5,minmax(250px,1fr))}}
+@media (max-width:760px){.il-lanes.po-lanes{grid-template-columns:repeat(5,minmax(240px,82vw))}}
 
 /* ---------- To do list (home) ---------- */
 /* "Just Tennis" (the business name) is home: the to do list */
@@ -1472,3 +1471,6 @@ th.th-s:not(.l) .th-sort{justify-content:flex-end}
 .th-sort:focus-visible{outline:2px solid var(--sales);outline-offset:-2px;border-radius:4px}
 .sort-ic{font-size:10px;opacity:.35}
 th.th-s.on .sort-ic{opacity:1;color:var(--ink)}
+/* an order straddling lanes (v0.38.0): the not-yet-invoiced rest is dashed; invoice cards carry a left rule */
+.il-card.oc.ocr{border-style:dashed}
+.il-card.oc.ocv{border-left:3px solid var(--sales)}

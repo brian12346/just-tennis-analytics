@@ -91,14 +91,23 @@
       "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status",
       "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)", "o.no_shopify_po",
       "o.approved_at::text", "o.approved_by", `(select count(*) ${IV} and ii.qbo_bill_id is not null)`,
-      `(select string_agg(ii.id || ':' || (ii.received_at is not null)::int || (ii.qbo_bill_id is not null)::int || ':' || coalesce(nullif(ii.invoice_no, ''), '#' || ii.id), '|' order by ii.id) ${IV})`],
+      `(select string_agg(ii.id || ':' || (ii.received_at is not null)::int || (ii.qbo_bill_id is not null)::int || ':' || coalesce(coalesce(ii.total, ii.subtotal)::text, '')
+         || ':' || (select coalesce(sum(il.qty), 0) from jt.invoice_lines il where il.invoice_id = ii.id and il.variant_id is not null and il.match_how <> 'skip')
+         || ':' || (select coalesce(sum(r.qty), 0) from jt.invoice_receipts r where r.invoice_id = ii.id) || ':' || coalesce(ii.invoice_date::text, '')
+         || ':' || coalesce(nullif(ii.invoice_no, ''), '#' || ii.id), '|' order by ii.id) ${IV})`,
+      // the part of the order no invoice covers yet, per product (units : cost) — its own card in Ordered (Oct 29)
+      `(select coalesce(sum(greatest(x.ord - x.inv, 0)), 0) || ':' || coalesce(sum(greatest(x.ord - x.inv, 0) * x.cost), 0) from (select l.variant_id, sum(l.qty_ordered) as ord,
+         max(coalesce(l.unit_cost, v.unit_cost, 0)) as cost, coalesce((select sum(il.qty) ${IL} and il.variant_id = l.variant_id and il.match_how <> 'skip'), 0) as inv
+         from jt.prep_order_lines l left join jt.variants v on v.variant_id = l.variant_id where l.order_id = o.id group by l.variant_id) x)`],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
       nLines: +x[16], units: +x[17], received: +x[18], cost: x[19] == null ? 0 : +x[19], unmatched: +x[20], guesses: +x[21], text: (x[22] || "").toLowerCase(), prepLines: +x[23],
       invoiced: +x[24], nBack: +x[25], backEta: x[26] || "", nUnpaid: +x[27] || 0, unpaidDue: x[28] || "", unpaidAmt: x[29] == null ? 0 : +x[29], shopifyUrl: x[30] || "", prepUnits: +x[31] || 0, into: x[32] || "", shopDiffs: x[34] ? +x[33] || 0 : null, shopStatus: x[35] || "", costsReady: +x[36] || 0, noShop: !!x[37],
       approvedAt: x[38] || "", approvedBy: x[39] || "", nQB: +x[40] || 0,
-      invs: (x[41] || "").split("|").filter(Boolean).map(t => { const [id, f, ...no] = t.split(":"); return { id, recv: f[0] === "1", qb: f[1] === "1", no: no.join(":") }; }) }))
+      invs: (x[41] || "").split("|").filter(Boolean).map(t => { const [id, f, tot, billed, got, date, ...no] = t.split(":");
+        return { id, recv: f[0] === "1", qb: f[1] === "1", total: tot === "" ? null : +tot, billed: +billed || 0, got: +got || 0, date: date || "", no: no.join(":") }; }),
+      restUnits: +String(x[42] || "0:0").split(":")[0] || 0, restCost: +String(x[42] || "0:0").split(":")[1] || 0 }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     // category / budget / placeholder (migration 162; empty until it's in)
     const pl = await JT.rows(["id::text", "category", "budget::text", "placeholder::text", "missing_invoice::text"], "from jt.prep_orders where category <> '' or budget is not null or placeholder or missing_invoice", refresh).catch(() => null);
@@ -810,8 +819,11 @@
   // A card's place in its lane is kept in the database (lane_pos, migration 173) so everyone sees the same order; cards
   // without one follow in the lane's usual order.
   const LANEPOS = { po: new Map(), inv: new Map() }, LANEIDS = { po: {}, inv: {} };
+  // Orders lanes hold order cards ("o12") and invoice cards ("i34", their place kept in invoices.po_lane_pos, migration 174)
   async function loadLanePos(kind) {
-    const r = await JT.rows(["id::text", "lane_pos::text"], `from ${kind === "po" ? "jt.prep_orders" : "jt.invoices"} where lane_pos is not null`, true).catch(() => null);
+    const r = kind === "po"
+      ? await JT.rows(["k", "pos::text"], "from (select 'o' || id as k, lane_pos as pos from jt.prep_orders where lane_pos is not null union all select 'i' || id, po_lane_pos from jt.invoices where po_lane_pos is not null) x", true).catch(() => null)
+      : await JT.rows(["id::text", "lane_pos::text"], "from jt.invoices where lane_pos is not null", true).catch(() => null);
     if (r) LANEPOS[kind] = new Map(r.map(x => [x[0], +x[1]]));
   }
   function laneSort(kind, k, arr) {
@@ -826,7 +838,7 @@
     const before = new Map(LANEPOS[kind]);
     ids.forEach((id, i) => clear ? LANEPOS[kind].delete(id) : LANEPOS[kind].set(id, i + 1));
     laneRedraw(kind);
-    try { await planCall("jt_lane_order", "jt.lane_order", { kind, ids: ids.map(Number), clear: !!clear }); }
+    try { await planCall("jt_lane_order", "jt.lane_order", { kind, ids: kind === "po" ? ids : ids.map(Number), clear: !!clear }); }
     catch (e) { LANEPOS[kind] = before; laneRedraw(kind); note("bad", "Couldn't save the order of the cards: " + esc(JT.message(e))); }
   }
   function moveCard(kind, k, id, to, above) {
@@ -836,8 +848,8 @@
     saveLaneOrder(kind, ids);
   }
   function wireLaneDrag(box, kind) {
-    const sel = kind === "po" ? "[data-po-open]" : "[data-inv-open]";
-    const idOf = (c) => kind === "po" ? c.dataset.poOpen : c.dataset.invOpen;
+    const sel = "[data-ck]";
+    const idOf = (c) => c.dataset.ck;
     let drag = null;
     const marks = () => box.querySelectorAll(".drop-above,.drop-below");
     const clear = () => { marks().forEach(x => x.classList.remove("drop-above", "drop-below")); box.querySelectorAll(".dragging").forEach(x => x.classList.remove("dragging")); };
@@ -900,7 +912,7 @@
   }
   // [value, first click's direction (-1: biggest / newest first)]
   const PO_KEYS = {
-    po: [o => o.po ? poLabel(o.po) : "#" + o.id], vendor: [o => o.vendor], status: [o => OLANES.findIndex(([k]) => k === laneOfO(o))],
+    po: [o => o.po ? poLabel(o.po) : "#" + o.id], vendor: [o => o.vendor], status: [o => OLANE_N_I.get(oLanes(o)[0])],
     products: [o => o.nLines, -1], ordered: [o => o.units, -1], invoiced: [o => o.nInv ? o.invoiced : null, -1], received: [o => o.received || null, -1],
     cost: [o => o.cost, -1], invoices: [o => o.invNos || null],
     dates: [o => (GOT.includes(o.status) ? o.stageAt.received : o.status === "draft" && o.kind === "booking" && o.placeBy ? o.placeBy : o.expected || o.updated) || null, -1],
@@ -944,7 +956,7 @@
       : k === "nopo" ? `<span class="dim">waiting ${esc(daysAgo(v.created || v.date))} · start or pick its PO</span>`
       : k === "receive" ? `${po} · ${v.got > 0 ? `<span class="pill manual">${n0(v.got)} of ${n0(v.billed)} in</span>` : `<span class="dim">${n0(v.billed)} unit${v.billed === 1 ? "" : "s"} to come</span>`}`
       : `${po ? po + " · " : ""}${v.paidOn ? '<span class="pill ok">Paid</span>' : v.due && v.due < today() ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'} ${v.qbo ? '<span class="pill ok">QB</span>' : ""}`;
-    return `<div class="il-card" role="button" tabindex="0" draggable="true" data-inv-open="${esc(v.id)}" title="Open invoice ${esc(v.no || "")} — drag to reorder (or Alt+↑ / Alt+↓)">
+    return `<div class="il-card" role="button" tabindex="0" draggable="true" data-ck="${esc(v.id)}" data-inv-open="${esc(v.id)}" title="Open invoice ${esc(v.no || "")} — drag to reorder (or Alt+↑ / Alt+↓)">
       <span class="il-top"><b>${esc(v.vendor || "—")}</b><span class="il-amt">${m(v.total)}</span></span>
       <span class="il-no"><span class="mono">${esc(v.no || "(no number)")}</span>${v.date ? " · " + esc(shortDate(v.date)) : ""}</span>
       <span class="il-hint">${hint}</span></div>`;
@@ -1176,8 +1188,8 @@
   // when it has one); fully received is Received until every invoice is in QuickBooks, then Recorded.
   // Everything is received in Seller Sage (Brian, Oct 21: no more Shopify POs), so Invoiced is one lane again.
   const OLANES = [["approve", "Ready to approve", "drafts waiting for approval"],
-    ["ordered", "Ordered", "with the vendor, no invoice yet"], ["invoiced", "Invoiced", "invoice in — receive it against the invoice"],
-    ["received", "Received", "in — bills not all in QuickBooks"], ["recorded", "Recorded", "received and in QuickBooks"]];
+    ["ordered", "Ordered", "with the vendor, not invoiced yet"], ["invoiced", "Invoiced", "invoice in — receive it against the invoice"],
+    ["received", "Received", "in — bill not in QuickBooks yet"], ["recorded", "Recorded", "received and in QuickBooks"]];
   const OLANE_N = new Map(OLANES.map(([k, n]) => [k, n])), OLANE_P = { approve: "warn", ordered: "manual", invoiced: "other", received: "ok", recorded: "ok" };
   const invLane = () => "invoiced";
   const laneOfO = (o) => o.status === "draft" ? (o.approvedAt ? "ordered" : "approve") : o.status === "ordered" ? "ordered"
@@ -1185,6 +1197,32 @@
     : o.nInv > 0 && o.nQB >= o.nInv ? "recorded" : "received";
   // a card is two short lines (vendor · cost / PO · what's next) so ten fit in a lane without scrolling (Brian, Oct 14)
   const OLANE_CARDS = 10;
+  // An order can straddle lanes (Brian, Oct 29: "once an order is invoiced it shows up the invoiced lane and then the
+  // state is tracked by the invoice state until the invoice is in quickbooks"). Each invoice on it is its own card:
+  // Invoiced until it's received, then Received until it's in QuickBooks, then Recorded. What no invoice covers yet stays
+  // as the order's card in Ordered. Drafts, and orders with no invoices, are one card as before.
+  const ivLane = (iv) => !iv.recv && iv.billed > 0 ? "invoiced" : iv.qb ? "recorded" : "received";
+  function oLaneCards(o) {
+    if (o.status === "draft" || !o.invs || !o.invs.length) return [{ k: laneOfO(o), ck: "o" + o.id, o, amt: o.cost }];
+    const cs = o.invs.map(iv => ({ k: ivLane(iv), ck: "i" + iv.id, o, iv, amt: iv.total || 0 }));
+    if (["ordered", "invoiced", "partial"].includes(o.status) && o.restUnits > 0) cs.unshift({ k: "ordered", ck: "o" + o.id, o, rest: true, amt: o.restCost });
+    return cs;
+  }
+  const oLanes = (o) => [...new Set(oLaneCards(o).map(c => c.k))].sort((a, b) => OLANE_N_I.get(a) - OLANE_N_I.get(b));
+  const OLANE_N_I = new Map(OLANES.map(([k], i) => [k, i]));
+  function cardOf(c) { return c.iv ? ivOCard(c) : oCard(c.o, c.k, c); }
+  // one invoice of an order, in the lane its own state puts it
+  function ivOCard(c) {
+    const o = c.o, iv = c.iv, k = c.k, name = esc(o.po ? poLabel(o.po) : "#" + o.id), nInv = o.invs.length;
+    const hint = k === "invoiced" ? (iv.got > 0 ? `<span class="pill manual">${n0(iv.got)}/${n0(iv.billed)} in</span>` : `<span class="dim">${n0(iv.billed)} to come</span>`)
+      : k === "received" ? '<span class="pill warn" title="Bill to enter in QuickBooks">for QB</span>'
+      : '<span class="pill ok">In QB</span>';
+    const bits = [`invoice ${nInv > 1 ? `${o.invs.indexOf(iv) + 1} of ${nInv}` : ""}`.trim(), iv.billed ? `${n0(iv.billed)} units` : "charges only", iv.date ? esc(shortDate(iv.date)) : "", iv.qb && k !== "recorded" ? "in QuickBooks" : ""].filter(Boolean);
+    return `<div class="il-card oc ocv" role="button" tabindex="0" draggable="true" data-ck="${esc(c.ck)}" data-po-open="${esc(o.id)}" data-po-inv="${esc(iv.id)}" title="Open ${esc(o.vendor || "")} ${name} at invoice ${esc(iv.no)} — drag to reorder (or Alt+↑ / Alt+↓)">
+      <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b><button class="oc-inv" type="button" data-inv-open="${esc(iv.id)}" title="Open invoice ${esc(iv.no)}">Inv ${esc(String(iv.no).replace(/^#/, "").slice(-6))} →</button></span><span class="il-amt">${iv.total == null ? '<span class="dim">—</span>' : m0(iv.total)}</span></span>
+      <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${hint}</span></span>
+      <span class="oc-3">${bits.join(" · ")}</span></div>`;
+  }
   // the extra line on a bigger card (Brian, Oct 29: "make the cards a little larger so we can see more of the details")
   function ocDetail(o, k) {
     const bits = [];
@@ -1196,9 +1234,10 @@
     if (o.category && o.nLines) bits.push(esc(o.category));
     return bits.join(" · ");
   }
-  function oCard(o, k) {
-    const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received);
-    const hint = k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
+  function oCard(o, k, c) {
+    const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received), rest = !!(c && c.rest);
+    const hint = rest ? `<span class="dim">${n0(o.restUnits)} not invoiced</span>`
+      : k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
       : k === "ordered" && o.status === "draft" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
       : k === "ordered" && !o.nLines && !o.missingInv ? `<span class="pill other" title="Placeholder — fills out from the invoices put on it${planGaps(o).length ? "; " + planGaps(o).join(", ") : ""}">${o.category ? esc(o.category) : "placeholder"}</span>${planGaps(o).length ? ` <span class="pill warn" title="${esc(planGaps(o).join(", "))}">!</span>` : ""}`
       : k === "ordered" ? `<span class="dim">${o.expected ? "exp " + esc(shortDate(o.expected)) : n0(o.units) + " units"}</span>`
@@ -1206,28 +1245,42 @@
       : k === "received" ? (o.nInv ? `<span class="pill warn" title="Bills to enter in QuickBooks">${o.nInv - o.nQB} for QB</span>` : '<span class="pill pos">no invoice</span>')
       : `<span class="dim">${esc(when(o.stageAt.received || o.updated))}</span>`;
     // the invoice, one click away (Brian, Oct 14): the next one that needs something — to receive, then to enter in QuickBooks
-    const iv = ["invoiced", "received", "recorded"].includes(k) && o.invs && o.invs.length
+    const iv = !rest && ["invoiced", "received", "recorded"].includes(k) && o.invs && o.invs.length
       ? (k === "invoiced" ? o.invs.find(v => !v.recv) : k === "received" ? o.invs.find(v => !v.qb) : null) || o.invs[o.invs.length - 1] : null;
     const miss = o.missingInv ? '<span class="pill warn" title="Goods came in with no invoice in the system — it clears when an invoice is put on this order">missing invoice</span> ' : "";
     const ivChip = iv ? `<button class="oc-inv" type="button" data-inv-open="${esc(iv.id)}" title="Open invoice ${esc(iv.no)}${o.invs.length > 1 ? ` (${o.invs.length} invoices on this order)` : ""}">${o.invs.length > 1 ? `${o.invs.length} inv` : "Inv"} ${esc(String(iv.no).replace(/^#/, "").slice(-6))} →</button>` : "";
-    return `<div class="il-card oc" role="button" tabindex="0" draggable="true" data-po-open="${esc(o.id)}" title="Open ${esc(o.vendor || "")} ${name} — drag to reorder (or Alt+↑ / Alt+↓)">
-      <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span><span class="il-amt" ${o.budget != null ? `title="Budget ${m0(o.budget)}${o.cost ? ` · ordered ${m0(o.cost)}` : ""}"` : ""}>${!o.cost && o.budget != null ? `<span class="dim">budget</span> ${m0(o.budget)}` : m0(o.cost)}</span></span>
+    const amt = rest ? `<span class="il-amt" title="The part not on an invoice yet, at cost (whole order ${m0(o.cost)})">${m0(o.restCost)}</span>`
+      : `<span class="il-amt" ${o.budget != null ? `title="Budget ${m0(o.budget)}${o.cost ? ` · ordered ${m0(o.cost)}` : ""}"` : ""}>${!o.cost && o.budget != null ? `<span class="dim">budget</span> ${m0(o.budget)}` : m0(o.cost)}</span>`;
+    const detail = rest ? [`rest of the order · ${o.invs.length} invoice${o.invs.length === 1 ? "" : "s"} in`, o.nBack ? `${n0(o.nBack)} backordered` : "", o.expected ? "exp " + esc(shortDate(o.expected)) : ""].filter(Boolean).join(" · ") : ocDetail(o, k);
+    return `<div class="il-card oc ${rest ? "ocr" : ""}" role="button" tabindex="0" draggable="true" data-ck="o${esc(o.id)}" data-po-open="${esc(o.id)}" ${rest ? 'data-po-view="notinv"' : ""} title="Open ${esc(o.vendor || "")} ${name}${rest ? " at what's not invoiced yet" : ""} — drag to reorder (or Alt+↑ / Alt+↓)">
+      <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span>${amt}</span>
       <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${miss}${hint}</span></span>
-      <span class="oc-3">${ocDetail(o, k)}</span></div>`;
+      <span class="oc-3">${detail}</span></div>`;
   }
   function renderOLanes(all) {
     const by = new Map(OLANES.map(([k]) => [k, []]));
-    for (const o of all) by.get(laneOfO(o)).push(o);
-    for (const k of ["approve", "ordered", "invoiced"]) by.get(k).sort((a, b) => String(a.created).localeCompare(String(b.created)));   // oldest waiting first
+    for (const o of all) for (const c of oLaneCards(o)) by.get(c.k).push({ ...c, id: c.ck });
+    const at = (c) => String(c.iv ? c.iv.date || c.o.created : c.o.created);
+    for (const k of ["approve", "ordered", "invoiced"]) by.get(k).sort((a, b) => at(a).localeCompare(at(b)));   // oldest waiting first
+    for (const k of ["received", "recorded"]) by.get(k).sort((a, b) => at(b).localeCompare(at(a)));
     $("po-lanes").innerHTML = OLANES.map(([k, n, sub]) => {
-      const os = laneSort("po", k, by.get(k)), tot = os.reduce((a, o) => a + (o.cost || 0), 0), more = os.length - OLANE_CARDS;
+      const os = laneSort("po", k, by.get(k)), tot = os.reduce((a, c) => a + (c.amt || 0), 0), more = os.length - OLANE_CARDS;
       return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}" data-lane-k="${k}">
         <div class="ol-headrow"><button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="${esc(sub)} — show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>${k === "approve" ? '<button class="ol-add" type="button" data-po-start title="Start an order: pick the vendor and see what to reorder" aria-label="Start an order">+</button>' : ""}</div>
-        <div class="ol-sum" title="Total of the ${n0(os.length)} order${os.length === 1 ? "" : "s"} here, at cost">${m0(tot)}</div>
-        <div class="il-cards">${os.slice(0, OLANE_CARDS).map(o => oCard(o, k)).join("") || (k === "approve" ? '<button class="il-empty ol-start" type="button" data-po-start>+ Start an order</button>' : '<div class="il-empty">Nothing here</div>')}</div>
+        <div class="ol-sum" title="Total of the ${n0(os.length)} card${os.length === 1 ? "" : "s"} here (orders at cost, invoices at their total)">${m0(tot)}</div>
+        <div class="il-cards">${os.slice(0, OLANE_CARDS).map(cardOf).join("") || (k === "approve" ? '<button class="il-empty ol-start" type="button" data-po-start>+ Start an order</button>' : '<div class="il-empty">Nothing here</div>')}</div>
         ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-olane="${k}">+ ${n0(more)} more in the table</button>` : ""}
         ${laneCustom("po", os) ? `<button class="linkbtn small il-reset" type="button" data-lane-reset="${k}" title="Put this lane back in its usual order">Reset order</button>` : ""}</div>`;
     }).join("");
+  }
+  // a lane card opens its PO at that invoice, or at what isn't invoiced yet
+  async function openCard(el) {
+    const inv = el.dataset.poInv, view = el.dataset.poView;
+    await openPO(el.dataset.poOpen);
+    if (!S.ed || (!inv && !view)) return;
+    if (inv) { const i = S.ed.invoices.findIndex(v => v.id === String(inv)); if (i >= 0) { S.ed.cur = i; S.ed.view = "inv"; } }
+    else S.ed.view = view;
+    render();
   }
   async function approveOrder(id, yes) {
     S.busy = yes === false ? "Saving…" : "Approving…"; render();
@@ -1249,7 +1302,7 @@
     const all = S.orders || [];
     const isOpen = (o) => o.status !== "complete";
     const isLane = (st) => OLANE_N.has(st);
-    const inStage = (o, st) => st === "open" ? isOpen(o) : st === "all" ? true : isLane(st) ? laneOfO(o) === st : o.status === st;
+    const inStage = (o, st) => st === "open" ? isOpen(o) : st === "all" ? true : isLane(st) ? oLanes(o).includes(st) : o.status === st;
     const q = S.q.trim().toLowerCase().replace(/^#/, "");
     const cnt = (st) => all.filter(o => inStage(o, st)).length;
     if (S.orders) renderOLanes(all); else $("po-lanes").innerHTML = "";
@@ -1274,7 +1327,7 @@
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
         return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
-          <td class="l"><span class="pill ${OLANE_P[laneOfO(o)]}" title="${esc(STAGE.get(o.status))}">${OLANE_N.get(laneOfO(o))}</span></td>
+          <td class="l">${oLanes(o).map(k => `<span class="pill ${OLANE_P[k]}" title="${esc(STAGE.get(o.status))}">${OLANE_N.get(k)}</span>`).join("")}</td>
           <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
           <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null ? `<div class="meta">${m(o.invTotal)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
           <td class="l small">${dates}</td>
@@ -2837,12 +2890,12 @@
       const mk = e.target.closest("[data-po-mark]"); if (mk) { e.stopPropagation(); markOrdered(mk.dataset.poMark); return; }
       const ln = e.target.closest("[data-olane]"); if (ln) { S.stage = S.stage === ln.dataset.olane && !ln.classList.contains("il-more") ? "open" : ln.dataset.olane; renderList();
         if (S.stage !== "open") { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
-      const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openPO(o.dataset.poOpen); } });
+      const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openCard(o); } });
     wireLaneDrag($("po-lanes"), "po"); wireLaneDrag($("inv-lanes"), "inv");
     $("po-table").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { e.stopPropagation(); toggleSort("po", PO_KEYS, b.dataset.sort); renderList(); } });
     $("inv-table").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { e.stopPropagation(); toggleSort("inv", INV_KEYS, b.dataset.sort); renderInvList(); } });
     $("inv-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-inv-open]"); if (o && e.target === o && !e.altKey && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openInvoice(o.dataset.invOpen); } });
-    $("po-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && e.target === o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
+    $("po-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && e.target === o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openCard(o); } });
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     // a PDF dropped anywhere on the tab
     const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
