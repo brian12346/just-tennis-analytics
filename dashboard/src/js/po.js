@@ -581,13 +581,32 @@
       return null;
     }
   }
+  // the POs an invoice can go on: the vendor's own, received / complete ones included (Oct 29: "it didn't let me choose
+  // this PO - likely because it has already been received"), then other vendors' open ones
+  function poChoices(vendor, skipId) {
+    const v = (vendor || "").toLowerCase(), os = (S.orders || []).filter(o => o.id !== skipId);
+    const same = os.filter(o => v && o.vendor.toLowerCase() === v);
+    return { sameOpen: same.filter(o => o.status !== "complete"), sameDone: same.filter(o => o.status === "complete"), rest: os.filter(o => !same.includes(o) && o.status !== "complete") };
+  }
+  const poOptgroups = (ed, c, opt) => `${c.sameOpen.length ? `<optgroup label="${esc(ed.vendor)}">${c.sameOpen.map(opt).join("")}</optgroup>` : ""}${c.sameDone.length ? `<optgroup label="${esc(ed.vendor)} · complete">${c.sameDone.map(opt).join("")}</optgroup>` : ""}${c.rest.length ? `<optgroup label="Other vendors">${c.rest.map(opt).join("")}</optgroup>` : ""}`;
+  // Link invoice (PO page, Oct 29: "i added an invoice to the system and want to link it. we need a button"): saved
+  // invoices with no PO, this vendor's first
+  function linkInvHtml(ed) {
+    if (!S.invs) return '<div class="note info small">Loading invoices…</div>';
+    const v = (ed.vendor || "").toLowerCase(), loose = S.invs.filter(x => !x.oid);
+    const same = loose.filter(x => x.vendor.toLowerCase() === v), rest = loose.filter(x => !same.includes(x));
+    const opt = (x) => `<option value="${esc(x.id)}">${esc(x.vendor || "—")} · ${esc(x.no || "(no number)")}${x.date ? " · " + esc(shortDate(x.date)) : ""}${x.total != null ? " · " + esc(m(x.total)) : ""}</option>`;
+    if (!loose.length) return `<div class="note info small">No saved invoices without a PO. Use <b>+ Add invoice</b> to read a PDF, or <b>+ New invoice</b> on Orders. <button class="linkbtn small" data-pact="no">Close</button></div>`;
+    return `<div class="note warn small">Link a saved invoice to this PO:
+      <select id="pe-linkinv" class="inp sm" style="width:100%;margin:6px 0">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
+      Units already received here count on it (up to what it bills). <span class="dbtns"><button class="mini primary" data-pact="link-inv-go">Link it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
+  }
   function aloneLinkHtml(ed) {
-    const all = (S.orders || []).filter(o => o.status !== "complete");
-    const same = all.filter(o => o.vendor.toLowerCase() === (ed.vendor || "").toLowerCase()), rest = all.filter(o => !same.includes(o));
+    const c = poChoices(ed.vendor), all = [...c.sameOpen, ...c.sameDone, ...c.rest];
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     return `<div class="note warn">Put this invoice on a purchase order:
       ${ed.moveRank ? rankHtml(ed.moveRank.rk, ed.moveRank.n, 'data-pact="alone-link-go" data-k') : ""}
-      <select id="pe-alonepo" class="inp sm" style="width:auto;max-width:320px">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
+      <select id="pe-alonepo" class="inp sm" style="width:auto;max-width:320px">${poOptgroups(ed, c, opt)}</select>
       <span class="dbtns"><button class="mini primary" data-pact="alone-link-go" ${all.length ? "" : "disabled"}>Add it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
 
@@ -1600,7 +1619,8 @@
     const invSum = ed.invoices.filter(v => v.id && !v.isNew).reduce((a, v) => a + (v.total != null ? v.total : v.subtotal || 0), 0);
     const trow = (k, u, c, mu) => `<span class="${mu ? "muted" : ""}">${k}</span><span class="num ${mu ? "muted" : ""}">${u}</span><span class="num ${mu ? "muted" : ""}">${c}</span>`;
     const side = ed.id ? `<aside class="po2-side" aria-label="Invoices and order details">
-        <section class="panel po2-card"><div class="po2-ch"><h2>Invoices${ed.invoices.length ? " · " + ed.invoices.length : ""}</h2>${!ro ? `<label class="btn sm" for="pe-file" title="Read the vendor's invoice PDF and put it on this PO">+ Add invoice</label>` : ""}</div>
+        <section class="panel po2-card"><div class="po2-ch"><h2>Invoices${ed.invoices.length ? " · " + ed.invoices.length : ""}</h2>${!ro ? `<span class="dbtns">${ed.id ? `<button class="btn sm" data-pact="link-inv" title="Put an invoice that's already saved (with no PO) on this PO">Link invoice</button>` : ""}<label class="btn sm" for="pe-file" title="Read the vendor's invoice PDF and put it on this PO">+ Add invoice</label></span>` : ""}</div>
+          ${ed.confirm === "link-inv" ? linkInvHtml(ed) : ""}
           ${flat("all", "All lines", tot.ordered)}${ed.invoices.map(ivCard).join("")}${vw.showLeft ? flat("left", "Still to receive", vw.left) : ""}${anyInv ? notInvCard : ""}
           ${selActs}</section>
         <section class="panel po2-card"><div class="po2-ch"><h2>Order details</h2></div>
@@ -1985,7 +2005,7 @@
   // before starting another PO — Brian, Oct 20). vids = the invoice's matched products. -> [{o, shared, open}]
   async function rankOpenPOs(vendor, vids, skipId) {
     const want = new Set((vids || []).filter(Boolean).map(String));
-    const open = (S.orders || []).filter(o => o.status !== "complete" && o.id !== skipId && (!vendor || o.vendor.toLowerCase() === vendor.toLowerCase()));
+    const open = (S.orders || []).filter(o => o.id !== skipId && (vendor ? o.vendor.toLowerCase() === vendor.toLowerCase() : o.status !== "complete"));
     if (!want.size || !open.length) return open.map(o => ({ o, shared: 0, open: 0 }));
     const r = await JT.rows(["order_id::text", "variant_id::text", "sum(qty_ordered)", "sum(qty_received)"],
       `from jt.prep_order_lines where order_id in (${open.map(o => JT.int(o.id)).join(",")}) group by 1, 2`, true).catch(() => []);
@@ -1999,13 +2019,12 @@
       <button class="mini ${i === 0 ? "primary" : ""}" ${act}="${esc(x.o.id)}">Use this PO</button></div>`).join("")}</div>`; };
   // picking another PO for a saved invoice (open POs, same vendor first)
   function moveHtml(ed) {
-    const all = (S.orders || []).filter(o => o.id !== ed.id && o.status !== "complete");
-    const same = all.filter(o => o.vendor.toLowerCase() === (ed.vendor || "").toLowerCase()), rest = all.filter(o => !same.includes(o));
+    const c = poChoices(ed.vendor, ed.id), all = [...c.sameOpen, ...c.sameDone, ...c.rest];
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     const iv = cur(ed), got = iv ? invTot(iv).g : 0;
     return `<div class="note warn">Move this invoice to another purchase order.${got ? ` The ${n0(got)} unit${got === 1 ? "" : "s"} received against it move with it (stock doesn't change; this PO keeps the rest).` : ""}${iv && iv.qbo ? " Its QuickBooks bill isn't changed." : ""}
       ${ed.moveRank ? rankHtml(ed.moveRank.rk, ed.moveRank.n, 'data-pact="inv-move-to" data-k') : ""}
-      <select id="pe-movepo" class="inp sm" style="width:auto;max-width:320px">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
+      <select id="pe-movepo" class="inp sm" style="width:auto;max-width:320px">${poOptgroups(ed, c, opt)}</select>
       <span class="dbtns"><button class="mini primary" data-pact="inv-move-go" ${all.length ? "" : "disabled"}>Move it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
   // ---------- the invoice page's lines (v0.35.0, Brian Oct 28: same look as the PO) ----------
@@ -2549,6 +2568,13 @@
     if (a === "alone-link" && iv) { if (ed.dirty || !iv.id) { note("warn", "Save the invoice first, then add it to a PO."); return; } ed.confirm = "alone-link"; ed.moveRank = null; render();
       { const vids = [...new Set((iv.rows || []).filter(r => r.vid && isSure(r)).map(r => r.vid))];
         rankOpenPOs(ed.vendor, vids).then(rk => { if (S.ed === ed && ed.confirm === "alone-link") { ed.moveRank = { rk, n: vids.length }; render(); } }); }
+      return; }
+    if (a === "link-inv") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.confirm = "link-inv"; render(); if (!S.invs) loadInvList(true).then(render).catch(() => {}); return; }
+    if (a === "link-inv-go") { const inv = ($("pe-linkinv") || {}).value; if (!inv) return; const poId = ed.id; S.busy = "Linking the invoice…"; render();
+      JT.po.moveInvoice(Number(inv), Number(poId)).then(async () => { S.busy = ""; ed.confirm = false; await loadOrders(true); loadInvList(true).catch(() => {}); await openPO(poId);
+        if (S.ed) { const i = S.ed.invoices.findIndex(v => String(v.id) === String(inv)); if (i >= 0) { S.ed.cur = i; S.ed.view = "inv"; } render(); }
+        note("info", "Invoice linked to this PO."); })
+        .catch(err => { S.busy = ""; render(); note("bad", "Couldn't link it: " + esc(JT.message(err))); });
       return; }
     if (a === "alone-link-go" && iv) { const to = k || ($("pe-alonepo") || {}).value; if (!to) return; S.busy = "Adding it to the PO…"; render();
       JT.po.moveInvoice(Number(iv.id), Number(to)).then(async () => { S.busy = ""; ed.leaveOk = true; S.ed = null; note("", ""); await loadOrders(true); await loadInvList(true); await openInvoice(iv.id); note("info", `Invoice ${esc(iv.no || "")} is on ${esc((S.ed && S.ed.vendor) || "")} ${esc(S.ed && S.ed.po ? poLabel(S.ed.po) : "")} now.`); })
