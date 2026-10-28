@@ -2079,7 +2079,7 @@
       <div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${tools}${iv.file || iv.parts ? `<button class="btn" data-pact="pdf" aria-pressed="${!!ed.showPdf}">${ed.showPdf ? "Hide PDF" : "Show PDF beside"}</button>` : ""}${iv.rows.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find item or product" value="${esc(ed.find || "")}" aria-label="Find a line on this invoice">` : ""}${canRecvIv ? `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>` : canMoreIv ? `<button class="btn po2-recv" data-pact="rq-start" title="Receive extra units, more than the invoice shows">Receive more</button>` : ""}</span></div>
       <div class="po-body ${pdfOn ? "with-pdf" : ""}">
         <div class="po-ivlines">
-          ${iv.rows.length ? `<div class="tbl-wrap"><table class="prept po-t iv-t"><thead><tr><th class="l">#</th><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || `<tr><td colspan="9" class="l muted small">No lines here.</td></tr>`}</tbody></table></div>` : (ed.alone && !iv.id && !iv.file && !iv.parts ? `<div class="iv-empty"><b>No lines yet.</b> <label class="btn sm primary" for="inv-file">Upload the invoice PDF</label> <span class="muted small">or drop it on the page to read it in — or type the lines with Add line.</span></div>` : '<div class="muted small">No lines yet.</div>')}
+          ${iv.rows.length ? `<div class="tbl-wrap"><table class="prept po-t iv-t"><thead><tr><th class="l">#</th><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || `<tr><td colspan="9" class="l muted small">No lines here.</td></tr>`}</tbody></table></div>` : (ed.alone && !iv.id && !iv.file && !iv.parts ? `${dropZone("Drag and drop the invoice PDF here", "it's read into this invoice — or type the lines with Add line below")}` : '<div class="muted small">No lines yet.</div>')}
           ${!lockL ? `<div class="row">${!ed.alone && poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add line</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
         </div>
         ${pdfOn ? `<aside class="po-pdf"><div class="panel-head"><h3 class="h3">Invoice PDF</h3><button class="mini" data-pact="pdf">Hide</button></div><div id="pe-pdf" class="pdfpages"></div></aside>` : ""}
@@ -2788,6 +2788,11 @@
   const monthTag = () => new Date().toLocaleDateString("en-US", { month: "short", timeZone: TZ });
   // New order opens a blank PO (Brian, Oct 29: "it should just open a blank new order and not do that pre-fill
   // silliness"). The reorder planner below (openStart) is no longer on a button.
+  // a file drop area like other sites' (Oct 29: "ours is less clear"): a dashed box with an upload icon; clicking it
+  // opens the file picker; the whole page shows a "drop" overlay while a file is dragged over it (CSS .filedrop)
+  const UPI = '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.6 4.6 0 0 1-.9-9.1A6 6 0 0 1 17.7 7.6 4.3 4.3 0 0 1 17.5 18"/><path d="M12 12v9"/><path d="m8.5 15.5 3.5-3.5 3.5 3.5"/></svg>';
+  const dropZone = (title, sub, forId) => `<label class="dz" for="${forId || "inv-file"}">${UPI}<span class="dz-t"><b>${title}</b><span>or <u>browse your files</u>${sub ? " · " + sub : ""}</span></span></label>`;
+  window.JTDropZone = dropZone;
   // + New invoice (Oct 29: "we need to be able to create an invoice and massage it until it's right before tying to an
   // order"): a blank invoice on its own, no PO, typed in by hand (or drop its PDF on it)
   function newInvoice() {
@@ -3188,7 +3193,7 @@
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     // a PDF dropped anywhere on the tab
     const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
-    tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (window.JTReader) window.JTReader.warm(); if (S.ed) tab.classList.add("filedrop"); } });
+    tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (window.JTReader) window.JTReader.warm(); tab.classList.add("filedrop"); } });
     tab.addEventListener("dragleave", (e) => { if (!tab.contains(e.relatedTarget)) tab.classList.remove("filedrop"); });
     tab.addEventListener("drop", (e) => { if (!isFile(e)) return; e.preventDefault(); tab.classList.remove("filedrop"); const f = e.dataTransfer.files[0];
       if (f && /\.(csv|tsv|xlsx|xls)$/i.test(f.name) && (!S.ed || S.ed.status === "draft")) sheetOrder(f); else readPdf(f); });

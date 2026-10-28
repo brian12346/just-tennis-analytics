@@ -526,7 +526,7 @@ html{scroll-padding-top:130px}
 /* Purchase orders */
 #tab-po{display:flex;flex-direction:column;gap:14px}
 #tab-po[hidden]{display:none}
-#tab-po.filedrop{outline:2px dashed var(--sales);outline-offset:6px;border-radius:10px}
+
 #po-list-view,#po-edit-view{display:flex;flex-direction:column;gap:14px}
 #po-list-view[hidden],#po-edit-view[hidden]{display:none}
 #po-busy{margin:0}
@@ -1520,3 +1520,15 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ivm-fields.ivm-7{grid-template-columns:minmax(150px,1.6fr) repeat(6,minmax(96px,1fr))}
 @media (max-width:1100px){.ivm-fields.ivm-7{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .iv-empty{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:14px;border:1px dashed var(--line);border-radius:10px}
+/* file drop areas (v0.49.2): a dashed box with an upload icon, and a full-page "drop here" overlay while a file is dragged */
+.dz{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:26px 18px;border:2px dashed var(--line);border-radius:12px;background:var(--panel);color:var(--muted);cursor:pointer;transition:border-color .15s,background .15s,color .15s}
+.dz:hover,.dz:focus-within{border-color:var(--sales);background:var(--sales-soft);color:var(--sales)}
+.dz .dz-t{display:flex;flex-direction:column;gap:3px}
+.dz .dz-t b{color:var(--ink);font-size:15px;font-weight:600}
+.dz .dz-t span{font-size:13px}
+.dz .dz-t u{color:var(--sales);text-decoration:underline;text-underline-offset:2px}
+.dz.dz-row{flex-direction:row;justify-content:flex-start;text-align:left;padding:14px 18px;gap:14px}
+#tab-invoices,#tab-po{position:relative}
+#tab-invoices.filedrop::after,#tab-po.filedrop::after{content:attr(data-drop);position:fixed;inset:14px;z-index:60;display:flex;align-items:center;justify-content:center;
+  border:3px dashed var(--sales);border-radius:16px;background:color-mix(in srgb,var(--sales-soft) 82%,transparent);color:var(--sales);font-size:22px;font-weight:600;pointer-events:none;backdrop-filter:blur(2px)}
+.dz.dz-row{margin-bottom:12px}
