@@ -1775,9 +1775,11 @@
     // ---------- page layout (v0.35.0, Brian Oct 28): the PO page's look — header, summary band, lines, cards on the right ----------
     const c = count(iv), savedTxt = ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? "All changes saved" : "";
     const matched = iv.rows.length > 0 && !c.check && !c.none;
-    const steps = [["Complete", !!iv.completeAt], ...(ed.alone ? [] : [["Received", !!iv.recvAt]]), ["In QuickBooks", !!iv.qbo], ["Paid", !!iv.paidOn]];
-    const nextAt = steps.findIndex(x => !x[1]);
-    const stepHtml = steps.map(([k, ok], i) => `<span class="step ${ok ? "done" : i === nextAt ? "on" : ""}">${ok ? "✓ " : ""}${k === "Paid" && !ok && iv.due ? `Unpaid · due ${esc(shortDate(iv.due))}` : k}</span>`).join('<span class="step-sep">→</span>');
+    // the steps show where the invoice is now (Oct 29: "why does this start with complete?"): Draft is lit until it's
+    // marked complete; steps behind the current one get a ✓
+    const steps = [["Draft", true], ["Complete", !!iv.completeAt], ...(ed.alone ? [] : [["Received", !!iv.recvAt]]), ["In QuickBooks", !!iv.qbo], ["Paid", !!iv.paidOn]];
+    const nowAt = steps.reduce((a, x, i) => x[1] ? i : a, 0);
+    const stepHtml = steps.map(([k, ok], i) => `<span class="step ${i === nowAt ? "on" : ok ? "done" : ""}">${ok && i < nowAt ? "✓ " : ""}${k === "Paid" && !ok && iv.due ? `Unpaid · due ${esc(shortDate(iv.due))}` : k}</span>`).join('<span class="step-sep">→</span>');
     const rowSum = iv.rows.reduce((a, r) => a + rowAmt(r), 0), chg = iv.rows.filter(r => r.skip).reduce((a, r) => a + rowAmt(r), 0);
     const tieDiff = iv.total != null ? Math.round((iv.total - rowSum) * 100) / 100 : null;
     const band = iv.rows.length || iv.total != null ? `<section class="panel po2-band" aria-label="Summary">
@@ -2030,6 +2032,23 @@
   // Lines lock once the invoice is matched (every line a sure match, a charge or not a product) and saved: "Edit lines"
   // opens them (ed.lineEdit) to change matches, quantities and costs, reorder (drag / Alt+arrows / Reorganize) or add lines.
   const invMatched = (iv) => !!iv.id && !iv.isNew && iv.rows.length > 0 && (() => { const c = count(iv); return !c.check && !c.none; })();
+  // Add product on an invoice (Oct 29: "we need a better way to add products - this is gross"): search the Shopify
+  // catalog and pick; the line comes in matched, with the product's name, SKU, UPC and cost, quantity 1 to type over.
+  // Something that isn't in Shopify still goes in by hand (then Not a product, or a charge).
+  function ivAddBox(ed) {
+    const q = (ed.ivAdd || "").trim(), found = q ? findProducts(q) : [];
+    return `<div class="addbox iv-addbox"><label class="stack" for="iv-add">Add product<input id="iv-add" class="inp" value="${esc(ed.ivAdd || "")}" placeholder="Shopify SKU, UPC, product name or Amazon SKU" autocomplete="off"></label>
+      ${q ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button type="button" data-ivadd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)}${x.v.barcode ? " · UPC " + esc(x.v.barcode) : ""} · ${esc(x.v.vendor)} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No Shopify products match.</span>'}</div>` : ""}
+      <span class="small muted">Not in Shopify? <button type="button" class="linkbtn small" data-pact="addrow" title="Add a blank line: pick the product later, or mark it Not a product">Add a line by hand</button></span></div>`;
+  }
+  function ivAddPick(ed, x) {
+    const iv = cur(ed); if (!iv || !x) return;
+    const v = x.v, r = { id: newId(), src: { item_code: v.sku || "", upc: v.barcode || "", description: v.title || "", qty: 1, unit_cost: v.cost, amount: v.cost },
+      vid: v.vid, how: "manual", conf: "sure", alts: [], confirmed: true, skip: false, account: "inventory", qty: "1", cost: fmtCost(v.cost) };
+    if (!ed.vendor && v.vendor) ed.vendor = v.vendor;    // a new invoice takes the vendor from its first product
+    iv.rows.push(r); iv.filter = "all"; ed.ivAdd = ""; syncLines(ed); ed.dirty = true; render();
+    setTimeout(() => { const i = document.querySelector(`#po-edit-view [data-f="iqty"][data-k="${r.id}"]`); if (i) { i.focus(); i.select(); } }, 0);
+  }
   function invDetailHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
     const lock = ro || iv.status === "applied", c = count(iv);
@@ -2079,8 +2098,8 @@
       <div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${tools}${iv.file || iv.parts ? `<button class="btn" data-pact="pdf" aria-pressed="${!!ed.showPdf}">${ed.showPdf ? "Hide PDF" : "Show PDF beside"}</button>` : ""}${iv.rows.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find item or product" value="${esc(ed.find || "")}" aria-label="Find a line on this invoice">` : ""}${canRecvIv ? `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>` : canMoreIv ? `<button class="btn po2-recv" data-pact="rq-start" title="Receive extra units, more than the invoice shows">Receive more</button>` : ""}</span></div>
       <div class="po-body ${pdfOn ? "with-pdf" : ""}">
         <div class="po-ivlines">
-          ${iv.rows.length ? `<div class="tbl-wrap"><table class="prept po-t iv-t"><thead><tr><th class="l">#</th><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || `<tr><td colspan="9" class="l muted small">No lines here.</td></tr>`}</tbody></table></div>` : (ed.alone && !iv.id && !iv.file && !iv.parts ? `${dropZone("Drag and drop the invoice PDF here", "it's read into this invoice — or add products by hand below")}` : '<div class="muted small">No lines yet.</div>')}
-          ${!lockL ? `<div class="row">${!ed.alone && poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add product</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
+          ${iv.rows.length ? `<div class="tbl-wrap"><table class="prept po-t iv-t"><thead><tr><th class="l">#</th><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || `<tr><td colspan="9" class="l muted small">No lines here.</td></tr>`}</tbody></table></div>` : (ed.alone && !iv.id && !iv.file && !iv.parts ? `${dropZone("Drag and drop the invoice PDF here", "it's read into this invoice — or add products below")}` : '<div class="muted small">No lines yet.</div>')}
+          ${!lockL ? `<div class="row">${!ed.alone && poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}${ivAddBox(ed)}<button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
         </div>
         ${pdfOn ? `<aside class="po-pdf"><div class="panel-head"><h3 class="h3">Invoice PDF</h3><button class="mini" data-pact="pdf">Hide</button></div><div id="pe-pdf" class="pdfpages"></div></aside>` : ""}
       </div>
@@ -3276,6 +3295,7 @@
       if (t.id === "pe-invsub" && iv) { iv.subtotal = IP.numOf(t.value); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 500); return; }
       if (t.id === "po-add") { ed.add = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); if (!S.cat) catalog().then(render).catch(() => {}); return; }
       if (t.id === "pe-sq") { ed.search.q = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); return; }
+      if (t.id === "iv-add") { ed.ivAdd = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); if (!S.cat) catalog().then(render).catch(() => {}); return; }
       const k = t.dataset.k, l = k && ed.lines.find(x => x.id === k), r = k && iv && iv.rows.find(x => x.id === k);
       if (t.dataset.f === "qty" && l) { rebalance(ed, l, t.value.trim()); l.auto = false; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
       if (t.dataset.f === "cost" && l) { l.cost = t.value.trim().replace(/^\$/, ""); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
@@ -3321,6 +3341,8 @@
       if (e.target.id === "po-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.add); if (f.length) addLine(f[0]); else render(); }
       if (e.target.id === "pe-sq" && e.key === "Enter") { e.preventDefault(); const b = box.querySelector(".mres button[data-ppick]"); if (b) b.click(); }
       if (e.target.id === "pe-sq" && e.key === "Escape") { ed.search = null; render(); }
+      if (e.target.id === "iv-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.ivAdd); if (f.length) ivAddPick(ed, f[0]); else render(); }
+      if (e.target.id === "iv-add" && e.key === "Escape") { ed.ivAdd = ""; render(); }
       const f = e.target.dataset && e.target.dataset.f;
       if (f === "rq" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); act("rq-go", e.target.dataset.k); return; }
       if (e.key === "Enter" && ["qty", "cost", "iqty", "icost", "recv"].includes(f)) {
@@ -3345,6 +3367,7 @@
         render(); return; }
       if (b.dataset.ifilter && iv) { iv.filter = b.dataset.ifilter; render(); return; }
       if (b.dataset.padd != null) { const x = findProducts(ed.add)[+b.dataset.padd]; if (x) addLine(x); return; }
+      if (b.dataset.ivadd != null && iv) { const x = findProducts(ed.ivAdd)[+b.dataset.ivadd]; if (x) ivAddPick(ed, x); return; }
       if (b.dataset.ppick && iv) { const r = iv.rows.find(x => x.id === b.dataset.k); if (r) { r.vid = b.dataset.ppick; r.skip = false; r.how = "manual"; r.conf = "sure"; r.confirmed = true; ed.search = null; syncLines(ed); ed.dirty = true; render(); } return; }
     });
     box.addEventListener("dragover", (e) => { const d = e.target.closest("#pe-drop"); if (d) d.classList.add("over"); });

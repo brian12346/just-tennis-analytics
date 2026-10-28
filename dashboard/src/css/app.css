@@ -1532,3 +1532,9 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 #tab-invoices.filedrop::after,#tab-po.filedrop::after{content:attr(data-drop);position:fixed;inset:14px;z-index:60;display:flex;align-items:center;justify-content:center;
   border:3px dashed var(--sales);border-radius:16px;background:color-mix(in srgb,var(--sales-soft) 82%,transparent);color:var(--sales);font-size:22px;font-weight:600;pointer-events:none;backdrop-filter:blur(2px)}
 .dz.dz-row{margin-bottom:12px}
+/* invoice: Add product search (v0.49.4) */
+.iv-addbox{flex:1 1 460px;margin:0}
+.iv-addbox .stack{max-width:none}
+.iv-addbox .stack .inp{width:100%}
+#inv-arrange{min-width:170px}
+.iv-addbox #iv-add{width:100%;max-width:none}
