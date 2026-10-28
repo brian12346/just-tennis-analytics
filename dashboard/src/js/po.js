@@ -2142,10 +2142,8 @@
     const out = [];
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
-    // a draft is approved (Ready to approve → Ordered: approving marks it ordered)
-    // Draft → Ready to approve → approved (Oct 29): the order says when it's ready; approving still works from either
-    // a draft's Save / Ready to Order / Approve are in the header, next to Save (draftActs)
-    else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
+    // a draft's Save / Ready to Order / Approve are in the header, next to Save (draftActs). No "Save & mark ordered"
+    // down here (Brian, Oct 29); the stage track in the header still moves an order along.
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
     // receive table has its own buttons)
     if (false)
