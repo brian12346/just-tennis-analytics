@@ -1266,7 +1266,7 @@
     $("po-lanes").innerHTML = OLANES.map(([k, n, sub]) => {
       const os = laneSort("po", k, by.get(k)), tot = os.reduce((a, c) => a + (c.amt || 0), 0), more = os.length - OLANE_CARDS;
       return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}" data-lane-k="${k}">
-        <div class="ol-headrow"><button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="${esc(sub)} — show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>${k === "approve" ? '<button class="ol-add" type="button" data-po-start title="Start an order: pick the vendor and see what to reorder" aria-label="Start an order">+</button>' : ""}</div>
+        <div class="ol-headrow"><button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="${esc(sub)} — show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>${k === "approve" ? '<button class="ol-add" type="button" data-po-start title="Start a new, blank order" aria-label="Start an order">+</button>' : ""}</div>
         <div class="ol-sum" title="Total of the ${n0(os.length)} card${os.length === 1 ? "" : "s"} here (orders at cost, invoices at their total)">${m0(tot)}</div>
         <div class="il-cards">${os.slice(0, OLANE_CARDS).map(cardOf).join("") || (k === "approve" ? '<button class="il-empty ol-start" type="button" data-po-start>+ Start an order</button>' : '<div class="il-empty">Nothing here</div>')}</div>
         ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-olane="${k}">+ ${n0(more)} more in the table</button>` : ""}
@@ -2625,6 +2625,13 @@
   const startPrefs = () => { try { return JSON.parse(localStorage.getItem(START_KEY) || "{}") || {}; } catch (_) { return {}; } };
   const keepStart = (f) => { try { const p = startPrefs(); f(p); localStorage.setItem(START_KEY, JSON.stringify(p)); } catch (_) {} };
   const monthTag = () => new Date().toLocaleDateString("en-US", { month: "short", timeZone: TZ });
+  // New order opens a blank PO (Brian, Oct 29: "it should just open a blank new order and not do that pre-fill
+  // silliness"). The reorder planner below (openStart) is no longer on a button.
+  function newOrder() {
+    if (S.ed && S.ed.dirty) return leave();
+    S.start = null; note("", "");
+    openPO(null);
+  }
   function openStart(vendor) {
     if (S.ed && S.ed.dirty) return leave();
     if (S.ed) S.ed = null;
@@ -2905,14 +2912,14 @@
 
   function bind() {
     const tab = $("tab-po"), box = $("po-edit-view");
-    $("po-new").addEventListener("click", () => openStart());
+    $("po-new").addEventListener("click", () => newOrder());
     bindStart();
     $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), S.cat ? catalog(true) : null]); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
     $("po-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderList, 150); });
     $("po-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; renderList(); });
     $("po-stage").addEventListener("click", (e) => { const b = e.target.closest("button[data-st]"); if (b) { S.stage = b.dataset.st; renderList(); } });
     tab.addEventListener("click", (e) => {
-      if (e.target.closest("[data-po-start]")) { openStart(); return; }
+      if (e.target.closest("[data-po-start]")) { newOrder(); return; }
       const ivo = e.target.closest("[data-inv-open]"); if (ivo) { e.stopPropagation(); if (S.ed && S.ed.dirty) return leave(); note("", ""); window.JTInvoices.open(ivo.dataset.invOpen); return; }
       const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); if (sg.classList.contains("kpi-go")) { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
       const ap = e.target.closest("[data-po-approve]"); if (ap) { e.stopPropagation(); approveOrder(ap.dataset.poApprove); return; }
