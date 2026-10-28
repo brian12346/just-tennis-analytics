@@ -1035,16 +1035,19 @@
   // Status lanes (Brian, Oct 14): every invoice is in exactly one, in this order — lines to check or match first, then
   // no PO yet, then on a PO with products still to come in, then complete (received, or nothing on it to receive).
   // QuickBooks and payment show on the cards and in the table; they don't move an invoice between lanes.
-  const LANES = [["issues", "Import issues", "lines to check or match"], ["nopo", "No PO", "waiting for their purchase order"],
+  // Draft comes first (Brian, Oct 28: "let's add a draft swimlane to the invoices page"): an invoice stays there until
+  // it's marked complete — new uploads, + New invoice, and the drafts the hourly Dropbox task makes.
+  const LANES = [["draft", "Draft", "not marked complete yet"], ["issues", "Import issues", "lines to check or match"], ["nopo", "No PO", "waiting for their purchase order"],
     ["receive", "Ready to receive", "on a PO, products still to come in"], ["complete", "Complete", "received"]];
-  const laneOf = (v) => v.check > 0 ? "issues" : !v.oid ? "nopo" : !v.recvAt && v.billed > 0 ? "receive" : "complete";
+  const laneOf = (v) => !v.completeAt ? "draft" : v.check > 0 ? "issues" : !v.oid ? "nopo" : !v.recvAt && v.billed > 0 ? "receive" : "complete";
   const LANE_CARDS = 6;
   const INVF = [["all", "All"], ...LANES.map(([k, n]) => [k, n]), ["unpaid", "To pay"], ["noqb", "Not in QuickBooks"]];
   const invMatch = (v, f) => f === "all" ? true : f === "unpaid" ? !v.paidOn : f === "noqb" ? !invClosed(v) : !v.paidOn && laneOf(v) === f;
   const daysAgo = (d) => { const n = Math.floor((Date.now() - new Date(d).getTime()) / 864e5); return n <= 0 ? "today" : n === 1 ? "1 day" : n + " days"; };
   function laneCard(v, k) {
     const po = v.oid ? esc(v.po ? poLabel(v.po) : "PO #" + v.oid) : "";
-    const hint = k === "issues" ? `<span class="pill miss">${v.check} line${v.check === 1 ? "" : "s"} to check</span>${po ? ` <span class="dim">${po}</span>` : ' <span class="dim">no PO</span>'}`
+    const hint = k === "draft" ? `<span class="pill warn">Draft</span>${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""} <span class="dim">${po || "no PO"} · ${esc(daysAgo(v.created || v.date))}</span>`
+      : k === "issues" ? `<span class="pill miss">${v.check} line${v.check === 1 ? "" : "s"} to check</span>${po ? ` <span class="dim">${po}</span>` : ' <span class="dim">no PO</span>'}`
       : k === "nopo" ? `<span class="dim">waiting ${esc(daysAgo(v.created || v.date))} · start or pick its PO</span>`
       : k === "receive" ? `${po} · ${v.got > 0 ? `<span class="pill manual">${n0(v.got)} of ${n0(v.billed)} in</span>` : `<span class="dim">${n0(v.billed)} unit${v.billed === 1 ? "" : "s"} to come</span>`}`
       : `${po ? po + " · " : ""}${v.paidOn ? '<span class="pill ok">Paid</span>' : v.due && v.due < today() ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'} ${v.qbo ? '<span class="pill ok">QB</span>' : ""}`;
@@ -1057,7 +1060,7 @@
     const by = new Map(LANES.map(([k]) => [k, []]));
     for (const v of all) if (!v.paidOn) by.get(laneOf(v)).push(v);   // paid invoices leave the lanes (Brian, Oct 28); the table still has them
     // oldest first where something is waiting on us; newest first once complete
-    for (const k of ["issues", "nopo", "receive"]) by.get(k).sort((a, b) => String(a.date || a.created).localeCompare(String(b.date || b.created)));
+    for (const k of ["draft", "issues", "nopo", "receive"]) by.get(k).sort((a, b) => String(a.date || a.created).localeCompare(String(b.date || b.created)));
     $("inv-lanes").innerHTML = LANES.map(([k, n, sub]) => {
       const vs = laneSort("inv", k, by.get(k)), tot = vs.reduce((a, v) => a + (v.total || 0), 0), more = vs.length - LANE_CARDS;
       return `<div class="il-lane il-${k} ${S.invF === k ? "on" : ""}" data-lane-k="${k}">
@@ -1094,7 +1097,7 @@
     const list = all.filter(v => invMatch(v, S.invF) && (!q || [v.vendor, v.no, v.po, v.terms].join(" ").toLowerCase().includes(q)));
     const t = $("inv-table");
     if (!S.invs) { t.innerHTML = '<tbody><tr><td class="l muted">Loading…</td></tr></tbody>'; return; }
-    const LN = new Map(LANES.map(([k, n]) => [k, n])), LP = { issues: "miss", nopo: "pos", receive: "manual", complete: "ok" };
+    const LN = new Map(LANES.map(([k, n]) => [k, n])), LP = { draft: "warn", issues: "miss", nopo: "pos", receive: "manual", complete: "ok" };
     const th = (k, l, left) => sortTh("inv", INV_KEYS, k, l, left);
     // tidied like the orders table (Brian, Oct 29: "let's make the invoices table pretty now too")
     t.classList.add("ot");
@@ -1102,7 +1105,7 @@
       applySort("inv", INV_KEYS, list).map(v => {
         const pct = v.billed ? Math.min(100, Math.round(v.got / v.billed * 100)) : 0, late = !v.paidOn && v.due && v.due < today();
         return `<tr class="po-row" data-inv-open="${v.id}" tabindex="0">
-        <td class="l ot-order"><b>${esc(v.vendor || "—")}</b><div class="ot-po mono">${esc(v.no || "(no number)")}${!v.completeAt ? ' <span class="pill warn" title="Still a draft — not marked complete">Draft</span>' : ""}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</div></td>
+        <td class="l ot-order"><b>${esc(v.vendor || "—")}</b><div class="ot-po mono">${esc(v.no || "(no number)")}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</div></td>
         <td class="l ot-status"><span class="pill ${LP[laneOf(v)]}">${LN.get(laneOf(v))}</span>${invClosed(v) ? " " + closedPill : ""}</td>
         <td class="l ot-date">${v.date ? `<span>${esc(shortDate(v.date))}</span>` : '<span class="dim">—</span>'}${v.terms ? `<div class="meta">${esc(v.terms)}</div>` : ""}</td>
         <td class="l">${v.oid ? `<button class="linkbtn" data-po-go="${esc(v.oid)}">${esc(v.po ? poLabel(v.po) : "#" + v.oid)}</button><div class="meta">${esc(STAGE.get(v.ostatus) || "")}</div>` : '<span class="pill pos" title="Saved on its own — it goes onto its PO when that PO syncs in with the same products">No PO yet</span>'}</td>
