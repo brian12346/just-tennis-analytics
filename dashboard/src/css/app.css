@@ -1146,15 +1146,17 @@ ul.anr-unm{margin:0;padding-left:18px;columns:2;column-gap:28px;font-size:14px} 
 #po-list-view{gap:10px}
 .ol-add{flex:none;width:24px;height:24px;border-radius:50%;border:1px solid var(--primary);background:var(--primary);color:#fff;font-size:17px;line-height:20px;padding:0;cursor:pointer;font-weight:600}
 .ol-add:hover{filter:brightness(1.15)}
-.po-lanes .il-cards{gap:4px}
-.il-card.oc{padding:4px 8px;gap:0;border-radius:8px;font-size:12.5px;line-height:1.35}
-.il-card.oc .il-top b{font-size:12.5px}
-.il-card.oc .il-amt{font-size:12.5px;font-weight:600}
-.oc-2{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0;font-size:11.5px;color:var(--muted)}
-.oc-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.po-lanes .il-cards{gap:6px}
+.il-card.oc{padding:9px 11px;gap:3px;border-radius:9px;font-size:14px;line-height:1.4}
+.il-card.oc .il-top b{font-size:14px}
+.il-card.oc .il-amt{font-size:14px;font-weight:600}
+.oc-2{display:flex;align-items:flex-start;justify-content:space-between;gap:6px;min-width:0;font-size:12.5px;color:var(--muted)}
+.oc-3{font-size:12px;color:var(--muted);line-height:1.35}
+.oc-3:empty{display:none}
+.oc-name{overflow-wrap:anywhere;min-width:0}
 .oc-h{flex:none}
-.oc-h .mini{padding:0 6px;font-size:11px;line-height:17px}
-.oc-h .pill{font-size:10.5px;padding:0 6px}
+.oc-h .mini{padding:1px 8px;font-size:12px;line-height:18px}
+.oc-h .pill{font-size:11.5px;padding:0 7px}
 button.il-empty.ol-start{border:1px dashed var(--line);border-radius:8px;background:transparent;cursor:pointer;color:var(--sales);font:inherit;font-size:12px;padding:8px;text-align:center}
 button.il-empty.ol-start:hover{border-color:var(--sales);background:var(--sales-soft)}
 .po-start{padding:10px 12px;gap:8px}
@@ -1195,7 +1197,7 @@ button.il-empty.ol-start:hover{border-color:var(--sales);background:var(--sales-
 .oc-h{display:inline-flex;align-items:center;gap:4px}
 .oc-inv{border:1px solid var(--sales);background:var(--sales-soft);color:var(--sales);border-radius:999px;font:inherit;font-size:10.5px;font-weight:600;line-height:16px;padding:0 6px;cursor:pointer;white-space:nowrap}
 .oc-inv:hover{background:var(--sales);color:#fff}
-.oc-v{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden}.oc-v b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oc-v{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px 6px;min-width:0}.oc-v b{overflow-wrap:anywhere}
 
 /* Sales › Ads (v0.17.0) */
 #ad-chart .bar.ch-justtennis{fill:var(--ch-jt)}#ad-chart .bar.ch-acenrally{fill:var(--ch-anr)}
@@ -1457,3 +1459,16 @@ tr.drop-below>td{box-shadow:inset 0 -2px 0 var(--founders-rock)}
 .ivm-qb .qb-state{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ivm-qb .dbtns{margin-left:auto}
 .linkbtn.neg{color:var(--critical)}
+/* swimlane cards can be dragged into any order (v0.37.0) */
+.il-card.dragging{opacity:.45}
+.il-card.drop-above{box-shadow:0 -3px 0 var(--founders-rock)}
+.il-card.drop-below{box-shadow:0 3px 0 var(--founders-rock)}
+.il-reset{align-self:flex-start;font-size:12px;color:var(--muted)}
+/* sortable table headings */
+th.th-s{padding:0}
+.th-sort{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:4px;width:100%;padding:7px 10px;cursor:pointer;white-space:nowrap}
+th.th-s:not(.l) .th-sort{justify-content:flex-end}
+.th-sort:hover{color:var(--ink)}
+.th-sort:focus-visible{outline:2px solid var(--sales);outline-offset:-2px;border-radius:4px}
+.sort-ic{font-size:10px;opacity:.35}
+th.th-s.on .sort-ic{opacity:1;color:var(--ink)}

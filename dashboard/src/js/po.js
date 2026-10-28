@@ -105,6 +105,7 @@
     S.planOn = !!pl;
     const pm = new Map((pl || []).map(x => [x[0], x]));
     for (const o of S.orders) { const x = pm.get(o.id); o.category = x ? x[1] || "" : ""; o.budget = x && x[2] != null ? +x[2] : null; o.placeholder = !!x && x[3] === "true"; o.missingInv = !!x && x[4] === "true"; }
+    await loadLanePos("po");
   }
   // what a PO is missing for its plan: shown as flags (only the vendor is required)
   const planGaps = (o) => [!o.category && "no category", o.budget == null && "no budget"].filter(Boolean);
@@ -803,6 +804,113 @@
     } catch (e) { S.busy = ""; render(); note("bad", "Couldn't move it: " + esc(JT.message(e))); }
   }
 
+
+  // ---------- swimlane order and table sorting (Brian, Oct 29: "we need to be able to sort the tables at the bottom of
+  // the orders and invoices page. we should also be able to reorder items in the swimlanes") ----------
+  // A card's place in its lane is kept in the database (lane_pos, migration 173) so everyone sees the same order; cards
+  // without one follow in the lane's usual order.
+  const LANEPOS = { po: new Map(), inv: new Map() }, LANEIDS = { po: {}, inv: {} };
+  async function loadLanePos(kind) {
+    const r = await JT.rows(["id::text", "lane_pos::text"], `from ${kind === "po" ? "jt.prep_orders" : "jt.invoices"} where lane_pos is not null`, true).catch(() => null);
+    if (r) LANEPOS[kind] = new Map(r.map(x => [x[0], +x[1]]));
+  }
+  function laneSort(kind, k, arr) {
+    const m = LANEPOS[kind], at = new Map(arr.map((x, i) => [x.id, i]));
+    const out = m.size ? arr.slice().sort((a, b) => (m.has(a.id) ? m.get(a.id) : 1e9) - (m.has(b.id) ? m.get(b.id) : 1e9) || at.get(a.id) - at.get(b.id)) : arr;
+    LANEIDS[kind][k] = out.map(x => x.id);
+    return out;
+  }
+  const laneCustom = (kind, arr) => arr.some(x => LANEPOS[kind].has(x.id));
+  const laneRedraw = (kind) => kind === "po" ? renderList() : renderInvList();
+  async function saveLaneOrder(kind, ids, clear) {
+    const before = new Map(LANEPOS[kind]);
+    ids.forEach((id, i) => clear ? LANEPOS[kind].delete(id) : LANEPOS[kind].set(id, i + 1));
+    laneRedraw(kind);
+    try { await planCall("jt_lane_order", "jt.lane_order", { kind, ids: ids.map(Number), clear: !!clear }); }
+    catch (e) { LANEPOS[kind] = before; laneRedraw(kind); note("bad", "Couldn't save the order of the cards: " + esc(JT.message(e))); }
+  }
+  function moveCard(kind, k, id, to, above) {
+    const ids = (LANEIDS[kind][k] || []).filter(x => x !== id);
+    const i = ids.indexOf(to); if (i < 0 || id === to) return;
+    ids.splice(above ? i : i + 1, 0, id);
+    saveLaneOrder(kind, ids);
+  }
+  function wireLaneDrag(box, kind) {
+    const sel = kind === "po" ? "[data-po-open]" : "[data-inv-open]";
+    const idOf = (c) => kind === "po" ? c.dataset.poOpen : c.dataset.invOpen;
+    let drag = null;
+    const marks = () => box.querySelectorAll(".drop-above,.drop-below");
+    const clear = () => { marks().forEach(x => x.classList.remove("drop-above", "drop-below")); box.querySelectorAll(".dragging").forEach(x => x.classList.remove("dragging")); };
+    box.addEventListener("dragstart", (e) => {
+      const c = e.target.closest && e.target.closest(sel + "[draggable=true]"); if (!c) return;
+      drag = { id: idOf(c), k: c.closest("[data-lane-k]").dataset.laneK };
+      e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", drag.id); c.classList.add("dragging");
+    });
+    box.addEventListener("dragover", (e) => {
+      if (!drag) return;
+      const lane = e.target.closest("[data-lane-k]"); if (!lane || lane.dataset.laneK !== drag.k) return;   // only within its own lane
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      const c = e.target.closest(sel);
+      marks().forEach(x => x.classList.remove("drop-above", "drop-below"));
+      if (c && idOf(c) !== drag.id) { const r = c.getBoundingClientRect(); c.classList.add(e.clientY < r.top + r.height / 2 ? "drop-above" : "drop-below"); }
+    });
+    box.addEventListener("drop", (e) => {
+      if (!drag) return; e.preventDefault();
+      const c = box.querySelector(".drop-above,.drop-below"), above = !!c && c.classList.contains("drop-above"), d = drag;
+      drag = null; clear();
+      if (c) moveCard(kind, d.k, d.id, idOf(c), above);
+    });
+    box.addEventListener("dragend", () => { drag = null; clear(); });
+    box.addEventListener("keydown", (e) => {     // Alt+Up / Alt+Down on a card moves it
+      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      const c = e.target.closest(sel); if (!c || e.target !== c) return;
+      e.preventDefault();
+      const k = c.closest("[data-lane-k]").dataset.laneK, id = idOf(c), ids = (LANEIDS[kind][k] || []).slice(), i = ids.indexOf(id), j = i + (e.key === "ArrowUp" ? -1 : 1);
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      saveLaneOrder(kind, ids);
+      const f = box.querySelector(`${sel.slice(0, -1)}="${CSS.escape(id)}"]`); if (f) f.focus();
+    });
+    box.addEventListener("click", (e) => {
+      const r = e.target.closest("[data-lane-reset]"); if (!r) return; e.stopPropagation();
+      const k = r.dataset.laneReset; saveLaneOrder(kind, LANEIDS[kind][k] || [], true);
+    });
+  }
+  // the tables: click a column heading to sort by it, again to flip it, a third time for the usual order
+  const SORTS = { po: null, inv: null };
+  try { Object.assign(SORTS, JSON.parse(localStorage.getItem("jt.po.sorts") || "{}")); } catch (e) { /* no storage here */ }
+  function sortTh(kind, keys, k, label, left) {
+    const s = SORTS[kind], on = !!s && s.k === k;
+    if (!keys[k]) return `<th class="${left ? "l" : ""}">${label}</th>`;
+    return `<th class="${left ? "l " : ""}th-s${on ? " on" : ""}" aria-sort="${on ? (s.dir > 0 ? "ascending" : "descending") : "none"}"><button type="button" class="th-sort" data-sort="${k}" title="Sort by ${esc(label)}">${label}<span class="sort-ic" aria-hidden="true">${on ? (s.dir > 0 ? "▲" : "▼") : "↕"}</span></button></th>`;
+  }
+  function applySort(kind, keys, list) {
+    const s = SORTS[kind]; if (!s || !keys[s.k]) return list;
+    const f = keys[s.k][0], blank = (x) => x == null || x === "" || (typeof x === "number" && isNaN(x));
+    return list.map((x, i) => [f(x), x, i]).sort((a, b) => {
+      if (blank(a[0]) || blank(b[0])) return blank(a[0]) - blank(b[0]) || a[2] - b[2];      // blanks last either way
+      const c = typeof a[0] === "number" && typeof b[0] === "number" ? a[0] - b[0] : String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true, sensitivity: "base" });
+      return c * s.dir || a[2] - b[2];
+    }).map(p => p[1]);
+  }
+  function toggleSort(kind, keys, k) {
+    const s = SORTS[kind], first = keys[k][1] || 1;
+    SORTS[kind] = !s || s.k !== k ? { k, dir: first } : s.dir === first ? { k, dir: -first } : null;
+    try { localStorage.setItem("jt.po.sorts", JSON.stringify(SORTS)); } catch (e) { /* no storage here */ }
+  }
+  // [value, first click's direction (-1: biggest / newest first)]
+  const PO_KEYS = {
+    po: [o => o.po ? poLabel(o.po) : "#" + o.id], vendor: [o => o.vendor], status: [o => OLANES.findIndex(([k]) => k === laneOfO(o))],
+    products: [o => o.nLines, -1], ordered: [o => o.units, -1], invoiced: [o => o.nInv ? o.invoiced : null, -1], received: [o => o.received || null, -1],
+    cost: [o => o.cost, -1], invoices: [o => o.invNos || null],
+    dates: [o => (GOT.includes(o.status) ? o.stageAt.received : o.status === "draft" && o.kind === "booking" && o.placeBy ? o.placeBy : o.expected || o.updated) || null, -1],
+    attention: [o => listFlags(o).filter(f => f[0] !== "info").length || null, -1],
+  };
+  const INV_KEYS = {
+    no: [v => v.no || null], status: [v => LANES.findIndex(([k]) => k === laneOf(v))], vendor: [v => v.vendor], date: [v => v.date || null, -1],
+    po: [v => v.oid ? v.po || "#" + v.oid : null], total: [v => v.total, -1], received: [v => v.recvAt ? 2 : v.billed ? v.got / v.billed : null, -1],
+    payment: [v => v.paidOn ? "2" + v.paidOn : "1" + (v.due || "9999")], qb: [v => v.qbo ? 1 : 0],
+  };
   // ---------- the Invoices tab: the list ----------
   async function loadInvList(refresh) {
     if (S.invLoading && !refresh) return;
@@ -817,6 +925,7 @@
         "from jt.invoices i left join jt.prep_orders o on o.id = coalesce(i.order_id, (select p.id from jt.prep_orders p where p.invoice_id = i.id limit 1)) order by coalesce(i.invoice_date, i.created_at::date) desc, i.id desc", refresh);
       S.invs = r.map(x => ({ id: x[0], vendor: x[9] || x[1] || "", no: x[2] || "", date: x[3] || "", due: x[4] || "", total: x[5] == null ? null : +x[5], oid: x[6] || "", po: x[7] || "", ostatus: x[8] || "",
         paidOn: x[10] || "", recvAt: x[11] || "", qbo: x[12] || "", parts: +x[13] || 0, got: +x[14] || 0, billed: +x[15] || 0, check: +x[16] || 0, created: x[17] || "", terms: x[18] || "" }));
+      await loadLanePos("inv");
     } finally { S.invLoading = false; }
   }
   // Status lanes (Brian, Oct 14): every invoice is in exactly one, in this order — lines to check or match first, then
@@ -835,10 +944,10 @@
       : k === "nopo" ? `<span class="dim">waiting ${esc(daysAgo(v.created || v.date))} · start or pick its PO</span>`
       : k === "receive" ? `${po} · ${v.got > 0 ? `<span class="pill manual">${n0(v.got)} of ${n0(v.billed)} in</span>` : `<span class="dim">${n0(v.billed)} unit${v.billed === 1 ? "" : "s"} to come</span>`}`
       : `${po ? po + " · " : ""}${v.paidOn ? '<span class="pill ok">Paid</span>' : v.due && v.due < today() ? '<span class="pill miss">Overdue</span>' : '<span class="pill warn">Unpaid</span>'} ${v.qbo ? '<span class="pill ok">QB</span>' : ""}`;
-    return `<button class="il-card" type="button" data-inv-open="${esc(v.id)}" title="Open invoice ${esc(v.no || "")}">
+    return `<div class="il-card" role="button" tabindex="0" draggable="true" data-inv-open="${esc(v.id)}" title="Open invoice ${esc(v.no || "")} — drag to reorder (or Alt+↑ / Alt+↓)">
       <span class="il-top"><b>${esc(v.vendor || "—")}</b><span class="il-amt">${m(v.total)}</span></span>
       <span class="il-no"><span class="mono">${esc(v.no || "(no number)")}</span>${v.date ? " · " + esc(shortDate(v.date)) : ""}</span>
-      <span class="il-hint">${hint}</span></button>`;
+      <span class="il-hint">${hint}</span></div>`;
   }
   function renderLanes(all) {
     const by = new Map(LANES.map(([k]) => [k, []]));
@@ -846,12 +955,13 @@
     // oldest first where something is waiting on us; newest first once complete
     for (const k of ["issues", "nopo", "receive"]) by.get(k).sort((a, b) => String(a.date || a.created).localeCompare(String(b.date || b.created)));
     $("inv-lanes").innerHTML = LANES.map(([k, n, sub]) => {
-      const vs = by.get(k), tot = vs.reduce((a, v) => a + (v.total || 0), 0), more = vs.length - LANE_CARDS;
-      return `<div class="il-lane il-${k} ${S.invF === k ? "on" : ""}">
+      const vs = laneSort("inv", k, by.get(k)), tot = vs.reduce((a, v) => a + (v.total || 0), 0), more = vs.length - LANE_CARDS;
+      return `<div class="il-lane il-${k} ${S.invF === k ? "on" : ""}" data-lane-k="${k}">
         <button class="il-head" type="button" data-lane="${k}" aria-pressed="${S.invF === k}" title="Show these in the table below"><b>${n}</b><span class="il-cnt">${n0(vs.length)}</span></button>
         <div class="il-sub">${vs.length ? `${m0(tot)} · ${sub}` : sub}</div>
         <div class="il-cards">${vs.slice(0, LANE_CARDS).map(v => laneCard(v, k)).join("") || '<div class="il-empty">Nothing here</div>'}</div>
-        ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-lane="${k}">+ ${n0(more)} more in the table</button>` : ""}</div>`;
+        ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-lane="${k}">+ ${n0(more)} more in the table</button>` : ""}
+        ${laneCustom("inv", vs) ? `<button class="linkbtn small il-reset" type="button" data-lane-reset="${k}" title="Put this lane back in its usual order">Reset order</button>` : ""}</div>`;
     }).join("");
   }
   function renderInvList() {
@@ -873,8 +983,9 @@
     const t = $("inv-table");
     if (!S.invs) { t.innerHTML = '<tbody><tr><td class="l muted">Loading…</td></tr></tbody>'; return; }
     const LN = new Map(LANES.map(([k, n]) => [k, n])), LP = { issues: "miss", nopo: "pos", receive: "manual", complete: "ok" };
-    t.innerHTML = `<thead><tr><th class="l">Invoice</th><th class="l">Status</th><th class="l">Vendor</th><th class="l">Date</th><th class="l">Purchase order</th><th>Total</th><th class="l">Received</th><th class="l">Payment</th><th class="l">QuickBooks</th></tr></thead><tbody>${
-      list.map(v => `<tr class="po-row" data-inv-open="${v.id}" tabindex="0">
+    const th = (k, l, left) => sortTh("inv", INV_KEYS, k, l, left);
+    t.innerHTML = `<thead><tr>${th("no", "Invoice", 1)}${th("status", "Status", 1)}${th("vendor", "Vendor", 1)}${th("date", "Date", 1)}${th("po", "Purchase order", 1)}${th("total", "Total")}${th("received", "Received", 1)}${th("payment", "Payment", 1)}${th("qb", "QuickBooks", 1)}</tr></thead><tbody>${
+      applySort("inv", INV_KEYS, list).map(v => `<tr class="po-row" data-inv-open="${v.id}" tabindex="0">
         <td class="l"><b class="mono">${esc(v.no || "(no number)")}</b>${invClosed(v) ? " " + closedPill : ""}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</td>
         <td class="l small"><span class="pill ${LP[laneOf(v)]}">${LN.get(laneOf(v))}</span></td>
         <td class="l">${esc(v.vendor || "—")}</td>
@@ -1074,6 +1185,17 @@
     : o.nInv > 0 && o.nQB >= o.nInv ? "recorded" : "received";
   // a card is two short lines (vendor · cost / PO · what's next) so ten fit in a lane without scrolling (Brian, Oct 14)
   const OLANE_CARDS = 10;
+  // the extra line on a bigger card (Brian, Oct 29: "make the cards a little larger so we can see more of the details")
+  function ocDetail(o, k) {
+    const bits = [];
+    if (o.nLines) bits.push(`${n0(o.nLines)} product${o.nLines === 1 ? "" : "s"}`);
+    if (o.units) bits.push(`${n0(o.units)} units`);
+    if (o.received > 0 && o.received < o.units) bits.push(`${n0(o.received)} in`);
+    if (o.invs && o.invs.length) bits.push(`${o.invs.length} invoice${o.invs.length === 1 ? "" : "s"}`);
+    if (o.expected && k !== "ordered") bits.push("exp " + esc(shortDate(o.expected)));
+    if (o.category && o.nLines) bits.push(esc(o.category));
+    return bits.join(" · ");
+  }
   function oCard(o, k) {
     const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received);
     const hint = k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
@@ -1088,21 +1210,23 @@
       ? (k === "invoiced" ? o.invs.find(v => !v.recv) : k === "received" ? o.invs.find(v => !v.qb) : null) || o.invs[o.invs.length - 1] : null;
     const miss = o.missingInv ? '<span class="pill warn" title="Goods came in with no invoice in the system — it clears when an invoice is put on this order">missing invoice</span> ' : "";
     const ivChip = iv ? `<button class="oc-inv" type="button" data-inv-open="${esc(iv.id)}" title="Open invoice ${esc(iv.no)}${o.invs.length > 1 ? ` (${o.invs.length} invoices on this order)` : ""}">${o.invs.length > 1 ? `${o.invs.length} inv` : "Inv"} ${esc(String(iv.no).replace(/^#/, "").slice(-6))} →</button>` : "";
-    return `<div class="il-card oc" role="button" tabindex="0" data-po-open="${esc(o.id)}" title="Open ${esc(o.vendor || "")} ${name}">
+    return `<div class="il-card oc" role="button" tabindex="0" draggable="true" data-po-open="${esc(o.id)}" title="Open ${esc(o.vendor || "")} ${name} — drag to reorder (or Alt+↑ / Alt+↓)">
       <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span><span class="il-amt" ${o.budget != null ? `title="Budget ${m0(o.budget)}${o.cost ? ` · ordered ${m0(o.cost)}` : ""}"` : ""}>${!o.cost && o.budget != null ? `<span class="dim">budget</span> ${m0(o.budget)}` : m0(o.cost)}</span></span>
-      <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${miss}${hint}</span></span></div>`;
+      <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${miss}${hint}</span></span>
+      <span class="oc-3">${ocDetail(o, k)}</span></div>`;
   }
   function renderOLanes(all) {
     const by = new Map(OLANES.map(([k]) => [k, []]));
     for (const o of all) by.get(laneOfO(o)).push(o);
     for (const k of ["approve", "ordered", "invoiced"]) by.get(k).sort((a, b) => String(a.created).localeCompare(String(b.created)));   // oldest waiting first
     $("po-lanes").innerHTML = OLANES.map(([k, n, sub]) => {
-      const os = by.get(k), tot = os.reduce((a, o) => a + (o.cost || 0), 0), more = os.length - OLANE_CARDS;
-      return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}">
+      const os = laneSort("po", k, by.get(k)), tot = os.reduce((a, o) => a + (o.cost || 0), 0), more = os.length - OLANE_CARDS;
+      return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}" data-lane-k="${k}">
         <div class="ol-headrow"><button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="${esc(sub)} — show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>${k === "approve" ? '<button class="ol-add" type="button" data-po-start title="Start an order: pick the vendor and see what to reorder" aria-label="Start an order">+</button>' : ""}</div>
         <div class="ol-sum" title="Total of the ${n0(os.length)} order${os.length === 1 ? "" : "s"} here, at cost">${m0(tot)}</div>
         <div class="il-cards">${os.slice(0, OLANE_CARDS).map(o => oCard(o, k)).join("") || (k === "approve" ? '<button class="il-empty ol-start" type="button" data-po-start>+ Start an order</button>' : '<div class="il-empty">Nothing here</div>')}</div>
-        ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-olane="${k}">+ ${n0(more)} more in the table</button>` : ""}</div>`;
+        ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-olane="${k}">+ ${n0(more)} more in the table</button>` : ""}
+        ${laneCustom("po", os) ? `<button class="linkbtn small il-reset" type="button" data-lane-reset="${k}" title="Put this lane back in its usual order">Reset order</button>` : ""}</div>`;
     }).join("");
   }
   async function approveOrder(id, yes) {
@@ -1141,10 +1265,11 @@
     const list = all.filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
+    const sorted = applySort("po", PO_KEYS, list), th = (k, l, left) => sortTh("po", PO_KEYS, k, l, left);
     const t = $("po-table");
     if (!S.orders) { t.innerHTML = `<tbody><tr><td class="l muted">${S.loading ? "Loading…" : ""}</td></tr></tbody>`; return; }
-    t.innerHTML = `<thead><tr><th class="l">PO</th><th class="l">Vendor</th><th class="l">Status</th><th>Products</th><th>Ordered</th><th>Invoiced</th><th>Received</th><th>Cost</th><th class="l">Invoices</th><th class="l">Dates</th><th class="l">Needs attention</th></tr></thead><tbody>${
-      list.map(o => {
+    t.innerHTML = `<thead><tr>${th("po", "PO", 1)}${th("vendor", "Vendor", 1)}${th("status", "Status", 1)}${th("products", "Products")}${th("ordered", "Ordered")}${th("invoiced", "Invoiced")}${th("received", "Received")}${th("cost", "Cost")}${th("invoices", "Invoices", 1)}${th("dates", "Dates", 1)}${th("attention", "Needs attention", 1)}</tr></thead><tbody>${
+      sorted.map(o => {
         const fl = listFlags(o), got = GOT.includes(o.status);
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
         return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</td>
@@ -2713,6 +2838,10 @@
       const ln = e.target.closest("[data-olane]"); if (ln) { S.stage = S.stage === ln.dataset.olane && !ln.classList.contains("il-more") ? "open" : ln.dataset.olane; renderList();
         if (S.stage !== "open") { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
       const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openPO(o.dataset.poOpen); } });
+    wireLaneDrag($("po-lanes"), "po"); wireLaneDrag($("inv-lanes"), "inv");
+    $("po-table").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { e.stopPropagation(); toggleSort("po", PO_KEYS, b.dataset.sort); renderList(); } });
+    $("inv-table").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { e.stopPropagation(); toggleSort("inv", INV_KEYS, b.dataset.sort); renderInvList(); } });
+    $("inv-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-inv-open]"); if (o && e.target === o && !e.altKey && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openInvoice(o.dataset.invOpen); } });
     $("po-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && e.target === o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
     // a PDF dropped anywhere on the tab
