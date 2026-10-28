@@ -1285,6 +1285,11 @@
       return `<button class="po2-inv ${on ? "on" : ""}" data-inv="${i}" aria-pressed="${on}" title="Show invoice ${esc(v.no || "")}"><span class="po2-ih"><b>${esc(v.no || "(no number)")}</b><span class="num">${v.total != null ? m(v.total) : ""}</span></span>
         ${meta ? `<span class="small muted">${meta}</span>` : ""}${t.b ? `<span class="po2-track sm"><span style="width:${pct}%"></span></span>` : ""}<span class="po2-pills">${rp}${v.id && !v.isNew ? (invClosed(v) ? closedPill : qbPill(v)) : ""}</span></button>`; };
     const flat = (k, label, n, cls) => `<button class="po2-inv flat ${cls || ""} ${mode === k ? "on" : ""}" data-pview="${k}" aria-pressed="${mode === k}"><span class="po2-ih"><span>${label}</span><span class="muted num">${n0(n)}</span></span></button>`;
+    // what isn't on an invoice yet: always listed once there are invoices; gold when something is waiting for one
+    const niLines = ed.lines.filter(l => pr.get(l.id).open > 0), niWait = niLines.filter(l => !l.backorder).length;
+    const notInvCard = `<button class="po2-inv ${vw.notInv ? "attn" : "flat dashed"} ${mode === "notinv" ? "on" : ""}" data-pview="notinv" aria-pressed="${mode === "notinv"}" title="Products, or the part of them, not on an invoice yet">
+        <span class="po2-ih"><span>Not on an invoice</span><span class="muted num">${n0(vw.notInv)}</span></span>
+        ${vw.notInv ? `<span class="small muted">${niLines.length} product${niLines.length === 1 ? "" : "s"}${niLines.length - niWait ? ` · ${niLines.length - niWait} backordered` : ""}</span><span class="po2-pills"><span class="pill warn">${niWait ? "Waiting for an invoice" : "Backordered"}</span></span>` : ""}</button>`;
     const selIv = mode === "inv" && ivNow && ivNow.id && !ivNow.isNew ? ivNow : null;
     const selActs = selIv ? `<div class="po2-ivact"><button class="btn sm" data-pact="print-inv">Print invoice</button>${selIv.parts || selIv.file ? '<button class="btn sm" data-pact="print-pdf">Vendor PDF</button>' : ""}${selIv.recvAt ? (selIv.recvManual && !ro ? '<button class="btn sm" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "") : !ro && invTot(selIv).g > 0 ? '<button class="btn sm" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : ""}<button class="btn sm" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></div>${invStepsHtml(ed, selIv)}` : "";
     const dd = (id, k, v, empty) => `<dt>${k}</dt><dd><button class="hfield2" data-hedit="${id}" title="Edit ${k.toLowerCase()}">${v ? esc(v) : `<span class="dim">${empty}</span>`}</button></dd>`;
@@ -1292,7 +1297,7 @@
     const trow = (k, u, c, mu) => `<span class="${mu ? "muted" : ""}">${k}</span><span class="num ${mu ? "muted" : ""}">${u}</span><span class="num ${mu ? "muted" : ""}">${c}</span>`;
     const side = ed.id ? `<aside class="po2-side" aria-label="Invoices and order details">
         <section class="panel po2-card"><div class="po2-ch"><h2>Invoices${ed.invoices.length ? " · " + ed.invoices.length : ""}</h2>${!ro ? `<label class="btn sm" for="pe-file" title="Read the vendor's invoice PDF and put it on this PO">+ Add invoice</label>` : ""}</div>
-          ${flat("all", "All lines", tot.ordered)}${ed.invoices.map(ivCard).join("")}${vw.showLeft ? flat("left", "Still to receive", vw.left) : ""}${anyInv ? flat("notinv", "Not on an invoice", vw.notInv, "dashed") : ""}
+          ${flat("all", "All lines", tot.ordered)}${ed.invoices.map(ivCard).join("")}${vw.showLeft ? flat("left", "Still to receive", vw.left) : ""}${anyInv ? notInvCard : ""}
           ${selActs}</section>
         <section class="panel po2-card"><div class="po2-ch"><h2>Order details</h2></div>
           <dl class="po2-dl">${dd("pe-vendor", "Vendor", ed.vendor, "not set")}${dd("pe-po", "PO #", ed.po, "not set")}${dd("pe-kind", "Type", ed.kind === "booking" ? "Booking" : "Order", "")}${ed.kind === "booking" ? dd("pe-placeby", "Place by", ed.placeBy ? shortDate(ed.placeBy) : "", "not set") : ""}${dd("pe-exp", "Expected", ed.expected ? shortDate(ed.expected) : "", "not set")}${dd("pe-dest", "Receive into", both ? "Both" : ed.dest === "prep" ? "Prep center" : "Shopify store", "")}${dd("pe-note", "Note", ed.note, "add a note")}</dl>
@@ -1310,7 +1315,7 @@
     } else if (mode === "notinv") flLeft = chip("Not on an invoice") + `<span class="muted small">${n0(vw.notInv)} units</span>`;
     else if (mode === "left") flLeft = chip("Still to receive") + `<span class="muted small">${n0(vw.left)} units</span>`;
     else flLeft = `<b>All lines</b> <span class="muted small">${n0(tot.ordered)} units${anyInv && vw.openInv ? " · pick an invoice on the right to receive it" : ""}</span>`;
-    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
+    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
     box.innerHTML = `
       <div class="po-top po2-top">
         <div class="po2-headrow">
@@ -2077,6 +2082,8 @@
       rankOpenPOs(ed.vendor, vids, ed.id).then(rk => { if (S.ed === ed && ed.confirm === "inv-move") { ed.moveRank = { rk, n: vids.length }; render(); } });
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
+    if (a === "add-prod") { if (ed.view === "inv" || ed.view === "left") ed.view = "all"; ed.search = null; render(); focusArg("po-add");
+      setTimeout(() => { const el = $("po-add"); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 0); return; }
     if (a === "print-slip") { printSlip(ed, cur(ed)); return; }
     if (a === "print-inv") { printInvoice(ed, cur(ed)); return; }
     if (a === "print-pdf") { printVendorPdf(ed, cur(ed)); return; }
