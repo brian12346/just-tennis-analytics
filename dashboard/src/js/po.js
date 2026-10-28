@@ -1275,6 +1275,13 @@
   }
   // Stats over the lanes (Brian, Oct 29: "something about orders on the way, backordered products, etc"). Each one
   // filters the table when it maps to a set of orders.
+  // the tiles that filter the table to orders that aren't a lane (Oct 29: "the backordered card should be clickable")
+  const kWeek = () => new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+  const KPI_ST = {
+    back: ["Backordered", o => o.nBack > 0 && o.status !== "complete"],
+    due: ["Due this week / late", o => ["ordered", "invoiced", "partial"].includes(o.status) && !!o.expected && (o.expected <= kWeek()) && (o.expected >= today() || o.status !== "partial")],
+    unpaid: ["Bills to pay", o => o.nUnpaid > 0],
+  };
   function poKpis(all) {
     const t = today(), wk = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
     const out = all.filter(o => ["ordered", "invoiced", "partial"].includes(o.status));
@@ -1288,10 +1295,10 @@
     const k = (l, v, sub, cls, go) => `<div class="kpi ${cls || ""}">${go ? `<button class="kpi-go" type="button" data-st-go="${go}" title="Show these in the table">` : ""}<span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${sub}</span>${go ? "</button>" : ""}</div>`;
     return [
       k("On the way", m0(toCome), `${n0(units)} units · ${n0(out.length)} order${out.length === 1 ? "" : "s"}`, "", "open"),
-      k("Due this week", n0(soon.length), `${soon.length ? m0(soon.reduce((a, o) => a + o.cost, 0)) + " expected" : "nothing expected"}${late.length ? ` · <b class="neg">${n0(late.length)} late</b>` : ""}`, late.length ? "warnk" : ""),
+      k("Due this week", n0(soon.length), `${soon.length ? m0(soon.reduce((a, o) => a + o.cost, 0)) + " expected" : "nothing expected"}${late.length ? ` · <b class="neg">${n0(late.length)} late</b>` : ""}`, late.length ? "warnk" : "", soon.length || late.length ? "due" : ""),
       k("Not invoiced yet", m0(notInvAmt), `${n0(notInv.reduce((a, o) => a + o.restUnits, 0))} units on ${n0(notInv.length)} order${notInv.length === 1 ? "" : "s"}`, "", "ordered"),
-      k("Backordered", n0(nBack), nBack ? `product${nBack === 1 ? "" : "s"} on ${n0(back.length)} order${back.length === 1 ? "" : "s"}${nextEta ? " · next ETA " + esc(shortDate(nextEta)) : ""}${pastEta ? ` · <b class="neg">${n0(pastEta)} past ETA</b>` : ""}` : "nothing backordered", pastEta ? "warnk" : ""),
-      k("Bills to pay", m0(owed), unpaid.length ? `${n0(unpaid.length)} order${unpaid.length === 1 ? "" : "s"}${overdue.length ? ` · <b class="neg">${n0(overdue.length)} overdue</b>` : " · none overdue"}` : "all paid"),
+      k("Backordered", n0(nBack), nBack ? `product${nBack === 1 ? "" : "s"} on ${n0(back.length)} order${back.length === 1 ? "" : "s"}${nextEta ? " · next ETA " + esc(shortDate(nextEta)) : ""}${pastEta ? ` · <b class="neg">${n0(pastEta)} past ETA</b>` : ""}` : "nothing backordered", pastEta ? "warnk" : "", nBack ? "back" : ""),
+      k("Bills to pay", m0(owed), unpaid.length ? `${n0(unpaid.length)} order${unpaid.length === 1 ? "" : "s"}${overdue.length ? ` · <b class="neg">${n0(overdue.length)} overdue</b>` : " · none overdue"}` : "all paid", "", unpaid.length ? "unpaid" : ""),
     ].join("");
   }
   // a lane card opens its PO at that invoice, or at what isn't invoiced yet
@@ -1323,12 +1330,12 @@
     const all = S.orders || [];
     const isOpen = (o) => o.status !== "complete";
     const isLane = (st) => OLANE_N.has(st);
-    const inStage = (o, st) => st === "open" ? isOpen(o) : st === "all" ? true : isLane(st) ? oLanes(o).includes(st) : o.status === st;
+    const inStage = (o, st) => st === "open" ? isOpen(o) : st === "all" ? true : isLane(st) ? oLanes(o).includes(st) : KPI_ST[st] ? KPI_ST[st][1](o) : o.status === st;
     const q = S.q.trim().toLowerCase().replace(/^#/, "");
     const cnt = (st) => all.filter(o => inStage(o, st)).length;
     if (S.orders) renderOLanes(all); else $("po-lanes").innerHTML = "";
     renderStart();
-    $("po-stage").innerHTML = [["open", "Open"], ...OLANES.map(([k, n]) => [k, n]), ["all", "All"]].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
+    $("po-stage").innerHTML = [["open", "Open"], ...OLANES.map(([k, n]) => [k, n]), ["all", "All"], ...(KPI_ST[S.stage] ? [[S.stage, KPI_ST[S.stage][0]]] : [])].map(([k, n]) => `<button data-st="${k}" aria-pressed="${S.stage === k}">${n} <span class="cnt">${cnt(k)}</span></button>`).join("");
     const vs = [...new Set(all.map(o => o.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const vsel = $("po-vendor"); const want = ["all", ...vs].join("|");
     if (vsel.dataset.opts !== want) { vsel.innerHTML = `<option value="all">All vendors</option>` + vs.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join(""); vsel.dataset.opts = want; vsel.value = vs.includes(S.vendor) ? S.vendor : "all"; }
