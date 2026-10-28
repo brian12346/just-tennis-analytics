@@ -1509,22 +1509,22 @@
           <span class="dbtns"><button class="btn sm primary" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="btn sm" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`
       : `<div class="ivm-po"><span class="eyebrow">Purchase order</span>
           ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b><label class="stack small" for="pe-po">PO name<input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off"></label>`
-            : `<button class="linkbtn ivm-polink" data-pact="open-po" title="Open the purchase order">${esc(ed.po ? ed.po : "#" + ed.id)} →</button><span class="small muted">${ed.id ? esc(STAGE.get(ed.status) || "") : ""}${others > 0 ? ` · ${others + 1} invoices` : ""}</span>`}
-          ${canMove ? '<button class="linkbtn small" data-pact="inv-move">Change PO</button>' : iv.isNew && S.pend ? '<button class="linkbtn small" data-pact="inv-repick">Wrong PO?</button>' : ""}</div>`;
+            : `<button class="linkbtn ivm-polink" data-pact="open-po" title="Open the purchase order">${esc(ed.po ? ed.po : "#" + ed.id)} →</button><span class="small muted">${ed.id ? esc(STAGE.get(ed.status) || "") : ""}${others > 0 ? ` · ${others + 1} invoices` : ""}${canMove ? ' · <button class="linkbtn small" data-pact="inv-move">Change PO</button>' : iv.isNew && S.pend ? ' · <button class="linkbtn small" data-pact="inv-repick">Wrong PO?</button>' : ""}</span>`}</div>`;
     const meta = `<section class="panel iv-meta" aria-label="Invoice details">
         <div class="ivm-row">
           ${poBlock}
           <div class="ivm-fields">
-            <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lockF ? "disabled" : ""}></label>
-            <label class="stack" for="pe-invdate">Invoice date<input id="pe-invdate" class="inp" type="date" value="${esc(iv.date)}" ${lockF ? "disabled" : ""}></label>
-            <label class="stack" for="pe-invdue">Due date<input id="pe-invdue" class="inp" type="date" value="${esc(iv.due)}"></label>
-            <label class="stack" for="pe-invterms">Terms<input id="pe-invterms" class="inp" value="${esc(iv.terms)}" placeholder="e.g. Net 30"></label>
-            <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
-            <label class="stack" for="pe-invtotal">Invoice total<input id="pe-invtotal" class="inp num" value="${iv.total != null ? iv.total.toFixed(2) : ""}"></label>
+            <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp sm mono" value="${esc(iv.no)}" ${lockF ? "disabled" : ""}></label>
+            <label class="stack" for="pe-invdate">Date<input id="pe-invdate" class="inp sm" type="date" value="${esc(iv.date)}" ${lockF ? "disabled" : ""}></label>
+            <label class="stack" for="pe-invdue">Due<input id="pe-invdue" class="inp sm" type="date" value="${esc(iv.due)}"></label>
+            <label class="stack" for="pe-invterms">Terms<input id="pe-invterms" class="inp sm" value="${esc(iv.terms)}" placeholder="e.g. Net 30"></label>
+            <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp sm num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
+            <label class="stack" for="pe-invtotal">Total<input id="pe-invtotal" class="inp sm num" value="${iv.total != null ? iv.total.toFixed(2) : ""}"></label>
           </div>
-          <div class="ivm-acts">${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}${iv.id && !iv.isNew ? `<button class="btn sm" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? '<button class="btn sm" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}` : ""}${!(t.g > 0) ? `<button class="btn sm danger" data-pact="rminv">${iv.isNew ? "Discard invoice" : "Delete invoice"}</button>` : ""}${iv.fileName ? `<span class="small muted iv-file" title="${esc(iv.fileName)}">PDF · ${esc(iv.fileName)}</span>` : ""}</div>
+          <div class="ivm-acts">${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}${iv.id && !iv.isNew ? `<button class="linkbtn small" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? `<button class="linkbtn small" data-pact="print-pdf" title="Print the vendor's PDF${iv.fileName ? " · " + esc(iv.fileName) : ""}">Print vendor PDF</button>` : ""}` : ""}${!(t.g > 0) ? `<button class="linkbtn small neg" data-pact="rminv">${iv.isNew ? "Discard invoice" : "Delete invoice"}</button>` : ""}</div>
         </div>
-        <div class="ivm-pq">${payHtml(ed, iv)}${iv.rows.length ? qbHtml(ed, iv) : ""}</div>
+        ${iv.rows.length ? `<div class="ivm-pq">${qbLine(ed, iv)}</div>` : ""}
+        ${iv.paidOn || iv.payMethod || iv.payRef || iv.paidFrom ? `<div class="ivm-pq">${payHtml(ed, iv)}</div>` : ""}
       </section>`;
     box.innerHTML = `
       <div class="po-top po2-top">
@@ -1845,6 +1845,15 @@
       <div class="qb-line small" title="Vendor, bill number, dates and terms are the invoice's own (above)">Bill to <b>${esc(ed.vendor || "—")}</b> · no. <span class="mono">${esc(iv.no || "—")}</span>${ed.po ? ` · memo <span class="mono">${esc(ed.po)}</span>` : ""} · ${iv.paidOn ? esc(payTxt(iv)) : "unpaid"}</div>
       <table class="qb-t"><thead><tr><th class="l">Account</th><th>Amount</th></tr></thead><tbody>${ACCOUNTS.filter(([k]) => Math.abs(ba.out.get(k) || 0) >= 0.005 || k === "inventory").map(([k, n]) => `<tr><td class="l">${n}</td><td>${m(ba.out.get(k) || 0)}</td></tr>`).join("")}</tbody>
         <tfoot><tr><td class="l">Total</td><td>${m(ba.all)}</td></tr>${diff != null ? `<tr class="${Math.abs(diff) >= 0.01 ? "off" : "ok"}"><td class="l">Invoice total</td><td>${m(iv.total)}${Math.abs(diff) >= 0.01 ? ` <span class="small">(${diff > 0 ? "+" : ""}${m(diff)} not assigned)</span>` : ' <span class="small">✓ matches</span>'}</td></tr>` : ""}</tfoot></table></div>`;
+  }
+  // one line for the invoice page (v0.36.2: "let's make this more compact"); "Show bill" opens the full breakdown
+  function qbLine(ed, iv) {
+    if (!iv.rows.length) return "";
+    if (ed.alone || ed.qbOpen) return qbHtml(ed, iv) + (ed.alone ? "" : '<button class="linkbtn small" data-pact="qb-more">Hide bill</button>');
+    const ba = byAccount(iv), diff = iv.total != null ? Math.round((iv.total - ba.all) * 100) / 100 : null;
+    const parts = ACCOUNTS.filter(([k]) => Math.abs(ba.out.get(k) || 0) >= 0.005 || k === "inventory").map(([k, n]) => `${n} ${m(ba.out.get(k) || 0)}`).join(" · ");
+    return `<div class="ivm-qb"><b>QuickBooks</b><span class="qb-state">${qbState(ed, iv, ba, diff)}</span><span class="small muted">${parts}${diff != null ? (Math.abs(diff) >= 0.01 ? ` · <span class="warnt">${diff > 0 ? "+" : ""}${m(diff)} not assigned</span>` : ' · <span class="okt">✓ matches the total</span>') : ""}</span>
+      <span class="dbtns"><button class="mini" data-pact="qbcopy" title="Copy the bill details">Copy</button><button class="linkbtn small" data-pact="qb-more">Show bill</button></span></div>${qbPick(ed, iv)}`;
   }
   // sent to QuickBooks as a bill, or the button to send it (once: QuickBooks is checked for the same bill number first)
   const QBO_BILL = "https://app.qbo.intuit.com/app/bill?txnId=";
@@ -2200,6 +2209,7 @@
       rankOpenPOs(ed.vendor, vids, ed.id).then(rk => { if (S.ed === ed && ed.confirm === "inv-move") { ed.moveRank = { rk, n: vids.length }; render(); } });
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
+    if (a === "qb-more") { ed.qbOpen = !ed.qbOpen; render(); return; }
     if (a === "lines-edit") { ed.lineEdit = true; render(); return; }
     if (a === "lines-done") { ed.lineEdit = false; ed.search = null; render(); return; }
     if (a === "add-prod") { if (ed.view === "inv" || ed.view === "left") ed.view = "all"; ed.search = null; render(); focusArg("po-add");

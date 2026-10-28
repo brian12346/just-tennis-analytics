@@ -1444,3 +1444,16 @@ tr.drop-below>td{box-shadow:inset 0 -2px 0 var(--founders-rock)}
 .iv-main .po-body.with-pdf{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,42%);gap:14px}
 .ivm-pq{align-items:start}
 .ivm-po .linkbtn{align-self:flex-start;text-align:left}
+/* v0.36.2 compact invoice details */
+.iv-meta{gap:8px;padding:12px 16px}
+.ivm-row{gap:10px 18px;align-items:flex-end}
+.ivm-po{gap:2px;min-width:150px;max-width:220px;align-self:center}
+.ivm-fields{flex:1 1 640px;grid-template-columns:repeat(6,minmax(96px,1fr));gap:6px 10px}
+@media (max-width:900px){.ivm-fields{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.ivm-fields .stack{font-size:12px;color:var(--muted);gap:2px}
+.ivm-acts{flex-direction:column;align-items:flex-end;gap:2px;align-self:center}
+.ivm-pq{display:block;border-top:1px solid var(--line);padding-top:8px}
+.ivm-qb{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:14px}
+.ivm-qb .qb-state{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ivm-qb .dbtns{margin-left:auto}
+.linkbtn.neg{color:var(--critical)}
