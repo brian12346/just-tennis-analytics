@@ -1284,6 +1284,7 @@
     back: ["Backordered", o => o.nBack > 0 && o.status !== "complete"],
     due: ["Due this week / late", o => ["ordered", "invoiced", "partial"].includes(o.status) && !!o.expected && (o.expected <= kWeek()) && (o.expected >= today() || o.status !== "partial")],
     unpaid: ["Bills to pay", o => o.nUnpaid > 0],
+    attn: ["Needs attention", o => o.status !== "complete" && listFlags(o).some(f => f[0] !== "info")],
   };
   function poKpis(all) {
     const t = today(), wk = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
@@ -1345,7 +1346,7 @@
     const open = all.filter(isOpen), out = all.filter(o => ["ordered", "invoiced", "partial"].includes(o.status));
     const flagged = open.filter(o => listFlags(o).some(f => f[0] !== "info"));
     const toCome = out.reduce((a, o) => a + o.cost * (o.units ? Math.max(0, o.units - o.received) / o.units : 1), 0), nBack = all.reduce((a, o) => a + o.nBack, 0);
-    if (S.orders) $("po-status").innerHTML = `${n0(open.length)} open${flagged.length ? ` · <button class="linkbtn" type="button" data-st-go="open" title="Late, unmatched lines, guesses, no invoice">${n0(flagged.length)} need attention</button>` : ""}`;
+    if (S.orders) $("po-status").innerHTML = `${n0(open.length)} open${flagged.length ? ` · <button class="linkbtn" type="button" data-st-go="attn" data-scroll="1" title="Show them in the table: late, unmatched lines, guesses, no invoice">${n0(flagged.length)} need attention</button>` : ""}`;
     const list = all.filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
@@ -3047,7 +3048,7 @@
     tab.addEventListener("click", (e) => {
       if (e.target.closest("[data-po-start]")) { newOrder(); return; }
       const ivo = e.target.closest("[data-inv-open]"); if (ivo) { e.stopPropagation(); if (S.ed && S.ed.dirty) return leave(); note("", ""); window.JTInvoices.open(ivo.dataset.invOpen); return; }
-      const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); if (sg.classList.contains("kpi-go")) { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
+      const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); if (sg.classList.contains("kpi-go") || sg.dataset.scroll) { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
       const ap = e.target.closest("[data-po-approve]"); if (ap) { e.stopPropagation(); approveOrder(ap.dataset.poApprove); return; }
       const mk = e.target.closest("[data-po-mark]"); if (mk) { e.stopPropagation(); markOrdered(mk.dataset.poMark); return; }
       const ln = e.target.closest("[data-olane]"); if (ln) { S.stage = S.stage === ln.dataset.olane && !ln.classList.contains("il-more") ? "open" : ln.dataset.olane; renderList();
