@@ -1581,7 +1581,7 @@
             <div class="po2-title"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po || "#" + ed.id)}</button>` : "New purchase order"}</h2>${ed.id ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this PO" title="Copy a link to this PO (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${appr}</div>
           </div>
           <div class="po2-hr"><span class="steps six seven">${steps}</span>
-            <span class="dbtns">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}${ed.dirty ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="${ed.id ? "Throw away the changes since the last save" : "Throw away this new order"}">${ed.id ? "Discard changes" : "Discard"}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
+            <span class="dbtns">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}${ed.dirty ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="${ed.id ? "Throw away the changes since the last save" : "Throw away this new order"}">${ed.id ? "Discard changes" : "Discard"}</button>` : ""}<button class="btn ${(ed.dirty || !ed.id) && !draftActs(ed) ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button>${draftActs(ed)}</span></div>
         </div>
         ${ed.id ? "" : headStrip(ed, ro, both)}
       </div>
@@ -2123,6 +2123,15 @@
       ["Paid on", iv.paidOn], ["Payment method", PAYN.get(iv.payMethod) || ""], ["Payment ref.", iv.payRef], ["Paid from", iv.paidFrom], ["Amount paid", iv.paidAmount != null ? iv.paidAmount.toFixed(2) : ""]]
       .map(([k, v]) => k + "\t" + (v || "")).concat(ACCOUNTS.map(([k, n]) => n + "\t" + (ba.out.get(k) || 0).toFixed(2)), ["Total\t" + ba.all.toFixed(2)]).join("\n");
   }
+  // Brian, Oct 29: "I like 'Save', 'Ready to Order', and 'Approve'" … "put all 3 buttons in the top … by the current
+  // save button". Each saves first when there are changes.
+  function draftActs(ed) {
+    if (ed.status !== "draft" || ed.approvedAt || ed.recv) return "";
+    const busy = S.busy ? "disabled" : "";
+    return (ed.readyAt ? `<button class="btn" data-pact="unready" ${busy} title="Still working on it: back to Draft">Back to draft</button>`
+      : `<button class="btn primary" data-pact="ready" ${busy} title="Done putting it together: saves it and shows it as Ready to approve">Ready to Order</button>`)
+      + `<button class="btn ${ed.readyAt ? "primary" : ""}" data-pact="save-approve" ${busy} title="Saves it, approves it and marks it ordered: it moves to Ordered">Approve</button>`;
+  }
   function footButtons(ed, got, ro) {
     const busy = S.busy ? "disabled" : "";
     if (ro) return `<button class="btn" data-pact="back">← Back to QB ready</button>${ed.dirty ? `<button class="btn primary" data-pact="save" ${busy}>Save</button>` : ""}`;
@@ -2135,13 +2144,7 @@
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     // a draft is approved (Ready to approve → Ordered: approving marks it ordered)
     // Draft → Ready to approve → approved (Oct 29): the order says when it's ready; approving still works from either
-    // Brian, Oct 29: "I like 'Save', 'Ready to Order', and 'Approve'" (each one saves first when there are changes)
-    if (ed.status === "draft" && !ed.approvedAt) {
-      out.push(`<button class="btn" data-pact="save" ${busy || (!ed.dirty && ed.id ? "disabled" : "")} title="Save this order (⌘S / Ctrl+S)">Save</button>`);
-      if (ed.readyAt) out.push(`<button class="btn" data-pact="unready" ${busy} title="Still working on it: back to Draft">Back to draft</button>`);
-      else out.push(`<button class="btn primary" data-pact="ready" ${busy} title="Done putting it together: saves it and shows it as Ready to approve">Ready to Order</button>`);
-      out.push(`<button class="btn ${ed.readyAt ? "primary" : ""}" data-pact="save-approve" ${busy} title="Saves it, approves it and marks it ordered: it moves to Ordered">Approve</button>`);
-    }
+    // a draft's Save / Ready to Order / Approve are in the header, next to Save (draftActs)
     else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
     // receive table has its own buttons)
