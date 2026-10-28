@@ -657,7 +657,9 @@
     if (!file) return;
     if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") { note("warn", "That isn't a PDF. Choose the invoice's PDF file."); return; }
     const fromPO = S.mode === "po" && S.ed && S.ed.id ? S.ed : null;
-    if (S.ed && S.ed.dirty && !fromPO) { note("warn", `Save or discard the open ${S.ed.id ? "purchase order" : "invoice"} first. <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="discard">Discard changes</button></span>`); return; }
+    // a PDF dropped on (or uploaded into) a + New invoice that isn't saved yet is read into it, and stays off any PO
+    const intoNew = S.ed && S.ed.alone && S.ed.invoices.length === 1 && !S.ed.invoices[0].id ? S.ed : null;
+    if (S.ed && S.ed.dirty && !fromPO && !intoNew) { note("warn", `Save or discard the open ${S.ed.id ? "purchase order" : "invoice"} first. <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="discard">Discard changes</button></span>`); return; }
     S.busy = "Reading " + file.name + "…"; render();
     let pend;
     try {
@@ -697,6 +699,8 @@
     }
     S.busy = "";
     if (fromPO) { S.pend = null; return attach(pend, fromPO, ""); }
+    if (intoNew) { S.pend = null; const vendor = intoNew.vendor; intoNew.leaveOk = true; S.ed = Object.assign(blankEd(), { alone: true, vendor });
+      return attach(pend, S.ed, "Read into your new invoice — no PO yet. "); }
     S.pend = pend;
     if (!S.orders) await loadOrders(false);
     if (orderId) { await openPO(orderId); return attach(pend, S.ed, ""); }
@@ -1805,7 +1809,7 @@
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
       ${band}
-      ${ed.alone ? `<div class="note info">${saved ? "This invoice isn't on a purchase order yet." : "Saving keeps this invoice on its own — no purchase order yet."} Get it right, then <b>Create PO from invoice</b> (to receive it) or <b>Add to a PO</b>. It can also go to QuickBooks as it is.</div>`
+      ${ed.alone ? `<div class="note info">${saved ? "This invoice isn't on a purchase order yet." : "Saving keeps this invoice on its own — no purchase order yet."} Get it right, then <b>Create PO from invoice</b> (to receive it) or <b>Add to a PO</b>. It can also go to QuickBooks as it is.${!iv.id && !iv.file && !iv.parts ? ` <span class="dbtns"><label class="btn sm primary" for="inv-file">Upload the invoice PDF</label></span> <span class="muted small">or drop it anywhere on this page — it's read into this invoice.</span>` : ""}</div>`
         : !ed.id ? '<div class="note info">Saving creates the purchase order with this invoice on it. You can add or change products on the PO afterwards.</div>' : ""}
       ${meta}
       <section class="panel po-inv iv-main" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>`;
