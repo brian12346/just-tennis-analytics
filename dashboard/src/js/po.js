@@ -1273,6 +1273,27 @@
         ${laneCustom("po", os) ? `<button class="linkbtn small il-reset" type="button" data-lane-reset="${k}" title="Put this lane back in its usual order">Reset order</button>` : ""}</div>`;
     }).join("");
   }
+  // Stats over the lanes (Brian, Oct 29: "something about orders on the way, backordered products, etc"). Each one
+  // filters the table when it maps to a set of orders.
+  function poKpis(all) {
+    const t = today(), wk = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+    const out = all.filter(o => ["ordered", "invoiced", "partial"].includes(o.status));
+    const toCome = out.reduce((a, o) => a + o.cost * (o.units ? Math.max(0, o.units - o.received) / o.units : 1), 0);
+    const units = out.reduce((a, o) => a + Math.max(0, o.units - o.received), 0);
+    const late = out.filter(o => o.status !== "partial" && o.expected && o.expected < t), soon = out.filter(o => o.expected && o.expected >= t && o.expected <= wk);
+    const notInv = out.filter(o => o.restUnits > 0), notInvAmt = notInv.reduce((a, o) => a + o.restCost, 0);
+    const back = all.filter(o => o.nBack > 0 && o.status !== "complete"), nBack = back.reduce((a, o) => a + o.nBack, 0);
+    const etas = back.map(o => o.backEta).filter(Boolean).sort(), pastEta = back.filter(o => o.backEta && o.backEta < t).length, nextEta = etas.find(d => d >= t);
+    const unpaid = all.filter(o => o.nUnpaid > 0), owed = unpaid.reduce((a, o) => a + o.unpaidAmt, 0), overdue = unpaid.filter(o => o.unpaidDue && o.unpaidDue < t);
+    const k = (l, v, sub, cls, go) => `<div class="kpi ${cls || ""}">${go ? `<button class="kpi-go" type="button" data-st-go="${go}" title="Show these in the table">` : ""}<span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${sub}</span>${go ? "</button>" : ""}</div>`;
+    return [
+      k("On the way", m0(toCome), `${n0(units)} units · ${n0(out.length)} order${out.length === 1 ? "" : "s"}`, "", "open"),
+      k("Due this week", n0(soon.length), `${soon.length ? m0(soon.reduce((a, o) => a + o.cost, 0)) + " expected" : "nothing expected"}${late.length ? ` · <b class="neg">${n0(late.length)} late</b>` : ""}`, late.length ? "warnk" : ""),
+      k("Not invoiced yet", m0(notInvAmt), `${n0(notInv.reduce((a, o) => a + o.restUnits, 0))} units on ${n0(notInv.length)} order${notInv.length === 1 ? "" : "s"}`, "", "ordered"),
+      k("Backordered", n0(nBack), nBack ? `product${nBack === 1 ? "" : "s"} on ${n0(back.length)} order${back.length === 1 ? "" : "s"}${nextEta ? " · next ETA " + esc(shortDate(nextEta)) : ""}${pastEta ? ` · <b class="neg">${n0(pastEta)} past ETA</b>` : ""}` : "nothing backordered", pastEta ? "warnk" : ""),
+      k("Bills to pay", m0(owed), unpaid.length ? `${n0(unpaid.length)} order${unpaid.length === 1 ? "" : "s"}${overdue.length ? ` · <b class="neg">${n0(overdue.length)} overdue</b>` : " · none overdue"}` : "all paid"),
+    ].join("");
+  }
   // a lane card opens its PO at that invoice, or at what isn't invoiced yet
   async function openCard(el) {
     const inv = el.dataset.poInv, view = el.dataset.poView;
@@ -1314,11 +1335,12 @@
     const open = all.filter(isOpen), out = all.filter(o => ["ordered", "invoiced", "partial"].includes(o.status));
     const flagged = open.filter(o => listFlags(o).some(f => f[0] !== "info"));
     const toCome = out.reduce((a, o) => a + o.cost * (o.units ? Math.max(0, o.units - o.received) / o.units : 1), 0), nBack = all.reduce((a, o) => a + o.nBack, 0);
-    if (S.orders) $("po-status").innerHTML = `${n0(open.length)} open · <b>${m0(toCome)}</b> on order (${n0(out.reduce((a, o) => a + Math.max(0, o.units - o.received), 0))} units to come)${nBack ? ` · ${n0(nBack)} backordered` : ""}${flagged.length ? ` · <button class="linkbtn" type="button" data-st-go="open" title="Late, unmatched lines, guesses, no invoice">${n0(flagged.length)} need attention</button>` : ""}`;
+    if (S.orders) $("po-status").innerHTML = `${n0(open.length)} open${flagged.length ? ` · <button class="linkbtn" type="button" data-st-go="open" title="Late, unmatched lines, guesses, no invoice">${n0(flagged.length)} need attention</button>` : ""}`;
     const list = all.filter(o => inStage(o, S.stage) && (S.vendor === "all" || o.vendor === S.vendor)
       && (!q || [o.vendor, o.po, o.invNos, o.note, o.text].join(" ").toLowerCase().includes(q)))
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
     const sorted = applySort("po", PO_KEYS, list), th = (k, l, left) => sortTh("po", PO_KEYS, k, l, left);
+    $("po-kpis").innerHTML = S.orders ? poKpis(all) : "";
     const t = $("po-table");
     if (!S.orders) { t.innerHTML = `<tbody><tr><td class="l muted">${S.loading ? "Loading…" : ""}</td></tr></tbody>`; return; }
     t.innerHTML = `<thead><tr>${th("po", "PO", 1)}${th("vendor", "Vendor", 1)}${th("status", "Status", 1)}${th("products", "Products")}${th("ordered", "Ordered")}${th("invoiced", "Invoiced")}${th("received", "Received")}${th("cost", "Cost")}${th("invoices", "Invoices", 1)}${th("dates", "Dates", 1)}${th("attention", "Needs attention", 1)}</tr></thead><tbody>${
@@ -2885,7 +2907,7 @@
     tab.addEventListener("click", (e) => {
       if (e.target.closest("[data-po-start]")) { openStart(); return; }
       const ivo = e.target.closest("[data-inv-open]"); if (ivo) { e.stopPropagation(); if (S.ed && S.ed.dirty) return leave(); note("", ""); window.JTInvoices.open(ivo.dataset.invOpen); return; }
-      const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); return; }
+      const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); if (sg.classList.contains("kpi-go")) { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
       const ap = e.target.closest("[data-po-approve]"); if (ap) { e.stopPropagation(); approveOrder(ap.dataset.poApprove); return; }
       const mk = e.target.closest("[data-po-mark]"); if (mk) { e.stopPropagation(); markOrdered(mk.dataset.poMark); return; }
       const ln = e.target.closest("[data-olane]"); if (ln) { S.stage = S.stage === ln.dataset.olane && !ln.classList.contains("il-more") ? "open" : ln.dataset.olane; renderList();

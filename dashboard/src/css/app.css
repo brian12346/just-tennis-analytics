@@ -1474,3 +1474,8 @@ th.th-s.on .sort-ic{opacity:1;color:var(--ink)}
 /* an order straddling lanes (v0.38.0): the not-yet-invoiced rest is dashed; invoice cards carry a left rule */
 .il-card.oc.ocr{border-style:dashed}
 .il-card.oc.ocv{border-left:3px solid var(--sales)}
+/* stats over the order lanes (v0.39.0) */
+.po-kpis{margin-bottom:2px}
+.kpi-go{all:unset;display:flex;flex-direction:column;gap:4px;cursor:pointer;border-radius:6px}
+.kpi:has(.kpi-go):hover{background:var(--line-soft)}
+.kpi-go:focus-visible{outline:2px solid var(--sales);outline-offset:4px}
