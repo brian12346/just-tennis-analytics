@@ -514,9 +514,9 @@
   const rematchMsg = (n) => `${n} invoice line${n === 1 ? " was" : "s were"} matched to products added in Shopify since the invoice was saved. Check them and Save.`;
   // the saved invoices of a PO (or the one invoice of an invoice saved without a PO): header, lines, receipts
   const INV_COLS = ["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
-    "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id"];
+    "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id", "i.complete_at::text"];
   async function fillInvoices(ed, ivs) {
-    ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft",
+    ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft", completeAt: v[24] || "",
       notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
       paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "", att: v[23] || "" } : null }));
     if (!ed.invoices.length) return;
@@ -964,10 +964,10 @@
         "(select coalesce(sum(qty), 0) from jt.invoice_receipts x where x.invoice_id = i.id)",
         "(select coalesce(sum(qty), 0) from jt.invoice_lines l where l.invoice_id = i.id and l.variant_id is not null and l.match_how <> 'skip')",
         "(select count(*) from jt.invoice_lines l where l.invoice_id = i.id and ((l.variant_id is null and l.match_how <> 'skip') or l.match_how like 'guess%'))",
-        "i.created_at::text", "i.terms"],
+        "i.created_at::text", "i.terms", "i.complete_at::text"],
         "from jt.invoices i left join jt.prep_orders o on o.id = coalesce(i.order_id, (select p.id from jt.prep_orders p where p.invoice_id = i.id limit 1)) order by coalesce(i.invoice_date, i.created_at::date) desc, i.id desc", refresh);
       S.invs = r.map(x => ({ id: x[0], vendor: x[9] || x[1] || "", no: x[2] || "", date: x[3] || "", due: x[4] || "", total: x[5] == null ? null : +x[5], oid: x[6] || "", po: x[7] || "", ostatus: x[8] || "",
-        paidOn: x[10] || "", recvAt: x[11] || "", qbo: x[12] || "", parts: +x[13] || 0, got: +x[14] || 0, billed: +x[15] || 0, check: +x[16] || 0, created: x[17] || "", terms: x[18] || "" }));
+        paidOn: x[10] || "", recvAt: x[11] || "", qbo: x[12] || "", parts: +x[13] || 0, got: +x[14] || 0, billed: +x[15] || 0, check: +x[16] || 0, created: x[17] || "", terms: x[18] || "", completeAt: x[19] || "" }));
       await loadLanePos("inv");
     } finally { S.invLoading = false; }
   }
@@ -1041,7 +1041,7 @@
       applySort("inv", INV_KEYS, list).map(v => {
         const pct = v.billed ? Math.min(100, Math.round(v.got / v.billed * 100)) : 0, late = !v.paidOn && v.due && v.due < today();
         return `<tr class="po-row" data-inv-open="${v.id}" tabindex="0">
-        <td class="l ot-order"><b>${esc(v.vendor || "—")}</b><div class="ot-po mono">${esc(v.no || "(no number)")}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</div></td>
+        <td class="l ot-order"><b>${esc(v.vendor || "—")}</b><div class="ot-po mono">${esc(v.no || "(no number)")}${!v.completeAt ? ' <span class="pill warn" title="Still a draft — not marked complete">Draft</span>' : ""}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</div></td>
         <td class="l ot-status"><span class="pill ${LP[laneOf(v)]}">${LN.get(laneOf(v))}</span>${invClosed(v) ? " " + closedPill : ""}</td>
         <td class="l ot-date">${v.date ? `<span>${esc(shortDate(v.date))}</span>` : '<span class="dim">—</span>'}${v.terms ? `<div class="meta">${esc(v.terms)}</div>` : ""}</td>
         <td class="l">${v.oid ? `<button class="linkbtn" data-po-go="${esc(v.oid)}">${esc(v.po ? poLabel(v.po) : "#" + v.oid)}</button><div class="meta">${esc(STAGE.get(v.ostatus) || "")}</div>` : '<span class="pill pos" title="Saved on its own — it goes onto its PO when that PO syncs in with the same products">No PO yet</span>'}</td>
@@ -1775,7 +1775,7 @@
     // ---------- page layout (v0.35.0, Brian Oct 28): the PO page's look — header, summary band, lines, cards on the right ----------
     const c = count(iv), savedTxt = ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? "All changes saved" : "";
     const matched = iv.rows.length > 0 && !c.check && !c.none;
-    const steps = [["Matched", matched], ...(ed.alone ? [] : [["Received", !!iv.recvAt]]), ["In QuickBooks", !!iv.qbo], ["Paid", !!iv.paidOn]];
+    const steps = [["Complete", !!iv.completeAt], ...(ed.alone ? [] : [["Received", !!iv.recvAt]]), ["In QuickBooks", !!iv.qbo], ["Paid", !!iv.paidOn]];
     const nextAt = steps.findIndex(x => !x[1]);
     const stepHtml = steps.map(([k, ok], i) => `<span class="step ${ok ? "done" : i === nextAt ? "on" : ""}">${ok ? "✓ " : ""}${k === "Paid" && !ok && iv.due ? `Unpaid · due ${esc(shortDate(iv.due))}` : k}</span>`).join('<span class="step-sep">→</span>');
     const rowSum = iv.rows.reduce((a, r) => a + rowAmt(r), 0), chg = iv.rows.filter(r => r.skip).reduce((a, r) => a + rowAmt(r), 0);
@@ -1788,7 +1788,7 @@
         <div class="po2-big"><span class="eyebrow">Payment</span><span class="po2-pay">${iv.paidOn ? `Paid ${esc(shortDate(iv.paidOn))}` : iv.due ? `Due ${esc(shortDate(iv.due))}` : "No due date"}</span><span class="small ${!iv.paidOn && overdue(iv) ? "neg" : "muted"}">${iv.paidOn ? esc(iv.payMethod || "") : overdue(iv) ? "Overdue" : iv.terms ? esc(iv.terms) : "unpaid"}</span></div>
         <span class="dbtns">${iv.paidOn ? "" : `<button class="btn primary" data-pact="pay">Mark paid</button>`}${ed.id && iv.id && !iv.isNew ? `<button class="btn" data-pact="print-slip" title="This invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}</span></section>` : "";
     const fld = (id, label, val, attrs) => `<label class="stack" for="${id}">${label}<input id="${id}" class="inp ${attrs || ""}" value="${esc(val)}"></label>`;
-    const lockF = iv.status === "applied";
+    const lockF = iv.status === "applied" || !!iv.completeAt;
     const fc = (k, label, n) => `<button class="po2-inv flat ${(iv.filter || "all") === k ? "on" : ""}" data-ifilter="${k}" aria-pressed="${(iv.filter || "all") === k}"><span class="po2-ih"><span>${label}</span><span class="muted num">${n0(n)}</span></span></button>`;
     // the invoice's details across the top (Brian, Oct 28: "let's not have the right hand column of details on the invoices -
     // it's too complicated to have 3 columns. let's put the invoice metadata at the top")
@@ -1805,10 +1805,10 @@
           <div class="ivm-fields">
             <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp sm mono" value="${esc(iv.no)}" ${lockF ? "disabled" : ""}></label>
             <label class="stack" for="pe-invdate">Date<input id="pe-invdate" class="inp sm" type="date" value="${esc(iv.date)}" ${lockF ? "disabled" : ""}></label>
-            <label class="stack" for="pe-invdue">Due<input id="pe-invdue" class="inp sm" type="date" value="${esc(iv.due)}"></label>
-            <label class="stack" for="pe-invterms">Terms<input id="pe-invterms" class="inp sm" value="${esc(iv.terms)}" placeholder="e.g. Net 30"></label>
+            <label class="stack" for="pe-invdue">Due<input id="pe-invdue" class="inp sm" type="date" value="${esc(iv.due)}" ${lockF ? "disabled" : ""}></label>
+            <label class="stack" for="pe-invterms">Terms<input id="pe-invterms" class="inp sm" value="${esc(iv.terms)}" placeholder="e.g. Net 30" ${lockF ? "disabled" : ""}></label>
             <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp sm num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
-            <label class="stack" for="pe-invtotal">Total<input id="pe-invtotal" class="inp sm num" value="${iv.total != null ? iv.total.toFixed(2) : ""}"></label>
+            <label class="stack" for="pe-invtotal">Total<input id="pe-invtotal" class="inp sm num" value="${iv.total != null ? iv.total.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
           </div>
           <div class="ivm-acts">${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}${iv.id && !iv.isNew ? `<button class="linkbtn small" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? `<button class="linkbtn small" data-pact="print-pdf" title="Print the vendor's PDF${iv.fileName ? " · " + esc(iv.fileName) : ""}">Print vendor PDF</button>` : ""}` : ""}${!(t.g > 0) ? `<button class="linkbtn small neg" data-pact="rminv">${iv.isNew ? "Discard invoice" : "Delete invoice"}</button>` : ""}</div>
         </div>
@@ -1819,11 +1819,11 @@
       <div class="po-top po2-top">
         <div class="po2-headrow">
           <div class="po2-tb">
-            <span class="eyebrow">${esc(ed.vendor || "Vendor")} · Invoice${savedTxt ? ` · <span class="po2-saved">${savedTxt}</span>` : ""}</span>
+            <span class="eyebrow">${esc(ed.vendor || "Vendor")} · Invoice · <span class="pill ${iv.completeAt ? "ok" : "warn"}" title="${iv.completeAt ? `Marked complete ${esc(when(iv.completeAt))}` : "Still being worked on — Mark complete once it matches the vendor's invoice"}">${iv.completeAt ? "Complete" : "Draft"}</span>${savedTxt ? ` · <span class="po2-saved">${savedTxt}</span>` : ""}</span>
             <div class="po2-title"><h2>${esc(iv.no || "(no number)")}</h2>${iv.id && !iv.isNew ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this invoice" title="Copy a link to this invoice (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</div>
           </div>
           <div class="po2-hr"><span class="steps">${stepHtml}</span>
-            <span class="dbtns">${ed.dirty ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="${saved ? "Throw away the changes since the last save" : "Throw away this new invoice"}">${saved ? "Discard changes" : "Discard"}</button>` : ""}<button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
+            <span class="dbtns"><button class="btn" data-pact="revert" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="${saved ? "Throw away the changes since the last save" : "Throw away this new invoice"}">${saved ? "Discard changes" : "Discard"}</button><button class="btn ${(ed.dirty || !saved) && iv.completeAt ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button>${iv.completeAt ? `<button class="btn" data-pact="iv-draft" ${S.busy ? "disabled" : ""} title="Unlock it to make changes">Reopen as draft</button>` : `<button class="btn primary" data-pact="iv-complete" ${S.busy ? "disabled" : ""} title="It matches the vendor's invoice: saves it, locks it, and it can go to QuickBooks">Mark complete</button>`}</span></div>
         </div>
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
@@ -2033,7 +2033,8 @@
   function invDetailHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
     const lock = ro || iv.status === "applied", c = count(iv);
-    const lockL = lock || (invMatched(iv) && !ed.lineEdit);
+    // Draft / Complete (Oct 29): a draft's lines are open; a complete invoice is locked until it's reopened as a draft
+    const lockL = lock || !!iv.completeAt;
     if ((iv.filter === "check" && !c.check) || (iv.filter === "none" && !c.none) || (iv.filter === "charge" && !c.skip)) iv.filter = "all";
     const fq = (ed.find || "").trim().toLowerCase();
     const rowText = (r) => { const v = variant(r.vid) || {}; return [r.src.item_code, r.src.upc, r.src.description, v.title, v.sku].join(" ").toLowerCase(); };
@@ -2068,7 +2069,7 @@
     const canRecvIv = ed.id && iv.id && !iv.isNew && !iv.recvAt && t.b > t.g && !c.check;
     const canMoreIv = ed.id && iv.id && !iv.isNew && !c.check && !canRecvIv && t.b > 0;
     const tools = lock ? "" : lockL
-      ? `<span class="iv-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg> Matched to the vendor invoice</span><button class="btn" data-pact="lines-edit" title="Change matches, quantities, costs or the order of the lines">Edit lines</button>`
+      ? `<span class="iv-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg> Complete${iv.completeAt ? " · " + esc(when(iv.completeAt)) : ""}</span><button class="btn" data-pact="iv-draft" title="Unlock it to change lines, matches, quantities and costs">Reopen as draft</button>`
       : `${iv.rows.length > 1 ? `<select id="inv-arrange" class="inp sm" aria-label="Reorganize the lines"><option value="">Reorganize lines…</option><option value="vendor">Match vendor invoice</option>${ed.lines.length ? '<option value="order">Match order</option>' : ""}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${invMatched(iv) && ed.lineEdit ? '<button class="btn" data-pact="lines-done">Done editing</button>' : ""}`;
     return `
       ${ed.confirm === "rminv" && ed.alone ? `<div class="note warn">${iv.id ? `Delete invoice ${esc(iv.no || "")}? It's removed for good.` : `Discard invoice ${esc(iv.no || "")}?`} <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, ${iv.id ? "delete" : "discard"} it</button><button class="mini" data-pact="no">Cancel</button></span></div>`
@@ -2150,7 +2151,7 @@
     if (iv.qbo) return `<span class="pill ok" title="${esc(iv.qbo.how === "linked" ? "Was already in QuickBooks — linked" : "Entered from here")} ${esc(when(iv.qbo.at))}${iv.qbo.by ? " · " + esc(iv.qbo.by) : ""}">In QuickBooks · bill ${esc(iv.qbo.doc || iv.no)}</span>
       ${iv.qbo.att ? '<span class="small muted" title="The invoice PDF is attached to the bill">📎 PDF attached</span>' : iv.parts ? `<button class="mini" data-pact="qbo-attach" ${S.busy ? "disabled" : ""} title="Attach the invoice PDF to the bill in QuickBooks">Attach PDF</button>` : ""}
       <a class="small" href="${QBO_BILL}${encodeURIComponent(iv.qbo.id)}" target="_blank" rel="noopener">open ↗</a>${ed.confirm === "qbo-unlink" ? ` <span class="small">Unlink it? (deletes nothing in QuickBooks) <button class="mini" data-pact="qbo-unlink-go">Unlink</button><button class="mini" data-pact="no">Cancel</button></span>` : ` <button class="linkbtn small" data-pact="qbo-unlink" title="If the bill was deleted in QuickBooks">unlink</button>`}`;
-    const why = !iv.id || iv.isNew ? "Save the invoice first" : !iv.no ? "The invoice needs a number" : !iv.date ? "The invoice needs a date" : !(ba.all > 0) ? "Nothing to bill" : "";
+    const why = !iv.id || iv.isNew ? "Save the invoice first" : !iv.completeAt ? "Mark the invoice complete first" : !iv.no ? "The invoice needs a number" : !iv.date ? "The invoice needs a date" : !(ba.all > 0) ? "Nothing to bill" : "";
     const busy = S.busy === "Sending to QuickBooks…";
     return `<span class="muted small">${why ? esc(why) : "not entered yet"}</span><button class="mini primary" data-pact="qbo-send" ${why || S.busy ? "disabled" : ""}>${busy ? "Sending…" : "Send to QuickBooks"}</button>`;
   }
@@ -2530,6 +2531,24 @@
     if (a === "fix-double") { fixDouble(ed); return; }
     if (a === "qb-more") { ed.qbOpen = !ed.qbOpen; render(); return; }
     if (a === "lines-edit") { ed.lineEdit = true; render(); return; }
+    if (a === "iv-complete" || a === "iv-draft") {
+      const on = a === "iv-complete", v0 = cur(ed); if (!v0) return;
+      if (on) { const c0 = count(v0);
+        if (!v0.rows.length) { note("warn", "Add the invoice's lines first."); return; }
+        if (c0.check || c0.none) { note("warn", `Match or skip every line first — ${c0.check ? `${c0.check} guess${c0.check === 1 ? "" : "es"} to check` : ""}${c0.check && c0.none ? ", " : ""}${c0.none ? `${c0.none} not matched` : ""}.`); return; }
+        if (!v0.no) { note("warn", "The invoice needs a number."); const f = $("pe-invno"); if (f) f.focus(); return; } }
+      const no = v0.no;
+      (on && (ed.dirty || !v0.id || v0.isNew) ? save(null, true) : Promise.resolve(v0.id)).then(async (r) => {
+        const e2 = S.ed; if (!r || !e2) return;
+        const v2 = e2.invoices.find(x => x.no === no && x.id) || cur(e2); if (!v2 || !v2.id) return;
+        S.busy = "Saving…"; render();
+        try { await planCall("jt_invoice_set_complete", "jt.invoice_set_complete", { id: Number(v2.id), on }); S.busy = ""; v2.completeAt = on ? new Date().toISOString() : ""; e2.lineEdit = false; render();
+          const off = on && v2.total != null ? Math.round((v2.total - v2.rows.reduce((a, r) => a + rowAmt(r), 0)) * 100) / 100 : 0;
+          loadInvList(true).catch(() => {}); note(off ? "warn" : "info", on ? `Invoice <b>${esc(v2.no)}</b> is complete.${off ? ` Its lines are ${m(Math.abs(off))} ${off < 0 ? "over" : "under"} the invoice total — reopen it if that's wrong.` : ""}` : `Invoice <b>${esc(v2.no)}</b> is a draft again — change what you need, then Mark complete.`); }
+        catch (e) { S.busy = ""; render(); note("bad", "Couldn't change it: " + esc(JT.message(e))); }
+      });
+      return;
+    }
     if (a === "lines-done") { ed.lineEdit = false; ed.search = null; render(); return; }
     if (a === "add-prod") { if (ed.view === "inv" || ed.view === "left") ed.view = "all"; ed.search = null; render(); focusArg("po-add");
       setTimeout(() => { const el = $("po-add"); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 0); return; }
