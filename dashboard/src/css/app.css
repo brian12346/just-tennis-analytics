@@ -1505,3 +1505,5 @@ table.po-list.ot tbody tr:last-child td{border-bottom:0}
 table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ot-pay{white-space:nowrap}
 .ot-pay .meta{margin-top:3px}
+/* Invoices left the sub-tabs; the invoice table is at the bottom of Orders (v0.44.0) */
+.tabs button.navgone{display:none!important}

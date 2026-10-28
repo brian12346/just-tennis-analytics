@@ -38,7 +38,7 @@
     <button type="button" class="grp" data-group="sales" aria-current="false">Sales</button>
     <button type="button" class="grp" data-group="inventory" aria-current="false">Inventory</button>
     <button type="button" class="grp" data-group="prep" aria-current="false"><span class="lg">Prep center</span><span class="sm">Prep</span></button>
-    <button type="button" class="grp" data-group="buying" aria-current="false">Buying</button>
+    <button type="button" class="grp" data-group="buying" aria-current="false">Orders</button>
     <button type="button" class="grp" data-group="shipping" aria-current="false">Shipping</button>
     <button type="button" class="grp" data-group="setup" aria-current="false">Setup</button>
     <button role="tab" data-tab="alerts" class="alertsbtn" aria-selected="false" aria-label="Alerts" title="Alerts"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="lbl">Alerts</span></button>
@@ -55,13 +55,13 @@
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
     <button role="tab" data-tab="shoes" data-group="inventory" aria-selected="false" hidden>Shoes</button>
     <button role="tab" data-tab="discontinued" data-group="inventory" aria-selected="false" hidden>Discontinued</button>
+    <button role="tab" data-tab="amzres" data-group="inventory" aria-selected="false" hidden>Amazon Research</button>
     <button role="tab" data-tab="prep" data-group="prep" aria-selected="false" hidden>Prep</button>
     <button role="tab" data-tab="analyze" data-group="prep" aria-selected="false" hidden>Analyze</button>
     <button role="tab" data-tab="shipments" data-group="prep" aria-selected="false" hidden>Shipments</button>
     <button role="tab" data-tab="pack" data-group="shipping" aria-selected="false" hidden>Packing photos</button>
     <button role="tab" data-tab="po" data-group="buying" aria-selected="false" hidden>Orders</button>
-    <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" hidden>Invoices</button>
-    <button role="tab" data-tab="amzres" data-group="buying" aria-selected="false" hidden>Amazon Research</button>
+    <button role="tab" data-tab="invoices" data-group="buying" aria-selected="false" class="navgone" hidden>Invoices</button>
     <button role="tab" data-tab="costmap" data-group="setup" aria-selected="false" hidden>Shopify cost mapping</button>
     <button role="tab" data-tab="amzmap" data-group="setup" aria-selected="false" hidden>Amazon mapping</button>
     <button role="tab" data-tab="amzmatch" data-group="setup" aria-selected="false" hidden>Amazon matching</button>
@@ -843,7 +843,18 @@
           </div>
         </div>
         <div class="tbl-wrap xl"><table class="prept po-list" id="po-table"></table></div>
-        <p class="muted small">Vendor invoices are uploaded on the Invoices tab; each one goes onto its PO here (by the PO # on it), or stays on its own until its PO exists.</p>
+      </section>
+      <section class="panel" id="po-invpanel">
+        <div class="panel-head">
+          <h2>Invoices <span class="muted small" id="inv-count"></span></h2>
+          <div class="seg" id="inv-seg" role="group" aria-label="Show"></div>
+          <div class="filters">
+            <label for="inv-q">Search <input id="inv-q" class="inp" type="search" placeholder="Vendor, invoice #, PO #"></label>
+            <label class="btn sm" for="inv-file">Upload invoice PDF</label>
+          </div>
+        </div>
+        <div class="tbl-wrap xl"><table class="prept po-list" id="inv-table"></table></div>
+        <p class="muted small">Drop an invoice PDF anywhere on this page. It's read, matched to the vendor's open PO by the PO # on it (or you pick the PO), and opens for checking, payment and QuickBooks.</p>
       </section>
     </div>
     <div id="po-edit-host"><div id="po-edit-view" hidden></div></div>
@@ -886,7 +897,7 @@
       </div>
       <div class="controls">
         <button class="btn" id="inv-refresh">Refresh</button>
-        <label class="btn primary" for="inv-file">Upload invoice PDF<input type="file" id="inv-file" accept=".pdf,application/pdf" hidden></label>
+        <input type="file" id="inv-file" accept=".pdf,application/pdf" hidden>
       </div>
     </header>
     <div class="status" id="inv-status" aria-live="polite">Loading invoices…</div>
@@ -894,17 +905,6 @@
     <div id="inv-list-view">
       <section class="kpis" id="inv-kpis" aria-label="Invoice totals"></section>
       <section class="il-lanes" id="inv-lanes" aria-label="Invoices by status"></section>
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Invoices</h2>
-          <div class="seg" id="inv-seg" role="group" aria-label="Show"></div>
-          <div class="filters">
-            <label for="inv-q">Search <input id="inv-q" class="inp" type="search" placeholder="Vendor, invoice #, PO #"></label>
-          </div>
-        </div>
-        <div class="tbl-wrap xl"><table class="prept po-list" id="inv-table"></table></div>
-        <p class="muted small">Drop an invoice PDF anywhere on this page. It's read, matched to the vendor's open PO with the same PO # (or you pick the PO), and opens here for checking, payment and QuickBooks. Receiving is done on the PO.</p>
-      </section>
     </div>
     <div id="inv-edit-host"></div>
   </div>

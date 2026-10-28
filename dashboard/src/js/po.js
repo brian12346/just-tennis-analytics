@@ -990,6 +990,14 @@
       { l: "Not received", v: n0(all.filter(v => !v.recvAt && v.billed > 0).length), s: "invoices with products still to come in" },
     ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
     if (S.invs) renderLanes(all); else $("inv-lanes").innerHTML = "";
+    renderInvTable();
+  }
+  // the invoices table, at the bottom of the Orders page (Brian, Oct 29: "move the invoice table to the orders tab at
+  // the bottom ... remove the invoices button at the top")
+  function renderInvTable() {
+    const all = S.invs || [];
+    if ($("inv-count")) $("inv-count").textContent = S.invs ? `${n0(all.length)}` : "";
+    $("inv-seg").innerHTML = INVF.map(([k, n]) => `<button data-invf="${k}" aria-pressed="${S.invF === k}">${n} <span class="cnt">${all.filter(v => invMatch(v, k)).length}</span></button>`).join("");
     const q = S.invQ.trim().toLowerCase().replace(/^#/, "");
     const list = all.filter(v => invMatch(v, S.invF) && (!q || [v.vendor, v.no, v.po, v.terms].join(" ").toLowerCase().includes(q)));
     const t = $("inv-table");
@@ -1196,8 +1204,9 @@
     ["received", "Received", "in — bill not in QuickBooks yet"], ["recorded", "Recorded", "received and in QuickBooks"]];
   const OLANE_N = new Map(OLANES.map(([k, n]) => [k, n])), OLANE_P = { approve: "warn", ordered: "manual", invoiced: "other", received: "ok", recorded: "ok" };
   const invLane = () => "invoiced";
+  // an order marked "invoiced" with no invoice on it is still waiting on one: it stays in Ordered (Oct 29)
   const laneOfO = (o) => o.status === "draft" ? (o.approvedAt ? "ordered" : "approve") : o.status === "ordered" ? "ordered"
-    : o.status === "invoiced" ? invLane(o) : o.status === "partial" ? (o.nInv ? invLane(o) : "ordered")
+    : o.status === "invoiced" ? (o.nInv ? invLane(o) : "ordered") : o.status === "partial" ? (o.nInv ? invLane(o) : "ordered")
     : o.nInv > 0 && o.nQB >= o.nInv ? "recorded" : "received";
   // a card is two short lines (vendor · cost / PO · what's next) so ten fit in a lane without scrolling (Brian, Oct 14)
   const OLANE_CARDS = 10;
@@ -1356,6 +1365,7 @@
       .sort((a, b) => S.stage === "open" ? ORDER.indexOf(b.status) - ORDER.indexOf(a.status) || String(b.updated).localeCompare(String(a.updated)) : String(b.updated).localeCompare(String(a.updated)));
     const sorted = applySort("po", PO_KEYS, list), th = (k, l, left) => sortTh("po", PO_KEYS, k, l, left);
     $("po-kpis").innerHTML = S.orders ? poKpis(all) : "";
+    renderInvTable();
     const t = $("po-table");
     if (!S.orders) { t.innerHTML = `<tbody><tr><td class="l muted">${S.loading ? "Loading…" : ""}</td></tr></tbody>`; return; }
     // the table, tidied (Brian, Oct 29: "the orders table is ugly - can you pretty it up?"): vendor and PO name in one
@@ -2395,7 +2405,7 @@
   function leave() {
     const ed = S.ed;
     if (ed && ed.dirty && !ed.leaveOk) { note("warn", `This purchase order has unsaved changes. <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="discard">Discard changes</button></span>`); return; }
-    if (S.mode === "inv") { S.invOpen = false; if (ed && ed.dirty) S.ed = null; S.pend = null; note("", ""); pdfToken++; render(); loadInvList(false).then(render).catch(() => {}); return; }
+    if (S.mode === "inv") { S.invOpen = false; S.ed = null; S.pend = null; note("", ""); pdfToken++; loadInvList(false).catch(() => {}); toOrders(); return; }
     S.ed = null; S.lastView = null; note("", ""); pdfToken++; render(); renderList();
   }
 
@@ -3045,12 +3055,13 @@
     $("po-new").addEventListener("click", () => newOrder());
     $("po-sheet").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sheetOrder(f); });
     bindStart();
-    $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), S.cat ? catalog(true) : null]); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
+    $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), loadInvList(true).catch(() => {}), S.cat ? catalog(true) : null]); renderList(); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
     $("po-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderList, 150); });
     $("po-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; renderList(); });
     $("po-stage").addEventListener("click", (e) => { const b = e.target.closest("button[data-st]"); if (b) { S.stage = b.dataset.st; renderList(); } });
     tab.addEventListener("click", (e) => {
       if (e.target.closest("[data-po-start]")) { newOrder(); return; }
+      const pg = e.target.closest("[data-po-go]"); if (pg) { e.stopPropagation(); if (S.ed && S.ed.dirty) return leave(); note("", ""); openPO(pg.dataset.poGo); return; }
       const ivo = e.target.closest("[data-inv-open]"); if (ivo) { e.stopPropagation(); if (S.ed && S.ed.dirty) return leave(); note("", ""); window.JTInvoices.open(ivo.dataset.invOpen); return; }
       const sg = e.target.closest("[data-st-go]"); if (sg) { S.stage = sg.dataset.stGo; renderList(); if (sg.classList.contains("kpi-go") || sg.dataset.scroll) { const t2 = $("po-table"); if (t2) t2.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
       const ap = e.target.closest("[data-po-approve]"); if (ap) { e.stopPropagation(); approveOrder(ap.dataset.poApprove); return; }
@@ -3060,7 +3071,7 @@
       const o = e.target.closest("[data-po-open]"); if (o && !e.target.closest("a")) { note("", ""); openCard(o); } });
     wireLaneDrag($("po-lanes"), "po"); wireLaneDrag($("inv-lanes"), "inv");
     $("po-table").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { e.stopPropagation(); toggleSort("po", PO_KEYS, b.dataset.sort); renderList(); } });
-    $("inv-table").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { e.stopPropagation(); toggleSort("inv", INV_KEYS, b.dataset.sort); renderInvList(); } });
+    $("inv-table").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { e.stopPropagation(); toggleSort("inv", INV_KEYS, b.dataset.sort); renderInvTable(); } });
     $("inv-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-inv-open]"); if (o && e.target === o && !e.altKey && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openInvoice(o.dataset.invOpen); } });
     $("po-lanes").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && e.target === o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openCard(o); } });
     $("po-table").addEventListener("keydown", (e) => { const o = e.target.closest("[data-po-open]"); if (o && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openPO(o.dataset.poOpen); } });
@@ -3082,8 +3093,8 @@
       }
       render();
     });
-    $("inv-q").addEventListener("input", (e) => { S.invQ = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderInvList, 150); });
-    $("inv-seg").addEventListener("click", (e) => { const b = e.target.closest("button[data-invf]"); if (b) { S.invF = b.dataset.invf; renderInvList(); } });
+    $("inv-q").addEventListener("input", (e) => { S.invQ = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderInvTable, 150); });
+    $("inv-seg").addEventListener("click", (e) => { const b = e.target.closest("button[data-invf]"); if (b) { S.invF = b.dataset.invf; renderInvTable(); } });
     $("inv-lanes").addEventListener("click", (e) => { const b = e.target.closest("[data-lane]"); if (!b) return; e.stopPropagation();
       S.invF = S.invF === b.dataset.lane && !b.classList.contains("il-more") ? "all" : b.dataset.lane; renderInvList();
       if (S.invF !== "all") { const t = $("inv-table"); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); } });
@@ -3272,10 +3283,15 @@
     if (b && e.isTrusted) { const inv = b.dataset.tab === "invoices";
       setTimeout(() => { if (S.ed && (inv ? S.mode === "inv" && S.invOpen : S.mode === "po")) leave(); }, 0); }
   }, true);
-  window.poShow = () => { S.mode = "po"; S.invOpen = false; if (!S.shown) { S.shown = true; refresh(false); catalog().catch(() => {}); } else if (S.stale && !S.ed) { S.stale = false; refresh(true); } render(); };
+  window.poShow = () => { S.mode = "po"; S.invOpen = false; if (!S.shown) { S.shown = true; refresh(false); catalog().catch(() => {}); } else if (S.stale && !S.ed) { S.stale = false; refresh(true); } render();
+    loadInvList(false).then(() => { if (S.mode === "po" && !S.ed) renderList(); }).catch(() => {});
+    if (window.JTReader) (window.JTWeb ? window.JTWeb.ready : Promise.resolve()).then(() => window.JTReader.warm()); };
+  // the Invoices list now lives on Orders: going "to the invoices list" goes there
+  const toOrders = () => { S.invOpen = false; S.mode = "po"; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b && $("tab-po").hidden) b.click(); else render(); };
   window.invShow = () => {
     S.mode = "inv";
     if (!S.invShown) { S.invShown = true; catalog().catch(() => {}); if (!S.orders) loadOrders(false).catch(() => {}); }
+    if (!S.invOpen && !S.ed) { toOrders(); return; }
     render(); loadInvList(false).then(render).catch(e => note("bad", esc(JT.message(e))));
     // wake the invoice reader now, so it's running by the time a PDF is dropped (it starts in ~30 s, stays up 10 min)
     if (window.JTReader) (window.JTWeb ? window.JTWeb.ready : Promise.resolve()).then(() => window.JTReader.warm());
@@ -3290,7 +3306,7 @@
   { const h = window.__bootHash != null ? window.__bootHash : (location.hash || ""), mp = /^#po\/(\d+)/.exec(h), mi = /^#invoices\/(\d+)/.exec(h);
     const go = (fn) => (window.JTWeb ? window.JTWeb.ready : Promise.resolve()).then(() => setTimeout(fn, 0));
     if (mi) go(() => { window.JTInvoices.open(mi[1]); });
-    else if (h === "#invoices") setTimeout(() => window.invShow(), 0);   // the tab code ran before this page was loaded
+    else if (h === "#invoices") setTimeout(() => toOrders(), 0);   // the tab code ran before this page was loaded
     if (mp) go(() => { window.JTPO.open(mp[1]); });
     else if (h === "#po") setTimeout(() => window.poShow(), 0);
   }
@@ -3305,7 +3321,7 @@
     window.JTNav.on("invoices", (rest) => {
       const id = (/^(\d+)/.exec(rest) || [])[1];
       if (id) { const iv = S.ed && S.invOpen && cur(S.ed); if (!(iv && String(iv.id) === id)) openInvoice(id); else stay(); return; }
-      if (S.invOpen) { leave(); if (S.invOpen) stay(); }
+      if (S.invOpen) { leave(); if (S.invOpen) stay(); } else toOrders();
     });
   }
 })();
