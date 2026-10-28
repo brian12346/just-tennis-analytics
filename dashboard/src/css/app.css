@@ -1426,3 +1426,8 @@ tr.drop-below>td{box-shadow:inset 0 -2px 0 var(--founders-rock)}
 .iv-t td.ivn .dragh{vertical-align:middle;margin-right:2px}
 .po2-card .pay,.po2-card .qb{border:0;padding:0;margin:0;background:none}
 .po2-main .po-body.with-pdf{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,40%);gap:14px}
+/* v0.36: not-for-resale (demo) lines, receiving extras */
+.po-t tr.bucket.demo td{box-shadow:inset 4px 0 0 var(--faint,#7A8494)}
+.ivdemo{display:inline-flex;align-items:center;gap:4px;margin-top:4px;color:var(--muted)}
+.rcv-add{align-items:center;gap:8px;flex-wrap:wrap}
+.rcv-add select{width:auto;max-width:360px}
