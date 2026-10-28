@@ -1479,3 +1479,6 @@ th.th-s.on .sort-ic{opacity:1;color:var(--ink)}
 .kpi-go{all:unset;display:flex;flex-direction:column;gap:4px;cursor:pointer;border-radius:6px}
 .kpi:has(.kpi-go):hover{background:var(--line-soft)}
 .kpi-go:focus-visible{outline:2px solid var(--sales);outline-offset:4px}
+/* Draft & approve lane (v0.42.0) */
+.ol-split{color:var(--muted);padding:0 2px 2px;font-size:12px}
+.ol-split b{color:var(--ink)}

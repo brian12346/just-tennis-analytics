@@ -91,6 +91,7 @@
       "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status",
       "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)", "o.no_shopify_po",
       "o.approved_at::text", "o.approved_by", `(select count(*) ${IV} and ii.qbo_bill_id is not null)`,
+      "o.ready_at::text",
       `(select string_agg(ii.id || ':' || (ii.received_at is not null)::int || (ii.qbo_bill_id is not null)::int || ':' || coalesce(coalesce(ii.total, ii.subtotal)::text, '')
          || ':' || (select coalesce(sum(il.qty), 0) from jt.invoice_lines il where il.invoice_id = ii.id and il.variant_id is not null and il.match_how <> 'skip')
          || ':' || (select coalesce(sum(r.qty), 0) from jt.invoice_receipts r where r.invoice_id = ii.id) || ':' || coalesce(ii.invoice_date::text, '')
@@ -98,7 +99,7 @@
       // the part of the order no invoice covers yet, per product (units : cost) — its own card in Ordered (Oct 29)
       `(select coalesce(sum(greatest(x.ord - x.inv, 0)), 0) || ':' || coalesce(sum(greatest(x.ord - x.inv, 0) * x.cost), 0) from (select l.variant_id, sum(l.qty_ordered) as ord,
          max(coalesce(l.unit_cost, v.unit_cost, 0)) as cost, coalesce((select sum(il.qty) ${IL} and il.variant_id = l.variant_id and il.match_how <> 'skip'), 0) as inv
-         from jt.prep_order_lines l left join jt.variants v on v.variant_id = l.variant_id where l.order_id = o.id group by l.variant_id) x)`],
+         from jt.prep_order_lines l left join jt.variants v on v.variant_id = l.variant_id where l.order_id = o.id group by l.variant_id) x)`, "o.ready_at::text"],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
@@ -107,7 +108,7 @@
       approvedAt: x[38] || "", approvedBy: x[39] || "", nQB: +x[40] || 0,
       invs: (x[41] || "").split("|").filter(Boolean).map(t => { const [id, f, tot, billed, got, date, ...no] = t.split(":");
         return { id, recv: f[0] === "1", qb: f[1] === "1", total: tot === "" ? null : +tot, billed: +billed || 0, got: +got || 0, date: date || "", no: no.join(":") }; }),
-      restUnits: +String(x[42] || "0:0").split(":")[0] || 0, restCost: +String(x[42] || "0:0").split(":")[1] || 0 }))
+      restUnits: +String(x[42] || "0:0").split(":")[0] || 0, restCost: +String(x[42] || "0:0").split(":")[1] || 0, readyAt: x[43] || "" }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     // category / budget / placeholder (migration 162; empty until it's in)
     const pl = await JT.rows(["id::text", "category", "budget::text", "placeholder::text", "missing_invoice::text"], "from jt.prep_orders where category <> '' or budget is not null or placeholder or missing_invoice", refresh).catch(() => null);
@@ -462,7 +463,7 @@
       const [h, ol, sh, ivs, lp] = await Promise.all([
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check", "o.shopify_received_at::text", "o.shopify_received_by",
           "(select max(seen_at) from jt.variants)::text", "o.shopify_po_status", "o.shopify_po_status_at::text",
-          "(select value::text from jt.settings where key = 'shopify_po_api')", "o.approved_at::text", "o.approved_by", "o.no_shopify_po"],
+          "(select value::text from jt.settings where key = 'shopify_po_api')", "o.approved_at::text", "o.approved_by", "o.no_shopify_po", "o.ready_at::text"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by coalesce(pos, 1000000), variant_id, dest desc, amazon_sku`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
@@ -472,7 +473,7 @@
       ]);
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
-      ed.noShop = !!x[x.length - 1]; ed.approvedAt = x[x.length - 3] || ""; ed.approvedBy = x[x.length - 2] || "";
+      ed.noShop = !!x[x.length - 2]; ed.approvedAt = x[x.length - 4] || ""; ed.approvedBy = x[x.length - 3] || ""; ed.readyAt = x[x.length - 1] || "";
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
         stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopUrl0: x[12] || "", shopCheck0: JSON.stringify(x[14] || null), shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
@@ -1187,7 +1188,7 @@
   // for "Mark ordered" once it's with the vendor; an invoice arriving makes it Invoiced (partly received counts there
   // when it has one); fully received is Received until every invoice is in QuickBooks, then Recorded.
   // Everything is received in Seller Sage (Brian, Oct 21: no more Shopify POs), so Invoiced is one lane again.
-  const OLANES = [["approve", "Ready to approve", "drafts waiting for approval"],
+  const OLANES = [["approve", "Draft & approve", "drafts being put together, and drafts ready to approve"],
     ["ordered", "Ordered", "with the vendor, not invoiced yet"], ["invoiced", "Invoiced", "invoice in — receive it against the invoice"],
     ["received", "Received", "in — bill not in QuickBooks yet"], ["recorded", "Recorded", "received and in QuickBooks"]];
   const OLANE_N = new Map(OLANES.map(([k, n]) => [k, n])), OLANE_P = { approve: "warn", ordered: "manual", invoiced: "other", received: "ok", recorded: "ok" };
@@ -1237,7 +1238,8 @@
   function oCard(o, k, c) {
     const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received), rest = !!(c && c.rest);
     const hint = rest ? `<span class="dim">${n0(o.restUnits)} not invoiced</span>`
-      : k === "approve" ? `<button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
+      : k === "approve" && !o.readyAt ? '<span class="pill pos" title="Still being put together — open it and press Ready to approve">Draft</span>'
+      : k === "approve" ? `<span class="pill warn" title="Marked ready ${esc(when(o.readyAt))}">Ready</span> <button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
       : k === "ordered" && o.status === "draft" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
       : k === "ordered" && !o.nLines && !o.missingInv ? `<span class="pill other" title="Placeholder — fills out from the invoices put on it${planGaps(o).length ? "; " + planGaps(o).join(", ") : ""}">${o.category ? esc(o.category) : "placeholder"}</span>${planGaps(o).length ? ` <span class="pill warn" title="${esc(planGaps(o).join(", "))}">!</span>` : ""}`
       : k === "ordered" ? `<span class="dim">${o.expected ? "exp " + esc(shortDate(o.expected)) : n0(o.units) + " units"}</span>`
@@ -1262,12 +1264,14 @@
     for (const o of all) for (const c of oLaneCards(o)) by.get(c.k).push({ ...c, id: c.ck });
     const at = (c) => String(c.iv ? c.iv.date || c.o.created : c.o.created);
     for (const k of ["approve", "ordered", "invoiced"]) by.get(k).sort((a, b) => at(a).localeCompare(at(b)));   // oldest waiting first
+    by.get("approve").sort((a, b) => !!b.o.readyAt - !!a.o.readyAt);   // ready to approve above drafts
     for (const k of ["received", "recorded"]) by.get(k).sort((a, b) => at(b).localeCompare(at(a)));
     $("po-lanes").innerHTML = OLANES.map(([k, n, sub]) => {
       const os = laneSort("po", k, by.get(k)), tot = os.reduce((a, c) => a + (c.amt || 0), 0), more = os.length - OLANE_CARDS;
       return `<div class="il-lane ol-${k} ${S.stage === k ? "on" : ""}" data-lane-k="${k}">
         <div class="ol-headrow"><button class="il-head" type="button" data-olane="${k}" aria-pressed="${S.stage === k}" title="${esc(sub)} — show these in the table below"><b>${n}</b><span class="il-cnt">${n0(os.length)}</span></button>${k === "approve" ? '<button class="ol-add" type="button" data-po-start title="Start a new, blank order" aria-label="Start an order">+</button>' : ""}</div>
         <div class="ol-sum" title="Total of the ${n0(os.length)} card${os.length === 1 ? "" : "s"} here (orders at cost, invoices at their total)">${m0(tot)}</div>
+        ${k === "approve" && os.length ? `<div class="ol-split small">${(() => { const r = os.filter(c => c.o.readyAt).length; return `<b>${n0(r)}</b> ready to approve · ${n0(os.length - r)} draft${os.length - r === 1 ? "" : "s"}`; })()}</div>` : ""}
         <div class="il-cards">${os.slice(0, OLANE_CARDS).map(cardOf).join("") || (k === "approve" ? '<button class="il-empty ol-start" type="button" data-po-start>+ Start an order</button>' : '<div class="il-empty">Nothing here</div>')}</div>
         ${more > 0 ? `<button class="linkbtn small il-more" type="button" data-olane="${k}">+ ${n0(more)} more in the table</button>` : ""}
         ${laneCustom("po", os) ? `<button class="linkbtn small il-reset" type="button" data-lane-reset="${k}" title="Put this lane back in its usual order">Reset order</button>` : ""}</div>`;
@@ -1314,7 +1318,7 @@
     S.busy = yes === false ? "Saving…" : "Approving…"; render();
     try { await JT.po.approve(id, yes); if (yes !== false) await JT.prep.setOrderStatus(Number(id), "ordered"); S.busy = ""; await loadOrders(true); if (S.ed && S.ed.id === String(id)) await openPO(id); else render();
       const o = (S.orders || []).find(x => x.id === String(id));
-      note("info", yes === false ? `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} is back in Ready to approve.` : `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} approved and marked ordered.`); }
+      note("info", yes === false ? `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} is back in Draft &amp; approve.` : `${esc(o ? o.vendor + " " + (o.po ? poLabel(o.po) : "#" + id) : "Order")} approved and marked ordered.`); }
     catch (e) { S.busy = ""; render(); note("bad", "Couldn't approve: " + esc(JT.message(e))); }
   }
   async function markOrdered(id) {
@@ -1356,7 +1360,7 @@
         const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
         return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</td>
           <td class="l">${esc(o.vendor || "—")}</td>
-          <td class="l">${oLanes(o).map(k => `<span class="pill ${OLANE_P[k]}" title="${esc(STAGE.get(o.status))}">${OLANE_N.get(k)}</span>`).join("")}</td>
+          <td class="l">${oLanes(o).map(k => `<span class="pill ${OLANE_P[k]}" title="${esc(STAGE.get(o.status))}">${k === "approve" ? (o.readyAt ? "Ready to approve" : "Draft") : OLANE_N.get(k)}</span>`).join("")}</td>
           <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
           <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null ? `<div class="meta">${m(o.invTotal)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
           <td class="l small">${dates}</td>
@@ -1520,7 +1524,7 @@
     const pdfOn = !!(iv && ed.showPdf && (iv.file || iv.parts));
     // ---------- page layout (v0.33.0, Brian Oct 27, option A): receiving first; invoices, details and totals on the right ----------
     const savedTxt = ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : ed.id ? "All changes saved" : "";
-    const appr = ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ' <span class="pill warn">Ready to approve</span>') : "";
+    const appr = ed.id && ed.status === "draft" ? (ed.approvedAt ? ` <span class="pill ok" title="Approved ${esc(when(ed.approvedAt))}${ed.approvedBy ? " by " + esc(ed.approvedBy) : ""}">Approved · awaiting submission</span> <button class="linkbtn small" data-pact="unapprove">undo</button>` : ed.readyAt ? ` <span class="pill warn" title="Marked ready ${esc(when(ed.readyAt))}">Ready to approve</span>` : ' <span class="pill pos" title="Still being put together — press Ready to approve when it is">Draft</span>') : "";
     const recvBy = (d) => { let o = 0, r = 0; for (const l of ed.lines) if (l.dest === d) { const p = pr.get(l.id); o += p.ordered; r += p.received; } return [r, o]; };
     const bandDests = ["prep", "shopify", "demo"].filter(d => ed.lines.some(l => l.dest === d)); if (!bandDests.length) bandDests.push(ed.dest === "prep" ? "prep" : "shopify");
     const destBar = (d) => { const [r, o] = recvBy(d), pct = o ? Math.min(100, Math.round(r / o * 100)) : 0;
@@ -2130,7 +2134,12 @@
     if (ed.id && PREV[ed.status]) out.push(`<button class="btn" data-pact="back">← Back to ${STAGE.get(PREV[ed.status]).toLowerCase()}</button>`);
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     // a draft is approved (Ready to approve → Ordered: approving marks it ordered)
-    if (ed.status === "draft" && !ed.approvedAt) out.push(`<button class="btn primary" data-pact="save-approve" ${busy} title="Approve this order: it's marked ordered and moves to Ordered">Save &amp; approve</button>`);
+    // Draft → Ready to approve → approved (Oct 29): the order says when it's ready; approving still works from either
+    if (ed.status === "draft" && !ed.approvedAt) {
+      if (ed.readyAt) out.push(`<button class="btn" data-pact="unready" ${busy} title="Still working on it: back to Draft">Back to draft</button>`);
+      else out.push(`<button class="btn primary" data-pact="ready" ${busy} title="Done putting it together: it shows as Ready to approve">${ed.dirty || !ed.id ? "Save &amp; ready to approve" : "Ready to approve"}</button>`);
+      out.push(`<button class="btn ${ed.readyAt ? "primary" : ""}" data-pact="save-approve" ${busy} title="Approve this order: it's marked ordered and moves to Ordered">Save &amp; approve</button>`);
+    }
     else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
     // receive table has its own buttons)
@@ -2460,6 +2469,17 @@
       JT.po.moveInvoice(Number(iv.id), Number(to)).then(async () => { S.busy = ""; ed.leaveOk = true; S.ed = null; note("", ""); await loadOrders(true); await loadInvList(true); await openInvoice(iv.id); note("info", `Invoice ${esc(iv.no || "")} is on ${esc((S.ed && S.ed.vendor) || "")} ${esc(S.ed && S.ed.po ? poLabel(S.ed.po) : "")} now.`); })
         .catch(err => { S.busy = ""; render(); note("bad", "Couldn't add it: " + esc(JT.message(err))); }); return; }
     if (a === "save-next" || a === "next-stage") return goStage(NEXT[ed.status][0]);
+    if (a === "ready" || a === "unready") {
+      const on = a === "ready";
+      (on && (ed.dirty || !ed.id) ? save(null) : Promise.resolve(ed.id)).then(async id => {
+        if (!id) return;
+        S.busy = "Saving…"; render();
+        try { await planCall("jt_po_ready", "jt.po_ready", { id: Number(id), on }); S.busy = ""; await loadOrders(true); await openPO(String(id));
+          note("info", on ? "Marked <b>ready to approve</b>." : "Back to <b>draft</b>."); }
+        catch (e) { S.busy = ""; render(); note("bad", "Couldn't change it: " + esc(JT.message(e))); }
+      });
+      return;
+    }
     if (a === "save-approve") { (ed.dirty || !ed.id ? save(null, true) : Promise.resolve(ed.id)).then(id => { if (id) approveOrder(id); }); return; }
     if (a === "unapprove" && ed.id) return approveOrder(ed.id, false);
     if (a === "do-complete") { ed.confirm = false; return save("complete"); }
