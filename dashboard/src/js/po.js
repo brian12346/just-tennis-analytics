@@ -912,8 +912,8 @@
   }
   // [value, first click's direction (-1: biggest / newest first)]
   const PO_KEYS = {
-    po: [o => o.po ? poLabel(o.po) : "#" + o.id], vendor: [o => o.vendor], status: [o => OLANE_N_I.get(oLanes(o)[0])],
-    products: [o => o.nLines, -1], ordered: [o => o.units, -1], invoiced: [o => o.nInv ? o.invoiced : null, -1], received: [o => o.received || null, -1],
+    order: [o => (o.vendor || "") + " " + (o.po ? poLabel(o.po) : "#" + o.id)], status: [o => OLANE_N_I.get(oLanes(o)[0])],
+    products: [o => o.nLines, -1], progress: [o => o.units ? o.received / o.units : null, -1],
     cost: [o => o.cost, -1], invoices: [o => o.invNos || null],
     dates: [o => (GOT.includes(o.status) ? o.stageAt.received : o.status === "draft" && o.kind === "booking" && o.placeBy ? o.placeBy : o.expected || o.updated) || null, -1],
     attention: [o => listFlags(o).filter(f => f[0] !== "info").length || null, -1],
@@ -1353,18 +1353,29 @@
     $("po-kpis").innerHTML = S.orders ? poKpis(all) : "";
     const t = $("po-table");
     if (!S.orders) { t.innerHTML = `<tbody><tr><td class="l muted">${S.loading ? "Loading…" : ""}</td></tr></tbody>`; return; }
-    t.innerHTML = `<thead><tr>${th("po", "PO", 1)}${th("vendor", "Vendor", 1)}${th("status", "Status", 1)}${th("products", "Products")}${th("ordered", "Ordered")}${th("invoiced", "Invoiced")}${th("received", "Received")}${th("cost", "Cost")}${th("invoices", "Invoices", 1)}${th("dates", "Dates", 1)}${th("attention", "Needs attention", 1)}</tr></thead><tbody>${
+    // the table, tidied (Brian, Oct 29: "the orders table is ugly - can you pretty it up?"): vendor and PO name in one
+    // column, a received bar instead of three number columns, invoices as a count, one short date
+    t.classList.add("ot");
+    t.innerHTML = `<thead><tr>${th("order", "Order", 1)}${th("status", "Status", 1)}${th("products", "Products")}${th("progress", "Received", 1)}${th("cost", "Cost")}${th("invoices", "Invoices", 1)}${th("dates", "Date", 1)}${th("attention", "Needs attention", 1)}</tr></thead><tbody>${
       sorted.map(o => {
         const fl = listFlags(o), got = GOT.includes(o.status);
-        const dates = o.status === "draft" && o.kind === "booking" && o.placeBy ? `place by ${shortDate(o.placeBy)}` : got ? `received ${when(o.stageAt.received)}` : o.expected ? `expected ${shortDate(o.expected)}` : `updated ${when(o.updated)}`;
-        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0"><td class="l"><b class="mono">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}</td>
-          <td class="l">${esc(o.vendor || "—")}</td>
-          <td class="l">${oLanes(o).map(k => `<span class="pill ${OLANE_P[k]}" title="${esc(STAGE.get(o.status))}">${k === "approve" ? (o.readyAt ? "Ready to approve" : "Draft") : OLANE_N.get(k)}</span>`).join("")}</td>
-          <td>${n0(o.nLines)}<div class="meta">${!o.units ? esc({ shopify: "→ Shopify", prep: "→ Prep", both: "→ Both" }[o.into] || "") : o.prepUnits === 0 ? "→ Shopify" : o.prepUnits >= o.units ? "→ Prep" : `→ Both`}</div></td><td>${n0(o.units)}${o.units && o.prepUnits > 0 && o.prepUnits < o.units ? `<div class="meta">${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep</div>` : ""}</td><td>${o.nInv ? n0(o.invoiced) : '<span class="dim">—</span>'}</td><td>${o.received ? n0(o.received) : '<span class="dim">—</span>'}</td><td>${m0(o.cost)}</td>
-          <td class="l small">${o.nInv ? `<span class="mono">${esc(o.invNos || "invoice")}</span>${o.nInv > 1 ? ` <span class="pill manual">${o.nInv} invoices</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null ? `<div class="meta">${m(o.invTotal)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
-          <td class="l small">${dates}</td>
-          <td class="l">${fl.map(f => `<span class="pill ${f[0] === "info" ? "pos" : "miss"}">${esc(f[1])}</span>`).join("")}</td></tr>`;
-      }).join("") || `<tr><td class="l muted" colspan="11">${S.stage === "open" && !q ? "No open orders. Start one with New PO, then add the vendor's invoices to it." : "No orders match."}</td></tr>`}</tbody>`;
+        const dk = o.status === "draft" && o.kind === "booking" && o.placeBy ? ["Place by", shortDate(o.placeBy)] : got ? ["Received", when(o.stageAt.received || o.stageAt.partial || o.updated)] : o.expected ? ["Expected", shortDate(o.expected)] : ["Updated", when(o.updated)];
+        const late = ["ordered", "invoiced"].includes(o.status) && o.expected && o.expected < today();
+        const into = !o.units ? ({ shopify: "Shopify", prep: "Prep center", both: "Shopify + prep" }[o.into] || "") : o.prepUnits === 0 ? "Shopify" : o.prepUnits >= o.units ? "Prep center" : `${n0(o.units - o.prepUnits)} Shopify · ${n0(o.prepUnits)} prep`;
+        const pct = o.units ? Math.min(100, Math.round(o.received / o.units * 100)) : 0, ipct = o.units && o.nInv ? Math.min(100, Math.round(o.invoiced / o.units * 100)) : 0;
+        const status = oLanes(o).map(k => `<span class="pill ${OLANE_P[k]}" title="${esc(STAGE.get(o.status))}">${k === "approve" ? (o.readyAt ? "Ready to approve" : "Draft") : OLANE_N.get(k)}</span>`).join("");
+        const nos = (o.invNos || "").split(", ").filter(Boolean);
+        return `<tr class="po-row" data-po-open="${o.id}" tabindex="0">
+          <td class="l ot-order"><b>${esc(o.vendor || "—")}</b>${o.kind === "booking" ? ' <span class="pill warn">Booking</span>' : ""}<div class="ot-po">${esc(o.po ? poLabel(o.po) : "#" + o.id)}</div></td>
+          <td class="l ot-status">${status}</td>
+          <td><span class="num">${n0(o.nLines)}</span><div class="meta">${esc(into)}</div></td>
+          <td class="l ot-prog">${o.units ? `<div class="ot-bar" title="${n0(o.received)} received${o.nInv ? ` · ${n0(o.invoiced)} invoiced` : ""} of ${n0(o.units)} ordered"><span class="ot-inv" style="width:${ipct}%"></span><span class="ot-got" style="width:${pct}%"></span></div>
+            <div class="meta"><b class="num">${n0(o.received)}</b> of ${n0(o.units)}${o.nInv && o.invoiced !== o.units ? ` · ${n0(o.invoiced)} invoiced` : ""}</div>` : '<span class="dim">—</span>'}</td>
+          <td class="num ot-cost">${m0(o.cost)}${o.budget != null && !o.cost ? `<div class="meta">budget ${m0(o.budget)}</div>` : ""}</td>
+          <td class="l ot-inv-c">${o.nInv ? `<span class="mono" title="${esc(o.invNos)}">${esc(nos[0] || "invoice")}</span>${o.nInv > 1 ? ` <span class="dim">+${o.nInv - 1}</span>` : ""}${o.nFiles ? ' <span class="pill pos" title="PDF attached">PDF</span>' : ""}${o.invTotal != null ? `<div class="meta">${m(o.invTotal)}</div>` : ""}` : '<span class="dim">—</span>'}</td>
+          <td class="l ot-date"><div class="meta">${dk[0]}</div><span class="${late ? "neg" : ""}">${esc(dk[1])}</span></td>
+          <td class="l ot-flags">${fl.map(f => `<span class="pill ${f[0] === "info" ? "pos" : "miss"}">${esc(f[1])}</span>`).join("")}</td></tr>`;
+      }).join("") || `<tr><td class="l muted" colspan="8">${S.stage === "open" && !q ? "No open orders. Start one with New order." : "No orders match."}</td></tr>`}</tbody>`;
   }
 
   // ---------- rendering: editor ----------
