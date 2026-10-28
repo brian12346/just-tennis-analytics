@@ -91,7 +91,6 @@
       "o.shopify_check->>'diffs'", "o.shopify_check is not null", "o.shopify_po_status",
       "(select count(distinct l.variant_id) from jt.prep_order_lines l where l.order_id = o.id and l.update_cost and l.qty_received > 0)", "o.no_shopify_po",
       "o.approved_at::text", "o.approved_by", `(select count(*) ${IV} and ii.qbo_bill_id is not null)`,
-      "o.ready_at::text",
       `(select string_agg(ii.id || ':' || (ii.received_at is not null)::int || (ii.qbo_bill_id is not null)::int || ':' || coalesce(coalesce(ii.total, ii.subtotal)::text, '')
          || ':' || (select coalesce(sum(il.qty), 0) from jt.invoice_lines il where il.invoice_id = ii.id and il.variant_id is not null and il.match_how <> 'skip')
          || ':' || (select coalesce(sum(r.qty), 0) from jt.invoice_receipts r where r.invoice_id = ii.id) || ':' || coalesce(ii.invoice_date::text, '')
