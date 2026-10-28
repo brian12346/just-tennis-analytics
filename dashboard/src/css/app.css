@@ -1571,3 +1571,5 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ap-t tr.ap-p.on td{background:var(--line-soft)}
 .ap-t tr.ap-v td{background:var(--ground);font-size:13px}
 .ap-t th.sortable{cursor:pointer;user-select:none}
+.ap-t tr.ap-g td{background:var(--line-soft);cursor:pointer;padding-top:8px;padding-bottom:8px}
+.ap-t tr.ap-g:hover td{background:var(--line)}

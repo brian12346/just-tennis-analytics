@@ -11,18 +11,21 @@
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const TZ = "America/Los_Angeles";
   const sd = (d) => d ? new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit", timeZone: "UTC" }) : "";
-  const FILTERS = [["all", "All"], ["both", "In stock & selling"], ["stock", "In stock, no sales 12 mo"], ["sold", "Sold, none in stock"], ["disc", "Discontinued"], ["draft", "Not active in Shopify"], ["removed", "Removed"]];
+  // new products are added by themselves (migration 185: new in Shopify, or put on a PO); "New" = added in the last 30 days
+  const NEW_DAYS = 30, isNew = (o) => !!o.added && Date.now() - Date.parse(o.added) < NEW_DAYS * 864e5;
+  const FILTERS = [["all", "All"], ["new", "New"], ["both", "In stock & selling"], ["stock", "In stock, no sales 12 mo"], ["sold", "Sold, none in stock"], ["disc", "Discontinued"], ["draft", "Not active in Shopify"], ["removed", "Removed"]];
   const SORTK = { sold: (p) => -p.sold, stock: (p) => -p.stock, last: (p) => -(p.last ? Date.parse(p.last) : 0), name: (p) => p.title.toLowerCase(), vendor: (p) => (p.vendor + " " + p.title).toLowerCase() };
-  const S = { rows: null, prods: null, f: "all", q: "", vendor: "", type: "", sort: "sold", open: new Set(), sel: new Set(), limit: 150, busy: false, err: null, ask: null };
+  const GROUPS = [["", "No grouping"], ["vendor", "Vendor"], ["type", "Category"]];
+  const S = { rows: null, prods: null, f: "all", q: "", vendor: "", type: "", sort: "sold", by: "", shut: new Set(), open: new Set(), sel: new Set(), limit: 150, busy: false, err: null, ask: null };
 
   async function load() {
     S.err = null;
     const r = await JT.rows(["a.variant_id::text", "a.product_id::text", "a.title", "a.sku", "a.vendor", "a.product_type", "a.status", "a.price", "a.unit_cost",
-      "a.store", "a.prep", "a.fba", "a.awd", "a.shop365", "a.anr365", "a.amz365", "a.sold90", "a.last_sold::text", "a.discontinued", "a.culled", "a.culled_at::text", "a.culled_by", "a.cull_note"],
+      "a.store", "a.prep", "a.fba", "a.awd", "a.shop365", "a.anr365", "a.amz365", "a.sold90", "a.last_sold::text", "a.discontinued", "a.culled", "a.culled_at::text", "a.culled_by", "a.cull_note", "a.added_at::text", "a.added_how"],
       "from jt.active_products() a", true);
     S.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2] || "", sku: x[3] || "", vendor: x[4] || "", type: x[5] || "", status: x[6] || "", price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8],
       store: +x[9] || 0, prep: +x[10] || 0, fba: +x[11] || 0, awd: +x[12] || 0, shop: +x[13] || 0, anr: +x[14] || 0, amz: +x[15] || 0, s90: +x[16] || 0, last: x[17] || "",
-      disc: x[18] === true || x[18] === "true", culled: x[19] === true || x[19] === "true", cAt: x[20] || "", cBy: x[21] || "", cNote: x[22] || "" }));
+      disc: x[18] === true || x[18] === "true", culled: x[19] === true || x[19] === "true", cAt: x[20] || "", cBy: x[21] || "", cNote: x[22] || "", added: x[23] || "", how: x[24] || "" }));
     group();
   }
   // a product's name without its size/color part ("Pure Aero 2026 - 4 1/8" (#1)" → "Pure Aero 2026")
@@ -44,13 +47,15 @@
       p.last = src.map(v => v.last).filter(Boolean).sort().pop() || "";
       p.disc = src.every(v => v.disc); p.anyDisc = src.some(v => v.disc);
       p.draft = src.every(v => v.status !== "ACTIVE");
+      p.added = src.map(v => v.added).filter(Boolean).sort().pop() || ""; p.isNew = src.some(isNew);
+      p.how = (src.find(v => isNew(v)) || {}).how || "";
       p.value = src.reduce((a, v) => a + v.stock * (v.cost || 0), 0);
     }
     S.prods = [...by.values()];
   }
   const fOk = (p, f) => f === "removed" ? p.vs.some(v => v.culled) : p.allCulled ? false
     : f === "all" ? true : f === "both" ? p.stock > 0 && p.sold > 0 : f === "stock" ? p.stock > 0 && p.sold === 0 : f === "sold" ? p.sold > 0 && p.stock === 0
-    : f === "disc" ? p.anyDisc : f === "draft" ? p.draft : true;
+    : f === "new" ? p.isNew : f === "disc" ? p.anyDisc : f === "draft" ? p.draft : true;
   function shown() {
     const q = S.q.trim().toLowerCase();
     const list = (S.prods || []).filter(p => fOk(p, S.f) && (!S.vendor || p.vendor === S.vendor) && (!S.type || p.type === S.type)
@@ -63,6 +68,7 @@
   const soldCell = (o) => o.sold ? `<span title="Just Tennis ${n0(o.shop)} · Ace n Rally ${n0(o.anr)} · Amazon ${n0(o.amz)} · last 90 days ${n0(o.s90)}">${n0(o.sold)}</span>` : '<span class="dim">0</span>';
   const chans = (o) => [["JT", o.shop], ["AnR", o.anr], ["Amz", o.amz]].filter(x => x[1]).map(x => `${x[0]} ${n0(x[1])}`).join(" · ");
   const tags = (o, isP) => [
+    (isP ? o.isNew : isNew(o)) ? `<span class="pill ok" title="Added ${esc((o.added || "").slice(0, 10))}${o.how ? " · " + esc(o.how) : ""}">new</span>` : "",
     (isP ? o.anyDisc : o.disc) ? '<span class="pill miss">discontinued</span>' : "",
     (isP ? o.draft : o.status !== "ACTIVE") ? `<span class="pill pos" title="Shopify status">${esc(isP ? "not active" : (o.status || "").toLowerCase())}</span>` : "",
     o.stock > 0 && o.sold === 0 ? '<span class="pill warn" title="Stock on hand, nothing sold in 12 months">no sales</span>' : "",
@@ -83,15 +89,36 @@
     ].map(([l, v, s]) => `<div class="kpi"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${s}</span></div>`).join("");
     $("ap-seg").innerHTML = FILTERS.map(([k, n]) => `<button data-ap-f="${k}" aria-pressed="${S.f === k}">${n} <span class="cnt">${n0(S.prods.filter(p => fOk(p, k)).length)}</span></button>`).join("");
     const opts = (k, cur, all) => `<option value="">${all}</option>` + [...new Set(S.prods.map(p => p[k]).filter(Boolean))].sort().map(v => `<option ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("");
-    $("ap-vendor").innerHTML = opts("vendor", S.vendor, "All vendors"); $("ap-type").innerHTML = opts("type", S.type, "All types");
-    const list = shown(), page = list.slice(0, S.limit), rem = S.f === "removed";
-    st.textContent = `${n0(list.length)} product${list.length === 1 ? "" : "s"}${list.length > page.length ? ` · showing ${n0(page.length)}` : ""}`;
+    $("ap-vendor").innerHTML = opts("vendor", S.vendor, "All vendors"); $("ap-type").innerHTML = opts("type", S.type, "All categories");
+    $("ap-by").innerHTML = GROUPS.map(([k, n]) => `<option value="${k}" ${S.by === k ? "selected" : ""}>${k ? "Group by " + n.toLowerCase() : n}</option>`).join("");
+    let list = shown();
+    const gk = (p) => (S.by ? p[S.by] : "") || (S.by === "type" ? "(no category)" : "(no vendor)");
+    const gstat = new Map();
+    if (S.by) {
+      for (const p of list) { const k = gk(p); let g = gstat.get(k); if (!g) gstat.set(k, g = { n: 0, stock: 0, sold: 0, value: 0 }); g.n++; g.stock += p.stock; g.sold += p.sold; g.value += p.value; }
+      const ord = [...gstat.keys()].sort((a, b) => gstat.get(b).sold - gstat.get(a).sold || a.localeCompare(b));
+      const rank = new Map(ord.map((k, i) => [k, i]));
+      list = list.map((p, i) => [p, i]).sort((a, b) => rank.get(gk(a[0])) - rank.get(gk(b[0])) || a[1] - b[1]).map(x => x[0]);
+
+    }
+    const openList = S.by ? list.filter(p => !S.shut.has(gk(p))) : list, page = openList.slice(0, S.limit), rem = S.f === "removed";
+    const pageSet = new Set(page);
+    // with grouping: every group's header in order (a closed group shows just its header), products up to the page limit
+    const items = S.by ? (() => { const out = [], seen = new Set(); for (const p of list) { const k = gk(p); if (!seen.has(k)) { seen.add(k); out.push({ k }); } if (pageSet.has(p)) out.push(p); } return out; })() : page;
+
+    const ghead = (k) => { const g = gstat.get(k), shut = S.shut.has(k);
+      return `<tr class="ap-g ${shut ? "shut" : ""}" data-ap-g="${esc(k)}"><td colspan="10" class="l"><span class="rl-car" aria-hidden="true">${shut ? "▸" : "▾"}</span> <b>${esc(k)}</b> <span class="muted small">· ${n0(g.n)} product${g.n === 1 ? "" : "s"} · ${n0(g.stock)} on hand · ${n0(g.sold)} sold in 12 mo</span></td></tr>`; };
+
+    const nAll = S.by ? [...gstat.values()].reduce((a, g) => a + g.n, 0) : list.length;
+    st.textContent = `${n0(nAll)} product${nAll === 1 ? "" : "s"}${S.by ? ` in ${n0(gstat.size)} ${S.by === "type" ? "categories" : "vendors"}` : ""}${openList.length > page.length ? ` · showing ${n0(page.length)}` : ""}`;
     const nSel = S.sel.size;
     $("ap-bulk").innerHTML = nSel ? `<b>${n0(nSel)}</b> selected · ${rem ? `<button class="btn sm primary" data-ap-act="restore">Put back on the list</button>` : `<input id="ap-note" class="inp sm" placeholder="Why (optional)" style="width:200px"> <button class="btn sm primary" data-ap-act="cull" ${S.busy ? "disabled" : ""}>Remove from the list</button>`} <button class="linkbtn small" data-ap-act="clear">Clear</button>` : `<span class="muted small">${rem ? "Tick products to put them back." : "Tick products (or single sizes) to take them off the list. Shopify isn't changed."}</span>`;
     const th = (k, l, left) => `<th class="${left ? "l" : ""} sortable" data-ap-sort="${k}" aria-sort="${S.sort === k ? "descending" : "none"}">${l}${S.sort === k ? " ↓" : ""}</th>`;
     const allOn = page.length && page.every(p => p.vs.filter(v => rem ? v.culled : !v.culled).every(v => S.sel.has(v.vid)));
-    $("ap-table").innerHTML = `<thead><tr><th><input type="checkbox" data-ap-all ${allOn ? "checked" : ""} aria-label="Select all shown"></th><th></th>${th("name", "Product", 1)}${th("vendor", "Vendor · type", 1)}${th("stock", "On hand")}<th class="l">Where</th>${th("sold", "Sold 12 mo")}<th class="l">Channels</th>${th("last", "Last sold", 1)}<th class="l"></th></tr></thead><tbody>${
-      page.map(p => {
+    $("ap-table").innerHTML = `<thead><tr><th><input type="checkbox" data-ap-all ${allOn ? "checked" : ""} aria-label="Select all shown"></th><th></th>${th("name", "Product", 1)}${th("vendor", "Vendor · category", 1)}${th("stock", "On hand")}<th class="l">Where</th>${th("sold", "Sold 12 mo")}<th class="l">Channels</th>${th("last", "Last sold", 1)}<th class="l"></th></tr></thead><tbody>${
+      items.map(p => {
+        if (p.k !== undefined && !p.pid) return ghead(p.k);
+
         const vs = p.vs.filter(v => rem ? v.culled : !v.culled), o = S.open.has(p.pid), on = vs.length && vs.every(v => S.sel.has(v.vid)), some = !on && vs.some(v => S.sel.has(v.vid));
         const one = p.vs.length === 1 ? p.vs[0] : null;
         return `<tr class="po-row ap-p ${o ? "on" : ""}" data-ap-open="${esc(p.pid)}">
@@ -110,7 +137,7 @@
             <td class="l small">${v.last ? esc(sd(v.last)) : '<span class="dim">—</span>'}</td><td class="l small">${v.culled ? `<span class="dim" title="${esc(v.cBy)} · ${esc(v.cAt.slice(0, 10))}">${esc(v.cNote || "removed")}</span>` : ""}</td></tr>`).join("") : ""}`;
       }).join("") || `<tr><td colspan="10" class="l muted">${S.prods.length ? "Nothing matches." : "No products."}</td></tr>`}</tbody>`;
     for (const c of $("ap-table").querySelectorAll('input[data-some="1"]')) c.indeterminate = true;
-    $("ap-more").hidden = list.length <= page.length;
+    $("ap-more").hidden = openList.length <= page.length;
   }
 
   async function refresh() {
@@ -145,6 +172,7 @@
     if (e.target.matches("[data-ap-all]")) { const page = shown().slice(0, S.limit); pick(page.flatMap(liveVids), e.target.checked); render(); return; }
     const sp = e.target.closest("[data-ap-selp]"); if (sp) { const p = S.prods.find(x => x.pid === sp.dataset.apSelp); if (p) pick(liveVids(p), sp.checked); render(); return; }
     const sv = e.target.closest("[data-ap-selv]"); if (sv) { pick([sv.dataset.apSelv], sv.checked); render(); return; }
+    const g = e.target.closest("[data-ap-g]"); if (g) { const k = g.dataset.apG; S.shut.has(k) ? S.shut.delete(k) : S.shut.add(k); render(); return; }
     if (e.target.closest("#ap-more")) { S.limit += 300; render(); return; }
     if (e.target.closest("#ap-refresh")) { refresh(); return; }
     const row = e.target.closest("[data-ap-open]");
@@ -153,6 +181,7 @@
   $("ap-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(() => { S.limit = 150; render(); }, 150); });
   $("ap-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; S.limit = 150; render(); });
   $("ap-type").addEventListener("change", (e) => { S.type = e.target.value; S.limit = 150; render(); });
+  $("ap-by").addEventListener("change", (e) => { S.by = e.target.value; S.shut.clear(); S.limit = 150; render(); });
   window.apShow = () => { if (!S.rows && !S.err) refresh(); else render(); };
   window.JTActive = { _state: S };
   if ((location.hash || "") === "#active") setTimeout(() => window.apShow(), 0);
