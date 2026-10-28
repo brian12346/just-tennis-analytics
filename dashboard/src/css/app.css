@@ -1507,3 +1507,5 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ot-pay .meta{margin-top:3px}
 /* Invoices left the sub-tabs; the invoice table is at the bottom of Orders (v0.44.0) */
 .tabs button.navgone{display:none!important}
+/* received before the invoice: its own card in Received (v0.45.0) */
+.il-card.oc.ocn{border-left:3px solid var(--warn)}

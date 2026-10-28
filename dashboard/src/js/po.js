@@ -96,9 +96,14 @@
          || ':' || (select coalesce(sum(r.qty), 0) from jt.invoice_receipts r where r.invoice_id = ii.id) || ':' || coalesce(ii.invoice_date::text, '')
          || ':' || coalesce(nullif(ii.invoice_no, ''), '#' || ii.id), '|' order by ii.id) ${IV})`,
       // the part of the order no invoice covers yet, per product (units : cost) — its own card in Ordered (Oct 29)
-      `(select coalesce(sum(greatest(x.ord - x.inv, 0)), 0) || ':' || coalesce(sum(greatest(x.ord - x.inv, 0) * x.cost), 0) from (select l.variant_id, sum(l.qty_ordered) as ord,
-         max(coalesce(l.unit_cost, v.unit_cost, 0)) as cost, coalesce((select sum(il.qty) ${IL} and il.variant_id = l.variant_id and il.match_how <> 'skip'), 0) as inv
-         from jt.prep_order_lines l left join jt.variants v on v.variant_id = l.variant_id where l.order_id = o.id group by l.variant_id) x)`, "o.ready_at::text"],
+      // + received with no invoice counting it yet (units : cost), and what's neither invoiced nor received (Oct 29)
+      `(select coalesce(sum(greatest(x.ord - x.inv, 0)), 0) || ':' || coalesce(sum(greatest(x.ord - x.inv, 0) * x.cost), 0)
+         || ':' || coalesce(sum(greatest(x.rec - x.att, 0)), 0) || ':' || coalesce(sum(greatest(x.rec - x.att, 0) * x.cost), 0)
+         || ':' || coalesce(sum(greatest(greatest(x.ord - x.inv, 0) - greatest(x.rec - x.att, 0), 0)), 0) || ':' || coalesce(sum(greatest(greatest(x.ord - x.inv, 0) - greatest(x.rec - x.att, 0), 0) * x.cost), 0)
+         from (select l.variant_id, sum(l.qty_ordered) as ord, sum(l.qty_received) as rec,
+         max(coalesce(l.unit_cost, v.unit_cost, 0)) as cost, coalesce((select sum(il.qty) ${IL} and il.variant_id = l.variant_id and il.match_how <> 'skip'), 0) as inv,
+         coalesce((select sum(ir.qty) from jt.invoice_receipts ir join jt.invoices ii on ii.id = ir.invoice_id where ii.order_id = o.id and ir.variant_id = l.variant_id), 0) as att
+         from jt.prep_order_lines l left join jt.variants v on v.variant_id = l.variant_id where l.order_id = o.id and l.dest <> 'demo' group by l.variant_id) x)`, "o.ready_at::text"],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
       stageAt: x[8] || {}, created: x[9], updated: x[10], nInv: +x[11], invNos: x[12] || "", invTotal: x[13] == null ? null : +x[13], due: x[14] || "", nFiles: +x[15],
@@ -107,7 +112,8 @@
       approvedAt: x[38] || "", approvedBy: x[39] || "", nQB: +x[40] || 0,
       invs: (x[41] || "").split("|").filter(Boolean).map(t => { const [id, f, tot, billed, got, date, ...no] = t.split(":");
         return { id, recv: f[0] === "1", qb: f[1] === "1", total: tot === "" ? null : +tot, billed: +billed || 0, got: +got || 0, date: date || "", no: no.join(":") }; }),
-      restUnits: +String(x[42] || "0:0").split(":")[0] || 0, restCost: +String(x[42] || "0:0").split(":")[1] || 0, readyAt: x[43] || "" }))
+      ...(() => { const r = String(x[42] || "").split(":").map(Number); return { restUnits: r[0] || 0, restCost: r[1] || 0, noinvUnits: r[2] || 0, noinvCost: r[3] || 0, openUnits: r[4] || 0, openCost: r[5] || 0 }; })(),
+      readyAt: x[43] || "" }))
       .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
     // category / budget / placeholder (migration 162; empty until it's in)
     const pl = await JT.rows(["id::text", "category", "budget::text", "placeholder::text", "missing_invoice::text"], "from jt.prep_orders where category <> '' or budget is not null or placeholder or missing_invoice", refresh).catch(() => null);
@@ -822,7 +828,7 @@
   // Orders lanes hold order cards ("o12") and invoice cards ("i34", their place kept in invoices.po_lane_pos, migration 174)
   async function loadLanePos(kind) {
     const r = kind === "po"
-      ? await JT.rows(["k", "pos::text"], "from (select 'o' || id as k, lane_pos as pos from jt.prep_orders where lane_pos is not null union all select 'i' || id, po_lane_pos from jt.invoices where po_lane_pos is not null) x", true).catch(() => null)
+      ? await JT.rows(["k", "pos::text"], "from (select 'o' || id as k, lane_pos as pos from jt.prep_orders where lane_pos is not null union all select 'i' || id, po_lane_pos from jt.invoices where po_lane_pos is not null union all select 'n' || id, noinv_lane_pos from jt.prep_orders where noinv_lane_pos is not null) x", true).catch(() => null)
       : await JT.rows(["id::text", "lane_pos::text"], "from jt.invoices where lane_pos is not null", true).catch(() => null);
     if (r) LANEPOS[kind] = new Map(r.map(x => [x[0], +x[1]]));
   }
@@ -1215,15 +1221,26 @@
   // Invoiced until it's received, then Received until it's in QuickBooks, then Recorded. What no invoice covers yet stays
   // as the order's card in Ordered. Drafts, and orders with no invoices, are one card as before.
   const ivLane = (iv) => !iv.recv && iv.billed > 0 ? "invoiced" : iv.qb ? "recorded" : "received";
+  // Received before the invoice (Oct 29): what came in that no invoice counts yet is a "no invoice yet" card in Received,
+  // like an invoice of its own, until the real invoice is put on the PO (migration 176 then counts those units on it).
   function oLaneCards(o) {
-    if (o.status === "draft" || !o.invs || !o.invs.length) return [{ k: laneOfO(o), ck: "o" + o.id, o, amt: o.cost }];
-    const cs = o.invs.map(iv => ({ k: ivLane(iv), ck: "i" + iv.id, o, iv, amt: iv.total || 0 }));
-    if (["ordered", "invoiced", "partial"].includes(o.status) && o.restUnits > 0) cs.unshift({ k: "ordered", ck: "o" + o.id, o, rest: true, amt: o.restCost });
+    const invs = o.invs || [];
+    if (o.status === "draft" || (!invs.length && !o.noinvUnits)) return [{ k: laneOfO(o), ck: "o" + o.id, o, amt: o.cost }];
+    const cs = invs.map(iv => ({ k: ivLane(iv), ck: "i" + iv.id, o, iv, amt: iv.total || 0 }));
+    if (o.noinvUnits > 0) cs.push({ k: "received", ck: "n" + o.id, o, noinv: true, amt: o.noinvCost });
+    if (["ordered", "invoiced", "partial"].includes(o.status) && o.openUnits > 0) cs.unshift({ k: "ordered", ck: "o" + o.id, o, rest: true, amt: o.openCost });
     return cs;
   }
   const oLanes = (o) => [...new Set(oLaneCards(o).map(c => c.k))].sort((a, b) => OLANE_N_I.get(a) - OLANE_N_I.get(b));
   const OLANE_N_I = new Map(OLANES.map(([k], i) => [k, i]));
-  function cardOf(c) { return c.iv ? ivOCard(c) : oCard(c.o, c.k, c); }
+  function cardOf(c) { return c.iv ? ivOCard(c) : c.noinv ? noinvCard(c) : oCard(c.o, c.k, c); }
+  function noinvCard(c) {
+    const o = c.o, name = esc(o.po ? poLabel(o.po) : "#" + o.id);
+    return `<div class="il-card oc ocv ocn" role="button" tabindex="0" draggable="true" data-ck="${esc(c.ck)}" data-po-open="${esc(o.id)}" data-po-view="notinv" title="Received with no invoice yet — open the PO and + Add invoice when it comes; these units count on it. Drag to reorder (or Alt+↑ / Alt+↓)">
+      <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b></span><span class="il-amt" title="At cost">${m0(o.noinvCost)}</span></span>
+      <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h"><span class="pill warn">no invoice yet</span></span></span>
+      <span class="oc-3">received without an invoice · ${n0(o.noinvUnits)} units${o.stageAt.received || o.stageAt.partial ? " · " + esc(shortDate(String(o.stageAt.received || o.stageAt.partial).slice(0, 10))) : ""}</span></div>`;
+  }
   // one invoice of an order, in the lane its own state puts it
   function ivOCard(c) {
     const o = c.o, iv = c.iv, k = c.k, name = esc(o.po ? poLabel(o.po) : "#" + o.id), nInv = o.invs.length;
@@ -1249,7 +1266,7 @@
   }
   function oCard(o, k, c) {
     const name = esc(o.po ? poLabel(o.po) : "#" + o.id), left = Math.max(0, o.units - o.received), rest = !!(c && c.rest);
-    const hint = rest ? `<span class="dim">${n0(o.restUnits)} not invoiced</span>`
+    const hint = rest ? `<span class="dim">${n0(o.openUnits)} ${o.invs && o.invs.length ? "not invoiced" : "to come"}</span>`
       : k === "approve" && !o.readyAt ? '<span class="pill pos" title="Still being put together — open it and press Ready to approve">Draft</span>'
       : k === "approve" ? `<span class="pill warn" title="Marked ready ${esc(when(o.readyAt))}">Ready</span> <button class="mini primary" type="button" data-po-approve="${esc(o.id)}" title="${n0(o.nLines)} products · ${n0(o.units)} units">Approve</button>`
       : k === "ordered" && o.status === "draft" ? `<button class="mini" type="button" data-po-mark="${esc(o.id)}" title="Approved ${esc(when(o.approvedAt))}${o.approvedBy ? " by " + esc(o.approvedBy.split("@")[0]) : ""} — mark it once it's with the vendor">Mark ordered</button>`
@@ -1263,9 +1280,9 @@
       ? (k === "invoiced" ? o.invs.find(v => !v.recv) : k === "received" ? o.invs.find(v => !v.qb) : null) || o.invs[o.invs.length - 1] : null;
     const miss = o.missingInv ? '<span class="pill warn" title="Goods came in with no invoice in the system — it clears when an invoice is put on this order">missing invoice</span> ' : "";
     const ivChip = iv ? `<button class="oc-inv" type="button" data-inv-open="${esc(iv.id)}" title="Open invoice ${esc(iv.no)}${o.invs.length > 1 ? ` (${o.invs.length} invoices on this order)` : ""}">${o.invs.length > 1 ? `${o.invs.length} inv` : "Inv"} ${esc(String(iv.no).replace(/^#/, "").slice(-6))} →</button>` : "";
-    const amt = rest ? `<span class="il-amt" title="The part not on an invoice yet, at cost (whole order ${m0(o.cost)})">${m0(o.restCost)}</span>`
+    const amt = rest ? `<span class="il-amt" title="The part not invoiced or received yet, at cost (whole order ${m0(o.cost)})">${m0(o.openCost)}</span>`
       : `<span class="il-amt" ${o.budget != null ? `title="Budget ${m0(o.budget)}${o.cost ? ` · ordered ${m0(o.cost)}` : ""}"` : ""}>${!o.cost && o.budget != null ? `<span class="dim">budget</span> ${m0(o.budget)}` : m0(o.cost)}</span>`;
-    const detail = rest ? [`rest of the order · ${o.invs.length} invoice${o.invs.length === 1 ? "" : "s"} in`, o.nBack ? `${n0(o.nBack)} backordered` : "", o.expected ? "exp " + esc(shortDate(o.expected)) : ""].filter(Boolean).join(" · ") : ocDetail(o, k);
+    const detail = rest ? [o.invs.length ? `rest of the order · ${o.invs.length} invoice${o.invs.length === 1 ? "" : "s"} in` : `rest of the order · ${n0(o.received)} received`, o.nBack ? `${n0(o.nBack)} backordered` : "", o.expected ? "exp " + esc(shortDate(o.expected)) : ""].filter(Boolean).join(" · ") : ocDetail(o, k);
     return `<div class="il-card oc ${rest ? "ocr" : ""}" role="button" tabindex="0" draggable="true" data-ck="o${esc(o.id)}" data-po-open="${esc(o.id)}" ${rest ? 'data-po-view="notinv"' : ""} title="Open ${esc(o.vendor || "")} ${name}${rest ? " at what's not invoiced yet" : ""} — drag to reorder (or Alt+↑ / Alt+↓)">
       <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b>${ivChip}</span>${amt}</span>
       <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h">${miss}${hint}</span></span>
