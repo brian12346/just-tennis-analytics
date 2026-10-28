@@ -1503,3 +1503,5 @@ table.po-list.ot tbody tr:last-child td{border-bottom:0}
 .ot-date .meta{font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:1px}
 .ot-flags .pill{margin:2px 4px 2px 0}
 table.po-list.ot .meta{color:var(--muted);font-size:12px}
+.ot-pay{white-space:nowrap}
+.ot-pay .meta{margin-top:3px}

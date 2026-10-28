@@ -919,7 +919,7 @@
     attention: [o => listFlags(o).filter(f => f[0] !== "info").length || null, -1],
   };
   const INV_KEYS = {
-    no: [v => v.no || null], status: [v => LANES.findIndex(([k]) => k === laneOf(v))], vendor: [v => v.vendor], date: [v => v.date || null, -1],
+    invoice: [v => (v.vendor || "") + " " + (v.no || "")], status: [v => LANES.findIndex(([k]) => k === laneOf(v))], date: [v => v.date || null, -1],
     po: [v => v.oid ? v.po || "#" + v.oid : null], total: [v => v.total, -1], received: [v => v.recvAt ? 2 : v.billed ? v.got / v.billed : null, -1],
     payment: [v => v.paidOn ? "2" + v.paidOn : "1" + (v.due || "9999")], qb: [v => v.qbo ? 1 : 0],
   };
@@ -996,18 +996,22 @@
     if (!S.invs) { t.innerHTML = '<tbody><tr><td class="l muted">Loading…</td></tr></tbody>'; return; }
     const LN = new Map(LANES.map(([k, n]) => [k, n])), LP = { issues: "miss", nopo: "pos", receive: "manual", complete: "ok" };
     const th = (k, l, left) => sortTh("inv", INV_KEYS, k, l, left);
-    t.innerHTML = `<thead><tr>${th("no", "Invoice", 1)}${th("status", "Status", 1)}${th("vendor", "Vendor", 1)}${th("date", "Date", 1)}${th("po", "Purchase order", 1)}${th("total", "Total")}${th("received", "Received", 1)}${th("payment", "Payment", 1)}${th("qb", "QuickBooks", 1)}</tr></thead><tbody>${
-      applySort("inv", INV_KEYS, list).map(v => `<tr class="po-row" data-inv-open="${v.id}" tabindex="0">
-        <td class="l"><b class="mono">${esc(v.no || "(no number)")}</b>${invClosed(v) ? " " + closedPill : ""}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</td>
-        <td class="l small"><span class="pill ${LP[laneOf(v)]}">${LN.get(laneOf(v))}</span></td>
-        <td class="l">${esc(v.vendor || "—")}</td>
-        <td class="l small">${v.date ? esc(shortDate(v.date)) : '<span class="dim">—</span>'}</td>
-        <td class="l small">${v.oid ? `<button class="linkbtn small" data-po-go="${esc(v.oid)}">${esc(v.po ? poLabel(v.po) : "#" + v.oid)}</button> <span class="pill ${PILL[v.ostatus] || "pos"}">${esc(STAGE.get(v.ostatus) || "")}</span>` : '<span class="pill pos" title="Saved on its own — it goes onto its PO when that PO syncs in with the same products">No PO yet</span>'}</td>
-        <td>${m(v.total)}</td>
-        <td class="l small">${v.recvAt ? '<span class="pill ok">Received</span>' : v.got > 0 ? `<span class="pill manual">${n0(v.got)} of ${n0(v.billed)} in</span>` : v.billed ? '<span class="dim">not yet</span>' : '<span class="dim">—</span>'}</td>
-        <td class="l small">${v.paidOn ? `<span class="pill ok">Paid</span> <span class="meta">${esc(shortDate(v.paidOn))}</span>` : v.due && v.due < today() ? `<span class="pill miss">Overdue</span> <span class="meta">due ${esc(shortDate(v.due))}</span>` : `<span class="pill warn">Unpaid</span>${v.due ? ` <span class="meta">due ${esc(shortDate(v.due))}</span>` : ""}`}</td>
-        <td class="l small">${v.qbo ? '<span class="pill ok">In QuickBooks</span>' : '<span class="pill pos">Not yet</span>'}</td></tr>`).join("")
-      || `<tr><td class="l muted" colspan="9">${all.length ? "No invoices match." : "No invoices yet. Upload a vendor invoice PDF — it's matched to its purchase order by the PO # on it."}</td></tr>`}</tbody>`;
+    // tidied like the orders table (Brian, Oct 29: "let's make the invoices table pretty now too")
+    t.classList.add("ot");
+    t.innerHTML = `<thead><tr>${th("invoice", "Invoice", 1)}${th("status", "Status", 1)}${th("date", "Date", 1)}${th("po", "Purchase order", 1)}${th("received", "Received", 1)}${th("total", "Total")}${th("payment", "Payment", 1)}${th("qb", "QuickBooks", 1)}</tr></thead><tbody>${
+      applySort("inv", INV_KEYS, list).map(v => {
+        const pct = v.billed ? Math.min(100, Math.round(v.got / v.billed * 100)) : 0, late = !v.paidOn && v.due && v.due < today();
+        return `<tr class="po-row" data-inv-open="${v.id}" tabindex="0">
+        <td class="l ot-order"><b>${esc(v.vendor || "—")}</b><div class="ot-po mono">${esc(v.no || "(no number)")}${v.parts ? ' <span class="pill pos" title="PDF stored">PDF</span>' : ""}${v.check ? ` <span class="pill miss">${v.check} to check</span>` : ""}</div></td>
+        <td class="l ot-status"><span class="pill ${LP[laneOf(v)]}">${LN.get(laneOf(v))}</span>${invClosed(v) ? " " + closedPill : ""}</td>
+        <td class="l ot-date">${v.date ? `<span>${esc(shortDate(v.date))}</span>` : '<span class="dim">—</span>'}${v.terms ? `<div class="meta">${esc(v.terms)}</div>` : ""}</td>
+        <td class="l">${v.oid ? `<button class="linkbtn" data-po-go="${esc(v.oid)}">${esc(v.po ? poLabel(v.po) : "#" + v.oid)}</button><div class="meta">${esc(STAGE.get(v.ostatus) || "")}</div>` : '<span class="pill pos" title="Saved on its own — it goes onto its PO when that PO syncs in with the same products">No PO yet</span>'}</td>
+        <td class="l ot-prog">${v.billed ? `<div class="ot-bar" title="${n0(v.got)} of ${n0(v.billed)} units received"><span class="ot-got" style="width:${v.recvAt ? 100 : pct}%"></span></div>
+          <div class="meta">${v.recvAt ? `<b class="num">Received</b> · ${n0(v.billed)} units` : `<b class="num">${n0(v.got)}</b> of ${n0(v.billed)}`}</div>` : '<span class="dim">no products</span>'}</td>
+        <td class="num ot-cost">${m(v.total)}</td>
+        <td class="l ot-pay">${v.paidOn ? `<span class="pill ok">Paid</span><div class="meta">${esc(shortDate(v.paidOn))}</div>` : late ? `<span class="pill miss">Overdue</span><div class="meta neg">due ${esc(shortDate(v.due))}</div>` : `<span class="pill warn">Unpaid</span>${v.due ? `<div class="meta">due ${esc(shortDate(v.due))}</div>` : ""}`}</td>
+        <td class="l">${v.qbo ? '<span class="pill ok">In QuickBooks</span>' : '<span class="pill pos">Not yet</span>'}</td></tr>`; }).join("")
+      || `<tr><td class="l muted" colspan="8">${all.length ? "No invoices match." : "No invoices yet. Upload a vendor invoice PDF — it's matched to its purchase order by the PO # on it."}</td></tr>`}</tbody>`;
   }
   // A parsed invoice becomes one of the PO's invoices; its products are matched and the PO lines follow.
   function merge(ed, p, f, rawRows, reuse) {
