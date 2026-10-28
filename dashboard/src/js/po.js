@@ -98,11 +98,12 @@
       // the part of the order no invoice covers yet, per product (units : cost) — its own card in Ordered (Oct 29)
       // + received with no invoice counting it yet (units : cost), and what's neither invoiced nor received (Oct 29)
       `(select coalesce(sum(greatest(x.ord - x.inv, 0)), 0) || ':' || coalesce(sum(greatest(x.ord - x.inv, 0) * x.cost), 0)
-         || ':' || coalesce(sum(greatest(x.rec - x.att, 0)), 0) || ':' || coalesce(sum(greatest(x.rec - x.att, 0) * x.cost), 0)
+         || ':' || coalesce(sum(greatest(x.rec - x.att - x.cl, 0)), 0) || ':' || coalesce(sum(greatest(x.rec - x.att - x.cl, 0) * x.cost), 0)
          || ':' || coalesce(sum(greatest(greatest(x.ord - x.inv, 0) - greatest(x.rec - x.att, 0), 0)), 0) || ':' || coalesce(sum(greatest(greatest(x.ord - x.inv, 0) - greatest(x.rec - x.att, 0), 0) * x.cost), 0)
          from (select l.variant_id, sum(l.qty_ordered) as ord, sum(l.qty_received) as rec,
          max(coalesce(l.unit_cost, v.unit_cost, 0)) as cost, coalesce((select sum(il.qty) ${IL} and il.variant_id = l.variant_id and il.match_how <> 'skip'), 0) as inv,
-         coalesce((select sum(ir.qty) from jt.invoice_receipts ir join jt.invoices ii on ii.id = ir.invoice_id where ii.order_id = o.id and ir.variant_id = l.variant_id), 0) as att
+         coalesce((select sum(ir.qty) from jt.invoice_receipts ir join jt.invoices ii on ii.id = ir.invoice_id where ii.order_id = o.id and ir.variant_id = l.variant_id), 0) as att,
+         coalesce((o.over_closed->>(l.variant_id::text))::numeric, 0) as cl
          from jt.prep_order_lines l left join jt.variants v on v.variant_id = l.variant_id where l.order_id = o.id and l.dest <> 'demo' group by l.variant_id) x)`, "o.ready_at::text"],
       "from jt.prep_orders o", "o.id", 2, refresh);
     S.orders = r.map(x => ({ id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "",
@@ -468,7 +469,7 @@
       const [h, ol, sh, ivs, lp] = await Promise.all([
         JT.rows(["o.id::text", "o.vendor", "o.po_no", "o.status", "o.kind", "o.place_by::text", "o.expected_on::text", "o.note", "o.short_ok", "o.stage_at", "o.created_at", "o.created_by", "o.shopify_po_url", "o.receive_into", "o.shopify_check", "o.shopify_received_at::text", "o.shopify_received_by",
           "(select max(seen_at) from jt.variants)::text", "o.shopify_po_status", "o.shopify_po_status_at::text",
-          "(select value::text from jt.settings where key = 'shopify_po_api')", "o.approved_at::text", "o.approved_by", "o.no_shopify_po", "o.ready_at::text"],
+          "(select value::text from jt.settings where key = 'shopify_po_api')", "o.approved_at::text", "o.approved_by", "o.no_shopify_po", "o.ready_at::text", "o.over_closed::text", "o.over_closed_at::text"],
           `from jt.prep_orders o where o.id = ${JT.int(id)}`, true),
         JT.rows(["variant_id::text", "amazon_sku", "dest", "qty_ordered", "qty_received", "unit_cost", "backorder", "eta::text", "update_cost", "cost_applied", "cost_applied_at::text"], `from jt.prep_order_lines where order_id = ${JT.int(id)} order by coalesce(pos, 1000000), variant_id, dest desc, amazon_sku`, true),
         JT.rows(["id::text", "name", "status"], `from jt.prep_shipments where order_id = ${JT.int(id)}`, true),
@@ -478,7 +479,8 @@
       ]);
       if (!h[0]) throw { code: "tool_error", message: "That purchase order no longer exists." };
       const x = h[0], ed = blankEd();
-      ed.noShop = !!x[x.length - 2]; ed.approvedAt = x[x.length - 4] || ""; ed.approvedBy = x[x.length - 3] || ""; ed.readyAt = x[x.length - 1] || "";
+      ed.noShop = !!x[x.length - 4]; ed.approvedAt = x[x.length - 6] || ""; ed.approvedBy = x[x.length - 5] || ""; ed.readyAt = x[x.length - 3] || "";
+      try { ed.overClosed = JSON.parse(x[x.length - 2] || "{}") || {}; } catch (e) { ed.overClosed = {}; } ed.overAt = x[x.length - 1] || "";
       Object.assign(ed, { id: x[0], vendor: x[1] || "", po: x[2] || "", status: x[3], kind: x[4] || "order", placeBy: x[5] || "", expected: x[6] || "", note: x[7] || "", shortOk: !!x[8],
         stageAt: x[9] || {}, created: x[10], createdBy: x[11] || "", shopifyUrl: x[12] || "", into: x[13] || "", shopCheck: x[14] || null, shopUrl0: x[12] || "", shopCheck0: JSON.stringify(x[14] || null), shopRecvAt: x[15] || "", shopRecvBy: x[16] || "", stockSyncedAt: x[17] || "", shopStatus: x[18] || "", shopStatusAt: x[19] || "", poApi: (() => { try { return x[20] ? JSON.parse(x[20]) : null; } catch (_) { return null; } })(), shipments: sh.map(s => ({ id: s[0], name: s[1], status: s[2] })) });
       ed.lines = ol.map(([vid, asku, dest, qo, qr, uc, bo, eta, upd, ca, cat]) => ({ id: newId(), vid, asku: asku || "", dest: dest || "prep", qty: String(+qo), cost: fmtCost(uc), received: +qr || 0, backorder: !!bo, eta: eta || "", auto: false,
@@ -1236,7 +1238,7 @@
   function cardOf(c) { return c.iv ? ivOCard(c) : c.noinv ? noinvCard(c) : oCard(c.o, c.k, c); }
   function noinvCard(c) {
     const o = c.o, name = esc(o.po ? poLabel(o.po) : "#" + o.id);
-    return `<div class="il-card oc ocv ocn" role="button" tabindex="0" draggable="true" data-ck="${esc(c.ck)}" data-po-open="${esc(o.id)}" data-po-view="notinv" title="Received with no invoice yet — open the PO and + Add invoice when it comes; these units count on it. Drag to reorder (or Alt+↑ / Alt+↓)">
+    return `<div class="il-card oc ocv ocn" role="button" tabindex="0" draggable="true" data-ck="${esc(c.ck)}" data-po-open="${esc(o.id)}" data-po-view="notinv" title="Received with no invoice yet — open the PO and + Add invoice when it comes (these units count on it), or Close as over if the vendor sent extra. Drag to reorder (or Alt+↑ / Alt+↓)">
       <span class="il-top"><span class="oc-v"><b>${esc(o.vendor || "—")}</b></span><span class="il-amt" title="At cost">${m0(o.noinvCost)}</span></span>
       <span class="oc-2"><span class="mono oc-name">${name}</span><span class="oc-h"><span class="pill warn">no invoice yet</span></span></span>
       <span class="oc-3">received without an invoice · ${n0(o.noinvUnits)} units${o.stageAt.received || o.stageAt.partial ? " · " + esc(shortDate(String(o.stageAt.received || o.stageAt.partial).slice(0, 10))) : ""}</span></div>`;
@@ -1664,6 +1666,8 @@
           ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}`}
         ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order and its draft invoices? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
+        ${ed.confirm === "over" ? (() => { const ov = overUnits(ed); return `<div class="note warn">Close <b>${n0(ov.units)}</b> unit${ov.units === 1 ? "" : "s"} as a vendor overage? They came in with no invoice billing them (${[...ov.by].slice(0, 4).map(([vid, q]) => `${esc((variant(vid) || {}).title || "variant " + vid)} ${n0(q)}`).join(", ")}${ov.by.size > 4 ? "…" : ""}). They stay in stock; no invoice is expected for them and the <b>no invoice yet</b> card goes away. If an invoice for them shows up later, it still counts them. <span class="dbtns"><button class="mini primary" data-pact="do-over">Close as over</button><button class="mini" data-pact="no">Cancel</button></span></div>`; })() : ""}
+        ${ed.overAt && Object.keys(ed.overClosed || {}).length ? `<div class="note info small">Closed as over ${esc(when(ed.overAt))}: ${n0(Object.values(ed.overClosed).reduce((a, q) => a + (Number(q) || 0), 0))} units received beyond the invoices. <button class="linkbtn small" data-pact="over-undo">Undo</button></div>` : ""}
         ${ed.confirm === "short" ? `<div class="note warn">Close this PO short? What wasn't received is treated as not coming (ask the vendor for a credit if it was billed), and the PO moves to Received. <span class="dbtns"><button class="mini primary" data-pact="do-short">Yes, close it short</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ro ? `<div class="note info">This PO is complete, so its products and invoice lines are locked. Invoice payments can still be changed. Step it back to QB ready to change anything else.</div>` : ""}
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
@@ -2182,6 +2186,15 @@
       : `<button class="btn primary" data-pact="ready" ${busy} title="Done putting it together: saves it and shows it as Ready to approve">Ready to Order</button>`)
       + `<button class="btn ${ed.readyAt ? "primary" : ""}" data-pact="save-approve" ${busy} title="Saves it, approves it and marks it ordered: it moves to Ordered">Approve</button>`;
   }
+  // units received that no invoice counts and that weren't already closed as over, per product (Oct 29)
+  function overUnits(ed) {
+    const rec = new Map(), att = new Map(), by = new Map();
+    for (const l of ed.lines) if (l.dest !== "demo" && l.received > 0) rec.set(l.vid, (rec.get(l.vid) || 0) + l.received);
+    for (const iv of ed.invoices) if (iv.got) for (const [vid, q] of iv.got) att.set(vid, (att.get(vid) || 0) + (Number(q) || 0));
+    let units = 0;
+    for (const [vid, r] of rec) { const g = r - (att.get(vid) || 0) - (Number((ed.overClosed || {})[vid]) || 0); if (g > 0) { by.set(vid, g); units += g; } }
+    return { units, by };
+  }
   function footButtons(ed, got, ro) {
     const busy = S.busy ? "disabled" : "";
     if (ro) return `<button class="btn" data-pact="back">← Back to QB ready</button>${ed.dirty ? `<button class="btn primary" data-pact="save" ${busy}>Save</button>` : ""}`;
@@ -2203,6 +2216,7 @@
     const anyInv = ed.invoices.length > 0, pr = progress(ed), notInv = ed.lines.some(l => pr.get(l.id).open > 0);
     if (ed.lines.length && true && (!anyInv || notInv)) out.push(`<button class="btn" data-pact="recv" ${busy}>${anyInv ? "Receive without an invoice…" : got ? "Receive more…" : "Receive…"}</button>`);
     if (ed.status === "partial") out.push(`<button class="btn" data-pact="short" ${busy}>Close short</button>`);
+    { const ov = overUnits(ed); if (ov.units > 0 && ed.invoices.some(v => v.id && !v.isNew)) out.push(`<button class="btn" data-pact="over" ${busy} title="More came in than the invoices bill: close the extra out as a vendor overage">Close as over (${n0(ov.units)})</button>`); }
     if (got && ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn" data-pact="amzship">Create Amazon shipment</button>`);
     return out.join("");
   }
@@ -2595,6 +2609,15 @@
     if (a === "back") { if (["partial", "received", "qb_ready", "complete"].includes(ed.status)) { ed.confirm = "unrecv"; render(); } else if (ed.dirty) note("warn", "Save or discard your changes first."); else setStatus2(PREV[ed.status], `Moved back to ${STAGE.get(PREV[ed.status]).toLowerCase()}.`); return; }
     if (a === "do-back") return setStatus2(PREV[ed.status], "Moved back to invoiced; the received units came out of the prep center.");
     if (a === "short") { ed.confirm = "short"; render(); return; }
+    if (a === "over") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.confirm = "over"; render(); return; }
+    if (a === "do-over" || a === "over-undo") {
+      const undo = a === "over-undo", ov = overUnits(ed);
+      S.busy = "Saving…"; render();
+      planCall("jt_po_close_over", "jt.po_close_over", { id: Number(ed.id), undo, note: undo ? "" : `Closed as over ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })}: ${n0(ov.units)} units received beyond the invoices (vendor overage).` })
+        .then(async () => { S.busy = ""; await loadOrders(true); await openPO(ed.id); note("info", undo ? "Overage reopened: those units show as <b>no invoice yet</b> again." : `Closed <b>${n0(ov.units)}</b> units as over.`); })
+        .catch(e => { S.busy = ""; render(); note("bad", "Couldn't close it as over: " + esc(JT.message(e))); });
+      return;
+    }
     if (a === "do-short") { if (ed.dirty) { save("received"); return; } return setStatus2("received", "Closed short — the PO is complete."); }
     if (a === "pay" && iv) { markPaid(ed, iv); render(); focusArg("pe-paymethod"); return; }
     if (a === "unpay" && iv) { iv.paidOn = ""; iv.paidAmount = null; iv.payRef = ""; ed.dirty = true; render(); return; }
