@@ -2732,6 +2732,49 @@
     await new Promise((ok, bad) => { const sc = document.createElement("script"); sc.src = XL_URL; sc.onload = ok; sc.onerror = () => bad(new Error("Couldn't load the spreadsheet reader.")); document.head.appendChild(sc); });
     return window.XLSX;
   }
+  // CSV text → rows: quoted fields (commas, quotes and line breaks inside), a BOM, and ; or tab as the separator
+  function csvGrid(text) {
+    text = String(text || "").replace(/^\uFEFF/, "");
+    const first = text.split(/\r?\n/, 1)[0] || "", cnt = (c) => first.split(c).length - 1;
+    const sep = [",", ";", "\t"].sort((a, b) => cnt(b) - cnt(a))[0];
+    const rows = []; let row = [], f = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; continue; }
+      if (c === '"') q = true;
+      else if (c === sep) { row.push(f); f = ""; }
+      else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(f); rows.push(row); row = []; f = ""; }
+      else f += c;
+    }
+    if (f !== "" || row.length) { row.push(f); rows.push(row); }
+    return rows.map(r => r.map(x => x.trim().replace(/^="(.*)"$/, "$1")));   // ="0123" keeps a UPC's leading zeros in Excel
+  }
+  // Upload CSV / Excel on the Orders page (Brian, Oct 29: "we need to be able to upload a csv to create an order"): the
+  // file goes straight into a new, unsaved order — products matched by Shopify SKU, UPC, Amazon seller SKU or ASIN, the
+  // vendor taken from the products — to check and Save. Rows that match nothing are listed in the order's note.
+  // the order template (Oct 29: "we need to be able to download a template for an order"): fill in one product column
+  // per row (Shopify SKU, UPC or Amazon SKU — an Amazon SKU sends it to the prep center) and Qty; Unit cost is optional
+  // (blank = the product's cost in Shopify); Product is just for you.
+  async function orderTemplate() {
+    const rows = [["Shopify SKU", "UPC", "Amazon SKU", "Product", "Qty", "Unit cost"]];
+    await saveFile("order-template.csv", rows.map(r => r.join(",")).join("\n") + "\n", "text/csv");
+  }
+  async function sheetOrder(f) {
+    if (!f) return;
+    if (S.ed && S.ed.dirty) return leave();
+    const st = { vendor: "", xl: null };
+    S.busy = `Reading ${esc(f.name)}…`; render();
+    await xlRead(st, f);
+    S.busy = ""; render();
+    const x = st.xl;
+    if (x.err) { note("bad", `Couldn't read ${esc(f.name)}: ${esc(x.err)}`); return; }
+    const sh = x.sheets[x.pick];
+    if (!sh || !sh.lines.length) {
+      note("warn", `Nothing in ${esc(f.name)} matched a product with a quantity.${sh && sh.unmatched.length ? ` ${n0(sh.unmatched.length)} row${sh.unmatched.length === 1 ? "" : "s"} didn't match (e.g. ${sh.unmatched.slice(0, 3).map(u => esc(u.desc)).join(", ")}).` : ""} The file needs a column of Shopify SKUs, UPCs or Amazon SKUs and a quantity column (Qty / Quantity / Units / Order).`);
+      return;
+    }
+    xlOpen(st, true);
+  }
   function xlId(v) {
     const t = String(v ?? "").trim(); if (!t || t.length < 3 || /^\d{1,3}$/.test(t)) return null;
     const a = S.byAmz.get(t.toLowerCase()); if (a) return { vid: a.vid, asku: a.asku, dest: "prep", how: a.asku ? "Amazon SKU" : "ASIN" };
@@ -2753,6 +2796,23 @@
         const id = r && xlId(r[aC]); const q = Math.max(0, Math.round(xlNum(r && r[oC]) || 0)); if (!id || !q) continue;
         const cost = ucC >= 0 ? xlNum(r[ucC]) : null;
         out.lines.push({ ...id, code: String(r[aC]).trim(), qty: q, desc: String(r[aC + 3] ?? r[aC] ?? ""), cost: cost && cost > 0 ? cost : null }); out.units += q;
+      }
+      return out;
+    }
+    // A sheet with named product and quantity columns (our template, a PO's Download CSV, most vendor sheets): the first
+    // product column that matches, the quantity from the quantity column. "Total" there is money, not a quantity.
+    const idCols = hd.map((x, i) => [x, i]).filter(([x]) => /^(amazon sku|seller sku|msku|shopify sku|vendor sku|sku|item|item #|item no\.?|style|upc|barcode|ean|gtin|asin)$/i.test(x))
+      .sort((a, b) => ["amazon sku", "seller sku", "msku"].includes(b[0].toLowerCase()) - ["amazon sku", "seller sku", "msku"].includes(a[0].toLowerCase())).map(x => x[1]);
+    if (idCols.length && qtyHead >= 0) {
+      const descC = hd.findIndex(x => /^(product|description|name|item description|title)$/i.test(x));
+      for (const r of grid.slice(h + 1)) {
+        if (!r || !r.some(c => c !== "" && c != null)) continue;
+        const q = Math.max(0, Math.round(xlNum(r[qtyHead]) || 0));
+        const c = idCols.find(i => xlId(r[i])), desc = String((descC >= 0 ? r[descC] : "") || "").trim();
+        if (c == null) { if (q > 0) out.unmatched.push({ desc: desc || String(r[idCols[0]] || ""), row: r.filter(x => x !== "" && x != null).slice(0, 4).join(" · ") }); continue; }
+        if (!q) continue;
+        const cost = costC >= 0 ? xlNum(r[costC]) : null;
+        out.lines.push({ ...xlId(r[c]), code: String(r[c]).trim(), qty: q, desc, cost: cost && cost > 0 ? cost : null }); out.units += q;
       }
       return out;
     }
@@ -2782,7 +2842,7 @@
     try {
       await catalog();
       let grids;
-      if (/\.csv$/i.test(f.name)) grids = [{ name: "CSV", grid: (await f.text()).split(/\r?\n/).map(l => l.split(",")) }];
+      if (/\.(csv|tsv|txt)$/i.test(f.name)) grids = [{ name: f.name.replace(/\.[^.]+$/, ""), grid: csvGrid(await f.text()) }];
       else { const X = await xlLib(); const wb = X.read(await f.arrayBuffer(), { type: "array" });
         grids = wb.SheetNames.map(n => ({ name: n, grid: X.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: "" }) })); }
       st.xl.sheets = grids.map(g => xlSheet(g.name, g.grid));
@@ -2812,20 +2872,21 @@
       ${sh.unmatched.length ? `<div class="small warnt">Not matched to a product: ${sh.unmatched.slice(0, 12).map(u => esc(u.desc)).join(", ")}${sh.unmatched.length > 12 ? "…" : ""}</div>` : ""}
       <div class="ps-row"><button class="btn primary sm" data-ps-xlgo ${sh.lines.length ? "" : "disabled"}>Open as a new order</button><span class="small muted">Opens unsaved for you to check, then Save. Vendor: ${esc(S.start && S.start.vendor || "pick above")}.</span></div></div>`;
   }
-  function xlOpen(st) {
+  function xlOpen(st, upload) {
     const x = st.xl, sh = x.sheets[x.pick]; if (!sh || !sh.lines.length) return;
-    if (!st.vendor) { note("warn", "Pick the vendor first."); return; }
+    if (!st.vendor && !upload) { note("warn", "Pick the vendor first."); return; }
     const by = new Map();
     for (const l of sh.lines) { const k = l.vid + "|" + l.asku + "|" + l.dest; const a = by.get(k) || { ...l, qty: 0 }; a.qty += l.qty; by.set(k, a); }
     const lines = [...by.values()].map(l => ({ id: newId(), vid: l.vid, asku: l.asku, dest: l.dest, qty: String(l.qty), cost: fmtCost(l.cost != null ? l.cost : (variant(l.vid) || {}).cost),
       received: 0, backorder: false, eta: "", auto: false }));
     const dests = new Set(lines.map(l => l.dest));
-    const m2 = /(\d{1,2})\s*([A-Za-z]{3})[a-z]*.*?(\d{4})/.exec(sh.name), nm = m2 ? `${m2[2]} ${m2[1]} ${m2[3]}` : sh.name;
-    const extra = [sh.covered.length ? `covered from stock: ${sh.covered.map(c => `${c.desc} ${c.want}`).join(", ")}` : "", sh.unmatched.length ? `not matched: ${sh.unmatched.map(u => u.desc).join(", ")}` : ""].filter(Boolean).join("; ");
+    const m2 = /(\d{1,2})\s*([A-Za-z]{3})[a-z]*.*?(\d{4})/.exec(sh.name), nm = m2 ? `${m2[2]} ${m2[1]} ${m2[3]}` : upload ? "" : sh.name;
+    const extra = [sh.covered.length ? `covered from stock: ${sh.covered.map(c => `${c.desc} ${c.want}`).join(", ")}` : "", sh.unmatched.length ? `not matched: ${sh.unmatched.map(u => u.row || u.desc).join("; ")}` : ""].filter(Boolean).join("; ");
     S.start = null; renderStart();
-    openPO(null, { vendor: st.vendor, po: nm, note: `From ${x.file} (sheet ${sh.name})${extra ? " — " + extra : ""}`, lines, dirty: true,
+    openPO(null, { vendor: st.vendor, po: nm, note: `From ${x.file}${x.sheets.length > 1 || !upload ? ` (sheet ${sh.name})` : ""}${extra ? " — " + extra : ""}`, lines, dirty: true,
       dest: dests.size > 1 ? "both" : [...dests][0], into: dests.size > 1 ? "both" : [...dests][0] });
-    note("info", `New ${esc(st.vendor)} order from <b>${esc(sh.name)}</b>: ${n0(lines.length)} lines, ${n0(sh.units)} units. Check it, then <b>Save</b>.`);
+    const miss = sh.unmatched.length ? ` <b>${n0(sh.unmatched.length)} row${sh.unmatched.length === 1 ? "" : "s"} didn't match a product</b> (listed in the note) — add ${sh.unmatched.length === 1 ? "it" : "them"} with Add product.` : "";
+    note(sh.unmatched.length || !st.vendor ? "warn" : "info", `New ${esc(st.vendor || "")} order from <b>${esc(upload ? x.file : sh.name)}</b>: ${n0(lines.length)} lines, ${n0(sh.units)} units.${miss}${st.vendor ? "" : " <b>Fill in the vendor.</b>"} Check it, then <b>Save</b>.`);
   }
   async function createMissing(st) {
     if (!st.vendor) { note("warn", "Pick the vendor the goods came from."); const v = $("ps-vendor"); if (v) v.focus(); return; }
@@ -2913,6 +2974,9 @@
   function bind() {
     const tab = $("tab-po"), box = $("po-edit-view");
     $("po-new").addEventListener("click", () => newOrder());
+    $("po-upload").addEventListener("click", () => $("po-sheet").click());
+    $("po-tmpl").addEventListener("click", () => orderTemplate());
+    $("po-sheet").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sheetOrder(f); });
     bindStart();
     $("po-refresh").addEventListener("click", async () => { await Promise.all([refresh(true), S.cat ? catalog(true) : null]); if (S.ed && S.ed.id && !S.ed.dirty) openPO(S.ed.id); });
     $("po-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderList, 150); });
@@ -2937,7 +3001,8 @@
     const isFile = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
     tab.addEventListener("dragover", (e) => { if (isFile(e)) { e.preventDefault(); if (window.JTReader) window.JTReader.warm(); if (S.ed) tab.classList.add("filedrop"); } });
     tab.addEventListener("dragleave", (e) => { if (!tab.contains(e.relatedTarget)) tab.classList.remove("filedrop"); });
-    tab.addEventListener("drop", (e) => { if (!isFile(e)) return; e.preventDefault(); tab.classList.remove("filedrop"); readPdf(e.dataTransfer.files[0]); });
+    tab.addEventListener("drop", (e) => { if (!isFile(e)) return; e.preventDefault(); tab.classList.remove("filedrop"); const f = e.dataTransfer.files[0];
+      if (f && /\.(csv|tsv|xlsx|xls)$/i.test(f.name) && !(S.ed && S.ed.id)) sheetOrder(f); else readPdf(f); });
     // ---- the Invoices tab ----
     const itab = $("tab-invoices");
     $("inv-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; S.mode = "inv"; readPdf(f); });
