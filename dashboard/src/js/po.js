@@ -2135,10 +2135,12 @@
     if (ed.id && PRE.includes(ed.status) && !ed.lines.some(l => l.received > 0)) out.push(`<button class="btn" data-pact="del">Delete</button>`);
     // a draft is approved (Ready to approve → Ordered: approving marks it ordered)
     // Draft → Ready to approve → approved (Oct 29): the order says when it's ready; approving still works from either
+    // Brian, Oct 29: "I like 'Save', 'Ready to Order', and 'Approve'" (each one saves first when there are changes)
     if (ed.status === "draft" && !ed.approvedAt) {
+      out.push(`<button class="btn" data-pact="save" ${busy || (!ed.dirty && ed.id ? "disabled" : "")} title="Save this order (⌘S / Ctrl+S)">Save</button>`);
       if (ed.readyAt) out.push(`<button class="btn" data-pact="unready" ${busy} title="Still working on it: back to Draft">Back to draft</button>`);
-      else out.push(`<button class="btn primary" data-pact="ready" ${busy} title="Done putting it together: it shows as Ready to approve">${ed.dirty || !ed.id ? "Save &amp; ready to approve" : "Ready to approve"}</button>`);
-      out.push(`<button class="btn ${ed.readyAt ? "primary" : ""}" data-pact="save-approve" ${busy} title="Approve this order: it's marked ordered and moves to Ordered">Save &amp; approve</button>`);
+      else out.push(`<button class="btn primary" data-pact="ready" ${busy} title="Done putting it together: saves it and shows it as Ready to approve">Ready to Order</button>`);
+      out.push(`<button class="btn ${ed.readyAt ? "primary" : ""}" data-pact="save-approve" ${busy} title="Saves it, approves it and marks it ordered: it moves to Ordered">Approve</button>`);
     }
     else if (NEXT[ed.status]) out.push(`<button class="btn primary" data-pact="save-next" ${busy}>Save &amp; ${NEXT[ed.status][1].replace(/^M/, "m")}</button>`);
     // each invoice still to receive: a button that opens it ready to receive (from any view; on its own view the
