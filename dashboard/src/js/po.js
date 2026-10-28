@@ -1349,7 +1349,7 @@
             <div class="po2-title"><h2>${ed.id ? `<button class="hlink" data-hedit="pe-po" title="Edit the PO number">${esc(ed.po || "#" + ed.id)}</button>` : "New purchase order"}</h2>${ed.id ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this PO" title="Copy a link to this PO (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${appr}</div>
           </div>
           <div class="po2-hr"><span class="steps six seven">${steps}</span>
-            <span class="dbtns">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
+            <span class="dbtns">${ed.id && ["received", "qb_ready"].includes(ed.status) && !ed.recv ? `<button class="btn primary" data-pact="next-stage" ${S.busy ? "disabled" : ""}>${NEXT[ed.status][1]}</button>` : ""}${ed.dirty && ed.id ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="Throw away the changes since the last save">Discard changes</button>` : ""}<button class="btn ${ed.dirty || !ed.id ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && ed.id) || ed.recv ? "disabled" : ""} title="Save this purchase order (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !ed.id ? "Save" : "Saved"}</button></span></div>
         </div>
         ${ed.id ? "" : headStrip(ed, ro, both)}
       </div>
@@ -1465,7 +1465,7 @@
     box.innerHTML = `
       <div class="po-top">
         <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${iv && iv.id && !iv.isNew ? `<button class="linkbtn small" data-pact="copy-link" title="Copy a link to this invoice to share (needs a Seller Sage sign-in)">🔗 Copy link</button>` : ""}${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? '<span class="muted small">All changes saved</span>' : ""}
-          <span class="dbtns right"><button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
+          <span class="dbtns right">${ed.dirty && saved ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="Throw away the changes since the last save">Discard changes</button>` : ""}<button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
         <div class="po-head inv-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2>${ed.alone ? "" : invStepsHtml(ed, iv)}</div>
         ${ed.alone ? aloneSum() : `
         <div class="po-sum"><span>Purchase order ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b> <label class="po-name">PO name <input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off" style="width:180px"></label>` : `<b>${poName}</b>`}${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
@@ -2124,6 +2124,16 @@
     if (a === "inv-move-go" && iv) { const to = ($("pe-movepo") || {}).value; if (to) moveInvoice(iv, to); return; }
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
     if (a === "discard") { ed.leaveOk = true; return leave(); }
+    // Discard changes (v0.34.1): reload what's saved and stay on the page
+    if (a === "revert") { note("warn", `Discard the changes since the last save? <span class="dbtns"><button class="mini primary" data-pact="revert-yes">Discard changes</button><button class="mini" data-pact="revert-no">Keep editing</button></span>`); return; }
+    if (a === "revert-no") { note("", ""); return; }
+    if (a === "revert-yes") {
+      const ivId = S.mode === "inv" && S.invOpen && cur(ed) && cur(ed).id && !cur(ed).isNew ? cur(ed).id : null, poId = ed.id, view = ed.view, curI = ed.cur;
+      ed.dirty = false; ed.leaveOk = true; S.ed = null; note("", "");
+      if (ivId) return openInvoice(ivId).then(() => note("info", "Changes discarded."));
+      if (poId) return openPO(poId).then(() => { if (S.ed) { if (view) S.ed.view = view; if (curI != null && S.ed.invoices[curI]) S.ed.cur = curI; render(); } note("info", "Changes discarded."); });
+      return leave();
+    }
     if (a === "save") return save(null);
     // an invoice without a PO
     if (a === "alone-newpo" && iv) { ed.alone = false; ed.confirm = false; ed.nameIn = true; syncLines(ed); ed.dirty = true; render();
