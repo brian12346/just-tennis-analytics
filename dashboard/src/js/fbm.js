@@ -167,9 +167,24 @@
     for (const g of m.values()) g.stocked = g.avail + g.inbound + g.awd > 0;
     S.fba = m;
   }
+  // per ASIN: units Amazon has assigned to its FBM listings (quantity × units per listing) against the Shopify stock behind
+  // them (each Shopify product counted once) — Brian, Oct 28: "show ASINs where Amazon has more stock assigned than we
+  // have in stock"
+  function overMap() {
+    const m = new Map();
+    for (const l of S.lst || []) {
+      const g = m.get(l.asin) || { amz: 0, shop: 0, seen: new Set() };
+      g.amz += (Number(l.amazon_qty_now) || 0) * (Number(l.map_units) || 1);
+      const vk = l.variant_id || l.shopify_sku || l.sku;
+      if (!g.seen.has(vk)) { g.seen.add(vk); g.shop += Math.max(0, Number(l.shopify_qty) || 0); }
+      m.set(l.asin, g);
+    }
+    for (const g of m.values()) g.over = g.amz > g.shop ? g.amz - g.shop : 0;
+    return m;
+  }
   function listingsShown() {
-    const q = S.lq, [k, dir] = S.lsort;
-    return (S.lst || []).filter(l => (S.lv === "all" || (S.lv === "zero" ? !Number(l.amazon_qty_now) : l.amazon_status === S.lv)) &&
+    const q = S.lq, [k, dir] = S.lsort, om = S.lv === "over" ? overMap() : null;
+    return (S.lst || []).filter(l => (S.lv === "all" || (S.lv === "over" ? (om.get(l.asin) || {}).over > 0 : S.lv === "zero" ? !Number(l.amazon_qty_now) : l.amazon_status === S.lv)) &&
         (S.lfba === "all" || (S.lfba === "fba") === !!(fbaOf(l.asin) || {}).stocked) &&
         (!q || [l.asin, l.sku, l.title, l.shopify_title, l.shopify_sku, ...((fbaOf(l.asin) || {}).rows || []).map(r => r.sku)].some(x => String(x || "").toLowerCase().includes(q))))
       .sort((a, b) => {
@@ -196,7 +211,8 @@
     sub.innerHTML = `${asins.size.toLocaleString()} ASINs (${all.length.toLocaleString()} FBM listings) with Shopify stock at <b>${esc(loc)}</b> · <b>${atFba.toLocaleString()}</b> also stocked at FBA${snap ? ` (FBA report ${esc(fmtDT(snap))})` : ""} — those stay at 0 on FBM` +
       (fromLoc ? ` · stock as of ${esc(fmtDT(f.stock_at))} <button class="mini" type="button" id="fbl-stock">Refresh stock</button>` : ` · <span class="warnt">stock shown is the total across locations until the first ${esc(loc)} stock sync</span> <button class="mini" type="button" id="fbl-stock">Get ${esc(loc)} stock</button>`) +
       `${f ? ` · listings ${/Amazon API/.test(f.report_file || "") ? "fetched" : "uploaded"} ${esc(fmtDT(f.report_at))}` : ""}`;
-    const list = listingsShown(), groups = groupsShown(list);
+    const list = listingsShown(), groups = groupsShown(list), om = overMap();
+    { const b = $("fbl-seg").querySelector('[data-v="over"]'); if (b) b.innerHTML = `More on Amazon than in stock <span class="cnt">${[...om.values()].filter(g => g.over > 0).length}</span>`; }
     for (const k of [...S.lsel]) if (!list.some(l => l.sku === k)) S.lsel.delete(k);
     const th = (k, label, cls) => `<th class="${cls || ""} sort" data-lsort="${k}" ${S.lsort[0] === k ? `aria-sort="${S.lsort[1] > 0 ? "ascending" : "descending"}"` : ""}>${label}</th>`;
     const shownGroups = groups.slice(0, S.lshown), shownRows = shownGroups.flatMap(g => g.fbm);
@@ -208,7 +224,7 @@
         : `<span class="pill pos">Not at FBA</span>`;
       const head = `<tr class="asin-head${fb && fb.stocked ? " atfba" : ""}"><td><input type="checkbox" data-lgsel="${esc(g.asin)}" ${gsel ? "checked" : ""} aria-label="Select the FBM listings of ${esc(g.asin)}"></td>
         <td class="l mono"><a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(g.asin)}" target="_blank" rel="noopener">${esc(g.asin)}</a></td>
-        <td class="l t" colspan="7"><div class="aname">${esc(g.fbm[0].title || g.fbm[0].sku)}</div><div class="meta">${fbaTxt}</div></td></tr>`;
+        <td class="l t" colspan="7"><div class="aname">${esc(g.fbm[0].title || g.fbm[0].sku)}</div><div class="meta">${fbaTxt}</div>${(om.get(g.asin) || {}).over > 0 ? `<div class="meta"><span class="pill miss">Over by ${num(om.get(g.asin).over)}</span> Amazon has <b>${num(om.get(g.asin).amz)}</b> units assigned on FBM · Shopify has <b>${num(om.get(g.asin).shop)}</b> at ${esc(loc)}</div>` : ""}</td></tr>`;
       const fbmRows = g.fbm.map(l => {
         const pill = l.amazon_status === "Active" ? '<span class="pill ok">Active</span>' : `<span class="pill pos">${esc(l.amazon_status || "?")}</span>`;
         const shop = l.product_id ? `<a class="olink" href="${esc(shopUrl(l.product_id, l.variant_id))}" target="_blank" rel="noopener">${esc(l.shopify_title || l.shopify_sku || "Shopify product")}</a>` : esc(l.shopify_title || "");
@@ -221,7 +237,7 @@
         return `<tr class="sku-row${S.lsel.has(l.sku) ? " sel" : ""}"><td><input type="checkbox" data-lsel="${esc(l.sku)}" ${S.lsel.has(l.sku) ? "checked" : ""} aria-label="Select ${esc(l.sku)}"></td>
           <td class="l"><span class="chan fbm">FBM</span></td>
           <td class="l t"><div class="meta mono">${esc(l.sku)}</div>${g.fbm.length > 1 || l.title !== g.fbm[0].title ? `<div class="meta">${esc(l.title)}</div>` : ""}</td>
-          <td class="l">${pill}</td><td>${amz ? `<b class="${fb && fb.stocked ? "warnt" : ""}">${num(amz)}</b>` : '<span class="dim">0</span>'}</td>
+          <td class="l">${pill}</td><td>${amz ? `<b class="${fb && fb.stocked ? "warnt" : amz > (l.packs || 0) ? "neg" : ""}" title="${amz > (l.packs || 0) ? "More than the Shopify stock covers" : ""}">${num(amz)}</b>` : '<span class="dim">0</span>'}</td>
           <td class="l t"><div>${shop}</div>${l.shopify_sku ? `<div class="meta mono">${esc(l.shopify_sku)}</div>` : ""}</td>
           <td><b>${num(l.shopify_qty)}</b>${l.stock_source === "location" && Number(l.shopify_total) !== Number(l.shopify_qty) ? `<div class="meta">${num(l.shopify_total)} all locations</div>` : ""}</td>
           <td>${l.map_units > 1 ? `${num(l.packs)} <span class="dim small">(${num(l.map_units)}/pack)</span>` : num(l.packs)}</td>
