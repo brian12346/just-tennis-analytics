@@ -309,6 +309,25 @@
     if (b < 0) { ed.lines.splice(a, 0, l); return false; }
     ed.lines.splice(after ? b + 1 : b, 0, l); return true;
   }
+  // invoice lines: move one before/after another; reorganize (v0.35.0). Charges and unmatched lines stay after the
+  // products for the order/category/product sorts; "vendor" is the line's place on the vendor's invoice (vendor_no).
+  function moveRow(iv, fromId, toId, after) {
+    const a = iv.rows.findIndex(x => x.id === fromId); if (a < 0) return false;
+    const [r] = iv.rows.splice(a, 1); const b = iv.rows.findIndex(x => x.id === toId);
+    if (b < 0) { iv.rows.splice(a, 0, r); return false; }
+    iv.rows.splice(after ? b + 1 : b, 0, r); return true;
+  }
+  function arrangeRows(ed, iv, how) {
+    const at = new Map(iv.rows.map((r, i) => [r.id, i])), v = (r) => variant(r.vid) || {}, tail = (r) => (r.vid && !r.skip ? 0 : 1);
+    const ordPos = new Map(ed.lines.map((l, i) => [String(l.vid), i]));
+    const key = how === "vendor" ? (r) => [r.vno != null ? r.vno : 1e6]
+      : how === "order" ? (r) => [tail(r), ordPos.has(String(r.vid)) ? ordPos.get(String(r.vid)) : 1e6]
+      : how === "cat" ? (r) => [tail(r), (v(r).type || "~").toLowerCase(), (v(r).product || v(r).title || "").toLowerCase(), (v(r).variant || "").toLowerCase()]
+      : how === "name" ? (r) => [tail(r), (v(r).product || v(r).title || "~").toLowerCase(), (v(r).variant || "").toLowerCase()] : null;
+    if (!key) return false;
+    const cmp = (x, y) => { const a = key(x), b = key(y); for (let i = 0; i < a.length; i++) { if (a[i] < b[i]) return -1; if (a[i] > b[i]) return 1; } return at.get(x.id) - at.get(y.id); };
+    const before = iv.rows.map(r => r.id).join(); iv.rows.sort(cmp); return iv.rows.map(r => r.id).join() !== before;
+  }
   // a whole new order: like an invoice (its line order; what isn't on it stays after, as it was), grouped by product, or by SKU
   function arrange(ed, how) {
     const v = (l) => variant(l.vid) || {}, at = new Map(ed.lines.map((l, i) => [l.id, i]));
@@ -317,7 +336,7 @@
       const pos = new Map(); (iv.rows || []).forEach((r, i) => { if (r.vid && !pos.has(String(r.vid))) pos.set(String(r.vid), i); });
       key = (l) => [pos.has(String(l.vid)) ? pos.get(String(l.vid)) : 1e6]; }
     else if (how === "name") key = (l) => [(v(l).product || v(l).title || "").toLowerCase(), (v(l).variant || "").toLowerCase()];
-    else if (how === "sku") key = (l) => [(v(l).sku || "~").toLowerCase()];
+    else if (how === "cat") key = (l) => [(v(l).type || "~").toLowerCase(), (v(l).product || v(l).title || "").toLowerCase(), (v(l).variant || "").toLowerCase()];
     else return false;
     const cmp = (x, y) => { const a = key(x), b = key(y); for (let i = 0; i < a.length; i++) { if (a[i] < b[i]) return -1; if (a[i] > b[i]) return 1; } return at.get(x.id) - at.get(y.id); };
     const before = ed.lines.map(l => l.id).join(); ed.lines.sort(cmp);
@@ -483,14 +502,14 @@
       notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
       paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "", att: v[23] || "" } : null }));
     if (!ed.invoices.length) return;
-    const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account"],
+    const il = await JT.rows(["invoice_id::text", "line_no", "item_code", "upc", "description", "qty", "unit_cost", "amount", "variant_id::text", "match_how", "account", "coalesce(vendor_no, line_no)"],
       `from jt.invoice_lines where invoice_id in (${ed.invoices.map(v => JT.int(v.id)).join(",")}) order by invoice_id, line_no`, true);
     const byId = new Map(ed.invoices.map(v => [v.id, v]));
     for (const l of il) {
       const iv = byId.get(l[0]); if (!iv) continue;
       const hw = howFromSaved(l[8] ? l[9] : "");
       iv.rows.push({ id: newId(), src: { item_code: l[2] || "", upc: l[3] || "", description: l[4] || "", qty: l[5] == null ? null : +l[5], unit_cost: l[6] == null ? null : +l[6], amount: l[7] == null ? null : +l[7] },
-        vid: l[8] || null, how: hw.how, conf: hw.conf, alts: [], confirmed: false, skip: l[9] === "skip", account: l[10] || "inventory",
+        vid: l[8] || null, how: hw.how, conf: hw.conf, alts: [], confirmed: false, skip: l[9] === "skip", account: l[10] || "inventory", vno: l[11] == null ? null : +l[11],
         qty: l[5] == null ? "" : String(+l[5]), cost: fmtCost(l[6]) });
     }
     for (const iv of ed.invoices) for (const r of iv.rows) if (needsCheck(r)) r.alts = guessLine(r.src, ed.vendor).alts;
@@ -771,7 +790,7 @@
       if (!S.ed || S.ed.id !== oid) await openPO(oid);
       if (!S.ed) return;
       const i = S.ed.invoices.findIndex(v => v.id === String(id)); if (i >= 0) S.ed.cur = i;
-      S.pend = null; pdfToken++; showInvoicePage();
+      S.ed.lineEdit = false; S.pend = null; pdfToken++; showInvoicePage();
     } catch (e) { note("bad", esc(JT.message(e))); }
   }
   async function moveInvoice(iv, toOrder) {
@@ -884,6 +903,7 @@
         qty: l.qty == null ? "" : String(Math.round(l.qty * 100) / 100), cost: fmtCost(l.unit_cost) });
     }
     for (const c of p.charges || []) iv.rows.push(chargeRow(c.label, c.amount, c.kind));
+    iv.rows.forEach((r, i) => { if (r.vno == null) r.vno = i + 1; });   // the vendor's line order, kept for "Match vendor invoice"
     // no product lines could be read: start from what's still open on the PO (checked against the PDF by hand)
     const matched = iv.rows.some(r => r.vid && !r.skip);
     if (!p.lines.length || !matched) { const pr = poRows(ed); if (pr.length) { iv.unread = iv.rows.filter(r => !r.vid && !r.skip).length; iv.rows.unshift(...pr); iv.fromPo = true; } }
@@ -1340,7 +1360,7 @@
     } else if (mode === "notinv") flLeft = chip("Not on an invoice") + `<span class="muted small">${n0(vw.notInv)} units</span>`;
     else if (mode === "left") flLeft = chip("Still to receive") + `<span class="muted small">${n0(vw.left)} units</span>`;
     else flLeft = `<b>All lines</b> <span class="muted small">${n0(tot.ordered)} units${anyInv && vw.openInv ? " · pick an invoice on the right to receive it" : ""}</span>`;
-    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && mode === "all" && ed.lines.length > 1 ? `<select id="po-arrange" class="inp sm" aria-label="Arrange the lines" title="Put the lines in an order — or drag them by the handle"><option value="">Arrange lines…</option>${ed.invoices.filter(v => v.rows && v.rows.length).map((v, i) => `<option value="inv:${ed.invoices.indexOf(v)}">Like invoice ${esc(v.no || "#" + (i + 1))}</option>`).join("")}<option value="name">Group by product</option><option value="sku">By SKU</option></select>` : ""}${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
+    const filterRow = `<div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${!ro && !ed.recv && mode === "all" && ed.lines.length > 1 ? `<select id="po-arrange" class="inp sm" aria-label="Reorganize the lines" title="Put the lines in an order — or drag them by the handle"><option value="">Reorganize lines…</option>${ed.invoices.filter(v => v.rows && v.rows.length).map((v, i) => `<option value="inv:${ed.invoices.indexOf(v)}">Match vendor invoice ${esc(v.no || "#" + (i + 1))}</option>`).join("")}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${!ro && !ed.recv && !(S.vview && ed.lines.length) ? `<button class="btn" data-pact="add-prod" title="Add a product to this PO">+ Add product</button>` : ""}${ed.lines.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find product or SKU" value="${esc(ed.find || "")}" aria-label="Find a product on this PO">` : ""}${flBtn}</span></div>`;
     box.innerHTML = `
       <div class="po-top po2-top">
         <div class="po2-headrow">
@@ -1462,19 +1482,67 @@
     // no PO yet: the vendor, and what to do with the invoice — start a PO from it, or put it on one
     const aloneSum = () => `<div class="po-sum alone"><span>Purchase order <b>none yet</b> <label class="po-name">Vendor <input id="pe-vendor" class="inp sm" list="pe-vendors" value="${esc(ed.vendor)}" autocomplete="off" placeholder="Shopify vendor" style="width:160px"><datalist id="pe-vendors">${S.vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label></span>
           <span class="dbtns"><button class="mini primary" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="mini" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`;
+    // ---------- page layout (v0.35.0, Brian Oct 28): the PO page's look — header, summary band, lines, cards on the right ----------
+    const c = count(iv), savedTxt = ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? "All changes saved" : "";
+    const matched = iv.rows.length > 0 && !c.check && !c.none;
+    const steps = [["Matched", matched], ...(ed.alone ? [] : [["Received", !!iv.recvAt]]), ["In QuickBooks", !!iv.qbo], ["Paid", !!iv.paidOn]];
+    const nextAt = steps.findIndex(x => !x[1]);
+    const stepHtml = steps.map(([k, ok], i) => `<span class="step ${ok ? "done" : i === nextAt ? "on" : ""}">${ok ? "✓ " : ""}${k === "Paid" && !ok && iv.due ? `Unpaid · due ${esc(shortDate(iv.due))}` : k}</span>`).join('<span class="step-sep">→</span>');
+    const rowSum = iv.rows.reduce((a, r) => a + rowAmt(r), 0), chg = iv.rows.filter(r => r.skip).reduce((a, r) => a + rowAmt(r), 0);
+    const tieDiff = iv.total != null ? Math.round((iv.total - rowSum) * 100) / 100 : null;
+    const band = iv.rows.length || iv.total != null ? `<section class="panel po2-band" aria-label="Summary">
+        <div class="po2-big"><span class="eyebrow">Invoice total</span><span class="po2-metric num">${iv.total != null ? m(iv.total) : m(rowSum)}</span>
+          <span class="small muted">${m(rowSum - chg)} products${chg ? ` + ${m(chg)} charges` : ""}${tieDiff == null ? "" : Math.abs(tieDiff) < 0.01 ? ' · <span class="okt">ties out ✓</span>' : ` · <span class="warnt">lines are ${m(Math.abs(tieDiff))} ${tieDiff > 0 ? "under" : "over"} the total</span>`}</span></div>
+        ${ed.id && t.b ? `<div class="po2-bars"><div class="po2-bar"><div class="po2-barl"><span>Received</span><span class="muted">${n0(t.g)} of ${n0(t.b)} units</span></div><span class="po2-track"><span style="width:${Math.min(100, Math.round(t.g / t.b * 100))}%"></span></span>
+          <span class="small ${iv.recvAt ? "okt" : "muted"}">${iv.recvAt ? `✓ Received in full${iv.recvAt ? " " + esc(shortDate(String(iv.recvAt).slice(0, 10))) : ""}` : t.g ? `${n0(t.b - t.g)} still to come` : "Nothing received yet"}</span></div></div>` : '<div class="po2-bars"></div>'}
+        <div class="po2-big"><span class="eyebrow">Payment</span><span class="po2-pay">${iv.paidOn ? `Paid ${esc(shortDate(iv.paidOn))}` : iv.due ? `Due ${esc(shortDate(iv.due))}` : "No due date"}</span><span class="small ${!iv.paidOn && overdue(iv) ? "neg" : "muted"}">${iv.paidOn ? esc(iv.payMethod || "") : overdue(iv) ? "Overdue" : iv.terms ? esc(iv.terms) : "unpaid"}</span></div>
+        <span class="dbtns">${iv.paidOn ? "" : `<button class="btn primary" data-pact="pay">Mark paid</button>`}${ed.id && iv.id && !iv.isNew ? `<button class="btn" data-pact="print-slip" title="This invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}</span></section>` : "";
+    const fld = (id, label, val, attrs) => `<label class="stack" for="${id}">${label}<input id="${id}" class="inp ${attrs || ""}" value="${esc(val)}"></label>`;
+    const lockF = iv.status === "applied";
+    const fc = (k, label, n) => `<button class="po2-inv flat ${(iv.filter || "all") === k ? "on" : ""}" data-ifilter="${k}" aria-pressed="${(iv.filter || "all") === k}"><span class="po2-ih"><span>${label}</span><span class="muted num">${n0(n)}</span></span></button>`;
+    const poCard = ed.alone ? `<section class="panel po2-card"><div class="po2-ch"><h2>Purchase order</h2></div>
+          <div class="small">None yet.</div>
+          <label class="stack small" for="pe-vendor">Vendor<input id="pe-vendor" class="inp sm" list="pe-vendors" value="${esc(ed.vendor)}" autocomplete="off" placeholder="Shopify vendor"><datalist id="pe-vendors">${S.vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>
+          <span class="dbtns"><button class="btn sm primary" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="btn sm" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></section>`
+      : `<section class="panel po2-card"><div class="po2-ch"><h2>Purchase order</h2>${canMove ? '<button class="linkbtn" data-pact="inv-move">Change PO</button>' : iv.isNew && S.pend ? '<button class="linkbtn" data-pact="inv-repick">Wrong PO?</button>' : ""}</div>
+          ${nameIn ? `<div><b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b></div><label class="stack small" for="pe-po">PO name<input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off"></label>`
+            : `<button class="po2-inv" data-pact="open-po" title="Open the purchase order"><span class="po2-ih"><b>${esc(ed.po ? ed.po : "#" + ed.id)}</b><span class="muted">Open →</span></span><span class="small muted">${ed.id ? esc(STAGE.get(ed.status) || "") : ""}${others > 0 ? ` · ${others + 1} invoices` : ""}${ed.lines.length ? ` · ${n0(ed.lines.reduce((a, l) => a + (Number(l.qty) || 0), 0))} ordered` : ""}</span></button>`}</section>`;
+    const side = `<aside class="po2-side" aria-label="Purchase order, lines and invoice details">
+        ${poCard}
+        ${iv.rows.length ? `<section class="panel po2-card"><div class="po2-ch"><h2>Lines</h2></div>${fc("all", "All lines", iv.rows.length)}${fc("check", "Guesses to check", c.check)}${fc("none", "Not matched", c.none)}${c.skip ? fc("charge", "Charges (freight, fees)", c.skip) : ""}</section>` : ""}
+        <section class="panel po2-card"><div class="po2-ch"><h2>Invoice details</h2>${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}</div>
+          <div class="iv-fields">
+            <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lockF ? "disabled" : ""}></label>
+            <label class="stack" for="pe-invdate">Invoice date<input id="pe-invdate" class="inp" type="date" value="${esc(iv.date)}" ${lockF ? "disabled" : ""}></label>
+            <label class="stack" for="pe-invdue">Due date<input id="pe-invdue" class="inp" type="date" value="${esc(iv.due)}"></label>
+            <label class="stack" for="pe-invterms">Terms<input id="pe-invterms" class="inp" value="${esc(iv.terms)}" placeholder="e.g. Net 30"></label>
+            <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
+            <label class="stack" for="pe-invtotal">Invoice total<input id="pe-invtotal" class="inp num" value="${iv.total != null ? iv.total.toFixed(2) : ""}"></label>
+          </div>
+          ${iv.fileName ? `<div class="small muted iv-file" title="${esc(iv.fileName)}">PDF · ${esc(iv.fileName)}</div>` : ""}</section>
+        <section class="panel po2-card">${payHtml(ed, iv)}</section>
+        ${iv.rows.length ? `<section class="panel po2-card">${qbHtml(ed, iv)}</section>` : ""}
+        <section class="panel po2-card po2-acts">${iv.id && !iv.isNew ? `<button class="btn sm" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? '<button class="btn sm" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}` : ""}${!(t.g > 0) ? `<button class="btn sm danger" data-pact="rminv">${iv.isNew ? "Discard invoice" : "Delete invoice"}</button>` : ""}</section>
+      </aside>`;
     box.innerHTML = `
-      <div class="po-top">
-        <div class="po-crumb"><button class="linkbtn" data-pact="inv-list">← All invoices</button>${iv && iv.id && !iv.isNew ? `<button class="linkbtn small" data-pact="copy-link" title="Copy a link to this invoice to share (needs a Seller Sage sign-in)">🔗 Copy link</button>` : ""}${ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? '<span class="muted small">All changes saved</span>' : ""}
-          <span class="dbtns right">${ed.dirty && saved ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="Throw away the changes since the last save">Discard changes</button>` : ""}<button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
-        <div class="po-head inv-head"><h2>Invoice ${esc(iv.no || "(no number)")} · ${esc(ed.vendor || "vendor")} ${invClosed(iv) ? closedPill : iv.isNew || !iv.id ? payPill(iv) : overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</h2>${ed.alone ? "" : invStepsHtml(ed, iv)}</div>
-        ${ed.alone ? aloneSum() : `
-        <div class="po-sum"><span>Purchase order ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b> <label class="po-name">PO name <input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off" style="width:180px"></label>` : `<b>${poName}</b>`}${ed.id ? ` <span class="pill ${PILL[ed.status]}">${STAGE.get(ed.status)}</span>` : ""}</span>${others > 0 ? `<span class="muted small">${others} other invoice${others === 1 ? "" : "s"} on this PO</span>` : ""}
-          <span class="dbtns">${iv.id && !iv.isNew ? `<button class="mini" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? '<button class="mini" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}` : ""}${ed.id && iv.id && !iv.isNew ? `<button class="mini" data-pact="print-slip" title="Print this invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}${ed.id ? `<button class="mini" data-pact="open-po">Open the PO →</button>` : ""}${canMove ? `<button class="mini" data-pact="inv-move">Change PO</button>` : iv.isNew && S.pend ? `<button class="mini" data-pact="inv-repick">Wrong PO?</button>` : ""}</span></div>`}
+      <div class="po-top po2-top">
+        <div class="po2-headrow">
+          <div class="po2-tb">
+            <span class="eyebrow">${esc(ed.vendor || "Vendor")} · Invoice${savedTxt ? ` · <span class="po2-saved">${savedTxt}</span>` : ""}</span>
+            <div class="po2-title"><h2>${esc(iv.no || "(no number)")}</h2>${iv.id && !iv.isNew ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this invoice" title="Copy a link to this invoice (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</div>
+          </div>
+          <div class="po2-hr"><span class="steps">${stepHtml}</span>
+            <span class="dbtns">${ed.dirty && saved ? `<button class="btn" data-pact="revert" ${S.busy ? "disabled" : ""} title="Throw away the changes since the last save">Discard changes</button>` : ""}<button class="btn ${ed.dirty || !saved ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button></span></div>
+        </div>
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
-      <section class="panel po-inv" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>
+      ${band}
       ${ed.alone ? `<div class="note info">${saved ? "This invoice isn't on a purchase order yet." : "Saving keeps this invoice on its own — no purchase order yet."} Start a PO from it, or add it to an open one.</div>`
-        : !ed.id ? '<div class="note info">Saving creates the purchase order with this invoice on it. You can add or change products on the PO afterwards.</div>' : ""}`;
+        : !ed.id ? '<div class="note info">Saving creates the purchase order with this invoice on it. You can add or change products on the PO afterwards.</div>' : ""}
+      <div class="po2-cols">
+        <section class="panel po-inv po2-main" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>
+        ${side}
+      </div>`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
       if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} }
@@ -1670,45 +1738,54 @@
       <select id="pe-movepo" class="inp sm" style="width:auto;max-width:320px">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
       <span class="dbtns"><button class="mini primary" data-pact="inv-move-go" ${all.length ? "" : "disabled"}>Move it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
+  // ---------- the invoice page's lines (v0.35.0, Brian Oct 28: same look as the PO) ----------
+  // Lines lock once the invoice is matched (every line a sure match, a charge or not a product) and saved: "Edit lines"
+  // opens them (ed.lineEdit) to change matches, quantities and costs, reorder (drag / Alt+arrows / Reorganize) or add lines.
+  const invMatched = (iv) => !!iv.id && !iv.isNew && iv.rows.length > 0 && (() => { const c = count(iv); return !c.check && !c.none; })();
   function invDetailHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
     const lock = ro || iv.status === "applied", c = count(iv);
-    const rows = iv.rows.filter(r => iv.filter === "all" || (iv.filter === "none" ? !r.vid && !r.skip : iv.filter === "check" ? needsCheck(r) : true));
-    const FILT = [["all", `All ${iv.rows.length}`], ["check", `Guesses to check ${c.check}`], ["none", `Not matched ${c.none}`]];
-    const iss = invIssues(ed, iv);
+    const lockL = lock || (invMatched(iv) && !ed.lineEdit);
+    const fq = (ed.find || "").trim().toLowerCase();
+    const rowText = (r) => { const v = variant(r.vid) || {}; return [r.src.item_code, r.src.upc, r.src.description, v.title, v.sku].join(" ").toLowerCase(); };
+    const rows = iv.rows.filter(r => iv.filter === "all" || (iv.filter === "none" ? !r.vid && !r.skip : iv.filter === "check" ? needsCheck(r) : iv.filter === "charge" ? r.skip : true)).filter(r => !fq || rowText(r).includes(fq));
+    const t = invTot(iv), iss = invIssues(ed, iv);
+    const gotShown = new Set();
     const rowsH = rows.map(r => {
       const badQ = r.qty !== "" && isNaN(Number(r.qty)), badC = r.cost !== "" && !(Number(r.cost) >= 0);
       const cls = r.skip ? "skipped" : !r.vid ? "nomatch" : needsCheck(r) ? "guess" : "";
-      return `<tr class="${cls}">
-        <td class="l inv">${r.src.item_code ? `<span class="mono">${esc(r.src.item_code)}</span>` : ""}${r.src.upc ? ` <span class="mono dim small">${esc(r.src.upc)}</span>` : ""}<div class="small">${esc(r.src.description) || '<span class="dim">no description</span>'}</div><div class="meta">${r.charge ? "charge on the invoice" : r.fromPo ? '<span class="pill pos" title="Filled in from the PO — check it against the invoice">from the PO</span>' : `${r.src.qty ?? "?"} × ${m(r.src.unit_cost)} = ${m(r.src.amount)}`}</div></td>
-        <td class="l match">${matchCell(ed, r, lock)}</td>
-        <td>${!lock ? `<input class="inp num sm ${badQ ? "bad" : ""}" data-f="iqty" data-k="${r.id}" value="${esc(r.qty)}" inputmode="decimal" style="width:64px">` : esc(r.qty)}</td>
-        <td>${!lock ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="icost" data-k="${r.id}" value="${esc(r.cost)}" inputmode="decimal" style="width:76px">` : m(Number(r.cost))}</td>
+      const n = iv.rows.indexOf(r) + 1;
+      let got = '<span class="dim">—</span>';
+      if (r.vid && !r.skip && iv.got && !gotShown.has(r.vid)) { gotShown.add(r.vid); const g = iv.got.get(r.vid) || 0, q = Number(r.qty) || 0; got = `<span class="${g >= q && q > 0 ? "okt" : g > 0 ? "warnt" : "dim"}">${n0(g)}</span>`; }
+      const handle = !lockL && iv.rows.length > 1 ? `<button type="button" class="dragh" id="drag-${r.id}" draggable="true" data-drag="${r.id}" data-dkind="row" aria-label="Move line ${n}: drag it, or Alt+Up / Alt+Down" title="Drag to reorder (or Alt+↑ / Alt+↓)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>` : "";
+      return `<tr class="${cls} ${handle ? "dragrow" : ""}" data-row="${r.id}">
+        <td class="l nowrap ivn">${handle}<span class="muted">${n}</span></td>
+        <td class="l inv">${r.src.item_code ? `<span class="mono">${esc(r.src.item_code)}</span>` : ""}${r.src.upc ? ` <span class="mono dim small">${esc(r.src.upc)}</span>` : ""}<div class="small">${esc(r.src.description) || '<span class="dim">no description</span>'}</div></td>
+        <td class="l match">${matchCell(ed, r, lockL)}</td>
+        <td>${!lockL ? `<input class="inp num sm ${badQ ? "bad" : ""}" data-f="iqty" data-k="${r.id}" value="${esc(r.qty)}" inputmode="decimal" style="width:64px">` : esc(r.qty)}</td>
+        <td>${got}</td>
+        <td>${!lockL ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="icost" data-k="${r.id}" value="${esc(r.cost)}" inputmode="decimal" style="width:76px">` : m(Number(r.cost))}</td>
         <td>${m(rowAmt(r))}</td>
-        <td class="l small">${!lock ? `<select class="inp sm" data-f="acct" data-k="${r.id}" style="width:auto;max-width:130px">${ACCOUNTS.map(([k, n]) => `<option value="${k}" ${(r.account || "inventory") === k ? "selected" : ""}>${n}</option>`).join("")}</select>` : esc(ACCT.get(r.account || "inventory"))}</td>
-        <td>${!lock ? `<button class="linkbtn small" data-pact="rmrow" data-k="${r.id}" title="Remove this invoice line" aria-label="Remove line">✕</button>` : ""}</td></tr>`;
+        <td class="l small">${!lockL ? `<select class="inp sm" data-f="acct" data-k="${r.id}" style="width:auto;max-width:130px">${ACCOUNTS.map(([k, nm]) => `<option value="${k}" ${(r.account || "inventory") === k ? "selected" : ""}>${nm}</option>`).join("")}</select>` : esc((ACCOUNTS.find(([k]) => k === (r.account || "inventory")) || [, "Inventory"])[1])}</td>
+        <td>${!lockL ? `<button class="linkbtn small" data-pact="rmrow" data-k="${r.id}" title="Remove this invoice line" aria-label="Remove line">✕</button>` : ""}</td></tr>`;
     }).join("");
+    const FN = { all: "All lines", check: "Guesses to check", none: "Not matched", charge: "Charges" };
+    const flLeft = iv.filter && iv.filter !== "all" ? `<span class="po2-chip">${FN[iv.filter] || ""}<button data-ifilter="all" aria-label="Show all lines" title="Show all lines"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span><span class="muted small">${rows.length} line${rows.length === 1 ? "" : "s"}</span>`
+      : `<b>All lines</b> <span class="muted small">${iv.rows.length} line${iv.rows.length === 1 ? "" : "s"}${c.sure ? ` · ${c.sure} matched` : ""}${c.skip ? ` · ${c.skip} charge${c.skip === 1 ? "" : "s"}` : ""}</span>`;
+    const canRecvIv = ed.id && iv.id && !iv.isNew && !iv.recvAt && t.b > t.g && !c.check;
+    const tools = lock ? "" : lockL
+      ? `<span class="iv-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg> Matched to the vendor invoice</span><button class="btn" data-pact="lines-edit" title="Change matches, quantities, costs or the order of the lines">Edit lines</button>`
+      : `${iv.rows.length > 1 ? `<select id="inv-arrange" class="inp sm" aria-label="Reorganize the lines"><option value="">Reorganize lines…</option><option value="vendor">Match vendor invoice</option>${ed.lines.length ? '<option value="order">Match order</option>' : ""}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${invMatched(iv) && ed.lineEdit ? '<button class="btn" data-pact="lines-done">Done editing</button>' : ""}`;
     return `
-      <div class="po-invbar"><span><b>Invoice details</b>${iv.fileName ? ` · <span class="dim">${esc(iv.fileName)}</span>` : ""}${iv.status === "applied" ? ' <span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}</span>
-        <span class="dbtns">${iv.file || iv.parts ? `<button class="mini" data-pact="pdf">${ed.showPdf ? "Hide PDF" : "Show PDF"}</button>` : ""}${!ro && !(invTot(iv).g > 0) ? `<button class="mini" data-pact="rminv">${iv.isNew ? "Discard" : "Delete invoice"}</button>` : ""}</span></div>
       ${ed.confirm === "rminv" && ed.alone ? `<div class="note warn">${iv.id ? `Delete invoice ${esc(iv.no || "")}? It's removed for good.` : `Discard invoice ${esc(iv.no || "")}?`} <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, ${iv.id ? "delete" : "discard"} it</button><button class="mini" data-pact="no">Cancel</button></span></div>`
       : ed.confirm === "rminv" ? `<div class="note warn">${iv.isNew ? `Discard invoice ${esc(iv.no || "")}?` : `Delete invoice ${esc(iv.no || "")}? ${iv.status === "applied" ? "It was applied earlier, so it's only detached from the PO." : "It's deleted when you save."}`} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
-      <div class="pmgrid inv-fields">
-        <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lock ? "disabled" : ""}></label>
-        <label class="stack" for="pe-invdate">Invoice date<input id="pe-invdate" class="inp" type="date" value="${esc(iv.date)}" ${lock ? "disabled" : ""}></label>
-        <label class="stack" for="pe-invdue">Due date<input id="pe-invdue" class="inp" type="date" value="${esc(iv.due)}" ${ro ? "disabled" : ""}></label>
-        <label class="stack" for="pe-invterms">Terms<input id="pe-invterms" class="inp" value="${esc(iv.terms)}" placeholder="e.g. Net 30" ${ro ? "disabled" : ""}></label>
-        <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lock ? "disabled" : ""}></label>
-        <label class="stack" for="pe-invtotal">Invoice total<input id="pe-invtotal" class="inp num" value="${iv.total != null ? iv.total.toFixed(2) : ""}" ${ro ? "disabled" : ""}></label>
-      </div>
-      <div class="inv-pq">${payHtml(ed, iv)}${qbHtml(ed, iv)}</div>
       ${iss.length ? window.JTIssues.issuesHtml(iss) : ""}
-      ${iv.fromPo && !lock && iv.rows.some(r => r.fromPo) ? `<div class="note info frompo">Lines filled in from the PO (the invoice's own lines couldn't be read). Compare them with the PDF${pdfOn ? " alongside" : ""}: fix any quantity or cost that's different, and remove products that aren't on this invoice. <span class="dbtns">${iv.rows.some(r => !r.vid && !r.skip) ? `<button class="mini" data-pact="dropunread">Remove the ${iv.rows.filter(r => !r.vid && !r.skip).length} unmatched line${iv.rows.filter(r => !r.vid && !r.skip).length === 1 ? "" : "s"}</button>` : ""}<button class="mini" data-pact="clearpo">Clear the PO lines</button></span></div>` : ""}
+      ${iv.fromPo && !lockL && iv.rows.some(r => r.fromPo) ? `<div class="note info frompo">Lines filled in from the PO (the invoice's own lines couldn't be read). Compare them with the PDF${pdfOn ? " alongside" : ""}: fix any quantity or cost that's different, and remove products that aren't on this invoice. <span class="dbtns">${iv.rows.some(r => !r.vid && !r.skip) ? `<button class="mini" data-pact="dropunread">Remove the ${iv.rows.filter(r => !r.vid && !r.skip).length} unmatched line${iv.rows.filter(r => !r.vid && !r.skip).length === 1 ? "" : "s"}</button>` : ""}<button class="mini" data-pact="clearpo">Clear the PO lines</button></span></div>` : ""}
+      <div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${tools}${iv.file || iv.parts ? `<button class="btn" data-pact="pdf" aria-pressed="${!!ed.showPdf}">${ed.showPdf ? "Hide PDF" : "Show PDF beside"}</button>` : ""}${iv.rows.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find item or product" value="${esc(ed.find || "")}" aria-label="Find a line on this invoice">` : ""}${canRecvIv ? `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>` : ""}</span></div>
       <div class="po-body ${pdfOn ? "with-pdf" : ""}">
         <div class="po-ivlines">
-          <div class="panel-head"><h3 class="h3">Invoice lines</h3><div class="seg" role="group" aria-label="Show lines">${FILT.map(([k, t]) => `<button data-ifilter="${k}" aria-pressed="${iv.filter === k}">${t}</button>`).join("")}</div></div>
-          ${iv.rows.length ? `<div class="tbl-wrap xl"><table class="prept po-t"><thead><tr><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || '<tr><td class="l muted" colspan="7">No lines here.</td></tr>'}</tbody></table></div>` : '<div class="muted small">No lines on this invoice.</div>'}
-          ${!lock ? `<div class="row">${!ed.alone && poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add line</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
+          ${iv.rows.length ? `<div class="tbl-wrap"><table class="prept po-t iv-t"><thead><tr><th class="l">#</th><th class="l">On the invoice</th><th class="l">Shopify product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Ext.</th><th class="l">Account</th><th></th></tr></thead><tbody>${rowsH || `<tr><td colspan="9" class="l muted small">No lines here.</td></tr>`}</tbody></table></div>` : '<div class="muted small">No lines yet.</div>'}
+          ${!lockL ? `<div class="row">${!ed.alone && poRows(ed, iv).length ? `<button class="btn ${iv.rows.some(r => r.vid && !r.skip) ? "" : "primary"}" data-pact="fillpo" title="Add every product still open on the PO that isn't on this invoice, at the PO's quantity and cost">Fill from the PO</button>` : ""}<button class="btn" data-pact="addrow">Add line</button><button class="btn" data-pact="addcharge">Add charge (freight in)</button><span class="muted small">Freight or shipping on the invoice goes to Inbound Shipping.</span></div>` : ""}
         </div>
         ${pdfOn ? `<aside class="po-pdf"><div class="panel-head"><h3 class="h3">Invoice PDF</h3><button class="mini" data-pact="pdf">Hide</button></div><div id="pe-pdf" class="pdfpages"></div></aside>` : ""}
       </div>
@@ -1857,7 +1934,7 @@
       lines: iv.rows.map(r => { const l = r.vid && lineOf(r.vid);
         return { item_code: r.src.item_code, upc: r.src.upc, description: r.src.description, qty: r.qty === "" ? null : Number(r.qty), unit_cost: r.cost === "" ? null : Number(r.cost),
           amount: rowAmt(r), variant_id: r.vid ? Number(r.vid) : null, match_how: howSaved(r), update_cost: false,
-          dest: l ? l.dest : "prep", amazon_sku: l && l.dest === "prep" ? l.asku || "" : "", account: r.account || "inventory" }; }) }));
+          dest: l ? l.dest : "prep", amazon_sku: l && l.dest === "prep" ? l.asku || "" : "", account: r.account || "inventory", vendor_no: r.vno == null ? null : r.vno }; }) }));
     const remember = [];
     for (const iv of ed.invoices) for (const r of iv.rows) if (r.src.item_code && r.vid && isSure(r) && r.how !== "sku" && r.how !== "po") remember.push({ item_code: r.src.item_code, variant_id: Number(r.vid) });
     return { order: { id: ed.id ? Number(ed.id) : null, vendor: ed.vendor.trim(), po_no: ed.po.trim(), kind: ed.kind, place_by: ed.placeBy || "", expected_on: ed.expected || "", note: ed.note, short_ok: !!ed.shortOk, no_shopify_po: !!ed.noShop, receive_into: ed.dest === "both" ? "both" : ed.dest, },
@@ -2107,6 +2184,8 @@
       rankOpenPOs(ed.vendor, vids, ed.id).then(rk => { if (S.ed === ed && ed.confirm === "inv-move") { ed.moveRank = { rk, n: vids.length }; render(); } });
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
+    if (a === "lines-edit") { ed.lineEdit = true; render(); return; }
+    if (a === "lines-done") { ed.lineEdit = false; ed.search = null; render(); return; }
     if (a === "add-prod") { if (ed.view === "inv" || ed.view === "left") ed.view = "all"; ed.search = null; render(); focusArg("po-add");
       setTimeout(() => { const el = $("po-add"); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 0); return; }
     if (a === "print-slip") { printSlip(ed, cur(ed)); return; }
@@ -2646,6 +2725,7 @@
       const ed = S.ed, t = e.target; if (!ed) return;
       const iv = cur(ed);
       if (t.id === "pe-cat" || t.id === "pe-budget") { savePlan(ed, t.id === "pe-cat" ? "category" : "budget", t.value); return; }
+      if (t.id === "inv-arrange") { const how = t.value; t.value = ""; if (how && iv && arrangeRows(ed, iv, how)) { ed.dirty = true; render(); note("info", "Lines reorganized. Save to keep the order."); } return; }
       if (t.id === "po-arrange") { const how = t.value; t.value = ""; if (how && arrange(ed, how)) { ed.dirty = true; render(); note("info", "Lines rearranged. Save to keep the order."); } return; }
       if (t.id === "pe-file") { const f = t.files[0]; t.value = ""; readPdf(f); return; }
       if (t.id === "pe-vendor") { ed.vendor = t.value.trim(); ed.dirty = true; reguess(ed); render(); return; }
@@ -2708,28 +2788,29 @@
     const dropClear = () => box.querySelectorAll("tr.drop-above, tr.drop-below, tr.dragging").forEach(x => x.classList.remove("drop-above", "drop-below", "dragging"));
     box.addEventListener("dragstart", (e) => {
       const h = e.target.closest && e.target.closest("[data-drag]"); if (!h || !S.ed) return;
-      box._drag = h.dataset.drag; e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", h.dataset.drag); } catch (_) {}
+      box._drag = h.dataset.drag; box._dkind = h.dataset.dkind || "line"; e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", h.dataset.drag); } catch (_) {}
       const tr = h.closest("tr"); if (tr) { tr.classList.add("dragging"); try { e.dataTransfer.setDragImage(tr, 20, 20); } catch (_) {} }
     });
     box.addEventListener("dragover", (e) => {
-      if (!box._drag) return; const tr = e.target.closest && e.target.closest("tr[data-line]"); if (!tr) return;
+      if (!box._drag) return; const tr = e.target.closest && e.target.closest(box._dkind === "row" ? "tr[data-row]" : "tr[data-line]"); if (!tr) return;
       e.preventDefault(); e.dataTransfer.dropEffect = "move";
       const r = tr.getBoundingClientRect(), below = e.clientY > r.top + r.height / 2;
       box.querySelectorAll("tr.drop-above, tr.drop-below").forEach(x => { if (x !== tr) x.classList.remove("drop-above", "drop-below"); });
       tr.classList.toggle("drop-below", below); tr.classList.toggle("drop-above", !below);
     });
     box.addEventListener("drop", (e) => {
-      if (!box._drag || !S.ed) return; const tr = e.target.closest && e.target.closest("tr[data-line]"); e.preventDefault();
+      if (!box._drag || !S.ed) return; const rowK = box._dkind === "row", tr = e.target.closest && e.target.closest(rowK ? "tr[data-row]" : "tr[data-line]"); e.preventDefault();
       const from = box._drag; box._drag = null; const below = tr && tr.classList.contains("drop-below"); dropClear();
-      if (tr && tr.dataset.line !== from && moveLine(S.ed, from, tr.dataset.line, below)) { S.ed.dirty = true; render(); }
+      const to = tr && (rowK ? tr.dataset.row : tr.dataset.line);
+      if (to && to !== from && (rowK ? moveRow(cur(S.ed), from, to, below) : moveLine(S.ed, from, to, below))) { S.ed.dirty = true; render(); }
     });
     box.addEventListener("dragend", () => { box._drag = null; dropClear(); });
     box.addEventListener("keydown", (e) => {
       const ed = S.ed; if (!ed) return;
       if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && e.target.dataset && e.target.dataset.drag) {
-        e.preventDefault(); const id = e.target.dataset.drag;
-        const rows = [...box.querySelectorAll("tr[data-line]")].map(x => x.dataset.line), i = rows.indexOf(id), j = e.key === "ArrowUp" ? i - 1 : i + 1;
-        if (i >= 0 && j >= 0 && j < rows.length && moveLine(ed, id, rows[j], e.key === "ArrowDown")) { ed.dirty = true; render(); }
+        e.preventDefault(); const id = e.target.dataset.drag, rowK = e.target.dataset.dkind === "row";
+        const rows = [...box.querySelectorAll(rowK ? "tr[data-row]" : "tr[data-line]")].map(x => rowK ? x.dataset.row : x.dataset.line), i = rows.indexOf(id), j = e.key === "ArrowUp" ? i - 1 : i + 1;
+        if (i >= 0 && j >= 0 && j < rows.length && (rowK ? moveRow(cur(ed), id, rows[j], e.key === "ArrowDown") : moveLine(ed, id, rows[j], e.key === "ArrowDown"))) { ed.dirty = true; render(); }
         return;
       }
       if (e.target.id === "po-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.add); if (f.length) addLine(f[0]); else render(); }
@@ -2809,8 +2890,9 @@
   // the Orders tab is the way back to the swimlanes (v0.33: no "← All orders" link on a PO). Only a person's click:
   // JTPO.open clicks the tab too, then opens a PO.
   document.addEventListener("click", (e) => {
-    const b = e.target.closest && e.target.closest('.tabs button[data-tab="po"]');
-    if (b && e.isTrusted) setTimeout(() => { if (S.ed && S.mode === "po") leave(); }, 0);
+    const b = e.target.closest && e.target.closest('.tabs button[data-tab="po"], .tabs button[data-tab="invoices"]');
+    if (b && e.isTrusted) { const inv = b.dataset.tab === "invoices";
+      setTimeout(() => { if (S.ed && (inv ? S.mode === "inv" && S.invOpen : S.mode === "po")) leave(); }, 0); }
   }, true);
   window.poShow = () => { S.mode = "po"; S.invOpen = false; if (!S.shown) { S.shown = true; refresh(false); catalog().catch(() => {}); } else if (S.stale && !S.ed) { S.stale = false; refresh(true); } render(); };
   window.invShow = () => {
