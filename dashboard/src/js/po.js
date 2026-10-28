@@ -1501,18 +1501,20 @@
     const fld = (id, label, val, attrs) => `<label class="stack" for="${id}">${label}<input id="${id}" class="inp ${attrs || ""}" value="${esc(val)}"></label>`;
     const lockF = iv.status === "applied";
     const fc = (k, label, n) => `<button class="po2-inv flat ${(iv.filter || "all") === k ? "on" : ""}" data-ifilter="${k}" aria-pressed="${(iv.filter || "all") === k}"><span class="po2-ih"><span>${label}</span><span class="muted num">${n0(n)}</span></span></button>`;
-    const poCard = ed.alone ? `<section class="panel po2-card"><div class="po2-ch"><h2>Purchase order</h2></div>
-          <div class="small">None yet.</div>
+    // the invoice's details across the top (Brian, Oct 28: "let's not have the right hand column of details on the invoices -
+    // it's too complicated to have 3 columns. let's put the invoice metadata at the top")
+    const poBlock = ed.alone
+      ? `<div class="ivm-po"><span class="eyebrow">Purchase order</span><span class="small">None yet</span>
           <label class="stack small" for="pe-vendor">Vendor<input id="pe-vendor" class="inp sm" list="pe-vendors" value="${esc(ed.vendor)}" autocomplete="off" placeholder="Shopify vendor"><datalist id="pe-vendors">${S.vendors.map(v => `<option value="${esc(v)}">`).join("")}</datalist></label>
-          <span class="dbtns"><button class="btn sm primary" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="btn sm" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></section>`
-      : `<section class="panel po2-card"><div class="po2-ch"><h2>Purchase order</h2>${canMove ? '<button class="linkbtn" data-pact="inv-move">Change PO</button>' : iv.isNew && S.pend ? '<button class="linkbtn" data-pact="inv-repick">Wrong PO?</button>' : ""}</div>
-          ${nameIn ? `<div><b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b></div><label class="stack small" for="pe-po">PO name<input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off"></label>`
-            : `<button class="po2-inv" data-pact="open-po" title="Open the purchase order"><span class="po2-ih"><b>${esc(ed.po ? ed.po : "#" + ed.id)}</b><span class="muted">Open →</span></span><span class="small muted">${ed.id ? esc(STAGE.get(ed.status) || "") : ""}${others > 0 ? ` · ${others + 1} invoices` : ""}${ed.lines.length ? ` · ${n0(ed.lines.reduce((a, l) => a + (Number(l.qty) || 0), 0))} ordered` : ""}</span></button>`}</section>`;
-    const side = `<aside class="po2-side" aria-label="Purchase order, lines and invoice details">
-        ${poCard}
-        ${iv.rows.length ? `<section class="panel po2-card"><div class="po2-ch"><h2>Lines</h2></div>${fc("all", "All lines", iv.rows.length)}${fc("check", "Guesses to check", c.check)}${fc("none", "Not matched", c.none)}${c.skip ? fc("charge", "Charges (freight, fees)", c.skip) : ""}</section>` : ""}
-        <section class="panel po2-card"><div class="po2-ch"><h2>Invoice details</h2>${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}</div>
-          <div class="iv-fields">
+          <span class="dbtns"><button class="btn sm primary" data-pact="alone-newpo" title="Start a Seller Sage purchase order with this invoice's products on it">Start a PO from it</button><button class="btn sm" data-pact="alone-link" title="Put this invoice on an existing purchase order">Add to a PO</button></span></div>`
+      : `<div class="ivm-po"><span class="eyebrow">Purchase order</span>
+          ${nameIn ? `<b>${ed.id ? esc(ed.vendor || "Vendor") + " · #" + esc(ed.id) : "New PO · " + esc(ed.vendor || "vendor")}</b><label class="stack small" for="pe-po">PO name<input id="pe-po" class="inp sm mono" value="${esc(ed.po)}" placeholder="e.g. Oct Balls" autocomplete="off"></label>`
+            : `<button class="linkbtn ivm-polink" data-pact="open-po" title="Open the purchase order">${esc(ed.po ? ed.po : "#" + ed.id)} →</button><span class="small muted">${ed.id ? esc(STAGE.get(ed.status) || "") : ""}${others > 0 ? ` · ${others + 1} invoices` : ""}</span>`}
+          ${canMove ? '<button class="linkbtn small" data-pact="inv-move">Change PO</button>' : iv.isNew && S.pend ? '<button class="linkbtn small" data-pact="inv-repick">Wrong PO?</button>' : ""}</div>`;
+    const meta = `<section class="panel iv-meta" aria-label="Invoice details">
+        <div class="ivm-row">
+          ${poBlock}
+          <div class="ivm-fields">
             <label class="stack" for="pe-invno">Invoice #<input id="pe-invno" class="inp mono" value="${esc(iv.no)}" ${lockF ? "disabled" : ""}></label>
             <label class="stack" for="pe-invdate">Invoice date<input id="pe-invdate" class="inp" type="date" value="${esc(iv.date)}" ${lockF ? "disabled" : ""}></label>
             <label class="stack" for="pe-invdue">Due date<input id="pe-invdue" class="inp" type="date" value="${esc(iv.due)}"></label>
@@ -1520,11 +1522,10 @@
             <label class="stack" for="pe-invsub">Subtotal<input id="pe-invsub" class="inp num" value="${iv.subtotal != null ? iv.subtotal.toFixed(2) : ""}" ${lockF ? "disabled" : ""}></label>
             <label class="stack" for="pe-invtotal">Invoice total<input id="pe-invtotal" class="inp num" value="${iv.total != null ? iv.total.toFixed(2) : ""}"></label>
           </div>
-          ${iv.fileName ? `<div class="small muted iv-file" title="${esc(iv.fileName)}">PDF · ${esc(iv.fileName)}</div>` : ""}</section>
-        <section class="panel po2-card">${payHtml(ed, iv)}</section>
-        ${iv.rows.length ? `<section class="panel po2-card">${qbHtml(ed, iv)}</section>` : ""}
-        <section class="panel po2-card po2-acts">${iv.id && !iv.isNew ? `<button class="btn sm" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? '<button class="btn sm" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}` : ""}${!(t.g > 0) ? `<button class="btn sm danger" data-pact="rminv">${iv.isNew ? "Discard invoice" : "Delete invoice"}</button>` : ""}</section>
-      </aside>`;
+          <div class="ivm-acts">${iv.status === "applied" ? '<span class="pill ok" title="Applied on the Invoices tab: its lines are locked">Costs in Shopify</span>' : ""}${iv.id && !iv.isNew ? `<button class="btn sm" data-pact="print-inv" title="Print this invoice as saved in Seller Sage">Print invoice</button>${iv.parts || iv.file ? '<button class="btn sm" data-pact="print-pdf" title="Print the vendor\'s PDF">Print vendor PDF</button>' : ""}` : ""}${!(t.g > 0) ? `<button class="btn sm danger" data-pact="rminv">${iv.isNew ? "Discard invoice" : "Delete invoice"}</button>` : ""}${iv.fileName ? `<span class="small muted iv-file" title="${esc(iv.fileName)}">PDF · ${esc(iv.fileName)}</span>` : ""}</div>
+        </div>
+        <div class="ivm-pq">${payHtml(ed, iv)}${iv.rows.length ? qbHtml(ed, iv) : ""}</div>
+      </section>`;
     box.innerHTML = `
       <div class="po-top po2-top">
         <div class="po2-headrow">
@@ -1540,10 +1541,8 @@
       ${band}
       ${ed.alone ? `<div class="note info">${saved ? "This invoice isn't on a purchase order yet." : "Saving keeps this invoice on its own — no purchase order yet."} Start a PO from it, or add it to an open one.</div>`
         : !ed.id ? '<div class="note info">Saving creates the purchase order with this invoice on it. You can add or change products on the PO afterwards.</div>' : ""}
-      <div class="po2-cols">
-        <section class="panel po-inv po2-main" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>
-        ${side}
-      </div>`;
+      ${meta}
+      <section class="panel po-inv iv-main" id="pe-drop">${invDetailHtml(ed, ro, pdfOn)}</section>`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
       if (el) { el.focus(); try { if (keep.s != null) el.setSelectionRange(keep.s, keep.s); } catch (_) {} }
@@ -1747,6 +1746,7 @@
     const iv = cur(ed);
     const lock = ro || iv.status === "applied", c = count(iv);
     const lockL = lock || (invMatched(iv) && !ed.lineEdit);
+    if ((iv.filter === "check" && !c.check) || (iv.filter === "none" && !c.none) || (iv.filter === "charge" && !c.skip)) iv.filter = "all";
     const fq = (ed.find || "").trim().toLowerCase();
     const rowText = (r) => { const v = variant(r.vid) || {}; return [r.src.item_code, r.src.upc, r.src.description, v.title, v.sku].join(" ").toLowerCase(); };
     const rows = iv.rows.filter(r => iv.filter === "all" || (iv.filter === "none" ? !r.vid && !r.skip : iv.filter === "check" ? needsCheck(r) : iv.filter === "charge" ? r.skip : true)).filter(r => !fq || rowText(r).includes(fq));
@@ -1775,8 +1775,8 @@
         <td>${!lockL ? `<button class="linkbtn small" data-pact="rmrow" data-k="${r.id}" title="Remove this invoice line" aria-label="Remove line">✕</button>` : ""}</td></tr>`;
     }).join("");
     const FN = { all: "All lines", check: "Guesses to check", none: "Not matched", charge: "Charges" };
-    const flLeft = iv.filter && iv.filter !== "all" ? `<span class="po2-chip">${FN[iv.filter] || ""}<button data-ifilter="all" aria-label="Show all lines" title="Show all lines"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span><span class="muted small">${rows.length} line${rows.length === 1 ? "" : "s"}</span>`
-      : `<b>All lines</b> <span class="muted small">${iv.rows.length} line${iv.rows.length === 1 ? "" : "s"}${c.sure ? ` · ${c.sure} matched` : ""}${c.skip ? ` · ${c.skip} charge${c.skip === 1 ? "" : "s"}` : ""}</span>`;
+    const fseg = (k, label, n) => `<button data-ifilter="${k}" aria-pressed="${(iv.filter || "all") === k}">${label} <span class="cnt">${n0(n)}</span></button>`;
+    const flLeft = `<span class="seg sm" role="group" aria-label="Show lines">${fseg("all", "All", iv.rows.length)}${c.check ? fseg("check", "Guesses to check", c.check) : ""}${c.none ? fseg("none", "Not matched", c.none) : ""}${c.skip ? fseg("charge", "Charges", c.skip) : ""}</span>${fq ? `<span class="muted small">${rows.length} found</span>` : ""}`;
     const canRecvIv = ed.id && iv.id && !iv.isNew && !iv.recvAt && t.b > t.g && !c.check;
     const canMoreIv = ed.id && iv.id && !iv.isNew && !c.check && !canRecvIv && t.b > 0;
     const tools = lock ? "" : lockL
