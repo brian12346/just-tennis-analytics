@@ -226,9 +226,9 @@
   let cat = null;
   async function catalog() {
     if (cat) return cat;
-    const r = await JT.rowsSplit(["variant_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "unit_cost", "coalesce(barcode, '')", "status"],
+    const r = await JT.rowsSplit(["variant_id::text", "sku", "coalesce(nullif(display_name, ''), product_title)", "vendor", "unit_cost", "coalesce(barcode, '')", "status", "coalesce(inventory_qty, 0)"],
       "from jt.variants where removed_at is null", "variant_id", 4, false);
-    cat = r.map(x => ({ vid: x[0], sku: x[1] || "", title: x[2] || "", vendor: x[3] || "", cost: x[4] == null ? null : +x[4], barcode: x[5], status: x[6] || "",
+    cat = r.map(x => ({ vid: x[0], sku: x[1] || "", title: x[2] || "", vendor: x[3] || "", cost: x[4] == null ? null : +x[4], barcode: x[5], status: x[6] || "", shop: +x[7] || 0,
       text: [x[1], x[2], x[3], x[5]].join(" ").toLowerCase() }));
     return cat;
   }
@@ -1567,6 +1567,59 @@
     M.rekey = M.rekey || {}; const from = M.rekey[k] != null ? M.rekey[k] : oldSku; delete M.rekey[k]; if (from !== (sku || "")) M.rekey[nk] = from;
     M.confirm = false;
   }
+  // ---------- Shopify stock on a shipment (Brian, Oct 28: "make it easy to see the shopify stock when we are making amazon
+  // shipments … move items to shopify when making a plan as well as pull in any shopify inventory if there isn't enough in
+  // prep center"). Each line shows the Shopify store's stock; short lines get "Pull N from Shopify"; any line can move
+  // units either way (jt.inventory_edit: the prep side at once, Shopify through the sync in a minute or two).
+  const SHOPQ = new Map();   // variant → Shopify store units (jt.shopify_qty_now: Shopify's count + moves still on their way)
+  let shopLoading = false;
+  async function loadShopQ(vids) {
+    const need = [...new Set(vids)].filter(v => /^\d+$/.test(String(v)) && !SHOPQ.has(String(v)));
+    if (!need.length || shopLoading) return;
+    shopLoading = true;
+    try {
+      const r = await JT.rows(["variant_id::text", "jt.shopify_qty_now(variant_id)"], `from jt.variants where variant_id in (${need.join(",")})`, true);
+      for (const v of need) SHOPQ.set(String(v), 0);
+      for (const x of r) SHOPQ.set(String(x[0]), Math.max(0, +x[1] || 0));
+    } catch (_) { for (const v of need) SHOPQ.set(String(v), null); }
+    shopLoading = false;
+    if (P.modal && P.modal.kind === "ship") renderModal();
+  }
+  const shopQ = (vid) => SHOPQ.has(String(vid)) ? SHOPQ.get(String(vid)) : undefined;
+  async function shipMove(vid, asku, dir, qty, label) {
+    const M = P.modal; if (!M || P.busy || !(qty > 0)) return;
+    P.busy = true; M.mvErr = ""; renderModal();
+    try {
+      await JT.prep.inventoryEdit({ variant_id: Number(vid), note: (dir === "from_shopify" ? "pulled from Shopify" : "moved to Shopify") + " for shipment " + (M.shipment.trim() || (M.id ? "#" + M.id : "(new)")), moves: [{ dir, amazon_sku: asku || "", qty }] });
+      SHOPQ.set(String(vid), Math.max(0, (shopQ(vid) || 0) + (dir === "from_shopify" ? -qty : qty)));
+      await load(true);
+      M.mv = null; P.busy = false;
+      note("info", `${esc(label || "")}: ${dir === "from_shopify" ? `pulled ${n0(qty)} from the Shopify store into the prep center` : `moved ${n0(qty)} from the prep center to the Shopify store`}. Shopify updates in a minute or two.`);
+      window.dispatchEvent(new CustomEvent("jt:stockmoved", { detail: { vid: String(vid), shop: dir === "from_shopify" ? -qty : qty } }));
+    } catch (e) { P.busy = false; M.mvErr = "Couldn't move it: " + JT.message(e); }
+    renderModal(); render(); refreshTotals();
+  }
+  async function pullAll() {
+    const M = P.modal; if (!M || P.busy) return;
+    const todo = [];
+    for (const k of M.lines) { const r = lineOf(k); if (!r) continue;
+      const sv = M.sh && M.sh.status !== "shipped" ? ((M.sh.lines.find(l => l.key === k) || {}).qty || 0) : 0;
+      const free = Math.max(0, r.qty - ((cache.alloc.get(k) || 0) - sv)), q = Number(M.qty[k]) || 0, n = Math.min(Math.max(0, q - free), shopQ(r.vid) || 0);
+      if (n > 0) todo.push({ r, n }); }
+    if (!todo.length) return;
+    P.busy = true; M.mvErr = ""; renderModal();
+    let done = 0, units = 0;
+    try {
+      for (const { r, n } of todo) {
+        await JT.prep.inventoryEdit({ variant_id: Number(r.vid), note: "pulled from Shopify for shipment " + (M.shipment.trim() || (M.id ? "#" + M.id : "(new)")), moves: [{ dir: "from_shopify", amazon_sku: r.asku || "", qty: n }] });
+        SHOPQ.set(String(r.vid), Math.max(0, (shopQ(r.vid) || 0) - n)); done++; units += n;
+      }
+    } catch (e) { M.mvErr = `Pulled ${done} of ${todo.length}; then: ` + JT.message(e); }
+    await load(true).catch(() => {});
+    P.busy = false;
+    if (done) note("info", `Pulled ${n0(units)} unit${units === 1 ? "" : "s"} from the Shopify store into the prep center for ${done} product${done === 1 ? "" : "s"}. Shopify updates in a minute or two.`);
+    renderModal(); render(); refreshTotals();
+  }
   function renderModal() {
     const box = $("prep-modal"), M = P.modal;
     box.hidden = !M; document.body.classList.toggle("modal-open", !!M);
@@ -1608,6 +1661,10 @@
       const rows = M.lines.map(lineOf).filter(Boolean);
       const saved = (k) => M.sh && M.sh.status !== "shipped" ? ((M.sh.lines.find(l => l.key === k) || {}).qty || 0) : 0;
       const avail = (r) => r.qty + comingOf(keyOf(r)) - ((cache.alloc.get(keyOf(r)) || 0) - saved(keyOf(r)));   // on hand + incoming, less other shipments in progress
+      const freeNow = (r) => Math.max(0, r.qty - ((cache.alloc.get(keyOf(r)) || 0) - saved(keyOf(r))));             // on the shelf now, not on other shipments
+      if (!ro) loadShopQ(M.lines.map(k => k.split("|")[0]));
+      const shortOf = (r) => { const v = M.qty[keyOf(r)], q = v === undefined || v === "" ? 0 : Number(v); return Number.isInteger(q) && q > freeNow(r) ? q - freeNow(r) : 0; };
+      const pullOf = (r) => Math.min(shortOf(r), shopQ(r.vid) || 0);
       let units = 0, cost = 0, lines = 0, bad = 0;
       for (const r of rows) {
         const v = M.qty[keyOf(r)], q = v === undefined || v === "" ? 0 : Number(v);
@@ -1626,17 +1683,31 @@
       html = `<div class="panel-head"><h2>${M.id ? esc(M.shipment || "Shipment #" + M.id) : "New shipment"}</h2><span class="steps">${steps}</span><button class="mini" data-act="close">Close</button></div>
         ${!M.id && M.fromRow && open.length && !M.single ? `<label class="small muted" for="pm-into">Add this product to <select id="pm-into" class="inp sm" style="width:auto"><option value="">a new shipment</option>${open.map(x => `<option value="${x.id}">${esc(shipTitle(x))} (${STATUS[x.status][0].toLowerCase()})</option>`).join("")}</select></label>` : ""}
         <div class="contents"><h3 class="psec" style="margin:0">What's going · pick the ASIN / seller SKU for each product</h3>
-        ${rows.length ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">Amazon listing</th>${ro ? "" : "<th>On hand</th>"}<th>${ro ? "Shipped" : "Ship"}</th><th></th></tr></thead><tbody>${
+        ${!ro && rows.some(r => pullOf(r) > 0) ? (() => { const ps = rows.filter(r => pullOf(r) > 0), u = ps.reduce((a, r) => a + pullOf(r), 0);
+          return `<div class="note warn sm">${ps.length} product${ps.length === 1 ? "" : "s"} short in the prep center · the Shopify store can cover ${n0(u)} unit${u === 1 ? "" : "s"} <button class="mini primary" data-act="pull-all" ${P.busy ? "disabled" : ""}>Pull ${n0(u)} from Shopify</button></div>`; })() : ""}
+        ${M.mvErr ? `<div class="note bad sm">${esc(M.mvErr)}</div>` : ""}
+        ${rows.length ? `<div class="tbl-wrap"><table class="prept"><thead><tr><th class="l">Product</th><th class="l">Amazon listing</th>${ro ? "" : '<th>On hand</th><th title="The Shopify store\'s stock (what can be pulled in, or where extra can go)">Shopify</th>'}<th>${ro ? "Shipped" : "Ship"}</th><th></th></tr></thead><tbody>${
           rows.map(r => { const k = keyOf(r), v = M.qty[k] ?? "", q = v === "" ? 0 : Number(v), b = v !== "" && (!Number.isInteger(q) || q < 0), ov = q > r.qty + comingOf(k), tg = !ov && q > avail(r), as = asinsOf(r);
             return `<tr><td class="l">${esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku)}</span> · ${esc(r.vendor)}</div></td>
               <td class="l small">${ro ? `${r.asku ? `<span class="mono">${esc(r.asku)}</span>` : '<span class="dim">Any listing</span>'}${as.length ? `<div class="meta mono">${esc(as.join(", "))}</div>` : ""}` : listingPick(r, k)}</td>
-              ${ro ? "" : `<td>${n0(r.qty)}${comingOf(k) ? `<div class="meta">+ ${n0(comingOf(k))} incoming</div>` : ""}${avail(r) !== r.qty + comingOf(k) ? `<div class="meta">${n0(Math.max(0, avail(r)))} not in other shipments</div>` : ""}</td>`}
-              <td>${ro ? `<b>${n0(q)}</b>` : `<input class="inp num sm ${b || ov ? "bad" : tg ? "warnin" : ""}" data-k="${esc(k)}" value="${esc(v)}" inputmode="numeric" placeholder="0" style="width:80px"><div class="meta"><button class="linkbtn small" data-all="${esc(k)}">all ${n0(Math.max(0, avail(r)))}</button></div>`}</td>
-              <td>${ro ? "" : `<button class="linkbtn small" data-rm="${esc(k)}" title="Remove from this shipment" aria-label="Remove ${esc(r.title)}">✕</button>`}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
+              ${ro ? "" : `<td>${n0(r.qty)}${comingOf(k) ? `<div class="meta">+ ${n0(comingOf(k))} incoming</div>` : ""}${avail(r) !== r.qty + comingOf(k) ? `<div class="meta">${n0(Math.max(0, avail(r)))} not in other shipments</div>` : ""}</td>
+              <td>${shopQ(r.vid) === undefined ? '<span class="dim">…</span>' : shopQ(r.vid) === null ? '<span class="dim">?</span>' : shopQ(r.vid) ? `<b>${n0(shopQ(r.vid))}</b>` : '<span class="dim">0</span>'}<div class="meta"><button class="linkbtn small" data-mvtog="${esc(k)}" title="Move units between the prep center and the Shopify store">${M.mv && M.mv.k === k ? "close" : "move…"}</button></div></td>`}
+              <td>${ro ? `<b>${n0(q)}</b>` : `<input class="inp num sm ${b || ov ? "bad" : tg ? "warnin" : ""}" data-k="${esc(k)}" value="${esc(v)}" inputmode="numeric" placeholder="0" style="width:80px"><div class="meta"><button class="linkbtn small" data-all="${esc(k)}">all ${n0(Math.max(0, avail(r)))}</button></div>${shortOf(r) ? `<div class="meta warnt">${n0(shortOf(r))} short on the shelf</div>${pullOf(r) ? `<button class="mini" data-pull="${esc(k)}" ${P.busy ? "disabled" : ""} title="Move ${n0(pullOf(r))} from the Shopify store into the prep center for this listing">Pull ${n0(pullOf(r))} from Shopify</button>` : shopQ(r.vid) === 0 ? '<div class="meta dim">Shopify has none</div>' : ""}` : ""}`}</td>
+              <td>${ro ? "" : `<button class="linkbtn small" data-rm="${esc(k)}" title="Remove from this shipment" aria-label="Remove ${esc(r.title)}">✕</button>`}</td></tr>
+              ${!ro && M.mv && M.mv.k === k ? (() => { const mq = Number(M.mv.qty), okq = Number.isInteger(mq) && mq > 0, sq = shopQ(r.vid) || 0;
+                return `<tr class="splitrow"><td colspan="6" class="l"><div class="splitbox"><b>Move ${esc(r.title)}</b>
+                  <label class="inline"><input id="pm-mvq" class="inp num sm" data-mvq="1" value="${esc(M.mv.qty)}" inputmode="numeric" placeholder="0" style="width:70px"> units</label>
+                  <button class="mini" data-mvgo="to_shopify" ${!okq || mq > r.qty || P.busy ? "disabled" : ""} title="Prep center (${n0(r.qty)}${r.asku ? " for " + esc(r.asku) : ""}) → Shopify store">Prep → Shopify</button>
+                  <button class="mini" data-mvgo="from_shopify" ${!okq || mq > sq || P.busy ? "disabled" : ""} title="Shopify store (${n0(sq)}) → prep center${r.asku ? " for " + esc(r.asku) : ""}">Shopify → Prep</button>
+                  <span class="small muted">prep ${n0(r.qty)} · Shopify ${n0(sq)}</span></div></td></tr>`; })() : ""}`; }).join("")}</tbody></table></div>` : ""}
         ${ro || (M.single && !M.id) ? "" : `<div class="addbox">
           <label class="stack" for="pm-add">Add product<input id="pm-add" class="inp mono" value="${esc(M.add)}" placeholder="ASIN, Amazon SKU or Shopify SKU" autocomplete="off"></label>
-          ${M.add.trim() ? `<div class="mres">${found.map(r => `<button data-add="${esc(keyOf(r))}"><b>${esc(r.title)}</b><br><span class="dim">${esc(r.sku)}${r.asku ? " · " + esc(r.asku) : ""}${asinsOf(r).length ? " · " + esc(asinsOf(r).join(", ")) : ""} · ${n0(r.qty)} on hand${comingOf(keyOf(r)) ? ` · ${n0(comingOf(keyOf(r)))} incoming` : ""}</span></button>`).join("")
-            || '<span class="muted small">Nothing in the prep center matches that ASIN or SKU.</span>'}</div>` : ""}
+          ${M.add.trim() ? (() => { const inPrep = new Set(found.map(r => r.vid).concat(M.lines.map(k => k.split("|")[0])));
+              const fromShop = cat ? searchCat(M.add).filter(v => v.shop > 0 && !inPrep.has(v.vid)).slice(0, 6) : [];
+              if (!cat) catalog().then(() => renderModal()).catch(() => {});
+              return `<div class="mres">${found.map(r => `<button data-add="${esc(keyOf(r))}"><b>${esc(r.title)}</b><br><span class="dim">${esc(r.sku)}${r.asku ? " · " + esc(r.asku) : ""}${asinsOf(r).length ? " · " + esc(asinsOf(r).join(", ")) : ""} · ${n0(r.qty)} on hand${comingOf(keyOf(r)) ? ` · ${n0(comingOf(keyOf(r)))} incoming` : ""}</span></button>`).join("")}
+              ${fromShop.map(v => `<button data-addshop="${esc(v.vid)}"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.sku)} · ${esc(v.vendor)} · <b>${n0(v.shop)} in the Shopify store</b>, none in the prep center — add it, then pull from Shopify</span></button>`).join("")}
+              ${!found.length && !fromShop.length ? '<span class="muted small">Nothing in the prep center or the Shopify store matches that.</span>' : ""}</div>`; })() : ""}
         </div>`}
         </div>
         <div class="pmgrid">
@@ -1809,6 +1880,7 @@
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && P.modal && !P.busy) closeModal(); });
     box.addEventListener("input", (e) => {
       const M = P.modal, t = e.target; if (!M) return;
+      if (t.dataset.mvq != null && M.mv) { M.mv.qty = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 200); return; }
       if (M.kind === "assign") { if (t.dataset.aq != null) { M.qty[t.dataset.aq] = t.value.trim(); clearTimeout(box._t); box._t = setTimeout(renderModal, 250); } else if (t.id === "pm-anote") M.note = t.value; return; }
       if (t.id === "pm-nq") { M.q = t.value; clearTimeout(box._t); box._t = setTimeout(renderModal, 150); return; }
       if (t.id === "pm-exc") { M.excEdit = t.value; return; }
@@ -1891,6 +1963,15 @@
       if (b.dataset.fix) return applyFix(b.dataset);
       if (b.dataset.dest) { M.dest = b.dataset.dest; M.confirm = false; renderModal(); return; }
       if (b.dataset.add) return addLine(b.dataset.add);
+      if (b.dataset.addshop) { const v = cat && cat.find(x => x.vid === b.dataset.addshop); if (!v) return; const k = v.vid + "|";
+        M.info[k] = { vid: v.vid, asku: "", title: v.title, sku: v.sku, vendor: v.vendor, cost: v.cost }; SHOPQ.delete(String(v.vid)); return addLine(k); }
+      if (b.dataset.mvtog) { M.mv = M.mv && M.mv.k === b.dataset.mvtog ? null : { k: b.dataset.mvtog, qty: "" }; M.mvErr = ""; renderModal(); setTimeout(() => { const i = $("pm-mvq"); if (i) i.focus(); }, 0); return; }
+      if (b.dataset.mvgo && M.mv) { const r = lineOf(M.mv.k); if (r) shipMove(r.vid, r.asku, b.dataset.mvgo, Number(M.mv.qty), r.title); return; }
+      if (b.dataset.pull) { const r = lineOf(b.dataset.pull); if (!r) return;
+        const sv = M.sh && M.sh.status !== "shipped" ? ((M.sh.lines.find(l => l.key === b.dataset.pull) || {}).qty || 0) : 0;
+        const free = Math.max(0, r.qty - ((cache.alloc.get(b.dataset.pull) || 0) - sv)), q = Number(M.qty[b.dataset.pull]) || 0;
+        const n = Math.min(Math.max(0, q - free), shopQ(r.vid) || 0); if (n > 0) shipMove(r.vid, r.asku, "from_shopify", n, r.title); return; }
+      if (b.dataset.act === "pull-all") return pullAll();
       if (b.dataset.rm) { M.lines = M.lines.filter(k => k !== b.dataset.rm); delete M.qty[b.dataset.rm]; M.confirm = false; renderModal(); return; }
       if (b.dataset.all) { const r = lineOf(b.dataset.all), sv = M.sh && M.sh.status !== "shipped" ? ((M.sh.lines.find(l => l.key === b.dataset.all) || {}).qty || 0) : 0;
         M.qty[b.dataset.all] = String(Math.max(0, r.qty + comingOf(b.dataset.all) - ((cache.alloc.get(b.dataset.all) || 0) - sv))); M.confirm = false; renderModal(); return; }
