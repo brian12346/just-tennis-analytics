@@ -269,7 +269,7 @@
       { c:"sales", l:"Profit after shipping", v: haveOrders && haveDaily ? `<span class="${profitAfterShip(sum("gp"), shipCh, cost) < 0 ? "neg" : ""}">${m0(profitAfterShip(sum("gp"), shipCh, cost))}</span>` : dash, s: haveOrders && haveDaily && net ? `${pct(profitAfterShip(sum("gp"), shipCh, cost)/net)} of net sales` : "Gross profit + shipping charged − labels" },
       // share of shipped (non-POS) orders that have a ShipStation label cost matched to them
       { c:"", l:"Label cost coverage", v: haveOrders ? (dv.webShipped ? pct(dv.webShippedWithCost/dv.webShipped) : dash) : dash,
-        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a label cost (ShipStation, combined, entered or in-store pickup at $0)${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
+        s: haveOrders ? `${dv.webShippedWithCost} of ${dv.webShipped} shipped orders have a label cost (ShipStation or Shopify Shipping, combined, entered or in-store pickup at $0)${dv.webShipped > dv.webShippedWithCost ? ` · <button class="linkbtn small" data-kpi-miss>show the ${dv.webShipped - dv.webShippedWithCost} without one</button>` : ""}` : "" },
     ];
     $("kpis").innerHTML = k.map(x => `<div class="kpi ${x.c}"><span class="eyebrow">${x.l}</span><span class="v">${x.v}</span><span class="s">${x.s}</span></div>`).join("");
   }
@@ -431,7 +431,7 @@
     if (state.shipErr) { el.textContent = "Label costs couldn't load. Press Refresh."; return; }
     const when = (t) => t && !isNaN(window.JTDate.parseTime(t)) ? window.JTDate.parseTime(t).toLocaleString("en-US",{timeZone:TZ,month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "never";
     const sales = (state.syncs || []).find(x => x[0] === "shopify_sales");
-    el.textContent = `${state.shipLabels.toLocaleString()} ShipStation labels for orders in this range · labels synced ${when(state.lastSync)} · sales synced ${when(sales && sales[1])} (both sync hourly)`;
+    el.textContent = `${state.shipLabels.toLocaleString()} shipping labels (ShipStation + Shopify Shipping) for orders in this range · labels synced ${when(state.lastSync)} · sales synced ${when(sales && sales[1])} (both sync hourly)`;
   }
 
   // ---------- CSV ----------
@@ -644,7 +644,7 @@
     const mm = (state.shipMan && state.shipMan.get(o.sid)) || {}, d = state.shipDraft || {};
     const cw = d.combined ?? mm.combined ?? "", cost = d.cost ?? (mm.cost != null ? String(mm.cost) : "");
     return `<tr class="detail"><td colspan="15"><div class="dpanel">
-      <div class="small">ShipStation has no label for <b>${esc(o.name)}</b>. Enter what shipping it cost, or the order it went out with.${state.shipComb && state.shipComb.get(o.sid) && mm.cost == null ? ` Matched automatically: it has the same tracking number as ${esc(state.shipComb.get(o.sid).name)}'s label, so it counts as combined at $0 — save here only to override that.` : ""}</div>
+      <div class="small">There's no ShipStation or Shopify Shipping label for <b>${esc(o.name)}</b>. Enter what shipping it cost, or the order it went out with.${state.shipComb && state.shipComb.get(o.sid) && mm.cost == null ? ` Matched automatically: it has the same tracking number as ${esc(state.shipComb.get(o.sid).name)}'s label, so it counts as combined at $0 — save here only to override that.` : ""}</div>
       <div class="row">
         <label class="stack" for="sc-with">Shipped in the same box as order<input id="sc-with" class="inp mono" value="${esc(cw)}" placeholder="#12345" style="width:130px"></label>
         <label class="stack" for="sc-cost">Label cost<input id="sc-cost" class="inp num" value="${esc(cost)}" inputmode="decimal" placeholder="${cw ? "0.00" : "e.g. 8.45"}" style="width:110px"></label>

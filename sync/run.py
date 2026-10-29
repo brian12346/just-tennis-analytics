@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None) -> None:
         if a.job in ("hourly", "nightly", "backfill", "shopify-orders"):
             # orders changed since the start of the window (one day of overlap for safety)
             run("shopify_orders", lambda: sh.sync_orders(shop, conn, _utc(since - dt.timedelta(days=1))))
+        if a.job in ("hourly", "nightly", "backfill", "shopify-orders"):
+            # Shopify Shipping label costs -> jt.shipstation_labels (label_id shopify:…), next to ShipStation's
+            run("shopify_labels", lambda: sh.sync_shopify_labels(shop, conn, since - dt.timedelta(days=14 if a.job == "hourly" else 0), until))
         if a.job in ("hourly", "nightly", "backfill", "shopify-orders", "shopify-pickups"):
             # in-store pickup orders: no label to buy (migration 096)
             run("shopify_pickups", lambda: sh.sync_pickups(shop, conn))

@@ -110,11 +110,11 @@
 
   <section class="panel" id="ss">
     <div class="panel-head">
-      <h2>ShipStation shipping costs</h2>
+      <h2>Shipping label costs</h2>
       <span class="muted" id="ss-summary" style="font-size:12px"></span>
     </div>
     <div class="drop" id="drop">
-      <p>Label costs sync from ShipStation every morning and are matched to Shopify orders by order ID. To fill a gap by hand, export shipments from ShipStation as CSV and drop the file here. CSV rows match by order number, and labels already saved won't double count.</p>
+      <p>Label costs sync from ShipStation and from Shopify Shipping (Shopify's own labels, hourly) and are matched to Shopify orders. To fill a gap by hand, export shipments from ShipStation as CSV and drop the file here. CSV rows match by order number, and labels already saved won't double count.</p>
       <label class="btn" for="file">Choose CSV<input type="file" id="file" accept=".csv,text/csv" hidden></label>
     </div>
     <div id="ss-map" hidden></div>

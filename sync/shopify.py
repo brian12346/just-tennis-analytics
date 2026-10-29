@@ -122,6 +122,40 @@ def sync_daily(shop: Shopify, conn, start: dt.date, end: dt.date, table: str = "
                           "cogs", "gross_profit", "net_no_cost"], out)
 
 
+# Shopify Shipping labels (Brian, Oct 28: "we are starting to use shopify for shipping - let's make sure we bring in the
+# shopify label costs into seller sage and not just shipstation"). ShopifyQL's shipping_labels dataset gives the cost by
+# order, day and service; they go into jt.shipstation_labels next to ShipStation's (label_id "shopify:…", no tracking
+# number), so every label-cost view and the order profit pick them up. A window is replaced as a whole, so voids and
+# adjustments that Shopify nets into the day come through.
+LABELS_Q = ("FROM shipping_labels SHOW shipping_labels, shipping_label_costs GROUP BY order_name, day, shipping_service "
+            "SINCE {s} UNTIL {e}")
+
+
+def sync_shopify_labels(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
+    rows = shop.shopifyql(LABELS_Q.format(s=start, e=end))
+    out = []
+    for r in rows:
+        name, day = str(r.get("order_name") or ""), str(r.get("day") or "")[:10]
+        if not day:
+            continue
+        svc = str(r.get("shipping_service") or "")
+        out.append((f"shopify:{name}:{day}:{svc}"[:200], name, day, ("Shopify · " + svc) if svc else "Shopify Shipping",
+                    money(r.get("shipping_label_costs")), _int(r.get("shipping_labels"))))
+    with conn.cursor() as cur:
+        cur.execute("delete from jt.shipstation_labels where label_id like 'shopify:%%' and ship_date between %s and %s", (start, end))
+        n = 0
+        for lid, name, day, svc, cost, cnt in out:
+            if cost is None or (cost == 0 and cnt == 0):
+                continue
+            cur.execute("""insert into jt.shipstation_labels (label_id, tracking, order_id, ship_date, service, cost, voided, created_at, synced_at)
+                           select %s, '', (select o.order_id from jt.shopify_orders o where o.name = %s order by o.created_at desc limit 1),
+                                  %s, %s, %s, false, %s::date, now()
+                           on conflict (label_id) do update set order_id = excluded.order_id, cost = excluded.cost, service = excluded.service,
+                                  synced_at = now()""", (lid, name, day, svc, cost, day))
+            n += 1
+        return n
+
+
 SALES_Q = ("FROM sales SHOW net_items_sold, gross_sales, discounts, sales_reversals, net_sales, cost_of_goods_sold, "
            "net_sales_without_cost_recorded GROUP BY day, order_id, order_name, product_variant_id, product_id, "
            "product_title, product_variant_title, product_variant_sku, product_type, product_vendor, sales_channel "
