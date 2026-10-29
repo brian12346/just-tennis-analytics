@@ -2117,3 +2117,25 @@
     mo.disconnect(); apply(t); mo.takeRecords(); mo.observe(host, { childList: true, subtree: true });
   });
 })();
+
+// ---------- fold a section away (Oct 29, Brian: "the ability to expand/shrink each section on the prep center page ...
+// a little chevron style thing to minimize"). Each section's heading gets a chevron; folded, only its header shows.
+// Remembered in this browser.
+(() => {
+  const host = document.getElementById("tab-prep"); if (!host) return;
+  const KEY = "jt.prep.folded";
+  let folded = new Set(); try { folded = new Set(JSON.parse(localStorage.getItem(KEY) || "[]")); } catch (_) {}
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify([...folded])); } catch (_) {} };
+  const SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  const set = (sec, h2, on) => { sec.classList.toggle("pfold", on); const b = sec.querySelector(".pfold-btn"); if (b) { b.setAttribute("aria-expanded", String(!on)); b.title = (on ? "Show " : "Hide ") + h2.textContent.trim(); } };
+  for (const sec of host.querySelectorAll("section.panel")) {
+    if (sec.closest(".modal")) continue;
+    const head = sec.querySelector(".panel-head"), h2 = head && head.querySelector("h2"); if (!h2) continue;
+    const k = h2.textContent.trim();
+    const b = document.createElement("button"); b.type = "button"; b.className = "pfold-btn"; b.innerHTML = SVG; b.setAttribute("aria-label", "Show or hide " + k);
+    h2.prepend(b); h2.classList.add("pfold-h");
+    h2.addEventListener("click", (e) => { if (e.target.closest("a, input, select") || (e.target.closest("button") && e.target.closest("button") !== b)) return;
+      const on = !sec.classList.contains("pfold"); on ? folded.add(k) : folded.delete(k); save(); set(sec, h2, on); });
+    set(sec, h2, folded.has(k));
+  }
+})();

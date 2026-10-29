@@ -1612,3 +1612,12 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .inc-card .arr{display:flex;align-items:center;gap:6px}
 .inc-card .mini{align-self:flex-start}
 .inc-card .arr input{width:138px;min-width:138px}
+#tab-prep h2.pfold-h{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.pfold-btn{all:unset;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:6px;color:var(--muted);cursor:pointer;transition:transform .15s}
+.pfold-btn:hover{background:var(--line-soft);color:var(--ink)}
+.pfold-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+section.pfold .pfold-btn{transform:rotate(-90deg)}
+section.panel.pfold > :not(.panel-head){display:none!important}
+section.panel.pfold > .panel-head{margin-bottom:0}
+section.panel.pfold .panel-head > :not(h2):not(.lanehead):not(.muted):not([id$="-sum"]){display:none}
+section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
