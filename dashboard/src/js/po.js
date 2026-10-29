@@ -1073,8 +1073,9 @@
     ["receive", "Ready to receive", "on a PO, products still to come in"], ["complete", "Complete", "received"]];
   const laneOf = (v) => !v.completeAt ? "draft" : v.check > 0 ? "issues" : !v.oid ? "nopo" : !v.recvAt && v.billed > 0 ? "receive" : "complete";
   const LANE_CARDS = 6;
-  const INVF = [["all", "All"], ...LANES.map(([k, n]) => [k, n]), ["unpaid", "To pay"], ["noqb", "Not in QuickBooks"]];
-  const invMatch = (v, f) => f === "all" ? true : f === "unpaid" ? !v.paidOn : f === "noqb" ? !invClosed(v) : !v.paidOn && laneOf(v) === f;
+  const INVF = [["all", "All"], ...LANES.map(([k, n]) => [k, n]), ["unpaid", "To pay"], ["overdue", "Overdue"], ["noqb", "Not in QuickBooks"], ["notrecv", "Not received"]];
+  const invMatch = (v, f) => f === "all" ? true : f === "unpaid" ? !v.paidOn : f === "overdue" ? !v.paidOn && !!v.due && v.due < today() : f === "noqb" ? !invClosed(v)
+    : f === "notrecv" ? !v.recvAt && v.billed > 0 : !v.paidOn && laneOf(v) === f;
   const daysAgo = (d) => { const n = Math.floor((Date.now() - new Date(d).getTime()) / 864e5); return n <= 0 ? "today" : n === 1 ? "1 day" : n + " days"; };
   function laneCard(v, k) {
     const po = v.oid ? esc(v.po ? poLabel(v.po) : "PO #" + v.oid) : "";
@@ -1110,12 +1111,14 @@
     $("inv-status").textContent = S.invs ? `${all.length.toLocaleString()} invoice${all.length === 1 ? "" : "s"}` : "Loading invoices…";
     $("inv-seg").innerHTML = INVF.map(([k, n]) => `<button data-invf="${k}" aria-pressed="${S.invF === k}">${n} <span class="cnt">${all.filter(v => invMatch(v, k)).length}</span></button>`).join("");
     const unpaid = all.filter(v => !v.paidOn), late = unpaid.filter(v => v.due && v.due < today());
+    // each card shows its invoices in the table below (Oct 29, Brian: "make the top cards on the invoices page clickable like
+    // on the orders page"); the picked one is outlined, and clicking it again shows all
     $("inv-kpis").innerHTML = [
-      { l: "To pay", v: m0(unpaid.reduce((a, v) => a + (v.total || 0), 0)), s: `${n0(unpaid.length)} unpaid invoice${unpaid.length === 1 ? "" : "s"}` },
-      { l: "Overdue", v: m0(late.reduce((a, v) => a + (v.total || 0), 0)), s: late.length ? `<b class="neg">${n0(late.length)} past due</b>` : "nothing past due" },
-      { l: "Open", v: n0(all.filter(v => !invClosed(v)).length), s: "not in QuickBooks yet — closes once sent" },
-      { l: "Not received", v: n0(all.filter(v => !v.recvAt && v.billed > 0).length), s: "invoices with products still to come in" },
-    ].map(k => `<div class="kpi"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
+      { l: "To pay", v: m0(unpaid.reduce((a, v) => a + (v.total || 0), 0)), s: `${n0(unpaid.length)} unpaid invoice${unpaid.length === 1 ? "" : "s"}`, go: "unpaid" },
+      { l: "Overdue", v: m0(late.reduce((a, v) => a + (v.total || 0), 0)), s: late.length ? `<b class="neg">${n0(late.length)} past due</b>` : "nothing past due", go: "overdue", cls: late.length ? "warnk" : "" },
+      { l: "Open", v: n0(all.filter(v => !invClosed(v)).length), s: "not in QuickBooks yet — closes once sent", go: "noqb" },
+      { l: "Not received", v: n0(all.filter(v => !v.recvAt && v.billed > 0).length), s: "invoices with products still to come in", go: "notrecv" },
+    ].map(k => `<div class="kpi ${k.cls || ""} ${S.invF === k.go ? "on" : ""}"><button class="kpi-go" type="button" data-inv-kpi="${k.go}" aria-pressed="${S.invF === k.go}" title="${S.invF === k.go ? "Show all invoices" : "Show these in the table"}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></button></div>`).join("");
     if (S.invs) renderLanes(all); else $("inv-lanes").innerHTML = "";
     renderInvTable();
   }
@@ -3513,7 +3516,9 @@
       render();
     });
     $("inv-q").addEventListener("input", (e) => { S.invQ = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(renderInvTable, 150); });
-    $("inv-seg").addEventListener("click", (e) => { const b = e.target.closest("button[data-invf]"); if (b) { S.invF = b.dataset.invf; renderInvTable(); } });
+    $("inv-seg").addEventListener("click", (e) => { const b = e.target.closest("button[data-invf]"); if (b) { S.invF = b.dataset.invf; renderInvList(); } });
+    $("inv-kpis").addEventListener("click", (e) => { const b = e.target.closest("[data-inv-kpi]"); if (!b) return; S.invF = S.invF === b.dataset.invKpi ? "all" : b.dataset.invKpi; renderInvList();
+      if (S.invF !== "all") { const t = $("inv-table"); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); } });
     $("inv-lanes").addEventListener("click", (e) => { const b = e.target.closest("[data-lane]"); if (!b) return; e.stopPropagation();
       S.invF = S.invF === b.dataset.lane && !b.classList.contains("il-more") ? "all" : b.dataset.lane; renderInvList();
       if (S.invF !== "all") { const t = $("inv-table"); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); } });
