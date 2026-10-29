@@ -35,22 +35,32 @@
   const suggest = (o, isP) => o.disc ? "eol" : o.stk === "new" || o.stk === "onorder" ? "active" : o.stk === "dead" ? "eol" : (isP ? o.draft : o.status !== "ACTIVE") && o.stock <= 0 ? "eol" : "active";
   const SORTK = { sold: (p) => -p.sold, stock: (p) => -p.stock, last: (p) => -(p.last ? Date.parse(p.last) : 0), name: (p) => p.title.toLowerCase(), vendor: (p) => (p.vendor + " " + p.title).toLowerCase() };
   const GROUPS = [["", "No grouping"], ["vendor", "Vendor"], ["type", "Category"]];
-  const S = { rows: null, prods: null, f: "all", sf: "", q: "", vendor: "", type: "", sort: "sold", by: "", shut: new Set(), open: new Set(), sel: new Set(), limit: 150, busy: false, err: null, ask: null };
+  // missing product info (Oct 29, Brian: "a filter for missing product attributes so we can fill them in" — products with
+  // no SKU / UPC don't match on vendor invoices). Checked per size / color; a product shows when any of its sizes is missing it.
+  const MISS = { sku: ["No SKU", v => !v.sku.trim()], upc: ["No UPC / barcode", v => !v.barcode.trim()], cost: ["No cost", v => !(v.cost > 0)],
+    price: ["No price", v => !(v.price > 0)], type: ["No category", v => !v.type.trim()], vendor: ["No vendor", v => !v.vendor.trim()],
+    dup: ["Duplicate SKU", v => !!v.sku.trim() && S.dups.has(v.sku.trim().toLowerCase())] };
+  const SHORT = { sku: "SKU", upc: "UPC", cost: "cost", price: "price", type: "category", vendor: "vendor", dup: "duplicate SKU" };
+  const missOf = (v) => Object.keys(MISS).filter(k => MISS[k][1](v));
+  const MFILT = [["", "Any info"], ["any", "Missing anything"], ...Object.entries(MISS).map(([k, v]) => [k, v[0]])];
+  const S = { rows: null, prods: null, f: "all", sf: "", mf: "", dups: new Set(), q: "", vendor: "", type: "", sort: "sold", by: "", shut: new Set(), open: new Set(), sel: new Set(), limit: 150, busy: false, err: null, ask: null };
 
   async function load() {
     S.err = null;
     const r = await JT.rows(["a.variant_id::text", "a.product_id::text", "a.title", "a.sku", "a.vendor", "a.product_type", "a.status", "a.price", "a.unit_cost",
-      "a.store", "a.prep", "a.fba", "a.awd", "a.shop365", "a.anr365", "a.amz365", "a.sold90", "a.last_sold::text", "a.discontinued", "a.culled", "a.culled_at::text", "a.culled_by", "a.cull_note", "a.added_at::text", "a.added_how", "a.on_order", "a.set_status", "a.status_note", "a.status_by", "a.status_at::text"],
-      "from jt.active_products() a", true);
+      "a.store", "a.prep", "a.fba", "a.awd", "a.shop365", "a.anr365", "a.amz365", "a.sold90", "a.last_sold::text", "a.discontinued", "a.culled", "a.culled_at::text", "a.culled_by", "a.cull_note", "a.added_at::text", "a.added_how", "a.on_order", "a.set_status", "a.status_note", "a.status_by", "a.status_at::text", "coalesce(v.barcode, '')"],
+      "from jt.active_products() a left join jt.variants v on v.variant_id = a.variant_id", true);
     S.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2] || "", sku: x[3] || "", vendor: x[4] || "", type: x[5] || "", status: x[6] || "", price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8],
       store: +x[9] || 0, prep: +x[10] || 0, fba: +x[11] || 0, awd: +x[12] || 0, shop: +x[13] || 0, anr: +x[14] || 0, amz: +x[15] || 0, s90: +x[16] || 0, last: x[17] || "",
-      disc: x[18] === true || x[18] === "true", culled: x[19] === true || x[19] === "true", cAt: x[20] || "", cBy: x[21] || "", cNote: x[22] || "", added: x[23] || "", how: x[24] || "", onOrder: +x[25] || 0, st: x[26] || "", stNote: x[27] || "", stBy: x[28] || "", stAt: x[29] || "" }));
+      disc: x[18] === true || x[18] === "true", culled: x[19] === true || x[19] === "true", cAt: x[20] || "", cBy: x[21] || "", cNote: x[22] || "", added: x[23] || "", how: x[24] || "", onOrder: +x[25] || 0, st: x[26] || "", stNote: x[27] || "", stBy: x[28] || "", stAt: x[29] || "", barcode: x[30] || "" }));
     group();
   }
   // a product's name without its size/color part ("Pure Aero 2026 - 4 1/8" (#1)" → "Pure Aero 2026")
   const base = (t) => String(t || "").split(" - ")[0].trim() || t;
   function group() {
-    const by = new Map();
+    const by = new Map(), seen = new Map();
+    for (const v of S.rows) { const k = v.sku.trim().toLowerCase(); if (k && !v.culled) seen.set(k, (seen.get(k) || 0) + 1); }
+    S.dups = new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
     for (const v of S.rows) {
       v.stock = v.store + v.prep + v.fba + v.awd; v.sold = v.shop + v.anr + v.amz;
       let p = by.get(v.pid); if (!p) by.set(v.pid, p = { pid: v.pid, title: base(v.title), vendor: v.vendor, type: v.type, vs: [] });
@@ -81,10 +91,12 @@
   }
   const fOk = (p, f) => f === "removed" ? p.vs.some(v => v.culled) : p.allCulled ? false
     : f === "all" ? true : f === "todo" ? p.todo : f === "mixed" ? p.st === "mixed" : p.st === f;
+  const mVs = (p, f) => p.vs.filter(v => !v.culled && (f === "any" ? missOf(v).length > 0 : MISS[f][1](v)));
+  const mOk = (p, f) => !f || mVs(p, f).length > 0;
   const sOk = (p, f) => !f ? true : f === "shopoff" ? p.draft : f === "disc" ? p.anyDisc : p.stk === f;
   function shown() {
     const q = S.q.trim().toLowerCase();
-    const list = (S.prods || []).filter(p => fOk(p, S.f) && sOk(p, S.sf) && (!S.vendor || p.vendor === S.vendor) && (!S.type || p.type === S.type)
+    const list = (S.prods || []).filter(p => fOk(p, S.f) && sOk(p, S.sf) && mOk(p, S.mf) && (!S.vendor || p.vendor === S.vendor) && (!S.type || p.type === S.type)
       && (!q || (p.title + " " + p.vendor + " " + p.type + " " + p.vs.map(v => v.sku + " " + v.title).join(" ")).toLowerCase().includes(q)));
     const k = SORTK[S.sort] || SORTK.sold;
     return list.sort((a, b) => { const x = k(a), y = k(b); return x < y ? -1 : x > y ? 1 : a.title.localeCompare(b.title); });
@@ -97,6 +109,8 @@
     (isP ? o.isNew : isNew(o)) && o.stk !== "new" ? `<span class="pill ok" title="Added ${esc((o.added || "").slice(0, 10))}${o.how ? " · " + esc(o.how) : ""}">new</span>` : "",
     (isP ? o.anyDisc : o.disc) ? '<span class="pill miss" title="Marked discontinued (Inventory › Discontinued)">discontinued</span>' : "",
     (isP ? o.draft : o.status !== "ACTIVE") ? `<span class="pill pos" title="Shopify status">${esc(isP ? "not active in Shopify" : (o.status || "").toLowerCase())}</span>` : ""].join(" ");
+  const missPill = (v) => { const m = missOf(v); return m.length ? `<span class="pill miss" title="Missing in Shopify — open it to fill in">no ${m.filter(k => k !== "dup").map(k => SHORT[k]).join(" · ")}${m.includes("dup") ? (m.length > 1 ? " · " : "") + "duplicate SKU" : ""}</span>`.replace("no duplicate", "duplicate") : ""; };
+  const codes = (v) => `<span class="mono">${esc(v.sku) || "no SKU"}</span>${v.barcode ? ` · <span class="mono">${esc(v.barcode)}</span>` : ""}`;
   const stockPill = (o) => { const x = STOCKS[o.stk]; return x ? `<span class="pill ${x[1]}" title="${esc(x[2])}${o.onOrder ? ` · ${n0(o.onOrder)} on order` : ""}">${x[0]}</span>` : ""; };
   // the assessment cell: the status, or (not assessed) the suggestion with one-click buttons
   const stCell = (o, key, isP) => {
@@ -120,6 +134,8 @@
       ["Dead stock", n0(live.filter(p => p.stk === "dead").length), "on hand, nothing sold in 12 months"],
       ["Removed", n0(S.prods.filter(p => p.vs.some(v => v.culled)).length), "taken off the list"],
     ].map(([l, v, s]) => `<div class="kpi"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${s}</span></div>`).join("");
+    $("ap-miss").innerHTML = MFILT.map(([k, n]) => `<option value="${k}" ${S.mf === k ? "selected" : ""}>${n}${k ? ` (${n0(S.prods.filter(p => !p.allCulled && fOk(p, S.f) && mOk(p, k)).length)})` : ""}</option>`).join("");
+    $("ap-dl").hidden = !S.mf;
     $("ap-stock").innerHTML = SFILT.map(([k, n]) => `<option value="${k}" ${S.sf === k ? "selected" : ""}>${n}${k ? ` (${n0(S.prods.filter(p => !p.allCulled && fOk(p, S.f) && sOk(p, k)).length)})` : ""}</option>`).join("");
     $("ap-seg").innerHTML = FILTERS.map(([k, n]) => `<button data-ap-f="${k}" aria-pressed="${S.f === k}">${n} <span class="cnt">${n0(S.prods.filter(p => fOk(p, k)).length)}</span></button>`).join("");
     const opts = (k, cur, all) => `<option value="">${all}</option>` + [...new Set(S.prods.map(p => p[k]).filter(Boolean))].sort().map(v => `<option ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("");
@@ -159,15 +175,15 @@
           <td><input type="checkbox" data-ap-selp="${esc(p.pid)}" ${on ? "checked" : ""} ${some ? 'data-some="1"' : ""} aria-label="Select ${esc(p.title)}"></td>
           <td class="rl-car" aria-hidden="true">${p.vs.length > 1 ? (o ? "▾" : "▸") : ""}</td>
           <td class="l"><a class="olink" href="${ADMIN}/products/${esc(p.pid)}" target="_blank" rel="noopener">${esc(one ? one.title : p.title)}</a>
-            <div class="meta">${one ? `<span class="mono">${esc(one.sku) || "no SKU"}</span>` : `${n0(vs.length)} size${vs.length === 1 ? "" : "s"} / color${vs.length === 1 ? "" : "s"}${p.someCulled && !rem ? ` · ${n0(p.vs.length - vs.length)} removed` : ""}`} ${stockPill(p)} ${tags(p, true)}</div></td>
+            <div class="meta">${one ? `${codes(one)} ${missPill(one)}` : `${n0(vs.length)} size${vs.length === 1 ? "" : "s"} / color${vs.length === 1 ? "" : "s"}${p.someCulled && !rem ? ` · ${n0(p.vs.length - vs.length)} removed` : ""}${(() => { const n = mVs(p, S.mf || "any").length; return n ? ` <span class="pill miss" title="Sizes / colors missing ${S.mf && S.mf !== "any" ? esc(MISS[S.mf][0].toLowerCase()) : "info"} in Shopify">${n0(n)} missing ${S.mf && S.mf !== "any" ? esc(SHORT[S.mf]) : "info"}</span>` : ""; })()}`} ${stockPill(p)} ${tags(p, true)}</div></td>
           <td class="l ap-stc">${rem ? "" : stCell(p, "p" + p.pid, true)}</td>
           <td class="l small">${esc(p.vendor || "—")}<div class="meta">${esc(p.type || "")}</div></td>
           <td class="num">${stockCell(p)}</td><td class="l small muted">${where(p)}</td>
           <td class="num">${soldCell(p)}</td><td class="l small muted">${chans(p)}</td>
           <td class="l small">${p.last ? esc(sd(p.last)) : '<span class="dim">—</span>'}</td>
           <td class="l small">${rem ? vs.map(v => v.cNote).filter(Boolean).slice(0, 1).map(esc).join("") || '<span class="dim">removed</span>' : ""}</td></tr>
-          ${o && p.vs.length > 1 ? vs.map(v => `<tr class="ap-v"><td><input type="checkbox" data-ap-selv="${esc(v.vid)}" ${S.sel.has(v.vid) ? "checked" : ""} aria-label="Select ${esc(v.title)}"></td><td></td>
-            <td class="l"><a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span> ${stockPill(v)} ${tags(v, false)}</div></td>
+          ${(o || S.mf) && p.vs.length > 1 ? (S.mf && !o ? vs.filter(v => S.mf === "any" ? missOf(v).length : MISS[S.mf][1](v)) : vs).map(v => `<tr class="ap-v"><td><input type="checkbox" data-ap-selv="${esc(v.vid)}" ${S.sel.has(v.vid) ? "checked" : ""} aria-label="Select ${esc(v.title)}"></td><td></td>
+            <td class="l"><a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta">${codes(v)} ${missPill(v)} ${stockPill(v)} ${tags(v, false)}</div></td>
             <td class="l ap-stc">${v.culled ? "" : stCell(v, "v" + v.vid, false)}</td><td></td><td class="num">${stockCell(v)}</td><td class="l small muted">${where(v)}</td><td class="num">${soldCell(v)}</td><td class="l small muted">${chans(v)}</td>
             <td class="l small">${v.last ? esc(sd(v.last)) : '<span class="dim">—</span>'}</td><td class="l small">${v.culled ? `<span class="dim" title="${esc(v.cBy)} · ${esc(v.cAt.slice(0, 10))}">${esc(v.cNote || "removed")}</span>` : ""}</td></tr>`).join("") : ""}`;
       }).join("") || `<tr><td colspan="11" class="l muted">${S.prods.length ? "Nothing matches." : "No products."}</td></tr>`}</tbody>`;
@@ -240,6 +256,19 @@
   $("ap-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; S.limit = 150; render(); });
   $("ap-type").addEventListener("change", (e) => { S.type = e.target.value; S.limit = 150; render(); });
   $("ap-stock").addEventListener("change", (e) => { S.sf = e.target.value; S.limit = 150; render(); });
+  $("ap-miss").addEventListener("change", (e) => { S.mf = e.target.value; S.limit = 150; render(); });
+  // the list to fill in (one row per size / color that's missing something), e.g. to work through in Shopify's bulk editor
+  $("ap-dl").addEventListener("click", async () => {
+    const q = (x) => /[",\n]/.test(String(x ?? "")) ? `"${String(x).replace(/"/g, '""')}"` : String(x ?? "");
+    const rows = [["Product", "Size / color", "Vendor", "Category", "SKU", "UPC", "Cost", "Price", "Missing", "On hand", "Sold 12 mo", "Shopify"]];
+    for (const p of shown()) for (const v of mVs(p, S.mf)) rows.push([p.title, v.title.includes(" - ") ? v.title.split(" - ").slice(1).join(" - ") : "", v.vendor, v.type, v.sku, v.barcode, v.cost ?? "", v.price ?? "",
+      missOf(v).map(k => MISS[k][0]).join("; "), v.stock, v.sold, `${ADMIN}/products/${v.pid}/variants/${v.vid}`]);
+    const d = window.claude && window.claude.use ? await window.claude.use("downloads").catch(() => null) : null;
+    const b = $("ap-note2");
+    if (!d) { b.hidden = false; b.className = "note warn"; b.textContent = "Downloads aren't available here."; return; }
+    try { await d.save({ filename: `products-${S.mf === "any" ? "missing-info" : "missing-" + S.mf}.csv`, data: rows.map(r => r.map(q).join(",")).join("\n") + "\n", mimeType: "text/csv" }); }
+    catch (e) { if (e && e.code !== "declined") { b.hidden = false; b.className = "note bad"; b.textContent = JT.message(e); } }
+  });
   $("ap-by").addEventListener("change", (e) => { S.by = e.target.value; S.shut.clear(); S.limit = 150; render(); });
   window.apShow = () => { if (!S.rows && !S.err) refresh(); else render(); };
   window.JTActive = { _state: S };
