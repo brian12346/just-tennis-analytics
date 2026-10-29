@@ -125,14 +125,30 @@
     stack = [{ h, t: titleOf(h || "#todo"), n }]; pos = 0;
     if (/\//.test(h)) { target = h; targetT = Date.now(); } }
 
-  // password managers (LastPass, 1Password) filling the app's own fields made pages look edited, so leaving them asked
-  // to save (Oct 29). Every input but sign-in / password ones is marked for them to leave alone.
-  const noFill = (root) => { if (!root || !root.querySelectorAll) return; for (const i of root.querySelectorAll("input:not([data-lpignore]), textarea:not([data-lpignore])")) {
-    if (i.type === "password" || i.type === "email" || /^(login|pwd)-/.test(i.id || "")) continue;
-    i.setAttribute("data-lpignore", "true"); i.setAttribute("data-1p-ignore", ""); i.setAttribute("data-form-type", "other");
-    if (!i.getAttribute("autocomplete")) i.setAttribute("autocomplete", "off"); } };
+  // password managers (LastPass, 1Password, Chrome's own autofill) filling the app's own fields made pages look edited,
+  // so leaving them asked to save (Oct 29). Two layers:
+  // 1. every input but the sign-in / password ones is marked for them to skip — an unrecognised autocomplete token
+  //    (Chrome ignores "off" but honours a token it doesn't know), plus LastPass / 1Password / Bitwarden ignore flags;
+  // 2. a fill that lands in a field the person isn't typing in (not the focused one) is undone before the page sees it,
+  //    so it can't mark anything as changed.
+  const isLogin = (i) => i.type === "password" || i.type === "email" || /^(login|pwd)-/.test(i.id || "");
+  const noFill = (root) => { if (!root || !root.querySelectorAll) return; for (const i of root.querySelectorAll("input:not([data-jtnofill]), textarea:not([data-jtnofill])")) {
+    if (isLogin(i)) continue;
+    i.setAttribute("data-jtnofill", ""); i.setAttribute("data-lpignore", "true"); i.setAttribute("data-lp-ignore", "true"); i.setAttribute("data-1p-ignore", "true");
+    i.setAttribute("data-bwignore", "true"); i.setAttribute("data-form-type", "other");
+    const ac = (i.getAttribute("autocomplete") || "").toLowerCase(); if (!ac || ac === "off" || ac === "on") i.setAttribute("autocomplete", "jt-no-fill"); } };
   const startNoFill = () => { noFill(document.body); new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) { if (n.matches && n.matches("input, textarea")) noFill(n.parentNode); else noFill(n); } }).observe(document.body, { childList: true, subtree: true }); };
   if (document.body) startNoFill(); else document.addEventListener("DOMContentLoaded", startNoFill);
+  const typed = new WeakSet();       // fields the person has typed or pasted in (keys, paste, drop, IME) since the page drew them
+  document.addEventListener("keydown", (e) => { const t = e.target; if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) typed.add(t); }, true);
+  for (const ev of ["paste", "drop", "compositionstart", "cut"]) document.addEventListener(ev, (e) => { if (e.target) typed.add(e.target); }, true);
+  const unfill = (e) => {
+    const t = e.target; if (!t || !(t.tagName === "INPUT" || t.tagName === "TEXTAREA") || isLogin(t) || !t.hasAttribute("data-jtnofill")) return;
+    if (t.type === "checkbox" || t.type === "radio" || t.type === "file" || t.type === "date" || t.type === "range") return;
+    if (t === document.activeElement || typed.has(t)) return;
+    if (t.value !== t.defaultValue) { t.value = t.defaultValue; e.stopImmediatePropagation(); }
+  };
+  document.addEventListener("input", unfill, true); document.addEventListener("change", unfill, true);
   window.JTNav = { guard: (fn) => { guard = fn; }, at, replace, go, on: (page, fn) => handlers.set(page, fn), onClose: (fn) => closers.push(fn),
     get current() { return stack[pos]; }, get target() { return target; }, done() { target = null; }, _s: () => ({ stack, pos, target }) };
 })();
