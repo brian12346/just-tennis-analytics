@@ -7,7 +7,15 @@
   //   window.claude.use("db")        -> the page's document storage (JT.docStore in db.js: Supabase table jt.docs)
   //   window.claude.use("downloads") -> saves files through the browser
   // Every database call goes through public.jt_* functions, which only answer the accounts in jt.app_users.
-  if (window.claude && window.claude.use) return;
+  // the sign-in and change-password forms are only on the page while they're showing: hidden password boxes made
+  // LastPass treat every page as a login and fill the app's own fields (Oct 29, Brian: "taking the hidden sign in boxes
+  // off is the cleaner fix"). Inside Claude there's no sign-in at all, so they're removed for good.
+  const park = (id) => { const f = document.getElementById(id); if (f && f.parentNode) { park.home[id] = f.parentNode; f.remove(); } return f; };
+  park.home = {};
+  const unpark = (f) => { if (f && !f.isConnected && park.home[f.id]) park.home[f.id].appendChild(f); };
+  if (window.claude && window.claude.use) { const drop = () => { for (const id of ["login", "pwd"]) { const d = document.getElementById(id); if (d) d.remove(); } };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", drop); else drop(); return; }
+  let loginForm = null, pwdForm = null;
 
   const SB_URL = "https://ppmzrlqvrhzfxobvnlon.supabase.co";
   const SB_KEY = "sb_publishable_nPVLpNx1vs2qfpEK7nFmag_5Z3NqDYb";   // publishable key: safe in the page, grants nothing by itself
@@ -19,6 +27,7 @@
 
   // ---------- sign-in ----------
   function showLogin(msg) {
+    unpark(loginForm);
     document.body.classList.add("signed-out");
     $("login").hidden = false;
     $("login-msg").textContent = msg || "";
@@ -26,7 +35,7 @@
   }
   function signedIn(session) {
     document.body.classList.remove("signed-out");
-    $("login").hidden = true;
+    $("login").hidden = true; if (loginForm) loginForm.remove();
     $("acct").hidden = false;
     $("whoami").textContent = session.user.email || "";
     readyResolve();
@@ -55,8 +64,8 @@
       signedIn(data.session);
     });
     // change password: check the current one by signing in with it, then set the new one
-    const pwdClose = () => { $("pwd").hidden = true; $("pwd-form").reset(); $("pwd-msg").textContent = ""; };
-    $("chpass").addEventListener("click", () => { $("pwd").hidden = false; $("pwd-msg").textContent = ""; setTimeout(() => $("pwd-cur").focus(), 0); });
+    const pwdClose = () => { $("pwd").hidden = true; pwdForm.reset(); pwdForm.querySelector("#pwd-msg").textContent = ""; pwdForm.remove(); };
+    $("chpass").addEventListener("click", () => { unpark(pwdForm); $("pwd").hidden = false; $("pwd-msg").textContent = ""; setTimeout(() => $("pwd-cur").focus(), 0); });
     $("pwd-cancel").addEventListener("click", pwdClose);
     $("pwd").addEventListener("keydown", (e) => { if (e.key === "Escape") pwdClose(); });
     $("pwd-form").addEventListener("submit", async (ev) => {
@@ -77,6 +86,7 @@
       } catch (e) { msg.textContent = (e && e.message) || String(e); }
       finally { btn.disabled = false; }
     });
+    loginForm = park("login-form"); pwdForm = park("pwd-form");     // listeners are on them already; back in only when shown
     $("signout").addEventListener("click", async () => { cache.clear(); if (window.JTCache) window.JTCache.clear(); if (sb) await sb.auth.signOut(); location.reload(); });
     boot();
   });
