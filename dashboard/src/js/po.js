@@ -1778,8 +1778,10 @@
     const ivCard = (v, i) => { const t = invTot(v), c = count(v), bad = c.check + c.none, pct = t.b ? Math.round(t.g / t.b * 100) : 0, on = mode === "inv" && i === ed.cur;
       const rp = v.isNew || !v.id ? '<span class="pill warn">not saved</span>' : bad ? `<span class="pill miss">${bad} to check</span>` : v.recvAt ? '<span class="pill ok">✓ Received</span>' : t.b > t.g ? `<span class="pill warn">${n0(t.b - t.g)} to come</span>` : "";
       const meta = [v.date && shortDate(v.date), v.due && "due " + shortDate(v.due), t.b ? `${n0(t.g)} of ${n0(t.b)} in` : ""].filter(Boolean).map(esc).join(" · ");
-      return `<button class="po2-inv ${on ? "on" : ""}" data-inv="${i}" aria-pressed="${on}" title="Show invoice ${esc(v.no || "")}"><span class="po2-ih"><b>${esc(v.no || "(no number)")}</b><span class="num">${v.total != null ? m(v.total) : ""}</span></span>
-        ${meta ? `<span class="small muted">${meta}</span>` : ""}${t.b ? `<span class="po2-track sm"><span style="width:${pct}%"></span></span>` : ""}<span class="po2-pills">${rp}${v.id && !v.isNew ? (invClosed(v) ? closedPill : qbPill(v)) : ""}</span></button>`; };
+      // a div, so the picked one can hold its own View invoice button (Oct 29: "it needs to be in the invoice box")
+      return `<div class="po2-inv ${on ? "on" : ""}" role="button" tabindex="0" data-inv="${i}" aria-pressed="${on}" title="Show invoice ${esc(v.no || "")}"><span class="po2-ih"><b>${esc(v.no || "(no number)")}</b><span class="num">${v.total != null ? m(v.total) : ""}</span></span>
+        ${meta ? `<span class="small muted">${meta}</span>` : ""}${t.b ? `<span class="po2-track sm"><span style="width:${pct}%"></span></span>` : ""}<span class="po2-pills">${rp}${v.id && !v.isNew ? (invClosed(v) ? closedPill : qbPill(v)) : ""}</span>
+        ${on && (v.id || v.rows.length) ? `<span class="po2-ivview"><button class="btn sm primary" data-pact="iv-peek" title="The PDF and lines in a popup — close it to come back here">View invoice</button></span>` : ""}</div>`; };
     const flat = (k, label, n, cls) => `<button class="po2-inv flat ${cls || ""} ${mode === k ? "on" : ""}" data-pview="${k}" aria-pressed="${mode === k}"><span class="po2-ih"><span>${label}</span><span class="muted num">${n0(n)}</span></span></button>`;
     // what isn't on an invoice yet: always listed once there are invoices; gold when something is waiting for one
     const niLines = ed.lines.filter(l => pr.get(l.id).open > 0), niWait = niLines.filter(l => !l.backorder).length;
@@ -1787,7 +1789,7 @@
         <span class="po2-ih"><span>Not on an invoice</span><span class="muted num">${n0(vw.notInv)}</span></span>
         ${vw.notInv ? `<span class="small muted">${niLines.length} product${niLines.length === 1 ? "" : "s"}${niLines.length - niWait ? ` · ${niLines.length - niWait} backordered` : ""}</span><span class="po2-pills"><span class="pill warn">${niWait ? "Waiting for an invoice" : "Backordered"}</span></span>` : ""}</button>`;
     const selIv = mode === "inv" && ivNow && ivNow.id && !ivNow.isNew ? ivNow : null;
-    const selActs = selIv ? `<div class="po2-ivact"><button class="btn sm primary" data-pact="iv-peek" title="The PDF and lines in a popup — close it to come back here">View invoice</button><button class="btn sm" data-pact="print-inv">Print invoice</button>${selIv.parts || selIv.file ? '<button class="btn sm" data-pact="print-pdf">Vendor PDF</button>' : ""}${selIv.recvAt ? (selIv.recvManual && !ro ? '<button class="btn sm" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "") : !ro && invTot(selIv).g > 0 ? '<button class="btn sm" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : ""}<button class="btn sm" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></div>${invStepsHtml(ed, selIv)}` : "";
+    const selActs = selIv ? `<div class="po2-ivact"><button class="btn sm" data-pact="print-inv">Print invoice</button>${selIv.parts || selIv.file ? '<button class="btn sm" data-pact="print-pdf">Vendor PDF</button>' : ""}${selIv.recvAt ? (selIv.recvManual && !ro ? '<button class="btn sm" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "") : !ro && invTot(selIv).g > 0 ? '<button class="btn sm" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : ""}<button class="btn sm" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></div>${invStepsHtml(ed, selIv)}` : "";
     const dd = (id, k, v, empty) => `<dt>${k}</dt><dd><button class="hfield2" data-hedit="${id}" title="Edit ${k.toLowerCase()}">${v ? esc(v) : `<span class="dim">${empty}</span>`}</button></dd>`;
     const invSum = ed.invoices.filter(v => v.id && !v.isNew).reduce((a, v) => a + (v.total != null ? v.total : v.subtotal || 0), 0);
     const trow = (k, u, c, mu) => `<span class="${mu ? "muted" : ""}">${k}</span><span class="num ${mu ? "muted" : ""}">${u}</span><span class="num ${mu ? "muted" : ""}">${c}</span>`;
@@ -3568,6 +3570,7 @@
       if (e.target.id === "po-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.add); if (f.length) addLine(f[0]); else render(); }
       if (e.target.id === "pe-sq" && e.key === "Enter") { e.preventDefault(); const b = box.querySelector(".mres button[data-ppick]"); if (b) b.click(); }
       if (e.target.id === "pe-sq" && e.key === "Escape") { ed.search = null; render(); }
+      if (e.target.dataset && e.target.dataset.inv != null && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); e.target.click(); return; }
       if (e.target.id === "iv-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.ivAdd); if (f.length) ivAddPick(ed, f[0]); else render(); }
       if (e.target.id === "iv-add" && e.key === "Escape") { ed.ivAdd = ""; render(); }
       const f = e.target.dataset && e.target.dataset.f;
@@ -3578,7 +3581,7 @@
       }
     });
     box.addEventListener("click", (e) => {
-      const ed = S.ed, b = e.target.closest("button"); if (!ed || !b) return;
+      const ed = S.ed, b = e.target.closest("button, [data-inv]"); if (!ed || !b) return;
       const iv = cur(ed);
       if (b.dataset.fix) { fix(b.dataset); return; }
       if (b.dataset.hedit) { openHead(b.dataset.hedit); return; }
