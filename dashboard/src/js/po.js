@@ -1036,8 +1036,8 @@
   // no PO yet, then on a PO with products still to come in, then complete (received, or nothing on it to receive).
   // QuickBooks and payment show on the cards and in the table; they don't move an invoice between lanes.
   // Draft comes first (Brian, Oct 28: "let's add a draft swimlane to the invoices page"): an invoice stays there until
-  // it's marked complete — new uploads, + New invoice, and the drafts the hourly Dropbox task makes.
-  const LANES = [["draft", "Draft", "not marked complete yet"], ["issues", "Import issues", "lines to check or match"], ["nopo", "No PO", "waiting for their purchase order"],
+  // it's marked verified — new uploads, + New invoice, and the drafts the hourly Dropbox task makes.
+  const LANES = [["draft", "Draft", "not verified yet"], ["issues", "Import issues", "lines to check or match"], ["nopo", "No PO", "waiting for their purchase order"],
     ["receive", "Ready to receive", "on a PO, products still to come in"], ["complete", "Complete", "received"]];
   const laneOf = (v) => !v.completeAt ? "draft" : v.check > 0 ? "issues" : !v.oid ? "nopo" : !v.recvAt && v.billed > 0 ? "receive" : "complete";
   const LANE_CARDS = 6;
@@ -1917,9 +1917,9 @@
     // ---------- page layout (v0.35.0, Brian Oct 28): the PO page's look — header, summary band, lines, cards on the right ----------
     const c = count(iv), savedTxt = ed.dirty ? '<span class="pill warn">Unsaved changes</span>' : saved ? "All changes saved" : "";
     const matched = iv.rows.length > 0 && !c.check && !c.none;
-    // the steps show where the invoice is now (Oct 29: "why does this start with complete?"): Draft is lit until it's
-    // marked complete; steps behind the current one get a ✓
-    const steps = [["Draft", true], ["Complete", !!iv.completeAt], ...(ed.alone ? [] : [["Received", !!iv.recvAt]]), ["In QuickBooks", !!iv.qbo], ["Paid", !!iv.paidOn]];
+    // the steps show where the invoice is now (Oct 29: "why does this start with complete?"; "Complete" renamed Verified Oct 29): Draft is lit until it's
+    // marked verified; steps behind the current one get a ✓
+    const steps = [["Draft", true], ["Verified", !!iv.completeAt], ...(ed.alone ? [] : [["Received", !!iv.recvAt]]), ["In QuickBooks", !!iv.qbo], ["Paid", !!iv.paidOn]];
     const nowAt = steps.reduce((a, x, i) => x[1] ? i : a, 0);
     const stepHtml = steps.map(([k, ok], i) => `<span class="step ${i === nowAt ? "on" : ok ? "done" : ""}">${ok && i < nowAt ? "✓ " : ""}${k === "Paid" && !ok && iv.due ? `Unpaid · due ${esc(shortDate(iv.due))}` : k}</span>`).join('<span class="step-sep">→</span>');
     const rowSum = iv.rows.reduce((a, r) => a + rowAmt(r), 0), chg = iv.rows.filter(r => r.skip).reduce((a, r) => a + rowAmt(r), 0);
@@ -1963,11 +1963,11 @@
       <div class="po-top po2-top">
         <div class="po2-headrow">
           <div class="po2-tb">
-            <span class="eyebrow">${esc(ed.vendor || (saved ? "Vendor" : "New"))} · Invoice · <span class="pill ${iv.completeAt ? "ok" : "warn"}" title="${iv.completeAt ? `Marked complete ${esc(when(iv.completeAt))}` : "Still being worked on — Mark complete once it matches the vendor's invoice"}">${iv.completeAt ? "Complete" : "Draft"}</span>${savedTxt ? ` · <span class="po2-saved">${savedTxt}</span>` : ""}</span>
+            <span class="eyebrow">${esc(ed.vendor || (saved ? "Vendor" : "New"))} · Invoice · <span class="pill ${iv.completeAt ? "ok" : "warn"}" title="${iv.completeAt ? `Verified ${esc(when(iv.completeAt))}` : "Still being worked on — Mark verified once it matches the vendor's invoice"}">${iv.completeAt ? "Verified" : "Draft"}</span>${savedTxt ? ` · <span class="po2-saved">${savedTxt}</span>` : ""}</span>
             <div class="po2-title"><h2>${esc(iv.no || (saved ? "(no number)" : "New invoice"))}</h2>${iv.id && !iv.isNew ? `<button class="po2-link" data-pact="copy-link" aria-label="Copy a link to this invoice" title="Copy a link to this invoice (needs a Seller Sage sign-in)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></button>` : ""}${overdue(iv) && !iv.paidOn ? payPill(iv) : ""}</div>
           </div>
           <div class="po2-hr"><span class="steps">${stepHtml}</span>
-            <span class="dbtns"><button class="btn" data-pact="revert" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="${saved ? "Throw away the changes since the last save" : "Throw away this new invoice"}">${saved ? "Discard changes" : "Discard"}</button><button class="btn ${(ed.dirty || !saved) && iv.completeAt ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button>${iv.completeAt ? `<button class="btn" data-pact="iv-draft" ${S.busy ? "disabled" : ""} title="Unlock it to make changes">Reopen as draft</button>` : `<button class="btn primary" data-pact="iv-complete" ${S.busy ? "disabled" : ""} title="It matches the vendor's invoice: saves it, locks it, and it can go to QuickBooks">Mark complete</button>`}</span></div>
+            <span class="dbtns"><button class="btn" data-pact="revert" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="${saved ? "Throw away the changes since the last save" : "Throw away this new invoice"}">${saved ? "Discard changes" : "Discard"}</button><button class="btn ${(ed.dirty || !saved) && iv.completeAt ? "primary" : ""}" data-pact="save" ${S.busy || (!ed.dirty && saved) ? "disabled" : ""} title="Save (⌘S / Ctrl+S)">${S.busy === "Saving…" ? "Saving…" : ed.dirty || !saved ? "Save" : "Saved"}</button>${iv.completeAt ? `<button class="btn" data-pact="iv-draft" ${S.busy ? "disabled" : ""} title="Unlock it to make changes">Reopen as draft</button>` : `<button class="btn primary" data-pact="iv-complete" ${S.busy ? "disabled" : ""} title="It matches the vendor's invoice: saves it, locks it, and it can go to QuickBooks">Mark verified</button>`}</span></div>
         </div>
       </div>
       ${ed.confirm === "inv-move" ? moveHtml(ed) : ed.confirm === "alone-link" ? aloneLinkHtml(ed) : ""}
@@ -2312,7 +2312,7 @@
     if (iv.qbo) return `<span class="pill ok" title="${esc(iv.qbo.how === "linked" ? "Was already in QuickBooks — linked" : "Entered from here")} ${esc(when(iv.qbo.at))}${iv.qbo.by ? " · " + esc(iv.qbo.by) : ""}">In QuickBooks · bill ${esc(iv.qbo.doc || iv.no)}</span>
       ${iv.qbo.att ? '<span class="small muted" title="The invoice PDF is attached to the bill">📎 PDF attached</span>' : iv.parts ? `<button class="mini" data-pact="qbo-attach" ${S.busy ? "disabled" : ""} title="Attach the invoice PDF to the bill in QuickBooks">Attach PDF</button>` : ""}
       <a class="small" href="${QBO_BILL}${encodeURIComponent(iv.qbo.id)}" target="_blank" rel="noopener">open ↗</a>${ed.confirm === "qbo-unlink" ? ` <span class="small">Unlink it? (deletes nothing in QuickBooks) <button class="mini" data-pact="qbo-unlink-go">Unlink</button><button class="mini" data-pact="no">Cancel</button></span>` : ` <button class="linkbtn small" data-pact="qbo-unlink" title="If the bill was deleted in QuickBooks">unlink</button>`}`;
-    const why = !iv.id || iv.isNew ? "Save the invoice first" : !iv.completeAt ? "Mark the invoice complete first" : !iv.no ? "The invoice needs a number" : !iv.date ? "The invoice needs a date" : !(ba.all > 0) ? "Nothing to bill" : "";
+    const why = !iv.id || iv.isNew ? "Save the invoice first" : !iv.completeAt ? "Mark the invoice verified first" : !iv.no ? "The invoice needs a number" : !iv.date ? "The invoice needs a date" : !(ba.all > 0) ? "Nothing to bill" : "";
     const busy = S.busy === "Sending to QuickBooks…";
     return `<span class="muted small">${why ? esc(why) : "not entered yet"}</span><button class="mini primary" data-pact="qbo-send" ${why || S.busy ? "disabled" : ""}>${busy ? "Sending…" : "Send to QuickBooks"}</button>`;
   }
@@ -2706,7 +2706,7 @@
         S.busy = "Saving…"; render();
         try { await planCall("jt_invoice_set_complete", "jt.invoice_set_complete", { id: Number(v2.id), on }); S.busy = ""; v2.completeAt = on ? new Date().toISOString() : ""; e2.lineEdit = false; render();
           const off = on && v2.total != null ? Math.round((v2.total - v2.rows.reduce((a, r) => a + rowAmt(r), 0)) * 100) / 100 : 0;
-          loadInvList(true).catch(() => {}); note(off ? "warn" : "info", on ? `Invoice <b>${esc(v2.no)}</b> is complete.${off ? ` Its lines are ${m(Math.abs(off))} ${off < 0 ? "over" : "under"} the invoice total — reopen it if that's wrong.` : ""}` : `Invoice <b>${esc(v2.no)}</b> is a draft again — change what you need, then Mark complete.`); }
+          loadInvList(true).catch(() => {}); note(off ? "warn" : "info", on ? `Invoice <b>${esc(v2.no)}</b> is verified${off || e2.alone || v2.recvAt ? "" : " — ready to receive"}.${off ? ` Its lines are ${m(Math.abs(off))} ${off < 0 ? "over" : "under"} the invoice total — reopen it if that's wrong.` : ""}` : `Invoice <b>${esc(v2.no)}</b> is a draft again — change what you need, then Mark verified.`); }
         catch (e) { S.busy = ""; render(); note("bad", "Couldn't change it: " + esc(JT.message(e))); }
       });
       return;
