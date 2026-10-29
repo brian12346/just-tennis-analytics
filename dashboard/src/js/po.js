@@ -584,18 +584,26 @@
   }
   // the POs an invoice can go on: the vendor's own, received / complete ones included (Oct 29: "it didn't let me choose
   // this PO - likely because it has already been received"), then other vendors' open ones
-  function poChoices(vendor, skipId) {
-    const v = (vendor || "").toLowerCase(), os = (S.orders || []).filter(o => o.id !== skipId);
-    const same = os.filter(o => v && o.vendor.toLowerCase() === v);
-    return { sameOpen: same.filter(o => o.status !== "complete"), sameDone: same.filter(o => o.status === "complete"), rest: os.filter(o => !same.includes(o) && o.status !== "complete") };
+  // Oct 29 (Brian): "bias towards matching the vendor on the invoice with the PO vendor" — the invoice's vendor's POs only
+  // (other vendors behind a "Show other vendors' POs" link), the ones holding the invoice's products first, then newest.
+  // Vendor names match loosely: "Wilson" = "Wilson Sporting Goods", case and punctuation ignored.
+  const vkey = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const sameVendor = (a, b) => { const x = vkey(a), y = vkey(b); return !!x && !!y && (x === y || (Math.min(x.length, y.length) >= 4 && (x.startsWith(y) || y.startsWith(x)))); };
+  const poSort = (rk) => { const sh = new Map((rk || []).map(x => [x.o.id, x.shared])); return (a, b) => (sh.get(b.id) || 0) - (sh.get(a.id) || 0) || Number(b.id) - Number(a.id); };
+  function poChoices(vendor, skipId, rk) {
+    const os = (S.orders || []).filter(o => o.id !== skipId), srt = poSort(rk);
+    const same = os.filter(o => sameVendor(o.vendor, vendor)).sort(srt);
+    return { sameOpen: same.filter(o => o.status !== "complete"), sameDone: same.filter(o => o.status === "complete"), rest: os.filter(o => !same.includes(o) && o.status !== "complete").sort(srt) };
   }
-  const poOptgroups = (ed, c, opt) => `${c.sameOpen.length ? `<optgroup label="${esc(ed.vendor)}">${c.sameOpen.map(opt).join("")}</optgroup>` : ""}${c.sameDone.length ? `<optgroup label="${esc(ed.vendor)} · complete">${c.sameDone.map(opt).join("")}</optgroup>` : ""}${c.rest.length ? `<optgroup label="Other vendors">${c.rest.map(opt).join("")}</optgroup>` : ""}`;
+  const hideOther = (ed, c) => !ed.showOther && (c.sameOpen.length + c.sameDone.length) > 0;
+  const poOptgroups = (ed, c, opt) => `${c.sameOpen.length ? `<optgroup label="${esc(ed.vendor)}">${c.sameOpen.map(opt).join("")}</optgroup>` : ""}${c.sameDone.length ? `<optgroup label="${esc(ed.vendor)} · complete">${c.sameDone.map(opt).join("")}</optgroup>` : ""}${c.rest.length && !hideOther(ed, c) ? `<optgroup label="${c.sameOpen.length + c.sameDone.length ? "Other vendors" : "Open purchase orders"}">${c.rest.map(opt).join("")}</optgroup>` : ""}`;
+  const otherBtn = (ed, c) => c.rest.length && hideOther(ed, c) ? ` <button class="linkbtn small" data-pact="po-other" title="The invoice is from ${esc(ed.vendor)} — only its POs are listed">Show other vendors' POs (${n0(c.rest.length)})</button>` : "";
   // Link invoice (PO page, Oct 29: "i added an invoice to the system and want to link it. we need a button"): saved
   // invoices with no PO, this vendor's first
   function linkInvHtml(ed) {
     if (!S.invs) return '<div class="note info small">Loading invoices…</div>';
     const v = (ed.vendor || "").toLowerCase(), loose = S.invs.filter(x => !x.oid);
-    const same = loose.filter(x => x.vendor.toLowerCase() === v), rest = loose.filter(x => !same.includes(x));
+    const same = loose.filter(x => sameVendor(x.vendor, ed.vendor)), rest = loose.filter(x => !same.includes(x));
     const opt = (x) => `<option value="${esc(x.id)}">${esc(x.vendor || "—")} · ${esc(x.no || "(no number)")}${x.date ? " · " + esc(shortDate(x.date)) : ""}${x.total != null ? " · " + esc(m(x.total)) : ""}</option>`;
     if (!loose.length) return `<div class="note info small">No saved invoices without a PO. Use <b>+ Add invoice</b> to read a PDF, or <b>+ New invoice</b> on Orders. <button class="linkbtn small" data-pact="no">Close</button></div>`;
     return `<div class="note warn small">Link a saved invoice to this PO:
@@ -603,11 +611,11 @@
       Units already received here count on it (up to what it bills). <span class="dbtns"><button class="mini primary" data-pact="link-inv-go">Link it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
   function aloneLinkHtml(ed) {
-    const c = poChoices(ed.vendor), all = [...c.sameOpen, ...c.sameDone, ...c.rest];
+    const c = poChoices(ed.vendor, undefined, ed.moveRank && ed.moveRank.rk), all = [...c.sameOpen, ...c.sameDone, ...(hideOther(ed, c) ? [] : c.rest)];
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     return `<div class="note warn">Put this invoice on a purchase order:
       ${ed.moveRank ? rankHtml(ed.moveRank.rk, ed.moveRank.n, 'data-pact="alone-link-go" data-k') : ""}
-      <select id="pe-alonepo" class="inp sm" style="width:auto;max-width:320px">${poOptgroups(ed, c, opt)}</select>
+      <select id="pe-alonepo" class="inp sm" style="width:auto;max-width:320px">${poOptgroups(ed, c, opt)}</select>${otherBtn(ed, c)}
       <span class="dbtns"><button class="mini primary" data-pact="alone-link-go" ${all.length ? "" : "disabled"}>Add it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
 
@@ -788,24 +796,25 @@
     // the PO # on the invoice: "1125" is PO1125 (poKey drops a leading "PO")
     const poKey = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^po/, "");
     const same = inv.po_no && S.orders.find(o => o.status !== "complete" && (norm(o.po) === norm(inv.po_no) || (poKey(o.po) && poKey(o.po) === poKey(inv.po_no)))
-      && (!inv.vendor || !o.vendor || o.vendor.toLowerCase() === inv.vendor.toLowerCase()));
+      && (!inv.vendor || !o.vendor || sameVendor(o.vendor, inv.vendor)));
     if (same) { await openPO(same.id); return attach(pend, S.ed, `Added to <b>${esc(same.vendor)} ${esc(poLabel(same.po))}</b> (the PO # on the invoice). `); }
     choosePO(pend);
   }
   // no PO matched: pick one of the vendor's open POs, or start a new PO
   async function choosePO(pend) {
     S.mode = "inv"; S.invOpen = false; S.pend = pend; goInvTab();
-    const inv = pend.inv, vend = (inv.vendor || "").toLowerCase();
+    const inv = pend.inv;
     // the vendor's open orders that already have these products: the likely home for this invoice
     const vids = [...new Set((inv.lines || []).map(l => { const g = guessLine(l, inv.vendor); return SURE.has(g.how) ? g.vid : null; }).filter(Boolean))];
     const rk = inv.vendor ? await rankOpenPOs(inv.vendor, vids).catch(() => []) : [];
     const best = rk.find(x => x.shared > 0 && x.shared * 2 >= vids.length);
     const open = (S.orders || []).filter(o => o.status !== "complete");
-    const same = open.filter(o => vend && o.vendor.toLowerCase() === vend), rest = open.filter(o => !same.includes(o));
+    const same = open.filter(o => sameVendor(o.vendor, inv.vendor)).sort(poSort(rk)), rest0 = open.filter(o => !same.includes(o)).sort(poSort(rk));
+    const rest = same.length && !pend.showOther ? [] : rest0, moreBtn = rest0.length && !rest.length ? `<button class="linkbtn small" data-pend="others" title="The invoice is from ${esc(inv.vendor)} — only its POs are listed">Show other vendors' POs (${n0(rest0.length)})</button>` : "";
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     note("warn", `<b>Which purchase order is invoice ${esc(inv.invoice_no || file0(pend))} from ${esc(inv.vendor || "this vendor")} for?</b>${inv.po_no ? ` It says PO # <span class="mono">${esc(inv.po_no)}</span>, which doesn't match an open PO.` : " No PO # was found on it."}
       ${best ? `<div class="small"><b>There's an open order with these products</b> — add the invoice to it rather than starting another PO:</div>` : ""}${rankHtml(rk, vids.length, 'data-pend="pick" data-o')}
-      <div class="row">${open.length ? `<select id="pe-pendpo" class="inp sm" style="width:auto;max-width:340px">${same.length ? `<optgroup label="${esc(inv.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="${same.length ? "Other vendors" : "Open purchase orders"}">${rest.map(opt).join("")}</optgroup>` : ""}</select><button class="mini primary" data-pend="pick">Add it to this PO</button>` : ""}
+      <div class="row">${open.length ? `<select id="pe-pendpo" class="inp sm" style="width:auto;max-width:340px">${same.length ? `<optgroup label="${esc(inv.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="${same.length ? "Other vendors" : "Open purchase orders"}">${rest.map(opt).join("")}</optgroup>` : ""}</select><button class="mini primary" data-pend="pick">Add it to this PO</button>${moreBtn}` : ""}
       <button class="mini" data-pend="new" ${best ? `title="${esc(best.o.vendor)} ${esc(best.o.po ? poLabel(best.o.po) : "#" + best.o.id)} already has ${best.shared} of these products"` : ""}>Start a new PO from it${best ? " anyway" : ""}</button><button class="mini ${open.length ? "" : "primary"}" data-pend="alone" title="Keep the invoice on its own for now: check its lines, build the Shopify PO from it (Shopify import CSV), and it goes onto that PO when it syncs in">Save the invoice only — no PO yet</button><button class="mini" data-pend="cancel">Cancel</button></div>`);
   }
   const file0 = (pend) => pend.f.name;
@@ -821,6 +830,7 @@
   async function pendGo(how, oid) {
     const pend = S.pend; if (!pend) return;
     if (how === "cancel") { S.pend = null; note("", ""); render(); return; }
+    if (how === "others") { pend.showOther = true; return choosePO(pend); }
     // the PO picker is inside the note: read it before the note is cleared
     const pick = how === "pick" ? (oid || ($("pe-pendpo") || {}).value) : "";
     if (how === "pick" && !pick) return;
@@ -2148,7 +2158,7 @@
   // before starting another PO — Brian, Oct 20). vids = the invoice's matched products. -> [{o, shared, open}]
   async function rankOpenPOs(vendor, vids, skipId) {
     const want = new Set((vids || []).filter(Boolean).map(String));
-    const open = (S.orders || []).filter(o => o.id !== skipId && (vendor ? o.vendor.toLowerCase() === vendor.toLowerCase() : o.status !== "complete"));
+    const open = (S.orders || []).filter(o => o.id !== skipId && (vendor ? sameVendor(o.vendor, vendor) : o.status !== "complete"));
     if (!want.size || !open.length) return open.map(o => ({ o, shared: 0, open: 0 }));
     const r = await JT.rows(["order_id::text", "variant_id::text", "sum(qty_ordered)", "sum(qty_received)"],
       `from jt.prep_order_lines where order_id in (${open.map(o => JT.int(o.id)).join(",")}) group by 1, 2`, true).catch(() => []);
@@ -2162,12 +2172,12 @@
       <button class="mini ${i === 0 ? "primary" : ""}" ${act}="${esc(x.o.id)}">Use this PO</button></div>`).join("")}</div>`; };
   // picking another PO for a saved invoice (open POs, same vendor first)
   function moveHtml(ed) {
-    const c = poChoices(ed.vendor, ed.id), all = [...c.sameOpen, ...c.sameDone, ...c.rest];
+    const c = poChoices(ed.vendor, ed.id, ed.moveRank && ed.moveRank.rk), all = [...c.sameOpen, ...c.sameDone, ...(hideOther(ed, c) ? [] : c.rest)];
     const opt = (o) => `<option value="${esc(o.id)}">${esc(o.vendor)} · ${esc(o.po ? poLabel(o.po) : "#" + o.id)} (${esc(STAGE.get(o.status))})</option>`;
     const iv = cur(ed), got = iv ? invTot(iv).g : 0;
     return `<div class="note warn">Move this invoice to another purchase order.${got ? ` The ${n0(got)} unit${got === 1 ? "" : "s"} received against it move with it (stock doesn't change; this PO keeps the rest).` : ""}${iv && iv.qbo ? " Its QuickBooks bill isn't changed." : ""}
       ${ed.moveRank ? rankHtml(ed.moveRank.rk, ed.moveRank.n, 'data-pact="inv-move-to" data-k') : ""}
-      <select id="pe-movepo" class="inp sm" style="width:auto;max-width:320px">${poOptgroups(ed, c, opt)}</select>
+      <select id="pe-movepo" class="inp sm" style="width:auto;max-width:320px">${poOptgroups(ed, c, opt)}</select>${otherBtn(ed, c)}
       <span class="dbtns"><button class="mini primary" data-pact="inv-move-go" ${all.length ? "" : "disabled"}>Move it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
   // ---------- the invoice page's lines (v0.35.0, Brian Oct 28: same look as the PO) ----------
@@ -2687,7 +2697,7 @@
     if (a === "open-po") { S.invOpen = false; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); return; }
     if (a === "inv-move") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; }
       const ivm = cur(ed), vids = ivm ? [...new Set((ivm.rows || []).filter(r => r.vid && isSure(r)).map(r => r.vid))] : [];
-      ed.moveRank = null; ed.confirm = "inv-move"; render();
+      ed.moveRank = null; ed.showOther = false; ed.confirm = "inv-move"; render();
       rankOpenPOs(ed.vendor, vids, ed.id).then(rk => { if (S.ed === ed && ed.confirm === "inv-move") { ed.moveRank = { rk, n: vids.length }; render(); } });
       return; }
     if (a === "fix-double") { fixDouble(ed); return; }
@@ -2746,7 +2756,7 @@
     // an invoice without a PO
     if (a === "alone-newpo" && iv) { ed.alone = false; ed.confirm = false; ed.nameIn = true; syncLines(ed); ed.dirty = true; render();
       note("info", `A new purchase order starts from this invoice, with its ${n0(ed.lines.length)} matched product${ed.lines.length === 1 ? "" : "s"}. Name it, then Save.`); setTimeout(() => { const i = $("pe-po"); if (i) i.focus(); }, 0); return; }
-    if (a === "alone-link" && iv) { if (ed.dirty || !iv.id) { note("warn", "Save the invoice first, then add it to a PO."); return; } ed.confirm = "alone-link"; ed.moveRank = null; render();
+    if (a === "alone-link" && iv) { if (ed.dirty || !iv.id) { note("warn", "Save the invoice first, then add it to a PO."); return; } ed.confirm = "alone-link"; ed.moveRank = null; ed.showOther = false; render();
       { const vids = [...new Set((iv.rows || []).filter(r => r.vid && isSure(r)).map(r => r.vid))];
         rankOpenPOs(ed.vendor, vids).then(rk => { if (S.ed === ed && ed.confirm === "alone-link") { ed.moveRank = { rk, n: vids.length }; render(); } }); }
       return; }
@@ -2821,6 +2831,7 @@
     if (a === "bo-no") { ed.boPrompt = false; render(); return; }
     if (a === "del") { ed.confirm = "del"; render(); return; }
     if (a === "no") { ed.confirm = false; render(); return; }
+    if (a === "po-other") { ed.showOther = true; render(); return; }
     if (a === "do-del") { S.busy = "Deleting…"; render(); JT.po.remove(Number(ed.id)).then(async () => { S.busy = ""; S.ed = null; await loadOrders(true); render(); renderList(); note("info", "Purchase order deleted."); })
       .catch(e => { S.busy = ""; ed.confirm = false; render(); note("bad", "Couldn't delete: " + esc(JT.message(e))); }); return; }
     if (a === "back") { if (["partial", "received", "qb_ready", "complete"].includes(ed.status)) { ed.confirm = "unrecv"; render(); } else if (ed.dirty) note("warn", "Save or discard your changes first."); else setStatus2(PREV[ed.status], `Moved back to ${STAGE.get(PREV[ed.status]).toLowerCase()}.`); return; }
