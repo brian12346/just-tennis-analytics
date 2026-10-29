@@ -2033,3 +2033,67 @@
       const o = cache.orders.find(x => x.id === String(id)); if (o) shipFromOrder(o); } };
   if ((location.hash || "") === "#prep") setTimeout(() => window.prepShow(), 0);
 })();
+
+// ---------- column sorting on the Prep center page (Oct 29, Brian: "let's add column sorting to the prep center page") ----
+// Every table on the page (not the popups): click a column header to sort by it, again to reverse, a third time for the
+// page's own order. Sorting is by what the cells show — numbers (units, $) as numbers, dates as dates, the rest as text,
+// blanks last — and it's remembered per table while the page is open (tables redraw, the sort is put back).
+// A row that only spans a few cells (a detail / note row under a product) moves with the row above it.
+(() => {
+  const host = document.getElementById("tab-prep"); if (!host) return;
+  const sorts = new Map();                 // table signature (its header labels) -> { col, dir }
+  const label = (th) => (th.dataset.lbl ?? (th.dataset.lbl = th.textContent.replace(/[▴▾↑↓]/g, "").trim()));
+  const sig = (t) => [...t.tHead.rows[0].cells].map(label).join("|");
+  const MON = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2}(,? \d{2,4})?/i;
+  const val = (td) => {
+    if (!td) return null;
+    if (td.dataset.sort != null) { const n = Number(td.dataset.sort); return isNaN(n) ? td.dataset.sort.toLowerCase() : n; }
+    const t = (td.querySelector("b, .num") || td).textContent.trim(), all = td.textContent.trim();
+    if (!all || /^[—–-]$/.test(all) || all === "0" && false) return null;
+    const mo = MON.exec(all); if (mo) { const y = /\d{4}/.test(mo[0]) ? "" : " " + new Date().getFullYear(); const d = Date.parse(mo[0].replace(/,/g, "") + y); if (!isNaN(d)) return d; }
+    if (/^(today|yesterday)\b/i.test(all)) return Date.now() - (/^y/i.test(all) ? 864e5 : 0);
+    const ago = /^(\d+) (min|minute|hour|day|week|month)s? ago/i.exec(all); if (ago) return Date.now() - Number(ago[1]) * { min: 6e4, minute: 6e4, hour: 36e5, day: 864e5, week: 6048e5, month: 2592e6 }[ago[2].toLowerCase()];
+    const num = /^[-−]?\$?[\d,]+(\.\d+)?%?$/.test(t.replace(/\s/g, "")) ? t : (/^[-−]?\$?[\d,]+(\.\d+)?/.exec(all) || [])[0];
+    if (num != null) { const n = Number(String(num).replace(/[$,%\s]/g, "").replace("−", "-")); if (!isNaN(n)) return n; }
+    return all.toLowerCase();
+  };
+  let busy = false;
+  function apply(t) {
+    if (!t.tHead || !t.tBodies[0] || t.closest(".modal")) return;
+    const ths = [...t.tHead.rows[0].cells], s = sorts.get(sig(t));
+    ths.forEach((th, i) => {
+      if (!label(th) || th.querySelector("input, button")) return;
+      th.classList.add("ps-sort"); th.dataset.col = i;
+      th.setAttribute("aria-sort", s && s.col === i ? (s.dir > 0 ? "ascending" : "descending") : "none");
+      if (!th.title) th.title = `Sort by ${label(th).toLowerCase()}`;
+    });
+    if (!s) return;
+    const tb = t.tBodies[0], rows = [...tb.rows], n = ths.length, groups = [];
+    for (const r of rows) { const span = [...r.cells].reduce((a, c) => a + (c.colSpan || 1), 0), lone = r.cells.length < Math.min(3, n) || (r.cells.length === 1 && span > 1);
+      if (lone && groups.length) groups[groups.length - 1].push(r); else groups.push([r]); }
+    if (groups.length < 2) return;
+    if (!groups.every(g => g[0].dataset.ord != null)) groups.forEach((g, i) => { g[0].dataset.ord = i; });
+    if (s.num == null) { const vs = groups.map(g => val(g[0].cells[s.col])).filter(v => v != null); s.num = vs.length > 0 && vs.filter(v => typeof v === "number").length * 2 >= vs.length; }
+    const keyed = groups.map(g => [val(g[0].cells[s.col]), g, Number(g[0].dataset.ord)]);
+    keyed.sort((a, b) => { const x = a[0], y = b[0];
+      if (x == null || y == null) return x == null && y == null ? a[2] - b[2] : x == null ? 1 : -1;
+      if (typeof x === "number" && typeof y === "number") return (x - y) * s.dir || a[2] - b[2];
+      if (typeof x !== typeof y && s.num) return typeof x === "number" ? -1 : 1;     // a word in a number column ("No cost") goes last
+      return String(x).localeCompare(String(y), undefined, { numeric: true }) * s.dir || a[2] - b[2]; });
+    busy = true; for (const [, g] of keyed) for (const r of g) tb.appendChild(r); busy = false;
+  }
+  const all = () => host.querySelectorAll("table").forEach(t => { try { apply(t); } catch (_) {} });
+  const mo = new MutationObserver(() => { if (busy) return; mo.disconnect(); all(); mo.takeRecords(); mo.observe(host, { childList: true, subtree: true }); });
+  mo.observe(host, { childList: true, subtree: true });
+  host.addEventListener("click", (e) => {
+    const th = e.target.closest("th.ps-sort"); if (!th || e.target.closest("a, button, input, select")) return;
+    const t = th.closest("table"), k = sig(t), col = Number(th.dataset.col), s = sorts.get(k);
+    // first click: numbers high→low, text A→Z; second: the other way; third: back to the page's order
+    if (!s || s.col !== col) { const vs = [...(t.tBodies[0] ? t.tBodies[0].rows : [])].map(r => val(r.cells[col])).filter(v => v != null), num = vs.length > 0 && vs.filter(v => typeof v === "number").length * 2 >= vs.length;
+      sorts.set(k, { col, dir: num ? -1 : 1, n: 1, num }); }
+    else if (s.n === 1) sorts.set(k, { col, dir: -s.dir, n: 2, num: s.num });
+    else { sorts.delete(k); const tb = t.tBodies[0], rows = [...tb.rows].filter(r => r.dataset.ord != null).sort((a, b) => a.dataset.ord - b.dataset.ord);
+      busy = true; for (const r of rows) { let nx = r.nextElementSibling; const tail = []; while (nx && nx.dataset.ord == null) { tail.push(nx); nx = nx.nextElementSibling; } tb.appendChild(r); tail.forEach(x => tb.appendChild(x)); } busy = false; }
+    mo.disconnect(); apply(t); mo.takeRecords(); mo.observe(host, { childList: true, subtree: true });
+  });
+})();
