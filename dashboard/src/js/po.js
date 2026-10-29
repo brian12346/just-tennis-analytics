@@ -599,16 +599,36 @@
   const poOptgroups = (ed, c, opt) => `${c.sameOpen.length ? `<optgroup label="${esc(ed.vendor)}">${c.sameOpen.map(opt).join("")}</optgroup>` : ""}${c.sameDone.length ? `<optgroup label="${esc(ed.vendor)} · complete">${c.sameDone.map(opt).join("")}</optgroup>` : ""}${c.rest.length && !hideOther(ed, c) ? `<optgroup label="${c.sameOpen.length + c.sameDone.length ? "Other vendors" : "Open purchase orders"}">${c.rest.map(opt).join("")}</optgroup>` : ""}`;
   const otherBtn = (ed, c) => c.rest.length && hideOther(ed, c) ? ` <button class="linkbtn small" data-pact="po-other" title="The invoice is from ${esc(ed.vendor)} — only its POs are listed">Show other vendors' POs (${n0(c.rest.length)})</button>` : "";
   // Link invoice (PO page, Oct 29: "i added an invoice to the system and want to link it. we need a button"): saved
-  // invoices with no PO, this vendor's first
+  // invoices with no PO. Oct 29 (Brian): "filter invoices that have the products that are on the PO. it should be an
+  // exception to bring in an invoice that doesn't match on a PO that has already been marked invoiced" — only invoices
+  // sharing products with the PO are listed (most shared first); the rest sit behind "Show other invoices", and linking
+  // one of those to a PO that's past Ordered asks first (link-inv-x).
+  const PO_PRE_INV = ["draft", "ordered"];
+  async function loadLinkOverlap(ed) {
+    const vids = [...new Set(ed.lines.map(l => l.vid).filter(Boolean))].map(JT.int);
+    const r = await JT.rows(["il.invoice_id::text", vids.length ? `count(distinct il.variant_id) filter (where il.variant_id in (${vids.join(",")}))` : "0", "count(distinct il.variant_id)"],
+      "from jt.invoice_lines il join jt.invoices i on i.id = il.invoice_id where i.order_id is null and il.variant_id is not null and il.match_how <> 'skip' group by 1", true);
+    return { n: vids.length, by: new Map(r.map(x => [x[0], { shared: +x[1] || 0, lines: +x[2] || 0 }])) };
+  }
   function linkInvHtml(ed) {
-    if (!S.invs) return '<div class="note info small">Loading invoices…</div>';
-    const v = (ed.vendor || "").toLowerCase(), loose = S.invs.filter(x => !x.oid);
-    const same = loose.filter(x => sameVendor(x.vendor, ed.vendor)), rest = loose.filter(x => !same.includes(x));
-    const opt = (x) => `<option value="${esc(x.id)}">${esc(x.vendor || "—")} · ${esc(x.no || "(no number)")}${x.date ? " · " + esc(shortDate(x.date)) : ""}${x.total != null ? " · " + esc(m(x.total)) : ""}</option>`;
+    if (!S.invs || !ed.linkOv) return '<div class="note info small">Loading invoices…</div>';
+    const ov = ed.linkOv, sh = (x) => (ov.by.get(String(x.id)) || { shared: 0 }).shared;
+    const loose = S.invs.filter(x => !x.oid);
+    const fit = loose.filter(x => sh(x) > 0).sort((a, b) => sh(b) - sh(a) || (sameVendor(b.vendor, ed.vendor) - sameVendor(a.vendor, ed.vendor)) || Number(b.id) - Number(a.id));
+    const rest = loose.filter(x => !fit.includes(x)).sort((a, b) => (sameVendor(b.vendor, ed.vendor) - sameVendor(a.vendor, ed.vendor)) || Number(b.id) - Number(a.id));
+    const show = ed.showOther || !ov.n ? rest : [];
+    const opt = (x) => `<option value="${esc(x.id)}">${esc(x.vendor || "—")} · ${esc(x.no || "(no number)")}${x.date ? " · " + esc(shortDate(x.date)) : ""}${x.total != null ? " · " + esc(m(x.total)) : ""}${sh(x) ? ` · ${n0(sh(x))} of this PO's ${n0(ov.n)} products` : ""}</option>`;
     if (!loose.length) return `<div class="note info small">No saved invoices without a PO. Use <b>+ Add invoice</b> to read a PDF, or <b>+ New invoice</b> on Orders. <button class="linkbtn small" data-pact="no">Close</button></div>`;
+    const more = rest.length && !show.length ? `<button class="linkbtn small" data-pact="po-other" title="Invoices with none of this PO's products${PO_PRE_INV.includes(ed.status) ? "" : " — this PO is already invoiced, so linking one is an exception"}">Show other invoices (${n0(rest.length)})</button>` : "";
+    if (!fit.length && !show.length) return `<div class="note info small">No saved invoice without a PO has this PO's products. ${more} <button class="linkbtn small" data-pact="no">Close</button></div>`;
     return `<div class="note warn small">Link a saved invoice to this PO:
-      <select id="pe-linkinv" class="inp sm" style="width:100%;margin:6px 0">${same.length ? `<optgroup label="${esc(ed.vendor)}">${same.map(opt).join("")}</optgroup>` : ""}${rest.length ? `<optgroup label="Other vendors">${rest.map(opt).join("")}</optgroup>` : ""}</select>
-      Units already received here count on it (up to what it bills). <span class="dbtns"><button class="mini primary" data-pact="link-inv-go">Link it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
+      <select id="pe-linkinv" class="inp sm" style="width:100%;margin:6px 0">${fit.length ? `<optgroup label="Has this PO's products">${fit.map(opt).join("")}</optgroup>` : ""}${show.length ? `<optgroup label="${fit.length ? "None of this PO's products" : "Saved invoices"}">${show.map(opt).join("")}</optgroup>` : ""}</select>
+      Units already received here count on it (up to what it bills). ${more}<span class="dbtns"><button class="mini primary" data-pact="link-inv-go">Link it</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
+  }
+  function linkInvXHtml(ed) {
+    const x = (S.invs || []).find(v => String(v.id) === String(ed.linkPick)) || {};
+    return `<div class="note bad small"><b>Invoice ${esc(x.no || "")}${x.vendor ? " from " + esc(x.vendor) : ""} has none of this PO's products</b>, and this PO is already ${esc((STAGE.get(ed.status) || "").toLowerCase())}. It probably belongs on another PO. Link it here anyway?
+      <span class="dbtns"><button class="mini" data-pact="link-inv-force">Link it anyway</button><button class="mini primary" data-pact="link-inv">Pick another</button><button class="mini" data-pact="no">Cancel</button></span></div>`;
   }
   function aloneLinkHtml(ed) {
     const c = poChoices(ed.vendor, undefined, ed.moveRank && ed.moveRank.rk), all = [...c.sameOpen, ...c.sameDone, ...(hideOther(ed, c) ? [] : c.rest)];
@@ -867,10 +887,12 @@
       : noText ? "This PDF has no text in it (it's probably a scan or photo), so no lines could be read. Add them with <b>Add product</b>."
       : !inv.lines.length ? (pend.csv ? "No product lines were found in the CSV — add them with Add product." : "No item lines were recognised in this PDF. The PDF is shown alongside; add what's missing by hand.")
       : `Read ${inv.lines.length} line${inv.lines.length === 1 ? "" : "s"}: ${c.sure} matched${c.check ? `, <b>${c.check} guess${c.check === 1 ? "" : "es"} to check</b>` : ""}${c.none ? `, <b>${c.none} not matched</b>` : ""}.`
+        + (ed.id && ed.lines.length && !PO_PRE_INV.includes(ed.status) && iv.rows.some(r => r.vid && !r.skip) && !iv.rows.some(r => r.vid && !r.skip && ed.lines.some(l => String(l.vid) === String(r.vid)))
+          ? ` <b>None of this invoice's products are on this PO, and the PO is already ${esc((STAGE.get(ed.status) || "").toLowerCase())}</b> — it probably belongs on another PO. Discard it here and add it from Invoices, or Save and use <b>Move to another PO</b>.` : "")
         + (open && ed.lines.length && ed.id ? ` ${open} product${open === 1 ? " on the PO isn't" : "s on the PO aren't"} on this invoice — mark them backordered on the PO, or leave them on order.` : "")
         + " Nothing is saved until you press Save.";
     showInvoicePage();
-    note(c.none || c.check || !inv.lines.length ? "warn" : "info", msg);
+    note(c.none || c.check || !inv.lines.length || msg.includes("probably belongs on another PO") ? "warn" : "info", msg);
   }
   // switch to the Invoices tab (it renders), or just render when it's already showing
   function goInvTab() {
@@ -1771,7 +1793,7 @@
     const trow = (k, u, c, mu) => `<span class="${mu ? "muted" : ""}">${k}</span><span class="num ${mu ? "muted" : ""}">${u}</span><span class="num ${mu ? "muted" : ""}">${c}</span>`;
     const side = ed.id ? `<aside class="po2-side" aria-label="Invoices and order details">
         <section class="panel po2-card"><div class="po2-ch"><h2>Invoices${ed.invoices.length ? " · " + ed.invoices.length : ""}</h2>${!ro ? `<span class="dbtns">${ed.id ? `<button class="btn sm" data-pact="link-inv" title="Put an invoice that's already saved (with no PO) on this PO">Link invoice</button>` : ""}<label class="btn sm" for="pe-file" title="Read the vendor's invoice PDF and put it on this PO">+ Add invoice</label></span>` : ""}</div>
-          ${ed.confirm === "link-inv" ? linkInvHtml(ed) : ""}
+          ${ed.confirm === "link-inv" ? linkInvHtml(ed) : ed.confirm === "link-inv-x" ? linkInvXHtml(ed) : ""}
           ${flat("all", "All lines", tot.ordered)}${ed.invoices.map(ivCard).join("")}${vw.showLeft ? flat("left", "Still to receive", vw.left) : ""}${anyInv ? notInvCard : ""}
           ${selActs}</section>
         <section class="panel po2-card"><div class="po2-ch"><h2>Order details</h2></div>
@@ -2760,8 +2782,13 @@
       { const vids = [...new Set((iv.rows || []).filter(r => r.vid && isSure(r)).map(r => r.vid))];
         rankOpenPOs(ed.vendor, vids).then(rk => { if (S.ed === ed && ed.confirm === "alone-link") { ed.moveRank = { rk, n: vids.length }; render(); } }); }
       return; }
-    if (a === "link-inv") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.confirm = "link-inv"; render(); if (!S.invs) loadInvList(true).then(render).catch(() => {}); return; }
-    if (a === "link-inv-go") { const inv = ($("pe-linkinv") || {}).value; if (!inv) return; const poId = ed.id; S.busy = "Linking the invoice…"; render();
+    if (a === "link-inv") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.confirm = "link-inv"; ed.showOther = false; ed.linkOv = null; render();
+      Promise.all([S.invs ? null : loadInvList(true), loadLinkOverlap(ed).then(ov => { ed.linkOv = ov; })]).then(() => { if (S.ed === ed) render(); })
+        .catch(err => { ed.confirm = false; render(); note("bad", "Couldn't load the invoices: " + esc(JT.message(err))); }); return; }
+    if (a === "link-inv-go" || a === "link-inv-force") { const inv = a === "link-inv-force" ? ed.linkPick : ($("pe-linkinv") || {}).value; if (!inv) return; const poId = ed.id;
+      const ovx = ed.linkOv && ed.linkOv.by.get(String(inv));
+      if (a === "link-inv-go" && ed.linkOv && ed.linkOv.n && !(ovx && ovx.shared) && !PO_PRE_INV.includes(ed.status)) { ed.linkPick = inv; ed.confirm = "link-inv-x"; render(); return; }
+      S.busy = "Linking the invoice…"; render();
       JT.po.moveInvoice(Number(inv), Number(poId)).then(async () => { S.busy = ""; ed.confirm = false; await loadOrders(true); loadInvList(true).catch(() => {}); await openPO(poId);
         if (S.ed) { const i = S.ed.invoices.findIndex(v => String(v.id) === String(inv)); if (i >= 0) { S.ed.cur = i; S.ed.view = "inv"; } render(); }
         note("info", "Invoice linked to this PO."); })
