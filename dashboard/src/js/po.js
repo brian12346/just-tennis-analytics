@@ -514,9 +514,9 @@
   const rematchMsg = (n) => `${n} invoice line${n === 1 ? " was" : "s were"} matched to products added in Shopify since the invoice was saved. Check them and Save.`;
   // the saved invoices of a PO (or the one invoice of an invoice saved without a PO): header, lines, receipts
   const INV_COLS = ["i.id::text", "i.invoice_no", "i.invoice_date::text", "i.subtotal", "i.file_name", "i.file_parts", "i.status", "i.notes", "i.due_date::text", "i.total", "i.terms",
-    "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id", "i.complete_at::text", "i.pdf_url"];
+    "i.paid_on::text", "i.pay_method", "i.pay_ref", "i.paid_from", "i.paid_amount", "i.received_at::text", "i.received_manual", "i.qbo_bill_id", "i.qbo_doc", "i.qbo_sent_at::text", "i.qbo_how", "i.qbo_sent_by", "i.qbo_attach_id", "i.complete_at::text", "i.pdf_url", "i.paid_source", "i.qbo_balance"];
   async function fillInvoices(ed, ivs) {
-    ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft", completeAt: v[24] || "", pdfUrl: v[25] || "", pdfUrlSaved: v[25] || "",
+    ed.invoices = ivs.map(v => ({ ...blankInv(), id: v[0], no: v[1] || "", date: v[2] || "", subtotal: v[3] == null ? null : +v[3], fileName: v[4] || "", parts: +v[5] || 0, status: v[6] || "draft", completeAt: v[24] || "", pdfUrl: v[25] || "", pdfUrlSaved: v[25] || "", paidSrc: v[26] || "", qboBal: v[27] == null ? null : +v[27],
       notes: v[7] || "", due: v[8] || "", total: v[9] == null ? null : +v[9], terms: v[10] || "", isNew: false,
       paidOn: v[11] || "", payMethod: v[12] || "", payRef: v[13] || "", paidFrom: v[14] || "", paidAmount: v[15] == null ? null : +v[15], recvAt: v[16] || "", recvManual: !!v[17], qbo: v[18] ? { id: v[18], doc: v[19] || "", at: v[20] || "", how: v[21] || "", by: v[22] || "", att: v[23] || "" } : null }));
     if (!ed.invoices.length) return;
@@ -1269,7 +1269,7 @@
       else if (iv.total == null && iv.subtotal != null && !near(ba.all, iv.subtotal) && !near(inv, iv.subtotal)) out.push({ lvl: "warn", kind: "subtotal", title: `Lines add up to ${m(ba.all)}; the invoice subtotal is ${m(iv.subtotal)}`,
         text: "A line may not have been read, or a quantity or cost is off.", fixes: [{ label: "Show the PDF", fix: "ppdf" }] });
       if (iv.total == null) out.push({ lvl: "info", kind: "nototal", title: "No invoice total", text: "Enter it so the QuickBooks breakdown can be checked.", fixes: [{ label: "Enter it", fix: "focus", arg: "pe-invtotal" }] });
-      if (overdue(iv)) out.push({ lvl: "warn", kind: "overdue", title: `Past due · was due ${shortDate(iv.due)}`, text: "Not marked paid yet.", fixes: [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(iv)) }] });
+      if (overdue(iv)) out.push({ lvl: "warn", kind: "overdue", title: `Past due · was due ${shortDate(iv.due)}`, text: qbDrives(iv) ? `QuickBooks shows ${m(iv.qboBal)} still owed — pay it there and it clears here.` : "Not marked paid yet.", fixes: qbDrives(iv) ? [] : [{ label: "Mark paid", fix: "ppaid", arg: String(ed.invoices.indexOf(iv)) }] });
       if (!iv.due) out.push({ lvl: "info", kind: "nodue", title: "No due date", text: "Enter the due date (or the terms) for the QuickBooks bill.", fixes: [{ label: "Enter it", fix: "focus", arg: "pe-invdue" }] });
     }
     const rank = { bad: 0, warn: 1, info: 2 };
@@ -1972,7 +1972,7 @@
         ${ed.id && t.b ? `<div class="po2-bars"><div class="po2-bar"><div class="po2-barl"><span>Received</span><span class="muted">${n0(t.g)} of ${n0(t.b)} units</span></div><span class="po2-track"><span style="width:${Math.min(100, Math.round(t.g / t.b * 100))}%"></span></span>
           <span class="small ${iv.recvAt ? "okt" : "muted"}">${iv.recvAt ? `✓ Received in full${iv.recvAt ? " " + esc(shortDate(String(iv.recvAt).slice(0, 10))) : ""}` : t.g ? `${n0(t.b - t.g)} still to come` : "Nothing received yet"}</span></div></div>` : '<div class="po2-bars"></div>'}
         <div class="po2-big"><span class="eyebrow">Payment</span><span class="po2-pay">${iv.paidOn ? `Paid ${esc(shortDate(iv.paidOn))}` : iv.due ? `Due ${esc(shortDate(iv.due))}` : "No due date"}</span><span class="small ${!iv.paidOn && overdue(iv) ? "neg" : "muted"}">${iv.paidOn ? esc(iv.payMethod || "") : overdue(iv) ? "Overdue" : iv.terms ? esc(iv.terms) : "unpaid"}</span></div>
-        <span class="dbtns">${iv.paidOn ? "" : `<button class="btn primary" data-pact="pay">Mark paid</button>`}${ed.id && iv.id && !iv.isNew ? `<button class="btn" data-pact="print-slip" title="This invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}</span></section>` : "";
+        <span class="dbtns">${iv.paidOn || qbDrives(iv) ? "" : `<button class="btn primary" data-pact="pay">Mark paid</button>`}${ed.id && iv.id && !iv.isNew ? `<button class="btn" data-pact="print-slip" title="This invoice's products with what's been received and what's still open">Print packing slip</button>` : ""}</span></section>` : "";
     const fld = (id, label, val, attrs) => `<label class="stack" for="${id}">${label}<input id="${id}" class="inp ${attrs || ""}" value="${esc(val)}"></label>`;
     const lockF = iv.status === "applied" || !!iv.completeAt;
     const fc = (k, label, n) => `<button class="po2-inv flat ${(iv.filter || "all") === k ? "on" : ""}" data-ifilter="${k}" aria-pressed="${(iv.filter || "all") === k}"><span class="po2-ih"><span>${label}</span><span class="muted num">${n0(n)}</span></span></button>`;
@@ -2308,11 +2308,23 @@
       ${!lock ? `<div class="mrow">${!sure ? `<button class="mini primary" data-pact="confirm" data-k="${r.id}">Confirm</button>` : ""}${alts}<button class="linkbtn small" data-pact="search" data-k="${r.id}">${sure ? "change" : "search"}</button></div>` : ""}`;
   }
   // Paying the invoice: always editable (also on applied invoices and complete POs).
+  // QuickBooks drives payment for an invoice that's in QuickBooks (Oct 29, migration 192): paid there → paid here, with its
+  // date, method and account; open there → no Mark paid here. Marked paid by hand while QuickBooks still has it open → flagged.
+  const qbDrives = (iv) => !!(iv.qbo && iv.qboBal != null);
   function payHtml(ed, iv) {
+    if (qbDrives(iv) && (iv.paidSrc === "quickbooks" || !iv.paidOn)) {
+      const tot = iv.total != null ? iv.total : iv.subtotal, part = !iv.paidOn && tot != null && iv.qboBal < tot - 0.005;
+      return `<div class="pay ${iv.paidOn ? "paid" : overdue(iv) ? "late" : ""}"><div class="pay-head"><b>Payment</b>${iv.paidOn ? `<span class="pill ok">Paid ${esc(shortDate(iv.paidOn))}</span>` : overdue(iv) ? `<span class="pill miss">Overdue · due ${esc(shortDate(iv.due))}</span>` : `<span class="pill warn">Unpaid${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}</span>`}
+        <span class="small muted">from QuickBooks</span></div>
+        <div class="small">${iv.paidOn ? esc(payTxt(iv)) + (iv.paidAmount != null ? ` · ${m(iv.paidAmount)}` : "") : `QuickBooks shows <b>${m(iv.qboBal)}</b> still owed on bill ${esc(iv.qbo.doc || iv.no)}${part ? ` (${m(tot - iv.qboBal)} paid so far)` : ""}.`}</div>
+        <div class="meta">${iv.paidOn ? "Paid in QuickBooks — kept up to date from there." : "Pay it in QuickBooks; it shows as paid here within the hour."}</div></div>`;
+    }
+    const mism = qbDrives(iv) && iv.paidOn && iv.qboBal > 0.005;
     const amt = iv.total != null ? iv.total : iv.subtotal != null ? iv.subtotal : null;
     const diff = iv.paidOn && iv.paidAmount != null && amt != null && !near(iv.paidAmount, amt) ? iv.paidAmount - amt : null;
     return `<div class="pay ${iv.paidOn ? "paid" : overdue(iv) ? "late" : ""}"><div class="pay-head"><b>Payment</b>${iv.paidOn ? `<span class="pill ok">Paid ${esc(shortDate(iv.paidOn))}</span>` : overdue(iv) ? `<span class="pill miss">Overdue · due ${esc(shortDate(iv.due))}</span>` : `<span class="pill warn">Unpaid${iv.due ? " · due " + esc(shortDate(iv.due)) : ""}</span>`}
         <span class="dbtns">${iv.paidOn ? `<button class="mini" data-pact="unpay">Mark unpaid</button>` : `<button class="mini primary" data-pact="pay">Mark paid</button>`}</span></div>
+      ${mism ? `<div class="note warn small">Marked paid here, but QuickBooks still shows <b>${m(iv.qboBal)}</b> owed on bill ${esc(iv.qbo.doc || iv.no)}. Record the payment in QuickBooks (it takes over from there), or mark it unpaid here.</div>` : ""}
       ${iv.paidOn || iv.payMethod || iv.payRef || iv.paidFrom ? `<div class="pmgrid small-grid">
         <label class="stack" for="pe-paidon">Paid on<input id="pe-paidon" class="inp" type="date" value="${esc(iv.paidOn)}"></label>
         <label class="stack" for="pe-paymethod">Paid by<select id="pe-paymethod" class="inp"><option value="" ${!iv.payMethod ? "selected" : ""}>—</option>${PAY.map(([k, n]) => `<option value="${k}" ${iv.payMethod === k ? "selected" : ""}>${n}</option>`).join("")}</select></label>
