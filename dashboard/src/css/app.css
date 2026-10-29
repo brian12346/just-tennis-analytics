@@ -1594,3 +1594,6 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .po2-chip button.po2-chipbtn{width:auto;height:auto;border-radius:6px;padding:0 2px;font:inherit;font-weight:600;text-decoration:underline dotted;text-underline-offset:3px}
 .po2-ivview{display:flex;gap:6px;padding-top:2px}.po2-ivview .btn{flex:1}
 .po2-inv[role=button]:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.so-sum{margin:2px 0 8px}
+.so-t td.l .pill{margin-right:4px}
+.so-t td.l.small{line-height:1.9}

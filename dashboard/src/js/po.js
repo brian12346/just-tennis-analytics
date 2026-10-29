@@ -98,7 +98,7 @@
       // the part of the order no invoice covers yet, per product (units : cost) — its own card in Ordered (Oct 29)
       // + received with no invoice counting it yet (units : cost), and what's neither invoiced nor received (Oct 29)
       `(select coalesce(sum(greatest(x.ord - x.inv, 0)), 0) || ':' || coalesce(sum(greatest(x.ord - x.inv, 0) * x.cost), 0)
-         || ':' || coalesce(sum(greatest(x.rec - x.att - x.cl, 0)), 0) || ':' || coalesce(sum(greatest(x.rec - x.att - x.cl, 0) * x.cost), 0)
+         || ':' || coalesce(sum(greatest(x.rec - greatest(x.att, x.inv) - x.cl, 0)), 0) || ':' || coalesce(sum(greatest(x.rec - greatest(x.att, x.inv) - x.cl, 0) * x.cost), 0)
          || ':' || coalesce(sum(greatest(greatest(x.ord - x.inv, 0) - greatest(x.rec - x.att, 0), 0)), 0) || ':' || coalesce(sum(greatest(greatest(x.ord - x.inv, 0) - greatest(x.rec - x.att, 0), 0) * x.cost), 0)
          from (select l.variant_id, sum(l.qty_ordered) as ord, sum(l.qty_received) as rec,
          max(coalesce(l.unit_cost, v.unit_cost, 0)) as cost, coalesce((select sum(il.qty) ${IL} and il.variant_id = l.variant_id and il.match_how <> 'skip'), 0) as inv,
@@ -1788,6 +1788,10 @@
     const notInvCard = `<button class="po2-inv ${vw.notInv ? "attn" : "flat dashed"} ${mode === "notinv" ? "on" : ""}" data-pview="notinv" aria-pressed="${mode === "notinv"}" title="Products, or the part of them, not on an invoice yet">
         <span class="po2-ih"><span>Not on an invoice</span><span class="muted num">${n0(vw.notInv)}</span></span>
         ${vw.notInv ? `<span class="small muted">${niLines.length} product${niLines.length === 1 ? "" : "s"}${niLines.length - niWait ? ` · ${niLines.length - niWait} backordered` : ""}</span><span class="po2-pills"><span class="pill warn">${niWait ? "Waiting for an invoice" : "Backordered"}</span></span>` : ""}</button>`;
+    const so = ed.id && ed.lines.some(l => l.received > 0) ? shortOver(ed) : null;
+    const soCard = so && so.rows.length ? `<button class="po2-inv ${so.billedShort || so.over ? "attn" : "flat dashed"} ${mode === "diff" ? "on" : ""}" data-pview="diff" aria-pressed="${mode === "diff"}" title="What's short and what's over, product by product">
+        <span class="po2-ih"><span>Short / over</span><span class="muted num">${so.rows.length}</span></span>
+        <span class="small muted">${[so.short && n0(so.short) + " short", so.over && n0(so.over) + " over", so.unbilled && n0(so.unbilled) + " not billed"].filter(Boolean).join(" · ")}</span></button>` : "";
     const selIv = mode === "inv" && ivNow && ivNow.id && !ivNow.isNew ? ivNow : null;
     const selActs = selIv ? `<div class="po2-ivact"><button class="btn sm" data-pact="print-inv">Print invoice</button>${selIv.parts || selIv.file ? '<button class="btn sm" data-pact="print-pdf">Vendor PDF</button>' : ""}${selIv.recvAt ? (selIv.recvManual && !ro ? '<button class="btn sm" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "") : !ro && invTot(selIv).g > 0 ? '<button class="btn sm" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : ""}<button class="btn sm" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></div>${invStepsHtml(ed, selIv)}` : "";
     const dd = (id, k, v, empty) => `<dt>${k}</dt><dd><button class="hfield2" data-hedit="${id}" title="Edit ${k.toLowerCase()}">${v ? esc(v) : `<span class="dim">${empty}</span>`}</button></dd>`;
@@ -1796,7 +1800,7 @@
     const side = ed.id ? `<aside class="po2-side" aria-label="Invoices and order details">
         <section class="panel po2-card"><div class="po2-ch"><h2>Invoices${ed.invoices.length ? " · " + ed.invoices.length : ""}</h2>${!ro ? `<span class="dbtns">${ed.id ? `<button class="btn sm" data-pact="link-inv" title="Put an invoice that's already saved (with no PO) on this PO">Link invoice</button>` : ""}<label class="btn sm" for="pe-file" title="Read the vendor's invoice PDF and put it on this PO">+ Add invoice</label></span>` : ""}</div>
           ${ed.confirm === "link-inv" ? linkInvHtml(ed) : ed.confirm === "link-inv-x" ? linkInvXHtml(ed) : ""}
-          ${flat("all", "All lines", tot.ordered)}${ed.invoices.map(ivCard).join("")}${vw.showLeft ? flat("left", "Still to receive", vw.left) : ""}${anyInv ? notInvCard : ""}
+          ${flat("all", "All lines", tot.ordered)}${ed.invoices.map(ivCard).join("")}${vw.showLeft ? flat("left", "Still to receive", vw.left) : ""}${anyInv ? notInvCard : ""}${soCard}
           ${selActs}</section>
         <section class="panel po2-card"><div class="po2-ch"><h2>Order details</h2></div>
           <dl class="po2-dl">${dd("pe-vendor", "Vendor", ed.vendor, "not set")}${dd("pe-po", "PO #", ed.po, "not set")}${dd("pe-kind", "Type", ed.kind === "booking" ? "Booking" : "Order", "")}${ed.kind === "booking" ? dd("pe-placeby", "Place by", ed.placeBy ? shortDate(ed.placeBy) : "", "not set") : ""}${dd("pe-exp", "Expected", ed.expected ? shortDate(ed.expected) : "", "not set")}${dd("pe-dest", "Receive into", both ? "Both" : ed.dest === "prep" ? "Prep center" : "Shopify store", "")}${dd("pe-note", "Note", ed.note, "add a note")}</dl>
@@ -1813,6 +1817,7 @@
       if (canRecv && ivNow.id && !ivNow.isNew && (ivNow.recvAt || !(t.b > t.g))) flBtn = `<button class="btn po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""} title="Receive extra units, more than the invoice shows">Receive more</button>`;
       else if (canRecv && ivNow.id && !ivNow.isNew && t.b > t.g) flBtn = `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>`;
     } else if (mode === "notinv") flLeft = chip("Not on an invoice") + `<span class="muted small">${n0(vw.notInv)} units</span>`;
+    else if (mode === "diff") flLeft = chip("Short / over") + '<span class="muted small">ordered vs invoiced vs received, product by product</span>';
     else if (mode === "left") flLeft = chip("Still to receive") + `<span class="muted small">${n0(vw.left)} units</span>`;
     else flLeft = `<b>All lines</b> <span class="muted small">${n0(tot.ordered)} units${anyInv && vw.openInv ? " · pick an invoice on the right to receive it" : ""}</span>`;
     // receiving with no invoice, from the row over the table too (Oct 29: "i don't see where you can receive against an
@@ -1852,7 +1857,7 @@
       <div class="po2-cols">
       <section class="panel po-lines po-inv po2-main" id="pe-drop">
         ${vendorBar(ed)}${S.vview && ed.lines.length ? vendorHtml(ed) : filterRow}
-        ${S.vview && ed.lines.length ? "" : mode === "inv" ? (recvHtml || "") : `
+        ${S.vview && ed.lines.length ? "" : mode === "diff" ? shortOverHtml(ed) : mode === "inv" ? (recvHtml || "") : `
         ${openLines.length && !ro && !ed.recv && ed.invoices.length && mode !== "all" ? `<div class="bobar ${ed.boPrompt ? "hot" : ""}"><span><b>${openLines.length} product${openLines.length === 1 ? "" : "s"}</b> ${openLines.length === 1 ? "isn't" : "aren't"} on an invoice yet (${n0(openLines.reduce((a, l) => a + pr.get(l.id).open, 0))} units).</span>
             <span class="dbtns"><label class="small" for="pe-boeta">Expected</label><input id="pe-boeta" class="inp sm" type="date" style="width:auto" aria-label="Expected arrival for the backorders (blank if unknown)">
             <button class="btn primary" data-pact="bo-all">Mark ${openLines.length === 1 ? "it" : "all " + openLines.length} backordered</button>${ed.boPrompt ? '<button class="btn" data-pact="bo-no">Keep on order</button>' : ""}</span></div>` : ""}
@@ -1865,7 +1870,7 @@
           ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}`}
         ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order and its draft invoices? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
-        ${ed.confirm === "over" ? (() => { const ov = overUnits(ed); return `<div class="note warn">Close <b>${n0(ov.units)}</b> unit${ov.units === 1 ? "" : "s"} as a vendor overage? They came in with no invoice billing them (${[...ov.by].slice(0, 4).map(([vid, q]) => `${esc((variant(vid) || {}).title || "variant " + vid)} ${n0(q)}`).join(", ")}${ov.by.size > 4 ? "…" : ""}). They stay in stock; no invoice is expected for them and the <b>no invoice yet</b> card goes away. If an invoice for them shows up later, it still counts them. <span class="dbtns"><button class="mini primary" data-pact="do-over">Close as over</button><button class="mini" data-pact="no">Cancel</button></span></div>`; })() : ""}
+        ${ed.confirm === "over" ? (() => { const ov = overUnits(ed); return `<div class="note warn">Close the <b>${n0(ov.units)}</b> unit${ov.units === 1 ? "" : "s"} in the <b>Not billed</b> column (${ov.by.size} product${ov.by.size === 1 ? "" : "s"}) as a vendor overage? They came in with no invoice billing them. They stay in stock; no invoice is expected for them and the <b>no invoice yet</b> card goes away. If an invoice for them shows up later, it still counts them. <span class="dbtns"><button class="mini primary" data-pact="do-over">Close as over</button><button class="mini" data-pact="no">Cancel</button></span></div>`; })() : ""}
         ${ed.overAt && Object.keys(ed.overClosed || {}).length ? `<div class="note info small">Closed as over ${esc(when(ed.overAt))}: ${n0(Object.values(ed.overClosed).reduce((a, q) => a + (Number(q) || 0), 0))} units received beyond the invoices. <button class="linkbtn small" data-pact="over-undo">Undo</button></div>` : ""}
         ${ed.confirm === "short" ? `<div class="note warn">Close this PO short? What wasn't received is treated as not coming (ask the vendor for a credit if it was billed), and the PO moves to Received. <span class="dbtns"><button class="mini primary" data-pact="do-short">Yes, close it short</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ro ? `<div class="note info">This PO is complete, so its products and invoice lines are locked. Invoice payments can still be changed. Step it back to QB ready to change anything else.</div>` : ""}
@@ -1908,7 +1913,7 @@
     const notInv = ed.lines.reduce((a, l) => a + pr.get(l.id).open, 0);
     const left = ed.lines.reduce((a, l) => { const p = pr.get(l.id); return a + Math.max(0, p.ordered - p.received); }, 0);
     const showLeft = !openInv && left > 0 && ed.lines.some(l => (l.received || 0) > 0);
-    const ok = (v) => v === "all" || (v === "inv" && !!cur(ed)) || v === "notinv" || (v === "left" && showLeft);
+    const ok = (v) => v === "all" || (v === "inv" && !!cur(ed)) || v === "notinv" || (v === "left" && showLeft) || v === "diff";
     return { anyInv, openInv, notInv, left, showLeft, ok, def: showLeft ? "left" : "all" };
   }
   // The view switch above the PO's table: All · each invoice · Still to receive · Not invoiced (last) · + Add invoice
@@ -2416,8 +2421,57 @@
     for (const l of ed.lines) if (l.dest !== "demo" && l.received > 0) rec.set(l.vid, (rec.get(l.vid) || 0) + l.received);
     for (const iv of ed.invoices) if (iv.got) for (const [vid, q] of iv.got) att.set(vid, (att.get(vid) || 0) + (Number(q) || 0));
     let units = 0;
-    for (const [vid, r] of rec) { const g = r - (att.get(vid) || 0) - (Number((ed.overClosed || {})[vid]) || 0); if (g > 0) { by.set(vid, g); units += g; } }
+    // billed on an invoice counts even when the receipt wasn't put against that invoice (Oct 29: PO 21 showed billed
+    // units as "over")
+    const billed = invoicedBy(ed);
+    for (const [vid, r] of rec) { const g = r - Math.max(att.get(vid) || 0, billed.get(vid) || 0) - (Number((ed.overClosed || {})[vid]) || 0); if (g > 0) { by.set(vid, g); units += g; } }
     return { units, by };
+  }
+  // Short / over (Oct 29, Brian on PO 21: "it wants me to close as over, but i can't tell what is over ... we know what is
+  // short and what is over in a clear way"): per product, ordered vs invoiced vs received, and what each gap means.
+  //   short       ordered, not received (billed-not-received = ask for a credit; the rest is still on order/backordered)
+  //   over        received more than ordered
+  //   not billed  received with no invoice billing it (what "Close as over" closes out); closed = already closed as over
+  // Demo (not-for-resale) lines are left out, as in overUnits.
+  function shortOver(ed) {
+    const billed = invoicedBy(ed), unb = overUnits(ed).by, by = new Map();
+    for (const l of ed.lines) { if (l.dest === "demo") continue;
+      const x = by.get(l.vid) || { vid: l.vid, ordered: 0, received: 0, back: false, eta: "" };
+      x.ordered += Number(l.qty) || 0; x.received += l.received || 0; if (l.backorder) { x.back = true; x.eta = x.eta || l.eta || ""; } by.set(l.vid, x); }
+    for (const [vid] of billed) if (!by.has(vid)) by.set(vid, { vid, ordered: 0, received: 0, back: false, eta: "" });
+    const anyInv = ed.invoices.some(v => v.id && !v.isNew), rows = [];
+    for (const x of by.values()) {
+      x.billed = billed.get(x.vid) || 0; x.closed = Number((ed.overClosed || {})[x.vid]) || 0;
+      x.short = Math.max(0, x.ordered - x.received); x.over = Math.max(0, x.received - x.ordered);
+      x.billedShort = Math.max(0, x.billed - x.received); x.unbilled = anyInv ? unb.get(x.vid) || 0 : 0;
+      if (x.short || x.over || x.billedShort || x.unbilled) rows.push(x);
+    }
+    const sum = (k) => rows.reduce((a, x) => a + x[k], 0);
+    return { rows, anyInv, short: sum("short"), over: sum("over"), unbilled: sum("unbilled"), billedShort: sum("billedShort") };
+  }
+  function shortOverHtml(ed) {
+    const so = shortOver(ed);
+    if (!so.rows.length) return '<div class="note ok">Nothing short or over — every product came in as ordered' + (so.anyInv ? " and is billed on an invoice." : ".") + "</div>";
+    const why = (x) => {
+      const out = [];
+      if (x.billedShort) out.push(x.back ? `<span class="pill warn">${n0(x.billedShort)} billed, backordered${x.eta ? " · ETA " + esc(shortDate(x.eta)) : ""}</span>` : `<span class="pill miss">${n0(x.billedShort)} billed, not received</span> ask the vendor for the rest or a credit`);
+      const onOrder = x.short - Math.min(x.short, x.billedShort);
+      if (onOrder) out.push(`<span class="pill ${x.back ? "warn" : "pos"}">${n0(onOrder)} ${x.back ? "backordered" + (x.eta ? " · ETA " + esc(shortDate(x.eta)) : "") : "still on order"}</span>`);
+      if (x.over) out.push(`<span class="pill warn">${n0(x.over)} more than ordered</span>`);
+      if (x.unbilled) out.push(`<span class="pill other">${n0(x.unbilled)} received, no invoice bills ${x.unbilled === 1 ? "it" : "them"}</span> waiting for an invoice, or close as over`);
+      if (x.closed) out.push(`<span class="pill ok">${n0(x.closed)} closed as over</span>`);
+      return out.join("<br>");
+    };
+    const cell = (n, cls) => n ? `<b class="num ${cls}">${n0(n)}</b>` : '<span class="dim">—</span>';
+    const rows = so.rows.slice().sort((a, b) => (b.billedShort - a.billedShort) || (b.short - a.short) || (b.over + b.unbilled - a.over - a.unbilled) || String((variant(a.vid) || {}).title).localeCompare(String((variant(b.vid) || {}).title)));
+    const tr = (x) => { const v = variant(x.vid);
+      return `<tr><td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta mono">${esc(v.sku) || "no SKU"}</div>` : `variant ${esc(x.vid)}`}</td>
+        <td>${n0(x.ordered)}</td>${so.anyInv ? `<td>${x.billed ? n0(x.billed) : '<span class="dim">—</span>'}</td>` : ""}<td>${x.received ? n0(x.received) : '<span class="dim">—</span>'}</td>
+        <td>${cell(x.short, "neg")}</td><td>${cell(x.over, "warnt")}</td>${so.anyInv ? `<td>${cell(x.unbilled, "")}</td>` : ""}<td class="l small">${why(x)}</td></tr>`; };
+    const tot = [so.short && `<b>${n0(so.short)}</b> short`, so.billedShort && `${n0(so.billedShort)} of them billed`, so.over && `<b>${n0(so.over)}</b> more than ordered`, so.unbilled && `<b>${n0(so.unbilled)}</b> received with no invoice`].filter(Boolean).join(" · ");
+    return `<div class="so-sum small">${so.rows.length} product${so.rows.length === 1 ? "" : "s"}: ${tot}</div>
+      <div class="tbl-wrap xl"><table class="prept po-t so-t"><thead><tr><th class="l">Product</th><th>Ordered</th>${so.anyInv ? "<th>Invoiced</th>" : ""}<th>Received</th><th title="Ordered, not received">Short</th><th title="Received beyond what was ordered">Over</th>${so.anyInv ? '<th title="Received, no invoice bills them">Not billed</th>' : ""}<th class="l">What it means</th></tr></thead>
+      <tbody>${rows.map(tr).join("")}</tbody></table></div>`;
   }
   function footButtons(ed, got, ro) {
     const busy = S.busy ? "disabled" : "";
@@ -2440,6 +2494,7 @@
     const anyInv = ed.invoices.length > 0, pr = progress(ed), notInv = ed.lines.some(l => pr.get(l.id).open > 0);
     if (ed.lines.length && true && (!anyInv || notInv)) out.push(`<button class="btn" data-pact="recv" ${busy}>${anyInv ? "Receive without an invoice…" : got ? "Receive more…" : "Receive…"}</button>`);
     if (ed.status === "partial") out.push(`<button class="btn" data-pact="short" ${busy}>Close short</button>`);
+    if (ed.view !== "diff" && ed.lines.some(l => l.received > 0) && shortOver(ed).rows.length) out.push(`<button class="btn" data-pview="diff" title="What's short and what's over, product by product">See short / over</button>`);
     { const ov = overUnits(ed); if (ov.units > 0 && ed.invoices.some(v => v.id && !v.isNew)) out.push(`<button class="btn" data-pact="over" ${busy} title="More came in than the invoices bill: close the extra out as a vendor overage">Close as over (${n0(ov.units)})</button>`); }
     if (got && ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn" data-pact="amzship">Create Amazon shipment</button>`);
     return out.join("");
@@ -2909,8 +2964,8 @@
       .catch(e => { S.busy = ""; ed.confirm = false; render(); note("bad", "Couldn't delete: " + esc(JT.message(e))); }); return; }
     if (a === "back") { if (["partial", "received", "qb_ready", "complete"].includes(ed.status)) { ed.confirm = "unrecv"; render(); } else if (ed.dirty) note("warn", "Save or discard your changes first."); else setStatus2(PREV[ed.status], `Moved back to ${STAGE.get(PREV[ed.status]).toLowerCase()}.`); return; }
     if (a === "do-back") return setStatus2(PREV[ed.status], "Moved back to invoiced; the received units came out of the prep center.");
-    if (a === "short") { ed.confirm = "short"; render(); return; }
-    if (a === "over") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.confirm = "over"; render(); return; }
+    if (a === "short") { ed.view = "diff"; ed.confirm = "short"; render(); return; }
+    if (a === "over") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; } ed.view = "diff"; ed.confirm = "over"; render(); return; }
     if (a === "do-over" || a === "over-undo") {
       const undo = a === "over-undo", ov = overUnits(ed);
       S.busy = "Saving…"; render();
