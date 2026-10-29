@@ -911,12 +911,19 @@
     const groups = [];
     const isAna = (r) => isAnalyzed(r.vid, r.asku);
     const here = usePo.filter(r => r.ready > 0 && match(r)).map(r => ({ ...r, n: r.ready, kind: "po" }));
-    if (here.length) groups.push({ key: "here", sort: "0", head: `<b>In the prep center now</b> <span class="muted small">received from POs, not on an Amazon shipment yet</span>`, rows: here });
+    if (here.length) groups.push({ key: "here", sort: "0", card: `<b>In the prep center now</b><span class="small muted">received from POs, not on a shipment yet</span><span class="inc-u">${n0(here.reduce((t, r) => t + r.n, 0))} units · ${n0(here.length)} product${here.length === 1 ? "" : "s"}</span>`, head: `<b>In the prep center now</b> <span class="muted small">received from POs, not on an Amazon shipment yet</span>`, rows: here });
     for (const iv of invs) {
       const rows = iv.lines.filter(l => l.left > 0 && match(l)).map(l => ({ ...l, n: l.left, oid: iv.oid, kind: "inv" }));
       if (!rows.length) continue;
       const late = iv.when && iv.when < td, units = rows.reduce((t, r) => t + r.n, 0), o = iv.order;
-      groups.push({ key: "inv" + iv.id, sort: "1" + (iv.when || "9999"), iv, rows,
+      const arr = iv.arrival || iv.when;
+      groups.push({ key: "inv" + iv.id, sort: "1" + (iv.when || "9999"), iv, rows, arr, late,
+        card: `<span class="inc-top"><b>${esc(iv.vendor)}</b>${late ? '<span class="pill miss">late</span>' : !arr ? '<span class="pill warn">set a date</span>' : ""}</span>
+          <span class="small">invoice <span class="mono">${esc(iv.no || "#" + iv.id)}</span>${o ? ` · <button class="linkbtn small" data-act="gotoorder" data-oid="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "order #" + o.id)}</button>` : ""}</span>
+          <span class="arr"><label class="small muted" for="arr-${esc(iv.id)}">Arriving</label> <input type="date" class="inp sm" id="arr-${esc(iv.id)}" data-arrival="${esc(iv.id)}" value="${esc(iv.arrival)}" ${FLOW ? "" : "disabled title=\"After the next database update\""}></span>
+          ${!iv.arrival && iv.when ? `<span class="small muted">PO says ${shortDate(iv.when)}</span>` : ""}
+          <span class="inc-u">${n0(units)} units · ${n0(rows.length)} product${rows.length === 1 ? "" : "s"}</span>
+          <button class="mini" data-act="plan-inv" data-iid="${esc(iv.id)}" title="Set up a placeholder Amazon shipment with everything on this invoice">Plan shipment</button>`,
         head: `<span class="arr"><label class="small muted" for="arr-${esc(iv.id)}">Arriving</label> <input type="date" class="inp sm" id="arr-${esc(iv.id)}" data-arrival="${esc(iv.id)}" value="${esc(iv.arrival)}" ${FLOW ? "" : "disabled title=\"After the next database update\""}>${!iv.arrival && iv.when ? ` <span class="small muted">PO says ${shortDate(iv.when)}</span>` : !iv.when ? ' <span class="pill warn">set a date</span>' : ""}${late ? ' <span class="pill miss">late</span>' : ""}</span>
           <b>${esc(iv.vendor)}</b> invoice <span class="mono">${esc(iv.no || "#" + iv.id)}</span>${iv.date ? ` <span class="small muted">· ${shortDate(iv.date)}</span>` : ""}
           ${o ? ` · <button class="linkbtn small" data-act="gotoorder" data-oid="${esc(o.id)}">${esc(o.po ? poLabel(o.po) : "order #" + o.id)}</button>` : ""} <span class="small muted">· ${n0(units)} units</span>
@@ -941,9 +948,22 @@
         <td class="l"><span class="rbtns">${r.hidden ? `<span class="pill pos">removed</span><button class="mini" data-act="inc-show" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}">Put back</button>`
           : `<button class="mini ${r.kind === "po" && r.ready ? "primary" : ""}" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid || "")}" data-n="${r.n}" title="Put these units on an Amazon shipment (a placeholder until they're here)">Ship</button>${isAna(r) ? "" : `<button class="mini" data-act="ana-on" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="Set aside in the Analyze lane (Amazon Outgoing) to look at more closely before making a shipment">Analyze</button>`}${r.kind === "po" ? `<button class="mini" data-act="inc-hide" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-oid="${esc(r.oid)}" title="Take this off the list (e.g. backordered for a long time). The PO keeps it; it comes back if more arrive.">Remove</button>` : ""}`}</span></td></tr>`;
     };
-    el.innerHTML = `<div class="tbl-wrap"><table class="prept inct"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th>Coming</th><th title="Units of this product in the prep center now, for this listing">At prep center</th><th>In shipments</th><th>Unit cost</th><th class="l"></th></tr></thead><tbody>${
-      groups.map(g => `<tr class="grp"><td class="l" colspan="7"><div class="grph">${g.head}</div></td></tr>${g.rows.map(row).join("")}`).join("")}</tbody></table></div>`;
+    // the invoices coming in, together at the top (Oct 29, Brian: "rather than have the PO/invoices dates inline, let's put
+    // the invoices that are coming at the top as a header so we can see them easier and together"). A card picks its rows
+    // in the table below (again for all); each row says which invoice it's on and when that's arriving.
+    if (P.incSel && !groups.some(g => g.key === P.incSel)) P.incSel = "";
+    const strip = `<div class="inc-strip" role="group" aria-label="Coming in">${groups.map(g => `<div class="inc-card ${g.key === P.incSel ? "on" : ""} ${g.late ? "late" : ""}" data-incsel="${esc(g.key)}" role="button" tabindex="0" aria-pressed="${g.key === P.incSel}" title="${g.key === P.incSel ? "Show everything" : "Show just these below"}">${g.card}</div>`).join("")}</div>`;
+    const whenCell = (g) => g.key === "here" ? '<td class="l small" data-sort="0"><span class="pill ok">here now</span></td>'
+      : `<td class="l small" data-sort="${esc(g.arr || "9999-12-31")}">${g.arr ? esc(shortDate(g.arr)) : '<span class="dim">no date</span>'}${g.late ? ' <span class="pill miss">late</span>' : ""}<div class="meta">${esc(g.iv.vendor)} <span class="mono">${esc(g.iv.no || "#" + g.iv.id)}</span></div></td>`;
+    const shown = groups.filter(g => !P.incSel || g.key === P.incSel);
+    el.innerHTML = `${strip}<div class="tbl-wrap"><table class="prept inct"><thead><tr><th class="l">Shopify product</th><th class="l">For Amazon listing</th><th class="l">Arriving</th><th>Coming</th><th title="Units of this product in the prep center now, for this listing">At prep center</th><th>In shipments</th><th>Unit cost</th><th class="l"></th></tr></thead><tbody>${
+      shown.map(g => g.rows.map(r => { const h = row(r), i = h.indexOf('<td class="l small">'), j = h.indexOf("</td>", i) + 5; return h.slice(0, j) + whenCell(g) + h.slice(j); }).join("")).join("")}</tbody></table></div>`;
   }
+  { const el0 = $("prep-inc");
+    if (el0) { const pick = (e) => { const c = e.target.closest("[data-incsel]"); if (!c || e.target.closest("a, button, input, select, label")) return false;
+        P.incSel = P.incSel === c.dataset.incsel ? "" : c.dataset.incsel; renderIncoming(); return true; };
+      el0.addEventListener("click", pick);
+      el0.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-incsel]")) { e.preventDefault(); pick(e); } }); } }
   // a placeholder Amazon shipment with everything still to come on an invoice
   function planInvoice(iid) {
     const iv = (cache.invoicesOpen || []).find(x => x.id === String(iid)); if (!iv) return;
