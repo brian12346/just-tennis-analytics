@@ -1580,3 +1580,15 @@ table.po-list.ot .meta{color:var(--muted);font-size:12px}
 .ap-quick .mini.sug{border-color:var(--good);color:var(--good);font-weight:600}
 .ap-sep{color:var(--line)}
 .kpi .v small{font-size:13px;font-weight:400;color:var(--ink-muted)}
+
+/* invoice popup on the PO (View invoice) */
+.ivpk-card{width:min(1280px,100%);max-height:calc(100vh - var(--appbar-h,0px) - 56px);overflow:auto}
+.ivpk-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;position:sticky;top:-18px;background:var(--panel);padding:4px 0 8px;z-index:1;border-bottom:1px solid var(--line)}
+.ivpk-head h2{margin:2px 0}
+.ivpk-body{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px;align-items:start}
+.ivpk-body.nopdf{grid-template-columns:1fr}
+@media (max-width:900px){.ivpk-body{grid-template-columns:1fr}}
+.ivpk-pdf canvas{display:block;max-width:100%;margin-bottom:8px;border:1px solid var(--line);border-radius:6px}
+.ivpk-lines{overflow-x:auto}
+.ivpk-lines tr.dim td{opacity:.55}
+.po2-chip button.po2-chipbtn{width:auto;height:auto;border-radius:6px;padding:0 2px;font:inherit;font-weight:600;text-decoration:underline dotted;text-underline-offset:3px}

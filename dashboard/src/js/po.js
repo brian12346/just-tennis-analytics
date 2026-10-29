@@ -234,9 +234,9 @@
     S.files.set(String(invId), f.bytes);
   }
   let pdfToken = 0;
-  async function renderPdf() {
-    const ed = S.ed, host = $("pe-pdf"); if (!ed || !host || !ed.showPdf) return;
-    const iv = cur(ed); if (!iv) return;
+  async function renderPdf(host0, iv0) {
+    const ed = S.ed, host = host0 || $("pe-pdf"); if (!ed || !host || (!host0 && !ed.showPdf)) return;
+    const iv = iv0 || cur(ed); if (!iv) return;
     const my = ++pdfToken;
     const bytes = iv.file ? iv.file.bytes : iv.parts ? S.files.get(iv.id) : null;
     if (!bytes) { host.innerHTML = `<div class="muted small">${iv.parts ? "Loading the PDF…" : "No PDF on this invoice."}</div>`; return; }
@@ -912,8 +912,8 @@
   async function openInvoice(id) {
     S.mode = "inv";
     if (S.ed && S.ed.dirty && !S.ed.invoices.some(v => v.id === String(id))) {
-      S.invOpen = true; render();
-      note("warn", `The open ${S.ed.id ? "purchase order" : "invoice"} has unsaved changes. <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="discard">Discard changes</button></span>`); return;
+      S.invOpen = true; render(); S.resume = () => openInvoice(id);
+      note("warn", `The open ${S.ed.id ? "purchase order" : "invoice"} has unsaved changes. <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="leave-discard">Discard changes and open it</button></span>`); return;
     }
     note("", "");
     try {
@@ -1787,7 +1787,7 @@
         <span class="po2-ih"><span>Not on an invoice</span><span class="muted num">${n0(vw.notInv)}</span></span>
         ${vw.notInv ? `<span class="small muted">${niLines.length} product${niLines.length === 1 ? "" : "s"}${niLines.length - niWait ? ` · ${niLines.length - niWait} backordered` : ""}</span><span class="po2-pills"><span class="pill warn">${niWait ? "Waiting for an invoice" : "Backordered"}</span></span>` : ""}</button>`;
     const selIv = mode === "inv" && ivNow && ivNow.id && !ivNow.isNew ? ivNow : null;
-    const selActs = selIv ? `<div class="po2-ivact"><button class="btn sm" data-pact="print-inv">Print invoice</button>${selIv.parts || selIv.file ? '<button class="btn sm" data-pact="print-pdf">Vendor PDF</button>' : ""}${selIv.recvAt ? (selIv.recvManual && !ro ? '<button class="btn sm" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "") : !ro && invTot(selIv).g > 0 ? '<button class="btn sm" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : ""}<button class="btn sm" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></div>${invStepsHtml(ed, selIv)}` : "";
+    const selActs = selIv ? `<div class="po2-ivact"><button class="btn sm primary" data-pact="iv-peek" title="The PDF and lines in a popup — close it to come back here">View invoice</button><button class="btn sm" data-pact="print-inv">Print invoice</button>${selIv.parts || selIv.file ? '<button class="btn sm" data-pact="print-pdf">Vendor PDF</button>' : ""}${selIv.recvAt ? (selIv.recvManual && !ro ? '<button class="btn sm" data-pact="inv-reopen" title="Take the received mark off this invoice">Reopen</button>' : "") : !ro && invTot(selIv).g > 0 ? '<button class="btn sm" data-pact="inv-recvd" title="Count this invoice as received in full, e.g. the vendor shipped less than they billed">Mark received</button>' : ""}<button class="btn sm" data-pact="open-inv" title="Lines, PDF, payment and QuickBooks">Open invoice →</button></div>${invStepsHtml(ed, selIv)}` : "";
     const dd = (id, k, v, empty) => `<dt>${k}</dt><dd><button class="hfield2" data-hedit="${id}" title="Edit ${k.toLowerCase()}">${v ? esc(v) : `<span class="dim">${empty}</span>`}</button></dd>`;
     const invSum = ed.invoices.filter(v => v.id && !v.isNew).reduce((a, v) => a + (v.total != null ? v.total : v.subtotal || 0), 0);
     const trow = (k, u, c, mu) => `<span class="${mu ? "muted" : ""}">${k}</span><span class="num ${mu ? "muted" : ""}">${u}</span><span class="num ${mu ? "muted" : ""}">${c}</span>`;
@@ -1807,7 +1807,7 @@
     const chip = (label) => `<span class="po2-chip">${label}<button data-pview="all" aria-label="Show all lines" title="Show all lines"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span>`;
     let flLeft = "", flBtn = "";
     if (mode === "inv" && ivNow) { const t = invTot(ivNow);
-      flLeft = chip("Invoice " + esc(ivNow.no || "(no number)")) + `<span class="muted small">${[ivNow.date && shortDate(ivNow.date), ivNow.total != null && m(ivNow.total), ivNow.due && "due " + shortDate(ivNow.due), t.b && `${n0(t.g)} of ${n0(t.b)} received`].filter(Boolean).join(" · ")}</span>`;
+      flLeft = chip(ivNow.id || ivNow.rows.length ? `<button class="po2-chipbtn" data-pact="iv-peek" title="View the invoice — PDF and lines">Invoice ${esc(ivNow.no || "(no number)")}</button>` : "Invoice " + esc(ivNow.no || "(no number)")) + `<span class="muted small">${[ivNow.date && shortDate(ivNow.date), ivNow.total != null && m(ivNow.total), ivNow.due && "due " + shortDate(ivNow.due), t.b && `${n0(t.g)} of ${n0(t.b)} received`].filter(Boolean).join(" · ")}</span>`;
       if (canRecv && ivNow.id && !ivNow.isNew && (ivNow.recvAt || !(t.b > t.g))) flBtn = `<button class="btn po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""} title="Receive extra units, more than the invoice shows">Receive more</button>`;
       else if (canRecv && ivNow.id && !ivNow.isNew && t.b > t.g) flBtn = `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>`;
     } else if (mode === "notinv") flLeft = chip("Not on an invoice") + `<span class="muted small">${n0(vw.notInv)} units</span>`;
@@ -2525,6 +2525,47 @@
     try { await JT.prep.invoiceReceived(iv.id, on); S.busy = ""; await openPO(ed.id); if (S.ed) { const i = S.ed.invoices.findIndex(v => v.id === iv.id); if (i >= 0) S.ed.cur = i; render(); } note("info", on ? `Invoice ${esc(iv.no || iv.id)} marked received.` : `Invoice ${esc(iv.no || iv.id)} reopened.`); }
     catch (e) { S.busy = ""; render(); note("bad", "Couldn't change the invoice: " + esc(JT.message(e))); }
   }
+  // ---------- invoice popup on the PO (Brian, Oct 29: "when you're on an invoice, it should be easier to click into the
+  // invoice rather than click open invoice way below ... popup might be best so it's really easy to close and then still
+  // be on the PO"). Read-only: the vendor's PDF beside the invoice's lines; "Open full invoice" goes to the editor.
+  function pkHost() {
+    let d = $("ivpk-modal"); if (d) return d;
+    d = document.createElement("div"); d.className = "modal"; d.id = "ivpk-modal"; d.hidden = true;
+    d.innerHTML = '<div class="modal-card ivpk-card" id="ivpk-card" role="dialog" aria-modal="true" aria-label="Invoice"></div>';
+    document.body.appendChild(d);
+    d.addEventListener("click", (e) => {
+      if (e.target === d) return pkClose();
+      const b = e.target.closest("[data-pk]"); if (!b) return;
+      if (b.dataset.pk === "close") return pkClose();
+      if (b.dataset.pk === "full") { pkClose(); return showInvoicePage(); }
+    });
+    d.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); pkClose(); } });
+    return d;
+  }
+  function pkClose() { const d = $("ivpk-modal"); if (!d || d.hidden) return; d.hidden = true; const h = $("ivpk-pdf"); if (h) h.innerHTML = ""; document.body.classList.remove("modal-open"); }
+  function openPeek() {
+    const ed = S.ed, iv = ed && cur(ed); if (!iv) return;
+    const d = pkHost(), t = invTot(iv), hasPdf = !!(iv.file || iv.parts);
+    const rows = iv.rows.map(r => { const v = variant(r.vid), q = Number(r.qty) || 0, c = r.cost === "" ? (v || {}).cost : Number(r.cost), got = r.vid && iv.got ? iv.got.get(String(r.vid)) || iv.got.get(r.vid) || 0 : 0;
+      const name = v ? `${esc(v.title)}<div class="small muted mono">${esc(v.sku)}</div>` : `${esc((r.src && (r.src.description || r.src.item_code)) || "—")}<div class="small muted">${r.skip ? "skipped" : "not matched to a product"}</div>`;
+      return `<tr class="${r.skip ? "dim" : ""}"><td class="l">${name}</td><td>${n0(q)}</td><td>${r.vid && !r.skip ? n0(got) : ""}</td><td>${c == null || isNaN(c) ? "" : m(c)}</td><td>${m(rowAmt(r) || 0)}</td></tr>`; }).join("");
+    const lineSum = iv.rows.filter(r => !r.skip).reduce((a, r) => a + (rowAmt(r) || 0), 0);
+    const meta = [iv.date && shortDate(iv.date), iv.due && "due " + shortDate(iv.due), iv.terms, t.b && `${n0(t.g)} of ${n0(t.b)} received`].filter(Boolean).map(esc).join(" · ");
+    const st = iv.isNew || !iv.id ? '<span class="pill warn">not saved</span>' : `<span class="pill ${iv.completeAt ? "ok" : "warn"}">${iv.completeAt ? "Verified" : "Draft"}</span>${iv.recvAt ? '<span class="pill ok">✓ Received</span>' : ""}${invClosed(iv) ? closedPill : qbPill(iv)}${iv.paidOn ? `<span class="pill ok">Paid ${esc(shortDate(iv.paidOn))}</span>` : ""}`;
+    $("ivpk-card").innerHTML = `<div class="ivpk-head"><div><span class="eyebrow">${esc(ed.vendor || "Vendor")} · Invoice${ed.po ? " · " + esc(poLabel(ed.po)) : ""}</span>
+        <h2>${esc(iv.no || "(no number)")} <span class="num">${iv.total != null ? m(iv.total) : ""}</span></h2>${meta ? `<div class="small muted">${meta}</div>` : ""}<div class="po2-pills">${st}</div></div>
+        <span class="dbtns"><button class="btn primary" data-pk="full" title="Edit lines, payment and QuickBooks">Open full invoice →</button><button class="btn" data-pk="close" title="Back to the PO (Esc)">Close</button></span></div>
+      <div class="ivpk-body ${hasPdf ? "" : "nopdf"}">${hasPdf ? '<div id="ivpk-pdf" class="pdfpages ivpk-pdf"></div>' : ""}
+        <div class="ivpk-lines"><table class="prept po-t"><thead><tr><th class="l">Product</th><th>Qty</th><th>Received</th><th>Unit cost</th><th>Amount</th></tr></thead>
+          <tbody>${rows || '<tr><td class="l muted" colspan="5">No lines on this invoice yet.</td></tr>'}</tbody>
+          <tfoot><tr><td class="l"><b>Lines</b></td><td>${n0(iv.rows.filter(r => !r.skip).reduce((a, r) => a + (Number(r.qty) || 0), 0))}</td><td></td><td></td><td><b>${m(lineSum)}</b></td></tr>
+          ${iv.total != null && Math.abs(iv.total - lineSum) >= 0.01 ? `<tr><td class="l muted" colspan="4">Invoice total${iv.charges && iv.charges.length ? " (with freight / charges)" : ""}</td><td class="muted">${m(iv.total)}</td></tr>` : ""}</tfoot></table></div></div>`;
+    d.hidden = false; document.body.classList.add("modal-open");
+    const cb = d.querySelector('[data-pk="close"]'); if (cb) cb.focus();
+    if (hasPdf) { const host = $("ivpk-pdf");
+      if (iv.parts && !iv.file && !S.files.has(iv.id)) { host.innerHTML = '<div class="muted small">Loading the PDF…</div>'; loadFile(iv).then(() => { if (!d.hidden && $("ivpk-pdf") === host) renderPdf(host, iv); }).catch(e => { host.innerHTML = `<div class="note bad">Couldn't load the PDF: ${esc(JT.message(e))}</div>`; }); }
+      else renderPdf(host, iv); }
+  }
   // ---------- receiving popup (Brian, Oct 27: "move to a pop up when you go to receive ... input a number / receive
   // each row individually as well as a receive all button ... a save button that asks to save/discard then commits") ----
   // Nothing is written while the popup is open: rows are filled in (a number, the row's "All", or "Receive all"), and
@@ -2715,6 +2756,7 @@
     if (a === "back-list") return leave();
     if (a === "inv-list") return leave();
     if (a === "open-inv") return showInvoicePage();
+    if (a === "iv-peek") return openPeek();
     if (a === "open-unpaid") { const i = ed.invoices.findIndex(v => !v.paidOn); ed.confirm = false; note("", ""); if (i >= 0) ed.cur = i; return showInvoicePage(); }
     if (a === "open-po") { S.invOpen = false; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); return; }
     if (a === "inv-move") { if (ed.dirty) { note("warn", "Save or discard your changes first."); return; }
@@ -2761,6 +2803,8 @@
     if (a === "inv-move-go" && iv) { const to = ($("pe-movepo") || {}).value; if (to) moveInvoice(iv, to); return; }
     if (a === "inv-repick" && S.pend) { const pend = S.pend; ed.leaveOk = true; S.ed = null; S.invOpen = false; render(); return choosePO(pend); }
     if (a === "discard") { ed.leaveOk = true; return leave(); }
+    if (a === "leave-discard") { const go = S.resume; S.resume = null; ed.dirty = false; ed.leaveOk = true; S.ed = null; S.invOpen = false; S.pend = null; S.lastView = null; note("", ""); pdfToken++;
+      if (go) { render(); go(); } else leave(); return; }
     // Discard changes (v0.34.1): reload what's saved and stay on the page
     // no "are you sure": pressing Discard is the choice (Brian, Oct 28)
     if (a === "revert" || a === "revert-yes") {
@@ -3583,18 +3627,21 @@
   // ---- unsaved changes hold the page (Brian, Oct 28: "we should not be able to leave the page if there are changes on
   // the page and save/discard has not been chosen"): tabs, the Back/Forward/Recent buttons, the browser's Back, and
   // closing or reloading the window all stop until Save or Discard changes is pressed ----
-  function holdForChanges() {
+  // Discard changes here carries on to where they were going (S.resume) — Oct 29: "when you navigate away from the page
+  // and discard changes, the nav should go to the next page and not stay where you were"
+  function holdForChanges(resume) {
     const ed = S.ed;
     if (!ed || !ed.dirty || ed.leaveOk) return false;
     const onPO = !$("tab-po").hidden, onInv = !$("tab-invoices").hidden && S.invOpen;
     if (!onPO && !onInv) return false;
-    note("warn", `<b>Save or discard your changes first.</b> <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="revert">Discard changes</button></span>`);
+    S.resume = typeof resume === "function" ? resume : null;
+    note("warn", `<b>Save or discard your changes first.</b> <span class="dbtns"><button class="mini primary" data-pact="save">Save</button><button class="mini" data-pact="leave-discard">Discard changes${S.resume ? " and go" : ""}</button></span>`);
     const n = $("po-note"); if (n && n.scrollIntoView) n.scrollIntoView({ block: "nearest", behavior: "smooth" });
     return true;
   }
   document.addEventListener("click", (e) => {
     const b = e.target.closest && e.target.closest(".tabs button, #nav-rmenu [data-nav-go]");
-    if (b && holdForChanges()) { e.preventDefault(); e.stopImmediatePropagation(); }
+    if (b && holdForChanges(() => b.click())) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
   { const reg = () => { if (window.JTNav && window.JTNav.guard) window.JTNav.guard(holdForChanges); }; reg(); document.addEventListener("DOMContentLoaded", reg); }
   window.addEventListener("beforeunload", (e) => { if (S.ed && S.ed.dirty && !S.ed.leaveOk) { e.preventDefault(); e.returnValue = ""; } });

@@ -73,15 +73,17 @@
     if (fn) try { fn(rest); } catch (_) {}
     setTimeout(() => { if (target === h && location.hash === h && (!rest || !fn)) target = null; }, 1500);
   }
-  // a page with unsaved changes can hold navigation (JTNav.guard(fn): fn() returns true to stay put)
+  // a page with unsaved changes can hold navigation (JTNav.guard(fn): fn(resume) returns true to stay put; resume() carries
+  // on to where the person was going — called when they choose Discard changes, Oct 29: "the nav should go to the next page")
   let guard = null, undoing = false;
-  const held = () => !!(guard && guard());
-  function go(h) { if (!h) return; if (held()) return; if (h === location.hash) return route(h); at(h); route(h); }
+  const held = (resume) => !!(guard && guard(resume || null));
+  function go(h) { if (!h) return; if (held(() => go(h))) return; if (h === location.hash) return route(h); at(h); route(h); }
 
   window.addEventListener("popstate", (e) => {
     const n = e.state && e.state.jt, i = n ? stack.findIndex(x => x.n === n) : -1;
     if (undoing) { undoing = false; return; }
-    if (held()) { undoing = true; if (i > pos) history.back(); else history.forward(); return; }   // the browser's Back/Forward: step back to where we were
+    const to = location.hash;
+    if (held(() => go(to))) { undoing = true; if (i > pos) history.back(); else history.forward(); return; }   // the browser's Back/Forward: step back to where we were
     if (i >= 0) pos = i;
     else { const ent = { h: location.hash, t: titleOf(location.hash), n: ++seq }; stack = stack.slice(0, pos + 1); stack.push(ent); pos = stack.length - 1;
       try { history.replaceState({ jt: ent.n }, "", location.hash); } catch (_) {} }
@@ -105,8 +107,8 @@
   function closeRecent() { const m = $("nav-rmenu"); if (m) m.hidden = true; const b = $("nav-recent"); if (b) b.setAttribute("aria-expanded", "false"); }
   document.addEventListener("DOMContentLoaded", () => {
     const back = $("nav-back"), fwd = $("nav-fwd"), rec = $("nav-recent"), menu = $("nav-rmenu");
-    if (back) back.addEventListener("click", () => { if (stack[pos - 1] && !held()) history.back(); });
-    if (fwd) fwd.addEventListener("click", () => { if (stack[pos + 1] && !held()) history.forward(); });
+    if (back) back.addEventListener("click", () => { if (stack[pos - 1] && !held(() => history.back())) history.back(); });
+    if (fwd) fwd.addEventListener("click", () => { if (stack[pos + 1] && !held(() => history.forward())) history.forward(); });
     if (rec) rec.addEventListener("click", (e) => { e.stopPropagation(); const open = menu.hidden; menu.hidden = !open; rec.setAttribute("aria-expanded", String(open)); if (open) menu.innerHTML = recentHtml(); });
     if (menu) menu.addEventListener("click", (e) => { const g = e.target.closest("[data-nav-go]"); if (!g) return; closeRecent(); go(g.dataset.navGo); });
     document.addEventListener("click", (e) => { if (menu && !menu.hidden && !e.target.closest("#nav-rmenu")) closeRecent(); });
@@ -123,6 +125,14 @@
     stack = [{ h, t: titleOf(h || "#todo"), n }]; pos = 0;
     if (/\//.test(h)) { target = h; targetT = Date.now(); } }
 
+  // password managers (LastPass, 1Password) filling the app's own fields made pages look edited, so leaving them asked
+  // to save (Oct 29). Every input but sign-in / password ones is marked for them to leave alone.
+  const noFill = (root) => { if (!root || !root.querySelectorAll) return; for (const i of root.querySelectorAll("input:not([data-lpignore]), textarea:not([data-lpignore])")) {
+    if (i.type === "password" || i.type === "email" || /^(login|pwd)-/.test(i.id || "")) continue;
+    i.setAttribute("data-lpignore", "true"); i.setAttribute("data-1p-ignore", ""); i.setAttribute("data-form-type", "other");
+    if (!i.getAttribute("autocomplete")) i.setAttribute("autocomplete", "off"); } };
+  const startNoFill = () => { noFill(document.body); new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) { if (n.matches && n.matches("input, textarea")) noFill(n.parentNode); else noFill(n); } }).observe(document.body, { childList: true, subtree: true }); };
+  if (document.body) startNoFill(); else document.addEventListener("DOMContentLoaded", startNoFill);
   window.JTNav = { guard: (fn) => { guard = fn; }, at, replace, go, on: (page, fn) => handlers.set(page, fn), onClose: (fn) => closers.push(fn),
     get current() { return stack[pos]; }, get target() { return target; }, done() { target = null; }, _s: () => ({ stack, pos, target }) };
 })();
