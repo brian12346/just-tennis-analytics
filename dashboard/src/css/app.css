@@ -1622,3 +1622,6 @@ section.panel.pfold > .panel-head{margin-bottom:0}
 section.panel.pfold .panel-head > :not(h2):not(.lanehead):not(.muted):not([id$="-sum"]){display:none}
 section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 #ap-kpis .kpi.on{box-shadow:inset 0 0 0 2px var(--primary);border-radius:12px}
+.ap-viewrow{align-items:center;gap:12px;margin:4px 0 8px}
+#ap-kpis .kpi.on{box-shadow:inset 0 0 0 2px var(--primary);border-radius:12px}
+.ap-useg td{background:transparent;border-bottom:0}

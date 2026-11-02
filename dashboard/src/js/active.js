@@ -43,7 +43,12 @@
   const SHORT = { sku: "SKU", upc: "UPC", cost: "cost", price: "price", type: "category", vendor: "vendor", dup: "duplicate SKU" };
   const missOf = (v) => Object.keys(MISS).filter(k => MISS[k][1](v));
   const MFILT = [["", "Any info"], ["any", "Missing anything"], ...Object.entries(MISS).map(([k, v]) => [k, v[0]])];
-  const S = { rows: null, prods: null, f: "all", sf: "", mf: "", dups: new Set(), q: "", vendor: "", type: "", sort: "sold", by: "", shut: new Set(), open: new Set(), sel: new Set(), limit: 150, busy: false, err: null, ask: null };
+  // Used gear (Nov 2, Brian: "let's handle used products differently than new. we aren't going to have UPC/SKU info on
+  // the used products. let's have an entirely different screen for used products"): Shopify product type or title
+  // starting "Used" (Used Tennis Rackets, Used Pickleball Paddles, "Used - …"). Kept out of the new-product list, its
+  // counts and its missing-info checks; the Used screen lists each piece on its own.
+  const isUsed = (v) => /^\s*used\b/i.test(v.type || "") || /^\s*used\b/i.test(v.title || "");
+  const S = { view: "new", used: [], uf: "stock", usort: "added", rows: null, prods: null, f: "all", sf: "", mf: "", dups: new Set(), q: "", vendor: "", type: "", sort: "sold", by: "", shut: new Set(), open: new Set(), sel: new Set(), limit: 150, busy: false, err: null, ask: null };
 
   async function load() {
     S.err = null;
@@ -59,10 +64,12 @@
   const base = (t) => String(t || "").split(" - ")[0].trim() || t;
   function group() {
     const by = new Map(), seen = new Map();
-    for (const v of S.rows) { const k = v.sku.trim().toLowerCase(); if (k && !v.culled) seen.set(k, (seen.get(k) || 0) + 1); }
+    for (const v of S.rows) { const k = v.sku.trim().toLowerCase(); if (k && !v.culled && !isUsed(v)) seen.set(k, (seen.get(k) || 0) + 1); }
     S.dups = new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+    S.used = [];
     for (const v of S.rows) {
       v.stock = v.store + v.prep + v.fba + v.awd; v.sold = v.shop + v.anr + v.amz;
+      if (isUsed(v)) { if (!v.culled) S.used.push(v); continue; }
       let p = by.get(v.pid); if (!p) by.set(v.pid, p = { pid: v.pid, title: base(v.title), vendor: v.vendor, type: v.type, vs: [] });
       p.vs.push(v);
     }
@@ -124,7 +131,10 @@
     const st = $("ap-status");
     if (S.err) { st.innerHTML = `<span class="neg">Couldn't load the list: ${esc(JT.message(S.err))}</span>`; return; }
     if (!S.prods) { st.textContent = "Loading products, stock and 12 months of sales… (a few seconds)"; $("ap-table").innerHTML = ""; return; }
-    const live = S.prods.filter(p => !p.allCulled), lv = S.rows.filter(v => !v.culled);
+    for (const b of document.querySelectorAll("#ap-view [data-ap-view]")) { b.setAttribute("aria-pressed", String(b.dataset.apView === S.view)); if (b.dataset.apView === "used") b.innerHTML = `Used <span class="cnt">${n0(S.used.filter(v => v.stock > 0).length)}</span>`; }
+    for (const id of ["ap-seg", "ap-stock", "ap-miss", "ap-by", "ap-bulk", "ap-dl"]) { const el = $(id); if (el) el.hidden = S.view === "used"; }
+    if (S.view === "used") return renderUsed();
+    const live = S.prods.filter(p => !p.allCulled), lv = S.rows.filter(v => !v.culled && !isUsed(v));
     // every card shows its products below (Nov 2, Brian: "let's make all of the items in the screenshot clickable");
     // the picked one is outlined, clicking it again shows all
     const KGO = [["todo", ""], ["active", ""], ["all", "onhand"], ["all", "sold"], ["all", "oos"], ["all", "dead"], ["removed", ""]];
@@ -196,6 +206,42 @@
     $("ap-more").hidden = openList.length <= page.length;
   }
 
+  // the Used screen: one row per piece — price, cost, where it is, when it came in, whether it sold
+  const UFILT = [["stock", "In stock"], ["sold", "Sold"], ["all", "All"]];
+  const USORT = { added: (v) => -(v.added ? Date.parse(v.added) : 0), name: (v) => v.title.toLowerCase(), price: (v) => -(v.price || 0), cost: (v) => -(v.cost || 0),
+    stock: (v) => -v.stock, sold: (v) => -v.sold, last: (v) => -(v.last ? Date.parse(v.last) : 0), vendor: (v) => (v.vendor + " " + v.title).toLowerCase() };
+  const daysIn = (v) => v.added ? Math.floor((Date.now() - Date.parse(v.added)) / 864e5) : null;
+  function renderUsed() {
+    const q = S.q.trim().toLowerCase(), all = S.used;
+    const inStock = all.filter(v => v.stock > 0), soldOut = all.filter(v => v.stock <= 0 && v.sold > 0);
+    const val = (vs, k) => vs.reduce((a, v) => a + v.stock * (v[k] || 0), 0), m0 = (x) => "$" + n0(x);
+    const aged = inStock.filter(v => (daysIn(v) ?? 0) > 90), new30 = all.filter(isNew);
+    $("ap-kpis").innerHTML = [
+      ["In stock", n0(inStock.length), `${m0(val(inStock, "price"))} at price · ${m0(val(inStock, "cost"))} cost`, "stock"],
+      ["Sold in 12 months", n0(all.reduce((a, v) => a + v.sold, 0)), `${n0(soldOut.length)} piece${soldOut.length === 1 ? "" : "s"} sold out`, "sold"],
+      ["Added in 30 days", n0(new30.length), "new used pieces", "new"],
+      ["Over 90 days", n0(aged.length), aged.length ? `${m0(val(aged, "price"))} at price — think about a markdown` : "nothing sitting long", "aged"],
+    ].map(([l, v, sub, k]) => `<div class="kpi ${S.uf === k ? "on" : ""}"><button class="kpi-go" type="button" data-ap-uf="${k}" aria-pressed="${S.uf === k}"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${sub}</span></button></div>`).join("");
+    const opts = (k, cur, lab) => `<option value="">${lab}</option>` + [...new Set(all.map(v => v[k]).filter(Boolean))].sort().map(x => `<option ${x === cur ? "selected" : ""}>${esc(x)}</option>`).join("");
+    $("ap-vendor").innerHTML = opts("vendor", S.vendor, "All brands"); $("ap-type").innerHTML = opts("type", S.type, "All used types");
+    const fOkU = (v) => S.uf === "stock" ? v.stock > 0 : S.uf === "sold" ? v.sold > 0 : S.uf === "new" ? isNew(v) : S.uf === "aged" ? v.stock > 0 && (daysIn(v) ?? 0) > 90 : true;
+    const k = USORT[S.usort] || USORT.added;
+    const list = all.filter(v => fOkU(v) && (!S.vendor || v.vendor === S.vendor) && (!S.type || v.type === S.type) && (!q || (v.title + " " + v.vendor + " " + v.type + " " + v.sku).toLowerCase().includes(q)))
+      .sort((a, b) => { const x = k(a), y = k(b); return x < y ? -1 : x > y ? 1 : a.title.localeCompare(b.title); });
+    $("ap-status").textContent = `${n0(list.length)} used piece${list.length === 1 ? "" : "s"}`;
+    const th = (key, l, left) => `<th class="${left ? "l" : ""} sortable" data-ap-usort="${key}" aria-sort="${S.usort === key ? "descending" : "none"}">${l}${S.usort === key ? " ↓" : ""}</th>`;
+    const seg = `<tr class="ap-useg"><td colspan="9" class="l"><span class="seg sm">${UFILT.map(([k2, n]) => `<button type="button" data-ap-uf="${k2}" aria-pressed="${S.uf === k2}">${n}</button>`).join("")}</span></td></tr>`;
+    $("ap-table").innerHTML = `<thead>${seg}<tr>${th("name", "Used piece", 1)}${th("vendor", "Brand · type", 1)}${th("price", "Price")}${th("cost", "Cost")}${th("stock", "On hand")}<th class="l">Where</th>${th("added", "Came in", 1)}${th("sold", "Sold 12 mo")}${th("last", "Last sold", 1)}</tr></thead><tbody>${
+      list.slice(0, S.limit).map(v => { const d = daysIn(v);
+        return `<tr><td class="l"><a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a>${v.status !== "ACTIVE" ? ` <span class="pill pos">${esc((v.status || "").toLowerCase())}</span>` : ""}</td>
+          <td class="l small">${esc(v.vendor || "—")}<div class="meta">${esc(v.type || "")}</div></td>
+          <td class="num">${v.price ? "$" + v.price.toFixed(2) : '<span class="dim">—</span>'}</td><td class="num">${v.cost ? "$" + v.cost.toFixed(2) : '<span class="pill miss">no cost</span>'}</td>
+          <td class="num">${stockCell(v)}</td><td class="l small muted">${where(v)}</td>
+          <td class="l small">${v.added ? esc(sd(v.added.slice(0, 10))) + (d != null ? `<div class="meta ${v.stock > 0 && d > 90 ? "neg" : ""}">${d} day${d === 1 ? "" : "s"}${v.stock > 0 ? " on hand" : ""}</div>` : "") : '<span class="dim">—</span>'}</td>
+          <td class="num">${soldCell(v)}</td><td class="l small">${v.last ? esc(sd(v.last)) : '<span class="dim">—</span>'}</td></tr>`; }).join("") || `<tr><td colspan="9" class="l muted">${all.length ? "Nothing matches." : "No used products (Shopify product type or title starting “Used”)."}</td></tr>`}</tbody>`;
+    $("ap-more").hidden = list.length <= S.limit;
+  }
+
   async function refresh() {
     S.prods = S.prods || null; render();
     try { await load(); } catch (e) { S.err = e; }
@@ -241,6 +287,9 @@
   const liveVids = (p) => p.vs.filter(v => S.f === "removed" ? v.culled : !v.culled).map(v => v.vid);
 
   $("tab-active").addEventListener("click", (e) => {
+    const vw = e.target.closest("[data-ap-view]"); if (vw) { S.view = vw.dataset.apView; S.vendor = ""; S.type = ""; S.limit = 150; render(); return; }
+    const uf = e.target.closest("[data-ap-uf]"); if (uf) { S.uf = S.uf === uf.dataset.apUf && uf.classList.contains("kpi-go") ? "all" : uf.dataset.apUf; S.limit = 150; render(); return; }
+    const us = e.target.closest("[data-ap-usort]"); if (us) { S.usort = us.dataset.apUsort; render(); return; }
     const kp = e.target.closest("[data-ap-kpi]");
     if (kp) { const [f2, sf2] = JSON.parse($("ap-kpis").dataset.go)[+kp.dataset.apKpi], on = S.f === f2 && S.sf === sf2;
       S.f = on ? "all" : f2; S.sf = on ? "" : sf2; if (S.sort === "added" && S.f !== "new") S.sort = "sold"; S.sel.clear(); S.limit = 150; render();
