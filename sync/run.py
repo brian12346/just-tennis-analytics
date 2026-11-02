@@ -70,6 +70,8 @@ def main(argv: list[str] | None = None) -> None:
             run("shopify_pickups", lambda: sh.sync_pickups(shop, conn))
         if a.job in ("nightly", "catalog"):
             run("catalog", lambda: sh.sync_catalog(shop, conn, today))
+        elif a.job == "hourly":   # new and edited products within the hour (2 h window, so a missed run is covered)
+            run("catalog_recent", lambda: sh.sync_catalog(shop, conn, today, since=dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)))
             # linked Shopify POs' status (Shopify's PO API is preview-only: this records "not available" until it opens)
             run("shopify_po_status", lambda: sh.sync_po_status(shop, conn))
         if a.job in ("hourly", "nightly", "shopify-pos"):

@@ -313,8 +313,8 @@ def sync_orders(shop: Shopify, conn, updated_since: dt.datetime, prefix: str = "
         after = page["pageInfo"]["endCursor"]
 
 
-VARIANTS_Q = """query($first: Int!, $after: String) {
-  productVariants(first: $first, after: $after) {
+VARIANTS_Q = """query($first: Int!, $after: String, $q: String) {
+  productVariants(first: $first, after: $after, query: $q) {
     pageInfo { hasNextPage endCursor }
     nodes { id sku barcode title displayName price updatedAt inventoryQuantity
             product { id title vendor productType status }
@@ -323,19 +323,24 @@ VARIANTS_Q = """query($first: Int!, $after: String) {
 }"""
 
 
-def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
-    """Snapshot every variant's cost; record cost changes against the previous snapshot."""
+def sync_catalog(shop: Shopify, conn, today: dt.date, since: dt.datetime | None = None) -> dict:
+    """Snapshot every variant's cost; record cost changes against the previous snapshot.
+
+    since: only the variants Shopify changed (or created) after this time — the hourly pass (Brian, Nov 2: new Shopify
+    products in Seller Sage within the hour). It doesn't mark anything removed; the nightly full pass does that.
+    A cost edited in Shopify doesn't change the variant's updated_at, so cost-only edits still arrive nightly."""
     from .common import upsert
     with conn.cursor() as cur:
         cur.execute("""select variant_id, unit_cost, sku, product_title, variant_title, vendor, product_type, status, price,
                               inventory_qty, barcode from jt.variants""")
         snap = {r[0]: r for r in cur.fetchall()}
         prev = {v: (float(r[1]) if r[1] is not None else None) for v, r in snap.items()}
-    baseline = not prev
+    baseline = not prev and since is None
     rows, changes, log, after = [], [], [], None
     now = dt.datetime.now(dt.timezone.utc)
     while True:
-        page = shop.graphql(VARIANTS_Q, {"first": 200, "after": after})["productVariants"]
+        page = shop.graphql(VARIANTS_Q, {"first": 200, "after": after,
+                                         "q": f"updated_at:>'{since.astimezone(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}'" if since else None})["productVariants"]
         for v in page["nodes"]:
             vid, p = gid_num(v["id"]), v.get("product") or {}
             inv = v.get("inventoryItem") or {}
@@ -376,7 +381,7 @@ def sync_catalog(shop: Shopify, conn, today: dt.date) -> dict:
         cur.execute("update jt.variants set removed_at = null where seen_at >= %s and removed_at is not null returning variant_id", (now,))
         back = [r[0] for r in cur.fetchall()]; restored = len(back)
         gone = []
-        if len(rows) >= 0.5 * len(prev):
+        if since is None and len(rows) >= 0.5 * len(prev):
             cur.execute("update jt.variants set removed_at = now() where seen_at < %s and removed_at is null returning variant_id", (now,))
             gone = [r[0] for r in cur.fetchall()]; removed = len(gone)
         if not baseline:

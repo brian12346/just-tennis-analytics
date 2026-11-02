@@ -270,7 +270,36 @@
     catch (e) { if (e && e.code !== "declined") { b.hidden = false; b.className = "note bad"; b.textContent = JT.message(e); } }
   });
   $("ap-by").addEventListener("change", (e) => { S.by = e.target.value; S.shut.clear(); S.limit = 150; render(); });
-  window.apShow = () => { if (!S.rows && !S.err) refresh(); else render(); };
+  // Refresh from Shopify (Nov 2, Brian): starts the catalog read (jt.catalog_refresh, migration 193 — at most every 5 minutes),
+  // waits for it (a few minutes) and reloads the list. New products land here by themselves (migration 185).
+  const ago = (iso) => { if (!iso) return "never"; const m = Math.round((Date.now() - Date.parse(iso)) / 6e4);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" }); };
+  const catStatus = async () => { const r = await JT.rows(["jt.catalog_status()::text"], "", true); return r[0] ? JSON.parse(r[0][0]) : {}; };
+  let shopWait = null;
+  async function showShop() { const el = $("ap-shopst"); if (!el || shopWait) return;
+    try { const st = await catStatus(); el.textContent = `Shopify products read ${ago(st.last_sync)}`; el.title = st.last_sync ? new Date(st.last_sync).toLocaleString() : ""; } catch (_) { el.textContent = ""; } }
+  async function refreshShop() {
+    const el = $("ap-shopst"), b = $("ap-shop"); if (shopWait) return;
+    b.disabled = true; el.textContent = "Asking Shopify…";
+    try {
+      const W = window.JTWeb || null;
+      const r = W ? await W.write("jt_catalog_refresh", { p: {} }) : JSON.parse(((await JT.run(`select jt.catalog_refresh('{"by":"Claude dashboard"}'::jsonb)::text as r`, true))[0] || {}).r || "{}");
+      const res = typeof r === "string" ? JSON.parse(r) : r || {};
+      const since = Date.parse(res.requested_at || new Date().toISOString()) - 5000, before = (S.rows || []).length, t0 = Date.now();
+      el.textContent = res.started ? "Reading products from Shopify… (2–3 minutes)" : `Already reading from Shopify (started ${ago(res.requested_at)})…`;
+      shopWait = setInterval(async () => {
+        let st = {}; try { st = await catStatus(); } catch (_) { return; }
+        if (st.last_sync && Date.parse(st.last_sync) > since) {
+          clearInterval(shopWait); shopWait = null; b.disabled = false;
+          await refresh();
+          const added = (S.rows || []).length - before;
+          el.textContent = `Up to date with Shopify${added > 0 ? ` · ${n0(added)} new size${added === 1 ? "" : "s"} / color${added === 1 ? "" : "s"}` : ""}`;
+        } else if (Date.now() - t0 > 10 * 6e4) { clearInterval(shopWait); shopWait = null; b.disabled = false; el.textContent = "Shopify is taking longer than usual — check back in a few minutes."; }
+      }, 15000);
+    } catch (e) { b.disabled = false; el.textContent = "Couldn't start it: " + JT.message(e); }
+  }
+  $("ap-shop").addEventListener("click", refreshShop);
+  window.apShow = () => { showShop(); if (!S.rows && !S.err) refresh(); else render(); };
   window.JTActive = { _state: S };
   if ((location.hash || "") === "#active") setTimeout(() => window.apShow(), 0);
 })();
