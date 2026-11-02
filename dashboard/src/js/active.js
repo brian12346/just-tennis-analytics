@@ -19,12 +19,12 @@
   // new products are added by themselves (migration 185: new in Shopify, or put on a PO); "New" = added in the last 30 days
   const NEW_DAYS = 30, isNew = (o) => !!o.added && Date.now() - Date.parse(o.added) < NEW_DAYS * 864e5;
   const STATUS = { active: ["Active", "ok"], eol: ["EOL", "miss"], seasonal: ["Seasonal", "other"], hold: ["Hold", "pos"] };
-  const FILTERS = [["all", "All"], ["todo", "Not assessed"], ["active", "Active"], ["eol", "EOL"], ["seasonal", "Seasonal"], ["hold", "Hold"], ["mixed", "Mixed"], ["removed", "Removed"]];
+  const FILTERS = [["all", "All"], ["new", "New"], ["todo", "Not assessed"], ["active", "Active"], ["eol", "EOL"], ["seasonal", "Seasonal"], ["hold", "Hold"], ["mixed", "Mixed"], ["removed", "Removed"]];
   const STOCKS = { new: ["New", "ok", "Added in the last 30 days, nothing sold yet"], instock: ["In stock", "", "Stock on hand and selling"],
     low: ["Low stock", "warn", "Under 4 weeks of stock at the 90-day pace"], oos: ["Out of stock", "miss", "Sold in the last 12 months, none on hand anywhere, nothing on order"],
     onorder: ["On order", "other", "None on hand; more is on an open PO"], slow: ["Slow", "warn", "Stock on hand, nothing sold in 90 days"],
     dead: ["Dead stock", "miss", "Stock on hand, nothing sold in 12 months"], none: ["No stock", "pos", "No stock and no sales"] };
-  const SFILT = [["", "Any stock"], ...Object.entries(STOCKS).map(([k, v]) => [k, v[0]]), ["shopoff", "Not active in Shopify"], ["disc", "Discontinued"]];
+  const SFILT = [["", "Any stock"], ["onhand", "On hand"], ["sold", "Sold in 12 months"], ...Object.entries(STOCKS).map(([k, v]) => [k, v[0]]), ["shopoff", "Not active in Shopify"], ["disc", "Discontinued"]];
   // the stock state of a size or a whole product
   const stockOf = (o, nw) => { const pace = o.s90 / 90;
     if (o.stock <= 0) return o.onOrder > 0 ? "onorder" : nw && !o.sold ? "new" : o.sold > 0 ? "oos" : "none";
@@ -33,7 +33,7 @@
     return pace > 0 && o.stock / (pace * 7) < 4 ? "low" : "instock"; };
   // what to set it to, when it isn't assessed yet
   const suggest = (o, isP) => o.disc ? "eol" : o.stk === "new" || o.stk === "onorder" ? "active" : o.stk === "dead" ? "eol" : (isP ? o.draft : o.status !== "ACTIVE") && o.stock <= 0 ? "eol" : "active";
-  const SORTK = { sold: (p) => -p.sold, stock: (p) => -p.stock, last: (p) => -(p.last ? Date.parse(p.last) : 0), name: (p) => p.title.toLowerCase(), vendor: (p) => (p.vendor + " " + p.title).toLowerCase() };
+  const SORTK = { added: (p) => -(p.added ? Date.parse(p.added) : 0), sold: (p) => -p.sold, stock: (p) => -p.stock, last: (p) => -(p.last ? Date.parse(p.last) : 0), name: (p) => p.title.toLowerCase(), vendor: (p) => (p.vendor + " " + p.title).toLowerCase() };
   const GROUPS = [["", "No grouping"], ["vendor", "Vendor"], ["type", "Category"]];
   // missing product info (Oct 29, Brian: "a filter for missing product attributes so we can fill them in" — products with
   // no SKU / UPC don't match on vendor invoices). Checked per size / color; a product shows when any of its sizes is missing it.
@@ -90,10 +90,10 @@
     S.prods = [...by.values()];
   }
   const fOk = (p, f) => f === "removed" ? p.vs.some(v => v.culled) : p.allCulled ? false
-    : f === "all" ? true : f === "todo" ? p.todo : f === "mixed" ? p.st === "mixed" : p.st === f;
+    : f === "all" ? true : f === "new" ? p.isNew : f === "todo" ? p.todo : f === "mixed" ? p.st === "mixed" : p.st === f;
   const mVs = (p, f) => p.vs.filter(v => !v.culled && (f === "any" ? missOf(v).length > 0 : MISS[f][1](v)));
   const mOk = (p, f) => !f || mVs(p, f).length > 0;
-  const sOk = (p, f) => !f ? true : f === "shopoff" ? p.draft : f === "disc" ? p.anyDisc : p.stk === f;
+  const sOk = (p, f) => !f ? true : f === "onhand" ? p.stock > 0 : f === "sold" ? p.sold > 0 : f === "shopoff" ? p.draft : f === "disc" ? p.anyDisc : p.stk === f;
   function shown() {
     const q = S.q.trim().toLowerCase();
     const list = (S.prods || []).filter(p => fOk(p, S.f) && sOk(p, S.sf) && mOk(p, S.mf) && (!S.vendor || p.vendor === S.vendor) && (!S.type || p.type === S.type)
@@ -125,6 +125,9 @@
     if (S.err) { st.innerHTML = `<span class="neg">Couldn't load the list: ${esc(JT.message(S.err))}</span>`; return; }
     if (!S.prods) { st.textContent = "Loading products, stock and 12 months of sales… (a few seconds)"; $("ap-table").innerHTML = ""; return; }
     const live = S.prods.filter(p => !p.allCulled), lv = S.rows.filter(v => !v.culled);
+    // every card shows its products below (Nov 2, Brian: "let's make all of the items in the screenshot clickable");
+    // the picked one is outlined, clicking it again shows all
+    const KGO = [["todo", ""], ["active", ""], ["all", "onhand"], ["all", "sold"], ["all", "oos"], ["all", "dead"], ["removed", ""]];
     $("ap-kpis").innerHTML = [
       ["Assessed", `${n0(live.filter(p => !p.todo).length)} <small>of ${n0(live.length)}</small>`, `${n0(live.filter(p => p.todo).length)} product${live.filter(p => p.todo).length === 1 ? "" : "s"} still to assess`],
       ["Active", n0(live.filter(p => p.st === "active").length), `EOL ${n0(live.filter(p => p.st === "eol").length)} · seasonal ${n0(live.filter(p => p.st === "seasonal").length)} · hold ${n0(live.filter(p => p.st === "hold").length)}`],
@@ -133,7 +136,9 @@
       ["Out of stock", n0(live.filter(p => p.stk === "oos").length), `${n0(live.filter(p => p.stk === "low").length)} low · ${n0(live.filter(p => p.stk === "onorder").length)} on order`],
       ["Dead stock", n0(live.filter(p => p.stk === "dead").length), "on hand, nothing sold in 12 months"],
       ["Removed", n0(S.prods.filter(p => p.vs.some(v => v.culled)).length), "taken off the list"],
-    ].map(([l, v, s]) => `<div class="kpi"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${s}</span></div>`).join("");
+    ].map(([l, v, s], i) => { const [f, sf] = KGO[i], on = S.f === f && S.sf === sf;
+      return `<div class="kpi ${on ? "on" : ""}"><button class="kpi-go" type="button" data-ap-kpi="${i}" aria-pressed="${on}" title="${on ? "Show all products" : "Show these below"}"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${s}</span></button></div>`; }).join("");
+    $("ap-kpis").dataset.go = JSON.stringify(KGO);
     $("ap-miss").innerHTML = MFILT.map(([k, n]) => `<option value="${k}" ${S.mf === k ? "selected" : ""}>${n}${k ? ` (${n0(S.prods.filter(p => !p.allCulled && fOk(p, S.f) && mOk(p, k)).length)})` : ""}</option>`).join("");
     $("ap-dl").hidden = !S.mf;
     $("ap-stock").innerHTML = SFILT.map(([k, n]) => `<option value="${k}" ${S.sf === k ? "selected" : ""}>${n}${k ? ` (${n0(S.prods.filter(p => !p.allCulled && fOk(p, S.f) && sOk(p, k)).length)})` : ""}</option>`).join("");
@@ -175,7 +180,7 @@
           <td><input type="checkbox" data-ap-selp="${esc(p.pid)}" ${on ? "checked" : ""} ${some ? 'data-some="1"' : ""} aria-label="Select ${esc(p.title)}"></td>
           <td class="rl-car" aria-hidden="true">${p.vs.length > 1 ? (o ? "▾" : "▸") : ""}</td>
           <td class="l"><a class="olink" href="${ADMIN}/products/${esc(p.pid)}" target="_blank" rel="noopener">${esc(one ? one.title : p.title)}</a>
-            <div class="meta">${one ? `${codes(one)} ${missPill(one)}` : `${n0(vs.length)} size${vs.length === 1 ? "" : "s"} / color${vs.length === 1 ? "" : "s"}${p.someCulled && !rem ? ` · ${n0(p.vs.length - vs.length)} removed` : ""}${(() => { const n = mVs(p, S.mf || "any").length; return n ? ` <span class="pill miss" title="Sizes / colors missing ${S.mf && S.mf !== "any" ? esc(MISS[S.mf][0].toLowerCase()) : "info"} in Shopify">${n0(n)} missing ${S.mf && S.mf !== "any" ? esc(SHORT[S.mf]) : "info"}</span>` : ""; })()}`} ${stockPill(p)} ${tags(p, true)}</div></td>
+            <div class="meta">${one ? `${codes(one)} ${missPill(one)}${S.f === "new" && one.added ? ` <span class="pill ok" title="${esc(one.how || "")}">added ${esc(sd(one.added.slice(0, 10)))}</span>` : ""}` : `${n0(vs.length)} size${vs.length === 1 ? "" : "s"} / color${vs.length === 1 ? "" : "s"}${p.someCulled && !rem ? ` · ${n0(p.vs.length - vs.length)} removed` : ""}${S.f === "new" && p.added ? ` · <span class="pill ok" title="${esc(p.how || "")}">added ${esc(sd(p.added.slice(0, 10)))}</span>` : ""}${(() => { const n = mVs(p, S.mf || "any").length; return n ? ` <span class="pill miss" title="Sizes / colors missing ${S.mf && S.mf !== "any" ? esc(MISS[S.mf][0].toLowerCase()) : "info"} in Shopify">${n0(n)} missing ${S.mf && S.mf !== "any" ? esc(SHORT[S.mf]) : "info"}</span>` : ""; })()}`} ${stockPill(p)} ${tags(p, true)}</div></td>
           <td class="l ap-stc">${rem ? "" : stCell(p, "p" + p.pid, true)}</td>
           <td class="l small">${esc(p.vendor || "—")}<div class="meta">${esc(p.type || "")}</div></td>
           <td class="num">${stockCell(p)}</td><td class="l small muted">${where(p)}</td>
@@ -236,7 +241,12 @@
   const liveVids = (p) => p.vs.filter(v => S.f === "removed" ? v.culled : !v.culled).map(v => v.vid);
 
   $("tab-active").addEventListener("click", (e) => {
-    const f = e.target.closest("[data-ap-f]"); if (f) { S.f = f.dataset.apF; S.sel.clear(); S.limit = 150; render(); return; }
+    const kp = e.target.closest("[data-ap-kpi]");
+    if (kp) { const [f2, sf2] = JSON.parse($("ap-kpis").dataset.go)[+kp.dataset.apKpi], on = S.f === f2 && S.sf === sf2;
+      S.f = on ? "all" : f2; S.sf = on ? "" : sf2; if (S.sort === "added" && S.f !== "new") S.sort = "sold"; S.sel.clear(); S.limit = 150; render();
+      if (!on) { const t = $("ap-table"); if (t) t.scrollIntoView({ behavior: "smooth", block: "start" }); } return; }
+    // New: added in the last 30 days, newest first (Nov 2)
+    const f = e.target.closest("[data-ap-f]"); if (f) { const was = S.f; S.f = f.dataset.apF; if (S.f === "new") S.sort = "added"; else if (was === "new" && S.sort === "added") S.sort = "sold"; S.sel.clear(); S.limit = 150; render(); return; }
     const qk = e.target.closest("[data-ap-quick]");
     if (qk) { const [key, st] = qk.dataset.apQuick.split(":"); const vids = key[0] === "p" ? liveVids(S.prods.find(x => x.pid === key.slice(1)) || { vs: [] }) : [key.slice(1)]; setStatus(vids, st); return; }
     const ss = e.target.closest("[data-ap-set]"); if (ss) { setStatus([...S.sel], ss.dataset.apSet); return; }
