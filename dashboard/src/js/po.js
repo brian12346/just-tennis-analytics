@@ -1880,6 +1880,7 @@
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
           <span class="dbtns right">${footButtons(ed, got, ro)}</span></div>
       </section>${side}</div>
+      ${ed.id ? notesHtml(ed) : ""}
       <input type="file" id="pe-file" accept=".pdf,application/pdf,.csv,.xlsx,.xls,text/csv" hidden>`;
     if (keep) {
       const el = keep.id ? $(keep.id) : keep.k && keep.f ? box.querySelector(`[data-f="${keep.f}"][data-k="${keep.k}"]`) : null;
@@ -2430,6 +2431,39 @@
       : `<button class="btn primary" data-pact="ready" ${busy} title="Done putting it together: saves it and shows it as Ready to approve">Ready to Order</button>`)
       + `<button class="btn ${ed.readyAt ? "primary" : ""}" data-pact="save-approve" ${busy} title="Saves it, approves it and marks it ordered: it moves to Ordered">Approve</button>`;
   }
+  // ---------- the conversation under a PO (Nov 2, Brian: "a conversation/chat below the order so we can explain oddities
+  // or certain details"). jt.po_notes (migration 194); a message can be taken back by whoever wrote it. ----------
+  const me = () => { const w = document.getElementById("whoami"); return (w && w.textContent.trim()) || "Claude dashboard"; };
+  const who = (by) => { const n = String(by || "").split("@")[0]; return n ? n.charAt(0).toUpperCase() + n.slice(1) : "Someone"; };
+  const at = (t) => { const d = window.JTDate.parseTime(t); return !t || isNaN(d) ? "" : d.toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); };
+  async function loadNotes(ed) {
+    const r = await JT.rows(["n.id::text", "n.body", "n.by", "n.created_at::text", "n.deleted_at is not null"], `from jt.po_notes n where n.order_id = ${JT.int(ed.id)} order by n.created_at, n.id`, true);
+    ed.notes = r.map(x => ({ id: x[0], body: x[1] || "", by: x[2] || "", at: x[3] || "", gone: x[4] === true || x[4] === "true" }));
+  }
+  function notesHtml(ed) {
+    if (ed.notes === undefined) { ed.notes = null; loadNots(ed); }
+    const list = ed.notes || [], mine = me();
+    const msg = (n) => n.gone ? `<div class="pn-msg gone"><span class="pn-who">${esc(who(n.by))}</span> <span class="small muted">removed a message · ${esc(at(n.at))}</span></div>`
+      : `<div class="pn-msg ${n.by === mine ? "me" : ""}"><div class="pn-h"><span class="pn-who">${esc(who(n.by))}</span><span class="small muted">${esc(at(n.at))}</span>${n.by === mine ? `<button class="linkbtn small" data-pact="note-rm" data-k="${esc(n.id)}" title="Take this message back">remove</button>` : ""}</div><div class="pn-body">${esc(n.body).replace(/\n/g, "<br>")}</div></div>`;
+    return `<section class="panel po-notes" aria-label="Notes on this PO"><div class="panel-head"><h2>Notes${list.filter(n => !n.gone).length ? ` · ${list.filter(n => !n.gone).length}` : ""}</h2><span class="muted small">explain anything odd about this order — everyone on Seller Sage sees it</span></div>
+      <div class="pn-list">${ed.notes === null ? '<div class="muted small">Loading…</div>' : list.map(msg).join("") || '<div class="muted small">No notes yet.</div>'}</div>
+      <div class="pn-new"><textarea id="pe-notein" class="inp" rows="2" placeholder="Add a note — e.g. Wilson shorted the grips, credit coming on the next invoice">${esc(ed.noteDraft || "")}</textarea>
+        <button class="btn primary" data-pact="note-add" ${S.busy === "note" ? "disabled" : ""} title="Post it (⌘/Ctrl + Enter)">Post</button></div></section>`;
+  }
+  function loadNots(ed) { loadNotes(ed).then(() => { if (S.ed === ed) render(); }).catch(e => { ed.notes = []; if (S.ed === ed) { render(); note("warn", "Couldn't load the notes: " + esc(JT.message(e))); } }); }
+  async function noteCall(ed, p) {
+    const W = window.JTWeb || null;
+    if (W) return W.write("jt_po_note", { p });
+    const fn = p.action === "remove" ? "jt.po_note_remove" : "jt.po_note_add";
+    return JT.run(`select ${fn}(${JT.q(JSON.stringify({ ...p, by: "Claude dashboard" }))}::jsonb)::text as r`, true);
+  }
+  async function postNote(ed) {
+    const t = $("pe-notein"), body = ((t && t.value) || ed.noteDraft || "").trim(); if (!body) return;
+    S.busy = "note"; render();
+    try { await noteCall(ed, { action: "add", order_id: Number(ed.id), body }); ed.noteDraft = ""; await loadNotes(ed); }
+    catch (e) { note("bad", "Couldn't post the note: " + esc(JT.message(e))); }
+    S.busy = ""; if (S.ed === ed) { render(); const t2 = $("pe-notein"); if (t2) t2.focus(); }
+  }
   // units received that no invoice counts and that weren't already closed as over, per product (Oct 29)
   function overUnits(ed) {
     const rec = new Map(), att = new Map(), by = new Map();
@@ -2828,6 +2862,8 @@
     if (a === "back-list") return leave();
     if (a === "inv-list") return leave();
     if (a === "open-inv") return showInvoicePage();
+    if (a === "note-add") return postNote(ed);
+    if (a === "note-rm" && k) { noteCall(ed, { action: "remove", id: Number(k) }).then(() => loadNotes(ed)).then(() => { if (S.ed === ed) render(); }).catch(e2 => note("bad", "Couldn't remove it: " + esc(JT.message(e2)))); return; }
     if (a === "iv-peek") return openPeek();
     if (a === "open-unpaid") { const i = ed.invoices.findIndex(v => !v.paidOn); ed.confirm = false; note("", ""); if (i >= 0) ed.cur = i; return showInvoicePage(); }
     if (a === "open-po") { S.invOpen = false; const b = document.querySelector('.tabs button[data-tab="po"]'); if (b) b.click(); return; }
@@ -3588,6 +3624,7 @@
       const iv = cur(ed);
       if (t.id === "pe-po") { ed.po = t.value; ed.dirty = true; return; }
       if (t.id === "pe-note") { ed.note = t.value; ed.dirty = true; return; }
+      if (t.id === "pe-notein") { ed.noteDraft = t.value; return; }      // a draft note isn't an unsaved change to the PO
       if (t.id === "pe-invno" && iv) { iv.no = t.value; ed.dirty = true; return; }
       if (t.id === "pe-invterms" && iv) { iv.terms = t.value; ed.dirty = true; return; }
       if (t.id === "pe-payref" && iv) { iv.payRef = t.value; ed.dirty = true; return; }
@@ -3633,6 +3670,7 @@
     box.addEventListener("dragend", () => { box._drag = null; dropClear(); });
     box.addEventListener("keydown", (e) => {
       const ed = S.ed; if (!ed) return;
+      if (e.target.id === "pe-notein" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); ed.noteDraft = e.target.value; postNote(ed); return; }
       if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") && e.target.dataset && e.target.dataset.drag) {
         e.preventDefault(); const id = e.target.dataset.drag, rowK = e.target.dataset.dkind === "row";
         const rows = [...box.querySelectorAll(rowK ? "tr[data-row]" : "tr[data-line]")].map(x => rowK ? x.dataset.row : x.dataset.line), i = rows.indexOf(id), j = e.key === "ArrowUp" ? i - 1 : i + 1;

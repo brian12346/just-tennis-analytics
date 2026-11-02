@@ -1625,3 +1625,13 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .ap-viewrow{align-items:center;gap:12px;margin:4px 0 8px}
 #ap-kpis .kpi.on{box-shadow:inset 0 0 0 2px var(--primary);border-radius:12px}
 .ap-useg td{background:transparent;border-bottom:0}
+.po-notes{margin-top:14px}
+.pn-list{display:flex;flex-direction:column;gap:10px;margin:6px 0 12px;max-height:420px;overflow:auto}
+.pn-msg{max-width:720px;padding:8px 12px;border-radius:12px;background:var(--surface-sunken,rgba(127,127,127,.08))}
+.pn-msg.me{align-self:flex-end;background:rgba(0,38,118,.08)}
+.pn-msg.gone{background:transparent;padding:2px 12px}
+.pn-h{display:flex;gap:8px;align-items:baseline;margin-bottom:2px}
+.pn-who{font-weight:600}
+.pn-body{white-space:normal;overflow-wrap:anywhere}
+.pn-new{display:flex;gap:8px;align-items:flex-end}
+.pn-new textarea{flex:1;resize:vertical;min-height:44px;font:inherit}
