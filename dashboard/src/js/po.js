@@ -487,6 +487,8 @@
         upd: !!upd, costApplied: ca == null ? null : +ca, costAppliedAt: cat || "" }));
       ed.lastPay = lp[0] ? { method: lp[0][0] || "", from: lp[0][1] || "" } : null;
       await fillInvoices(ed, ivs);
+      // invoiced products that were left off the PO on purpose ("Don't add") stay off it
+      ed.noAdd = new Set([...invoicedBy(ed).keys()].map(String).filter(v => !ed.lines.some(l => String(l.vid) === v)));
       { const pl = await JT.rows(["category", "budget::text", "placeholder::text", "missing_invoice::text", "missing_invoice_at::text", "missing_invoice_by"], `from jt.prep_orders where id = ${JT.int(id)}`, true).catch(() => null);
         ed.planOn = !!pl; ed.category = pl && pl[0] ? pl[0][0] || "" : ""; ed.budget = pl && pl[0] && pl[0][1] != null ? +pl[0][1] : null; ed.placeholder = !!(pl && pl[0] && pl[0][2] === "true");
         ed.missingInv = !!(pl && pl[0] && pl[0][3] === "true"); ed.missingAt = pl && pl[0] ? pl[0][4] || "" : ""; ed.missingBy = pl && pl[0] ? pl[0][5] || "" : ""; }
@@ -666,10 +668,53 @@
   }
   // keep the PO in step with its invoices: an invoiced product the PO doesn't have gets a line; lines added that way
   // follow the invoice and go away with it; a PO line's cost is the invoice's (the average when several invoices have it)
+  // An invoice line's product changed (picked, an other guess, or a guess confirmed). On a PO, a product that isn't on
+  // it yet asks first (Nov 3, Brian): add it to the PO, put it in place of the product the line had (when that one
+  // isn't received or on another invoice line), or leave the PO as it is.
+  function matchTo(ed, r, vid, how) {
+    const old = r.vid ? String(r.vid) : "", nv = String(vid);
+    const had = ed.lines.some(l => String(l.vid) === nv);
+    r.vid = vid; r.skip = false; if (how) { r.how = how; r.conf = "sure"; } r.confirmed = true; ed.search = null;
+    if (ed.noAdd) ed.noAdd.delete(nv);
+    syncLines(ed); ed.dirty = true;
+    if (ed.alone || had || old === nv) { ed.addAsk = null; return; }
+    // the product the line had: replaceable when it's on the PO, nothing received, and no other invoice line has it
+    const stillInv = old && ed.invoices.some(v => v.rows.some(x => x !== r && String(x.vid) === old && !x.skip));
+    const oldL = old && !stillInv ? ed.lines.find(l => String(l.vid) === old && !(l.received > 0)) : null;
+    ed.addAsk = { row: r.id, vid: nv, old: oldL ? oldL.id : null };
+  }
+  // Change the product on a PO line (Nov 3, Brian: "we need to be able to edit the items on the purchase order"): only
+  // a line with nothing received. Same product already on the PO for the same place → the quantities add up.
+  // Invoice lines still matched to the old product: asks whether to change them too.
+  function swapLine(ed, lid, vid) {
+    const l = ed.lines.find(x => x.id === lid); ed.lsearch = null; if (!l || l.received > 0) return;
+    const old = String(l.vid), nv = String(vid); if (old === nv) return;
+    const same = ed.lines.find(x => x !== l && String(x.vid) === nv && x.dest === l.dest && (x.asku || "") === (l.asku || ""));
+    if (same) { same.qty = String((Number(same.qty) || 0) + (Number(l.qty) || 0)); same.auto = false; ed.lines = ed.lines.filter(x => x !== l); }
+    else { l.vid = nv; l.auto = false; if (l.dest === "prep") l.asku = ""; }
+    const onInv = ed.invoices.reduce((a, v) => a + v.rows.filter(r => String(r.vid) === old && !r.skip && !(rowGot(v, r) > 0)).length, 0);
+    ed.swapAsk = onInv ? { old, nv, n: onInv } : null;
+    if (ed.noAdd) ed.noAdd.delete(nv);
+    ed.dirty = true;
+    if (!onInv) syncLines(ed);
+  }
+  function swapAskHtml(ed) {
+    const q = ed.swapAsk; if (!q) return "";
+    const ov = variant(q.old) || {}, nv = variant(q.nv) || {};
+    return `<div class="note warn addask">The PO now has <b>${esc(nv.title || "the new product")}</b>${nv.sku ? ` <span class="mono">${esc(nv.sku)}</span>` : ""}. ${q.n} invoice line${q.n === 1 ? " is" : "s are"} still matched to <b>${esc(ov.title || "the old product")}</b>${ov.sku ? ` <span class="mono">${esc(ov.sku)}</span>` : ""}.
+      <span class="dbtns"><button class="mini primary" data-pact="swap-inv">Change ${q.n === 1 ? "it" : "them"} too</button><button class="mini" data-pact="swap-keep" title="The invoice bills the old product: it stays on the PO too">Leave the invoice</button></span></div>`;
+  }
+  function addAskHtml(ed) {
+    const a = ed.addAsk; if (!a) return "";
+    const v = variant(a.vid) || {}, nl = ed.lines.find(l => String(l.vid) === a.vid), ol = a.old && ed.lines.find(l => l.id === a.old), ov = ol && variant(ol.vid);
+    if (!nl) { ed.addAsk = null; return ""; }
+    return `<div class="note warn addask"><b>${esc(v.title || "This product")}</b>${v.sku ? ` <span class="mono">${esc(v.sku)}</span>` : ""} isn't on the purchase order. Add it?
+      <span class="dbtns">${ol ? `<button class="mini primary" data-pact="ask-swap" title="The PO line for ${esc(ov ? ov.title : "the old product")} becomes this product (its quantity, cost and place stay)">Put it in place of ${esc(ov ? ov.title + (ov.sku ? " · " + ov.sku : "") : "the old product")}</button>` : ""}<button class="mini ${ol ? "" : "primary"}" data-pact="ask-add" title="Add it as its own line on the PO">Add to the PO (${n0(Number(nl.qty) || 0)})</button><button class="mini" data-pact="ask-no" title="Leave the PO as it is — this line is billed but not on the PO">Don't add</button></span></div>`;
+  }
   function syncLines(ed) {
     const inv = invoicedBy(ed);
     const firstRow = (vid) => { for (const iv of ed.invoices) for (const r of iv.rows) if (r.vid === vid && !r.skip && isSure(r)) return r; return null; };
-    for (const [vid, q] of inv) if (!ed.lines.some(l => l.vid === vid)) {
+    for (const [vid, q] of inv) if (!ed.lines.some(l => l.vid === vid) && !(ed.noAdd && ed.noAdd.has(String(vid)))) {
       const r = firstRow(vid);
       ed.lines.push({ id: newId(), vid, asku: "", dest: newDest(ed), qty: String(q), cost: r ? r.cost : "", received: 0, backorder: false, eta: "", auto: true });
     }
@@ -1664,7 +1709,11 @@
       return `<select class="inp sm" data-f="dest" data-k="${l.id}" style="width:auto;max-width:150px"><option value="@shopify" ${val === "@shopify" ? "selected" : ""}>Shopify store</option><option value="@demo" ${l.dest === "demo" ? "selected" : ""}>Not for resale (demo)</option><option value="" ${val === "" ? "selected" : ""}>Prep center · any ASIN (assign later)</option>${ls.map(x => `<option value="${esc(x.sku)}" ${val === x.sku ? "selected" : ""} title="${esc(x.title || "")}">Prep · ${esc(lbl(x))}</option>`).join("")}${l.asku && !ls.some(x => x.sku === l.asku) ? `<option selected value="${esc(l.asku)}">Prep · ${esc(l.asku)}</option>` : ""}</select>`;
     };
     const costInp = (l, v, chg, mode) => `${!ro && !ed.recv ? `<input class="inp num sm ${l.cost !== "" && !(Number(l.cost) >= 0) ? "bad" : ""}" data-f="cost" data-k="${l.id}" value="${esc(l.cost)}" inputmode="decimal" placeholder="${v && v.cost != null ? v.cost.toFixed(2) : "cost"}" style="width:76px">` : m(l.cost === "" ? v && v.cost : Number(l.cost))}`;
-    const prodCell = (l, v) => `<td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>${splitTot(l)}` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}</td>`;
+    const prodCell = (l, v, edit) => edit && ed.lsearch && ed.lsearch.id === l.id ? lineSearchCell(l, v) : `<td class="l">${v ? `<a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta"><span class="mono">${esc(v.sku) || "no SKU"}</span>${v.vendor ? " · " + esc(v.vendor) : ""}${l.auto ? ' <span class="pill manual" title="On an invoice but not on the PO when it was placed">added from invoice</span>' : ""}</div>${splitTot(l)}` : `<span class="dim">variant ${esc(l.vid)} (not in the catalog)</span>`}${edit ? `<div><button class="linkbtn small" data-pact="lchange" data-k="${l.id}" title="Wrong product on the PO? Change it (nothing's been received on this line)">change product</button></div>` : ""}</td>`;
+    const lineSearchCell = (l, v) => { const res = findProducts(ed.lsearch.q);
+      return `<td class="l"><div class="small muted">Change ${esc(v ? v.title + (v.sku ? " · " + v.sku : "") : "this product")} to:</div><input class="inp" id="pe-lsq" data-k="${l.id}" value="${esc(ed.lsearch.q)}" placeholder="SKU, UPC, product words or Amazon SKU" autocomplete="off" data-lpignore="true" data-jtnofill="1">
+        <div class="mres">${ed.lsearch.q.trim() ? res.map(x => `<button data-plpick="${esc(x.v.vid)}" data-k="${l.id}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)} · cost ${m(x.v.cost)}${x.v.status !== "ACTIVE" ? " · " + esc(x.v.status.toLowerCase()) : ""}</span></button>`).join("") || '<span class="muted small">No products match.</span>' : '<span class="muted small">Type to search the Shopify catalog.</span>'}</div>
+        <div class="row"><button class="mini" data-pact="lchange-cancel">Cancel</button></div></td>`; };
     const forCell = (l) => `<td class="l small"><div class="forcell">${destSel(l)}${canSplit(l) ? `<button class="linkbtn small" data-pact="split" data-k="${l.id}" title="Split between the Shopify store and one or more prep-center ASINs">Split</button>` : ""}</div></td>`;
     const unitOf = (l, v) => l.cost === "" ? (v && v.cost) || 0 : Number(l.cost) || 0;
     // the PO's products, in one of three views: "all" (the entire PO), "notinv" (what isn't on an invoice yet) and
@@ -1673,6 +1722,7 @@
     const fq = (ed.find || "").trim().toLowerCase();
     const findOk = (l) => { if (!fq) return true; const v = variant(l.vid) || {}; return [v.title, v.sku, v.barcode, l.asku].join(" ").toLowerCase().includes(fq); };
     const lineRow = (l, mode) => {
+      const lEdit = !ro && !ed.recv && !(l.received > 0) && !!variant(l.vid);
       const v = variant(l.vid), p = pr.get(l.id), badQ = l.qty !== "" && !(Number.isInteger(Number(l.qty)) && Number(l.qty) >= 0);
       const chg = v && v.cost > 0 && l.cost !== "" && !isNaN(Number(l.cost)) ? (Number(l.cost) - v.cost) / v.cost : null;
       const extra = (ed.split && ed.split.id === l.id ? splitRow(l, NC) : "") + (ed.unrecv && ed.unrecv.id === l.id ? unrecvRow(l, NC) : "");
@@ -1681,7 +1731,7 @@
       const boCell = (open) => `<td class="l small">${open > 0 && !ro ? `<label class="inline bo"><input type="checkbox" data-f="bo" data-k="${l.id}" ${l.backorder ? "checked" : ""}> backordered</label>${l.backorder ? `<input class="inp sm" type="date" data-f="eta" data-k="${l.id}" value="${esc(l.eta)}" aria-label="Expected arrival" style="width:auto">` : ""}` : l.eta && open > 0 ? shortDate(l.eta) : mode === "all" ? `<span class="pill ${p.st[1]}">${esc(p.st[0])}</span>` : '<span class="dim">—</span>'}</td>`;
       const canDrag = !ro && !ed.recv && ed.lines.length > 1;
       const handle = canDrag ? `<button type="button" class="dragh" id="drag-${l.id}" draggable="true" data-drag="${l.id}" aria-label="Move ${esc(v ? v.title : "this line")}: drag it, or Alt+Up / Alt+Down" title="Drag to reorder (or Alt+↑ / Alt+↓)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>` : "";
-      return `<tr data-line="${l.id}" class="${canDrag ? "dragrow" : ""}">${handle ? prodCell(l, v).replace('<td class="l">', '<td class="l"><div class="dragcell">' + handle + '<div>').replace(/<\/td>$/, "</div></div></td>") : prodCell(l, v)}${forCell(l)}
+      return `<tr data-line="${l.id}" class="${canDrag ? "dragrow" : ""}">${handle ? prodCell(l, v, lEdit).replace('<td class="l">', '<td class="l"><div class="dragcell">' + handle + '<div>').replace(/<\/td>$/, "</div></div></td>") : prodCell(l, v, lEdit)}${forCell(l)}
         <td>${!ro && !ed.recv ? `<input class="inp num sm ${badQ || p.ordered < p.received ? "bad" : ""}" data-f="qty" data-k="${l.id}" value="${esc(l.qty)}" inputmode="numeric" placeholder="0" style="width:64px">` : n0(p.ordered)}</td>
         ${mode === "notinv" ? `<td>${p.invoiced ? n0(p.invoiced) : '<span class="dim">—</span>'}</td><td><b class="num">${n0(p.open)}</b></td>`
           : mode === "left" ? `${recvCell}<td><b class="num">${n0(still)}</b></td>`
@@ -1875,6 +1925,7 @@
         ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "over" ? (() => { const ov = overUnits(ed); return `<div class="note warn">Close the <b>${n0(ov.units)}</b> unit${ov.units === 1 ? "" : "s"} in the <b>Not billed</b> column (${ov.by.size} product${ov.by.size === 1 ? "" : "s"}) as a vendor overage? They came in with no invoice billing them. They stay in stock; no invoice is expected for them and the <b>no invoice yet</b> card goes away. If an invoice for them shows up later, it still counts them. <span class="dbtns"><button class="mini primary" data-pact="do-over">Close as over</button><button class="mini" data-pact="no">Cancel</button></span></div>`; })() : ""}
         ${ed.overAt && Object.keys(ed.overClosed || {}).length ? `<div class="note info small">Closed as over ${esc(when(ed.overAt))}: ${n0(Object.values(ed.overClosed).reduce((a, q) => a + (Number(q) || 0), 0))} units received beyond the invoices. <button class="linkbtn small" data-pact="over-undo">Undo</button></div>` : ""}
+        ${swapAskHtml(ed)}${addAskHtml(ed)}
         ${ed.confirm === "noprod" ? `<div class="note warn">Mark this PO complete with nothing to receive? It has no products, so no stock changes. Its invoices stay on it as they are. <span class="dbtns"><button class="mini primary" data-pact="do-noprod">Yes, mark it complete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "short" ? `<div class="note warn">Close this PO short? What wasn't received is treated as not coming (ask the vendor for a credit if it was billed), and the PO moves to Received. <span class="dbtns"><button class="mini primary" data-pact="do-short">Yes, close it short</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ro ? `<div class="note info">This PO is complete, so its products and invoice lines are locked. Invoice payments can still be changed. Step it back to QB ready to change anything else.</div>` : ""}
@@ -2235,11 +2286,19 @@
     iv.rows.push(r); iv.filter = "all"; ed.ivAdd = ""; syncLines(ed); ed.dirty = true; render();
     setTimeout(() => { const i = document.querySelector(`#po-edit-view [data-f="iqty"][data-k="${r.id}"]`); if (i) { i.focus(); i.select(); } }, 0);
   }
+  const gotAny = (iv) => !!iv.got && [...iv.got.values()].some(q => Number(q) > 0);
+  // Nov 3 (Brian): "you should be able to edit the invoice if SOME products have already been received as long as the
+  // item you want to change had not been received" — so per line: a received product's lines stay as they are.
+  const verifiedOpen = (iv) => !!iv.completeAt && !!iv.id && !iv.isNew && !iv.recvAt && !iv.qbo;
+  // a line whose product was already received on this invoice keeps its product (un-receive first to change it)
+  const rowGot = (iv, r) => r.vid && iv.got ? Number(iv.got.get(String(r.vid)) || iv.got.get(r.vid) || 0) : 0;
   function invDetailHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
     const lock = ro || iv.status === "applied", c = count(iv);
-    // Draft / Complete (Oct 29): a draft's lines are open; a complete invoice is locked until it's reopened as a draft
-    const lockL = lock || !!iv.completeAt;
+    // Draft / Complete (Oct 29): a draft's lines are open; a complete invoice is locked until it's reopened as a draft.
+    // Nov 3 (Brian): a verified invoice stays open to change until it's received in full or in QuickBooks — so a wrong
+    // product, quantity or cost is fixed in place. Lines whose product was already received on it stay locked.
+    const openV = verifiedOpen(iv), lockL = lock || (!!iv.completeAt && !openV);
     if ((iv.filter === "check" && !c.check) || (iv.filter === "none" && !c.none) || (iv.filter === "charge" && !c.skip)) iv.filter = "all";
     const fq = (ed.find || "").trim().toLowerCase();
     const rowText = (r) => { const v = variant(r.vid) || {}; return [r.src.item_code, r.src.upc, r.src.description, v.title, v.sku].join(" ").toLowerCase(); };
@@ -2251,6 +2310,7 @@
       if (lockL || l.received > 0) return l.dest === "demo" ? '<div><span class="pill other" title="Received, not added to inventory">Not for resale</span></div>' : "";
       return `<label class="inline small ivdemo"><input type="checkbox" data-f="ivdemo" data-k="${r.id}" ${l.dest === "demo" ? "checked" : ""}> Not for resale (demo)</label>`; };
     const rowsH = rows.map(r => {
+      const rg = rowGot(iv, r), rl = lockL || rg > 0;
       const badQ = r.qty !== "" && isNaN(Number(r.qty)), badC = r.cost !== "" && !(Number(r.cost) >= 0);
       const cls = r.skip ? "skipped" : !r.vid ? "nomatch" : needsCheck(r) ? "guess" : "";
       const n = iv.rows.indexOf(r) + 1;
@@ -2260,25 +2320,27 @@
       return `<tr class="${cls} ${handle ? "dragrow" : ""}" data-row="${r.id}">
         <td class="l nowrap ivn">${handle}<span class="muted">${n}</span></td>
         <td class="l inv">${r.src.item_code ? `<span class="mono">${esc(r.src.item_code)}</span>` : ""}${r.src.upc ? ` <span class="mono dim small">${esc(r.src.upc)}</span>` : ""}<div class="small">${esc(r.src.description) || '<span class="dim">no description</span>'}</div></td>
-        <td class="l match">${matchCell(ed, r, lockL)}${demoCell(r)}</td>
-        <td>${!lockL ? `<input class="inp num sm ${badQ ? "bad" : ""}" data-f="iqty" data-k="${r.id}" value="${esc(r.qty)}" inputmode="decimal" style="width:64px">` : esc(r.qty)}</td>
+        <td class="l match">${matchCell(ed, r, rl)}${!lockL && rg > 0 ? `<div class="meta" title="Un-receive them to change this line">${n0(rg)} received on this invoice — locked</div>` : ""}${demoCell(r)}</td>
+        <td>${!rl ? `<input class="inp num sm ${badQ ? "bad" : ""}" data-f="iqty" data-k="${r.id}" value="${esc(r.qty)}" inputmode="decimal" style="width:64px">` : esc(r.qty)}</td>
         <td>${got}</td>
-        <td>${!lockL ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="icost" data-k="${r.id}" value="${esc(r.cost)}" inputmode="decimal" style="width:76px">` : m(Number(r.cost))}</td>
+        <td>${!rl ? `<input class="inp num sm ${badC ? "bad" : ""}" data-f="icost" data-k="${r.id}" value="${esc(r.cost)}" inputmode="decimal" style="width:76px">` : m(Number(r.cost))}</td>
         <td>${m(rowAmt(r))}</td>
-        <td class="l small">${!lockL ? `<select class="inp sm" data-f="acct" data-k="${r.id}" style="width:auto;max-width:130px">${ACCOUNTS.map(([k, nm]) => `<option value="${k}" ${(r.account || "inventory") === k ? "selected" : ""}>${nm}</option>`).join("")}</select>` : esc((ACCOUNTS.find(([k]) => k === (r.account || "inventory")) || [, "Inventory"])[1])}</td>
-        <td>${!lockL ? `<button class="linkbtn small" data-pact="rmrow" data-k="${r.id}" title="Remove this invoice line" aria-label="Remove line">✕</button>` : ""}</td></tr>`;
+        <td class="l small">${!rl ? `<select class="inp sm" data-f="acct" data-k="${r.id}" style="width:auto;max-width:130px">${ACCOUNTS.map(([k, nm]) => `<option value="${k}" ${(r.account || "inventory") === k ? "selected" : ""}>${nm}</option>`).join("")}</select>` : esc((ACCOUNTS.find(([k]) => k === (r.account || "inventory")) || [, "Inventory"])[1])}</td>
+        <td>${!rl ? `<button class="linkbtn small" data-pact="rmrow" data-k="${r.id}" title="Remove this invoice line" aria-label="Remove line">✕</button>` : ""}</td></tr>`;
     }).join("");
     const FN = { all: "All lines", check: "Guesses to check", none: "Not matched", charge: "Charges" };
     const fseg = (k, label, n) => `<button data-ifilter="${k}" aria-pressed="${(iv.filter || "all") === k}">${label} <span class="cnt">${n0(n)}</span></button>`;
     const flLeft = !iv.rows.length ? "" : `<span class="seg sm" role="group" aria-label="Show lines">${fseg("all", "All", iv.rows.length)}${c.check ? fseg("check", "Guesses to check", c.check) : ""}${c.none ? fseg("none", "Not matched", c.none) : ""}${c.skip ? fseg("charge", "Charges", c.skip) : ""}</span>${fq ? `<span class="muted small">${rows.length} found</span>` : ""}`;
     const canRecvIv = ed.id && iv.id && !iv.isNew && !iv.recvAt && t.b > t.g && !c.check;
     const canMoreIv = ed.id && iv.id && !iv.isNew && !c.check && !canRecvIv && t.b > 0;
+    const vOpen = openV && !lock ? `<span class="iv-lock open" title="Verified ${esc(when(iv.completeAt))}. It isn't received in full or in QuickBooks, so lines not received yet can still be changed — Save keeps it verified.">Verified · still editable</span>` : "";
     const tools = lock ? "" : lockL
       ? `<span class="iv-lock"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg> Verified${iv.completeAt ? " · " + esc(when(iv.completeAt)) : ""}</span><button class="btn" data-pact="iv-draft" title="Unlock it to change lines, matches, quantities and costs">Reopen as draft</button>`
-      : `${iv.rows.length > 1 ? `<select id="inv-arrange" class="inp sm" aria-label="Reorganize the lines"><option value="">Reorganize lines…</option><option value="vendor">Match vendor invoice</option>${ed.lines.length ? '<option value="order">Match order</option>' : ""}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${invMatched(iv) && ed.lineEdit ? '<button class="btn" data-pact="lines-done">Done editing</button>' : ""}`;
+      : `${vOpen}${iv.rows.length > 1 ? `<select id="inv-arrange" class="inp sm" aria-label="Reorganize the lines"><option value="">Reorganize lines…</option><option value="vendor">Match vendor invoice</option>${ed.lines.length ? '<option value="order">Match order</option>' : ""}<option value="cat">Group by category</option><option value="name">Group by product</option></select>` : ""}${invMatched(iv) && ed.lineEdit ? '<button class="btn" data-pact="lines-done">Done editing</button>' : ""}`;
     return `
       ${ed.confirm === "rminv" && ed.alone ? `<div class="note warn">${iv.id ? `Delete invoice ${esc(iv.no || "")}? It's removed for good.` : `Discard invoice ${esc(iv.no || "")}?`} <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, ${iv.id ? "delete" : "discard"} it</button><button class="mini" data-pact="no">Cancel</button></span></div>`
       : ed.confirm === "rminv" ? `<div class="note warn">${iv.isNew ? `Discard invoice ${esc(iv.no || "")}?` : `Delete invoice ${esc(iv.no || "")}? ${iv.status === "applied" ? "It was applied earlier, so it's only detached from the PO." : "It's deleted when you save."}`} Products added to the PO from it go too. <span class="dbtns"><button class="mini primary" data-pact="do-rminv">Yes, remove it</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
+      ${addAskHtml(ed)}${swapAskHtml(ed)}
       ${iss.length ? window.JTIssues.issuesHtml(iss) : ""}
       ${iv.fromPo && !lockL && iv.rows.some(r => r.fromPo) ? `<div class="note info frompo">Lines filled in from the PO (the invoice's own lines couldn't be read). Compare them with the PDF${pdfOn ? " alongside" : ""}: fix any quantity or cost that's different, and remove products that aren't on this invoice. <span class="dbtns">${iv.rows.some(r => !r.vid && !r.skip) ? `<button class="mini" data-pact="dropunread">Remove the ${iv.rows.filter(r => !r.vid && !r.skip).length} unmatched line${iv.rows.filter(r => !r.vid && !r.skip).length === 1 ? "" : "s"}</button>` : ""}<button class="mini" data-pact="clearpo">Clear the PO lines</button></span></div>` : ""}
       <div class="po2-filter"><span class="po2-fl">${flLeft}</span><span class="po2-fr">${tools}${iv.file || iv.parts ? `<button class="btn" data-pact="pdf" aria-pressed="${!!ed.showPdf}">${ed.showPdf ? "Hide PDF" : "Show PDF beside"}</button>` : ""}${iv.rows.length ? `<input id="po-find" class="inp sm" type="search" placeholder="Find item or product" value="${esc(ed.find || "")}" aria-label="Find a line on this invoice">` : ""}${canRecvIv ? `<button class="btn primary po2-recv" data-pact="rq-start" ${S.busy ? "disabled" : ""}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> Receive · ${n0(t.b - t.g)} left</button>` : canMoreIv ? `<button class="btn po2-recv" data-pact="rq-start" title="Receive extra units, more than the invoice shows">Receive more</button>` : ""}</span></div>
@@ -2970,9 +3032,26 @@
     if (a === "save-approve") { (ed.dirty || !ed.id ? save(null, true) : Promise.resolve(ed.id)).then(id => { if (id) approveOrder(id); }); return; }
     if (a === "unapprove" && ed.id) return approveOrder(ed.id, false);
     if (a === "do-complete") { ed.confirm = false; return save("complete"); }
-    if (a === "confirm" && r) { r.confirmed = true; syncLines(ed); ed.dirty = true; render(); return; }
+    if (a === "confirm" && r) { matchTo(ed, r, r.vid, ""); render(); return; }
     if (a === "search" && r) { ed.search = { id: r.id, q: r.src.item_code || (r.src.description || "").split(/\s+/).slice(0, 4).join(" ") }; render(); setTimeout(() => { const i = $("pe-sq"); if (i) { i.focus(); i.select(); } }, 0); return; }
     if (a === "search-cancel") { ed.search = null; render(); return; }
+    if (a === "lchange") { const l = ed.lines.find(x => x.id === k); const v = l && variant(l.vid); ed.lsearch = { id: k, q: v ? (v.title || "").split(/\s+/).slice(0, 3).join(" ") : "" }; ed.swapAsk = null; render(); setTimeout(() => { const i = $("pe-lsq"); if (i) { i.focus(); i.select(); } }, 0); return; }
+    if (a === "lchange-cancel") { ed.lsearch = null; render(); return; }
+    if (a === "swap-inv") {
+      const q = ed.swapAsk; ed.swapAsk = null; if (!q) return render();
+      let n = 0;
+      for (const v of ed.invoices) { if (v.qbo || v.recvAt || (v.completeAt && !verifiedOpen(v))) continue;
+        for (const r of v.rows) if (String(r.vid) === q.old && !r.skip && !(rowGot(v, r) > 0)) { r.vid = q.nv; r.how = "manual"; r.conf = "sure"; r.confirmed = true; n++; } }
+      syncLines(ed); ed.dirty = true; render(); note("info", `${n} invoice line${n === 1 ? "" : "s"} changed to the new product too.`); return;
+    }
+    if (a === "swap-keep") { ed.swapAsk = null; syncLines(ed); render(); return; }
+    if (a === "ask-add") { const nl = ed.addAsk && ed.lines.find(l => String(l.vid) === ed.addAsk.vid); if (nl) nl.auto = false; ed.addAsk = null; ed.dirty = true; render(); return; }
+    if (a === "ask-no") { const k = ed.addAsk && ed.addAsk.vid; if (k) { (ed.noAdd = ed.noAdd || new Set()).add(k); ed.lines = ed.lines.filter(l => !(l.auto && String(l.vid) === k && !(l.received > 0))); } ed.addAsk = null; ed.dirty = true; render(); return; }
+    if (a === "ask-swap") {
+      const q = ed.addAsk, ol = q && ed.lines.find(l => l.id === q.old), nl = q && ed.lines.find(l => String(l.vid) === q.vid);
+      if (ol && nl && !(ol.received > 0)) { ol.vid = nl.vid; ol.auto = false; ed.lines = ed.lines.filter(l => l !== nl); syncLines(ed); }
+      ed.addAsk = null; ed.dirty = true; render(); return;
+    }
     if (a === "skip" && r) { r.vid = null; r.how = ""; r.conf = ""; r.confirmed = false; r.skip = true; if (FREIGHT.test(r.src.description)) r.account = "inbound_shipping"; ed.search = null; syncLines(ed); ed.dirty = true; render(); return; }
     if (a === "unskip" && r) { r.skip = false; r.account = "inventory"; ed.dirty = true; render(); return; }
     if (a === "rmrow" && r) { iv.rows = iv.rows.filter(x => x !== r); syncLines(ed); ed.dirty = true; render(); return; }
@@ -3623,7 +3702,7 @@
       if (t.dataset.f === "bo" && l) { l.backorder = t.checked; if (!t.checked) l.eta = ""; ed.dirty = true; render(); return; }
       if (t.dataset.f === "eta" && l) { l.eta = t.value; ed.dirty = true; render(); return; }
       if (t.dataset.f === "acct" && r) { r.account = t.value; ed.dirty = true; render(); return; }
-      if (t.dataset.f === "alt" && r && t.value) { r.vid = t.value; r.how = "manual"; r.conf = "sure"; r.confirmed = true; syncLines(ed); ed.dirty = true; render(); return; }
+      if (t.dataset.f === "alt" && r && t.value) { matchTo(ed, r, t.value, "manual"); render(); return; }
     });
     box.addEventListener("input", () => setTimeout(syncTop, 0));     // typing marks the PO unsaved: update the Save button now
     box.addEventListener("change", () => setTimeout(syncTop, 0));
@@ -3641,6 +3720,7 @@
       if (t.id === "pe-invsub" && iv) { iv.subtotal = IP.numOf(t.value); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 500); return; }
       if (t.id === "po-add") { ed.add = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); if (!S.cat) catalog().then(render).catch(() => {}); return; }
       if (t.id === "pe-sq") { ed.search.q = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); return; }
+      if (t.id === "pe-lsq" && ed.lsearch) { ed.lsearch.q = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); return; }
       if (t.id === "iv-add") { ed.ivAdd = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); if (!S.cat) catalog().then(render).catch(() => {}); return; }
       const k = t.dataset.k, l = k && ed.lines.find(x => x.id === k), r = k && iv && iv.rows.find(x => x.id === k);
       if (t.dataset.f === "qty" && l) { rebalance(ed, l, t.value.trim()); l.auto = false; ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 400); }
@@ -3688,6 +3768,8 @@
       if (e.target.id === "po-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.add); if (f.length) addLine(f[0]); else render(); }
       if (e.target.id === "pe-sq" && e.key === "Enter") { e.preventDefault(); const b = box.querySelector(".mres button[data-ppick]"); if (b) b.click(); }
       if (e.target.id === "pe-sq" && e.key === "Escape") { ed.search = null; render(); }
+      if (e.target.id === "pe-lsq" && e.key === "Enter") { e.preventDefault(); const b = box.querySelector(".mres button[data-plpick]"); if (b) b.click(); }
+      if (e.target.id === "pe-lsq" && e.key === "Escape") { ed.lsearch = null; render(); }
       if (e.target.dataset && e.target.dataset.inv != null && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); e.target.click(); return; }
       if (e.target.id === "iv-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.ivAdd); if (f.length) ivAddPick(ed, f[0]); else render(); }
       if (e.target.id === "iv-add" && e.key === "Escape") { ed.ivAdd = ""; render(); }
@@ -3716,7 +3798,8 @@
       if (b.dataset.ifilter && iv) { iv.filter = b.dataset.ifilter; render(); return; }
       if (b.dataset.padd != null) { const x = findProducts(ed.add)[+b.dataset.padd]; if (x) addLine(x); return; }
       if (b.dataset.ivadd != null && iv) { const x = findProducts(ed.ivAdd)[+b.dataset.ivadd]; if (x) ivAddPick(ed, x); return; }
-      if (b.dataset.ppick && iv) { const r = iv.rows.find(x => x.id === b.dataset.k); if (r) { r.vid = b.dataset.ppick; r.skip = false; r.how = "manual"; r.conf = "sure"; r.confirmed = true; ed.search = null; syncLines(ed); ed.dirty = true; render(); } return; }
+      if (b.dataset.plpick) { swapLine(ed, b.dataset.k, b.dataset.plpick); render(); return; }
+      if (b.dataset.ppick && iv) { const r = iv.rows.find(x => x.id === b.dataset.k); if (r) { matchTo(ed, r, b.dataset.ppick, "manual"); render(); } return; }
     });
     box.addEventListener("dragover", (e) => { const d = e.target.closest("#pe-drop"); if (d) d.classList.add("over"); });
     box.addEventListener("dragleave", (e) => { const d = e.target.closest("#pe-drop"); if (d) d.classList.remove("over"); });

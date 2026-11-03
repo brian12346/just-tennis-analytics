@@ -1681,3 +1681,5 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .oos-qty{width:72px;text-align:right}
 .oos-confirm td{padding-top:0}
 .oos-confirm .note{text-align:left;white-space:normal}
+.iv-lock.open{color:var(--ok, #1a7f37);border:1px solid currentColor;border-radius:999px;padding:1px 8px;font-size:12px}
+.addask .dbtns{flex-wrap:wrap}
