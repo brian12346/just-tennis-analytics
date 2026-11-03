@@ -1663,3 +1663,12 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .lb-pt td{vertical-align:top}.lb-pt tr.dim td{opacity:.6}
 .lb-pitems{display:flex;flex-direction:column;gap:4px}.lb-pi{display:flex;gap:6px;align-items:center}.lb-pi img{width:32px;height:32px;object-fit:contain;border-radius:4px;background:#fff}
 #lb-mode{margin-right:8px}
+
+/* Inventory › Out of stock (oos.js) */
+.oos-t td{vertical-align:top}
+.oos-act{text-align:right;white-space:nowrap}
+.oos-count{display:inline-flex;gap:6px;align-items:center}
+.oos-count .inp{width:80px}
+.oos-sort{all:unset;cursor:pointer;font:inherit;color:inherit}
+.oos-sort:hover{color:var(--text)}
+.oos-sort:focus-visible{outline:2px solid var(--sales);outline-offset:2px}

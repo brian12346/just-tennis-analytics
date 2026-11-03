@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     load_env()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("job", choices=["hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders",
-                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "shopify-order-payments", "shopify-pickups", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo", "price-match", "price-match-preview", "price-match-apply"])
+                                    "catalog", "cost-watch", "cost-updates", "fbm-inventory", "location-stock", "shopify-payouts", "shopify-fees", "shopify-order-payments", "shopify-pickups", "labels", "amazon-transactions", "amazon-listings", "shopify-po-probe", "shopify-pos", "acenrally", "acenrally-catalog", "veeqo", "price-match", "price-match-preview", "price-match-apply", "stockouts"])
     ap.add_argument("file", nargs="?", help="report file for amazon-* jobs")
     ap.add_argument("--since", type=dt.date.fromisoformat)
     ap.add_argument("--until", type=dt.date.fromisoformat)
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> None:
         from .shopify import Shopify
         return Shopify()
 
-    if a.job in ("hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders", "shopify-pickups", "catalog", "shopify-pos", "shopify-po-probe"):
+    if a.job in ("hourly", "nightly", "backfill", "shopify-daily", "shopify-sales", "shopify-orders", "shopify-pickups", "catalog", "shopify-pos", "shopify-po-probe", "stockouts"):
         from . import shopify as sh
         shop = shopify()
         days = {"hourly": 3, "nightly": 35}.get(a.job, 7)
@@ -65,6 +65,9 @@ def main(argv: list[str] | None = None) -> None:
         if a.job in ("hourly", "nightly", "backfill", "shopify-orders"):
             # Shopify Shipping label costs -> jt.shipstation_labels (label_id shopify:…), next to ShipStation's
             run("shopify_labels", lambda: sh.sync_shopify_labels(shop, conn, since - dt.timedelta(days=14 if a.job == "hourly" else 0), until))
+        if a.job in ("hourly", "nightly", "stockouts"):
+            # products that went to 0 in the last 8 days (Inventory › Out of stock, migration 199)
+            run("stockouts", lambda: sh.sync_stockouts(shop, conn, today - dt.timedelta(days=8), today))
         if a.job in ("hourly", "nightly", "backfill", "shopify-orders", "shopify-pickups"):
             # in-store pickup orders: no label to buy (migration 096)
             run("shopify_pickups", lambda: sh.sync_pickups(shop, conn))

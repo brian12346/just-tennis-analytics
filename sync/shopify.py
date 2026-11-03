@@ -156,6 +156,42 @@ def sync_shopify_labels(shop: Shopify, conn, start: dt.date, end: dt.date) -> in
         return n
 
 
+# Out of stock (Brian, Nov 3; migration 199): the days a product went to 0 in Shopify — started the day above 0 and
+# ended it at 0 or below — from ShopifyQL's inventory dataset, with the units sold that day (orders vs an adjustment).
+# The current quantity of each is read too, so the page doesn't wait for the catalog sync to notice it.
+STOCKOUTS_Q = ("FROM inventory SHOW starting_inventory_units, ending_inventory_units, inventory_units_sold "
+               "GROUP BY product_variant_id, day SINCE {s} UNTIL {e} "
+               "HAVING ending_inventory_units <= 0 AND starting_inventory_units > 0 LIMIT 5000")
+VARIANT_QTY_Q = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on ProductVariant { id inventoryQuantity } } }"""
+
+
+def sync_stockouts(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
+    rows = shop.shopifyql(STOCKOUTS_Q.format(s=start, e=end))
+    out = []
+    for r in rows:
+        vid, day = str(r.get("product_variant_id") or "").split("/")[-1], str(r.get("day") or "")[:10]
+        if vid.isdigit() and day:
+            out.append((int(vid), day, _int(r.get("starting_inventory_units")), _int(r.get("ending_inventory_units")), _int(r.get("inventory_units_sold"))))
+    with conn.cursor() as cur:
+        cur.execute("delete from jt.stockouts where day between %s and %s", (start, end))
+        for row in out:
+            cur.execute("""insert into jt.stockouts (variant_id, day, start_units, end_units, sold) values (%s, %s, %s, %s, %s)
+                           on conflict (variant_id, day) do update set start_units = excluded.start_units, end_units = excluded.end_units,
+                           sold = excluded.sold, seen_at = now()""", row)
+    conn.commit()
+    # their quantity now
+    ids = sorted({x[0] for x in out})
+    for i in range(0, len(ids), 100):
+        nodes = shop.graphql(VARIANT_QTY_Q, {"ids": [f"gid://shopify/ProductVariant/{v}" for v in ids[i:i + 100]]})["nodes"] or []
+        with conn.cursor() as cur:
+            for n in nodes:
+                if n and n.get("inventoryQuantity") is not None:
+                    cur.execute("update jt.variants set inventory_qty = %s where variant_id = %s",
+                                (int(n["inventoryQuantity"]), int(n["id"].split("/")[-1])))
+        conn.commit()
+    return len(out)
+
+
 SALES_Q = ("FROM sales SHOW net_items_sold, gross_sales, discounts, sales_reversals, net_sales, cost_of_goods_sold, "
            "net_sales_without_cost_recorded GROUP BY day, order_id, order_name, product_variant_id, product_id, "
            "product_title, product_variant_title, product_variant_sku, product_type, product_vendor, sales_channel "
@@ -553,7 +589,8 @@ def _fbm_location_setting(conn) -> str | None:
     return row[0] if row and row[0] else None
 
 
-def _adjust_available(shop: "Shopify", item, delta: int, loc_setting, names: dict, key: str, ref: str, reason: str = "correction"):
+def _adjust_available(shop: "Shopify", item, delta: int, loc_setting, names: dict, key: str, ref: str, reason: str = "correction",
+                      set_to: int | None = None):
     """Change Shopify's "available" quantity of one inventory item by `delta` at the store's location (the FBM
     location setting, else the item's only location). Returns (quantity before, location id); raises on any problem."""
     lv = shop.graphql(LEVELS_Q, {"item": f"gid://shopify/InventoryItem/{item}"})["inventoryItem"]
@@ -576,6 +613,11 @@ def _adjust_available(shop: "Shopify", item, delta: int, loc_setting, names: dic
                            "orders ship from at the top of the FBM page")
     loc = level["location"]["id"]
     before = next((q["quantity"] for q in level["quantities"] if q["name"] == "available"), None)
+    if set_to is not None:
+        # a physical count (Out of stock page, migration 199): make available the counted number, from what Shopify has now
+        delta = int(set_to) - int(before or 0)
+        if delta == 0:
+            return before, loc
     change = {"inventoryItemId": f"gid://shopify/InventoryItem/{item}", "locationId": loc, "delta": int(delta)}
     attempts = [(True, True), (False, True), (True, False), (False, False)]   # (changeFromQuantity, idempotency key)
     last = None
@@ -609,7 +651,7 @@ def apply_stock_moves(shop: "Shopify", conn) -> int:
     """Units put back into Shopify's available stock (or taken out) from the dashboard: jt.shopify_stock_moves, status
     pending (e.g. units a Seller Central shipment didn't take, migration 087)."""
     with conn.cursor() as cur:
-        cur.execute("""select m.id, m.variant_id, v.inventory_item_id, m.delta, m.kind from jt.shopify_stock_moves m
+        cur.execute("""select m.id, m.variant_id, v.inventory_item_id, m.delta, m.kind, m.set_to from jt.shopify_stock_moves m
                        left join jt.variants v on v.variant_id = m.variant_id where m.status = 'pending' order by m.id""")
         todo = cur.fetchall()
     if not todo:
@@ -617,22 +659,27 @@ def apply_stock_moves(shop: "Shopify", conn) -> int:
     names = _fbm_save_locations(shop, conn)
     loc_setting = _fbm_location_setting(conn)
     done = 0
-    for mid, vid, item, delta, kind in todo:
+    for mid, vid, item, delta, kind, set_to in todo:
         before, err, loc = None, "", None
         try:
             if not item:
                 raise RuntimeError(f"variant {vid} has no Shopify inventory item (not in the catalog sync)")
             # units received against an invoice show in Shopify's inventory history as "Received" (migration 161)
             before, loc = _adjust_available(shop, item, int(delta), loc_setting, names, f"jt-stock-{mid}", f"gid://just-tennis/StockMove/{mid}",
-                                            "received" if kind == "receive" and int(delta) > 0 else "correction")
+                                            "received" if kind == "receive" and int(delta) > 0 else "cycle_count_available" if set_to is not None else "correction",
+                                            set_to=set_to)
+            if set_to is not None:
+                delta = int(set_to) - int(before or 0)     # what actually changed
         except Exception as e:  # noqa: BLE001 - record it on the move and carry on
             err = str(e)[:500]
         with conn.cursor() as cur:
             if err:
                 cur.execute("update jt.shopify_stock_moves set status = 'failed', error = %s, applied_at = now() where id = %s and status = 'pending'", (err, mid))
             else:
-                cur.execute("""update jt.shopify_stock_moves set status = 'done', error = '', applied_at = now(), shopify_before = %s, location_id = %s
-                               where id = %s and status = 'pending'""", (before, loc, mid))
+                cur.execute("""update jt.shopify_stock_moves set status = 'done', error = '', applied_at = now(), shopify_before = %s, location_id = %s,
+                               delta = %s where id = %s and status = 'pending'""", (before, loc, delta, mid))
+                if set_to is not None:
+                    cur.execute("update jt.stock_counts set shopify_had = %s where move_id = %s", (before, mid))
                 cur.execute("update jt.variants set inventory_qty = coalesce(inventory_qty, 0) + %s where inventory_item_id = %s", (delta, item))
                 cur.execute("""update jt.location_stock set available = available + %s, updated_at = now()
                                where location_id = %s and inventory_item_id = %s""", (delta, loc, item))
