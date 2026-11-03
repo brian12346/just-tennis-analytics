@@ -688,6 +688,38 @@ def apply_stock_moves(shop: "Shopify", conn) -> int:
     return done
 
 
+# Archive from Inventory › Out of stock (migration 200): jt.product_archives, status pending -> the Shopify product's
+# status ARCHIVED (needs the app's write_products scope; a refusal is recorded on the request for the page).
+ARCHIVE_M = """mutation($p: ProductUpdateInput!) { productUpdate(product: $p) { product { id status } userErrors { field message } } }"""
+
+
+def apply_product_archives(shop: "Shopify", conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("select id, product_id from jt.product_archives where status = 'pending' order by id")
+        todo = cur.fetchall()
+    done = 0
+    for rid, pid in todo:
+        err = ""
+        try:
+            out = shop.graphql(ARCHIVE_M, {"p": {"id": f"gid://shopify/Product/{pid}", "status": "ARCHIVED"}})["productUpdate"]
+            ue = out.get("userErrors") or []
+            if ue:
+                raise RuntimeError("; ".join(x["message"] for x in ue))
+        except Exception as e:  # noqa: BLE001 - record it on the request
+            err = str(e)[:500]
+            if "access" in err.lower() or "scope" in err.lower():
+                err = "the Shopify app needs the write_products scope to archive products — " + err
+        with conn.cursor() as cur:
+            if err:
+                cur.execute("update jt.product_archives set status = 'failed', error = %s, applied_at = now() where id = %s", (err, rid))
+            else:
+                cur.execute("update jt.product_archives set status = 'done', error = '', applied_at = now() where id = %s", (rid,))
+                cur.execute("update jt.variants set status = 'ARCHIVED' where product_id = %s", (pid,))
+                done += 1
+        conn.commit()
+    return done
+
+
 def apply_fbm_adjustments(shop: "Shopify", conn) -> int:
     """Take confirmed Amazon FBM orders out of Shopify's available stock (jt.fbm_decisions, status pending)."""
     with conn.cursor() as cur:

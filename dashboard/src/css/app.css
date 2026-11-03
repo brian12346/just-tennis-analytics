@@ -1672,3 +1672,12 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .oos-sort{all:unset;cursor:pointer;font:inherit;color:inherit}
 .oos-sort:hover{color:var(--text)}
 .oos-sort:focus-visible{outline:2px solid var(--sales);outline-offset:2px}
+.oos-btns{display:inline-flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.oos-listsec{margin-top:22px}
+.oos-listhead{align-items:baseline;gap:12px;margin-bottom:8px}
+.oos-listhead h2{margin:0;font-size:18px}
+.oos-ven+.oos-ven{border-top:1px solid var(--line);margin-top:6px;padding-top:6px}
+.oos-vhead{align-items:center;gap:10px;padding:8px 4px}
+.oos-qty{width:72px;text-align:right}
+.oos-confirm td{padding-top:0}
+.oos-confirm .note{text-align:left;white-space:normal}

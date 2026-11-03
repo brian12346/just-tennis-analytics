@@ -114,6 +114,8 @@ def main(argv: list[str] | None = None) -> None:
         run("fbm_inventory", lambda: sh3.apply_fbm_adjustments(shopify(), conn))
         # units sent back to Shopify from the prep center (Seller Central reconcile; migration 087)
         run("stock_moves", lambda: sh3.apply_stock_moves(shopify(), conn))
+        # products archived from Inventory › Out of stock (migration 200)
+        run("product_archives", lambda: sh3.apply_product_archives(shopify(), conn))
         # packing photos: link each Shopify order to its photos in Seller Sage (migration 151)
         run("photo_links", lambda: sh3.link_order_photos(shopify(), conn, "justtennis"))
         if os.environ.get("ACENRALLY_SHOP"):
