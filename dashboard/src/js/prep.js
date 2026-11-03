@@ -848,8 +848,8 @@
     const out = [];
     if (!o || o.status === "complete") return out;
     const at = OORDER.indexOf(o.status), lines = o.lines.filter(l => l.ordered > 0 || l.received > 0);
-    if (o.id && !o.lines.length) out.push({ lvl: "warn", kind: "empty", title: "No products on this order", text: "Add what was ordered so it can be received into the prep center.",
-      fixes: [{ label: "Add a product", fix: "focus", arg: "po-add" }] });
+    if (o.id && !o.lines.length && !OGOT.includes(o.status)) out.push({ lvl: "warn", kind: "empty", title: "No products on this order", text: "Add what was ordered so it can be received into the prep center. If this invoice doesn't go into inventory, mark the PO complete instead.",
+      fixes: [{ label: "Add a product", fix: "focus", arg: "po-add" }, { label: "Mark complete", fix: "onoprod" }] });
     if (OGOT.includes(o.status)) {
       const short = o.status === "partial" ? lines.filter(l => l.received < l.ordered) : [], over = lines.filter(l => l.received > l.ordered);
       if (short.length && !o.shortOk) out.push({ lvl: "warn", kind: "partial", title: `Not received in full · ${short.length} product${short.length === 1 ? "" : "s"}`,

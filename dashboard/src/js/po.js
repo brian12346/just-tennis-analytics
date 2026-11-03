@@ -1623,7 +1623,7 @@
     const at = ORDER.indexOf(ed.status);
     // the stage pills: before anything is received you can jump between draft / ordered / invoiced; after that, the
     // next stage (received → QB ready → complete) is a click too
-    const steps = STAGES.map(([k, n], i) => { const click = ed.id && k !== ed.status && ((!got && PRE.includes(k) && !ed.lines.some(l => l.received > 0)) || (NEXT[ed.status] && NEXT[ed.status][0] === k && GOT.includes(k)));
+    const steps = STAGES.map(([k, n], i) => { const click = ed.id && k !== ed.status && ((!got && PRE.includes(k) && !ed.lines.some(l => l.received > 0)) || (NEXT[ed.status] && NEXT[ed.status][0] === k && GOT.includes(k)) || (k === "complete" && noProducts(ed)));
       return `<${click ? "button" : "span"} class="step ${k === ed.status ? "on" : i < at ? "done" : ""}" ${click ? `data-pgo="${k}" title="Move to ${n}"` : ""}>${n}</${click ? "button" : "span"}>`; }).join('<span class="step-sep">→</span>');
     const pr = progress(ed), iss = S.cat ? poIssues(ed) : [];
     let tot = { ordered: 0, invoiced: 0, received: 0, open: 0, back: 0, cost: 0 };
@@ -1875,6 +1875,7 @@
         ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "over" ? (() => { const ov = overUnits(ed); return `<div class="note warn">Close the <b>${n0(ov.units)}</b> unit${ov.units === 1 ? "" : "s"} in the <b>Not billed</b> column (${ov.by.size} product${ov.by.size === 1 ? "" : "s"}) as a vendor overage? They came in with no invoice billing them. They stay in stock; no invoice is expected for them and the <b>no invoice yet</b> card goes away. If an invoice for them shows up later, it still counts them. <span class="dbtns"><button class="mini primary" data-pact="do-over">Close as over</button><button class="mini" data-pact="no">Cancel</button></span></div>`; })() : ""}
         ${ed.overAt && Object.keys(ed.overClosed || {}).length ? `<div class="note info small">Closed as over ${esc(when(ed.overAt))}: ${n0(Object.values(ed.overClosed).reduce((a, q) => a + (Number(q) || 0), 0))} units received beyond the invoices. <button class="linkbtn small" data-pact="over-undo">Undo</button></div>` : ""}
+        ${ed.confirm === "noprod" ? `<div class="note warn">Mark this PO complete with nothing to receive? It has no products, so no stock changes. Its invoices stay on it as they are. <span class="dbtns"><button class="mini primary" data-pact="do-noprod">Yes, mark it complete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "short" ? `<div class="note warn">Close this PO short? What wasn't received is treated as not coming (ask the vendor for a credit if it was billed), and the PO moves to Received. <span class="dbtns"><button class="mini primary" data-pact="do-short">Yes, close it short</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ro ? `<div class="note info">This PO is complete, so its products and invoice lines are locked. Invoice payments can still be changed. Step it back to QB ready to change anything else.</div>` : ""}
         <div class="row po-foot"><span class="muted small">${ed.recv ? "Enter what arrived. It starts from what's invoiced and not yet received; anything else can be received too. Prep-center lines go into the prep center (pick the ASIN, or leave it on any ASIN and assign it later); Shopify-store lines are recorded." : `${n0(tot.ordered)} units · ${m(tot.cost)}`}</span>
@@ -2522,6 +2523,9 @@
       <div class="tbl-wrap xl"><table class="prept po-t so-t"><thead><tr><th class="l">Product</th><th>Ordered</th>${so.anyInv ? "<th>Invoiced</th>" : ""}<th>Received</th><th title="Ordered, not received">Short</th><th title="Received beyond what was ordered">Over</th>${so.anyInv ? '<th title="Received, no invoice bills them">Not billed</th>' : ""}<th class="l">What it means</th></tr></thead>
       <tbody>${rows.map(tr).join("")}</tbody></table></div>`;
   }
+  // a PO with no products (an invoice that doesn't go into inventory, Nov 3): it can be completed without receiving
+  // anything (migration 198)
+  function noProducts(ed) { return !ed.recv && !ed.lines.length && !GOT.includes(ed.status) && !!ed.vendor.trim(); }
   function footButtons(ed, got, ro) {
     const busy = S.busy ? "disabled" : "";
     if (ro) return `<button class="btn" data-pact="back">← Back to QB ready</button>${ed.dirty ? `<button class="btn primary" data-pact="save" ${busy}>Save</button>` : ""}`;
@@ -2543,6 +2547,7 @@
     const anyInv = ed.invoices.length > 0, pr = progress(ed), notInv = ed.lines.some(l => pr.get(l.id).open > 0);
     if (ed.lines.length && true && (!anyInv || notInv)) out.push(`<button class="btn" data-pact="recv" ${busy}>${anyInv ? "Receive without an invoice…" : got ? "Receive more…" : "Receive…"}</button>`);
     if (ed.status === "partial") out.push(`<button class="btn" data-pact="short" ${busy}>Close short</button>`);
+    if (noProducts(ed)) out.push(`<button class="btn" data-pact="noprod" ${busy} title="For an invoice that doesn't go into inventory: complete the PO with no products">Mark complete — nothing to receive</button>`);
     if (ed.view !== "diff" && ed.lines.some(l => l.received > 0) && shortOver(ed).rows.length) out.push(`<button class="btn" data-pview="diff" title="What's short and what's over, product by product">See short / over</button>`);
     { const ov = overUnits(ed); if (ov.units > 0 && ed.invoices.some(v => v.id && !v.isNew)) out.push(`<button class="btn" data-pact="over" ${busy} title="More came in than the invoices bill: close the extra out as a vendor overage">Close as over (${n0(ov.units)})</button>`); }
     if (got && ed.lines.some(l => l.dest === "prep" && l.received > 0)) out.push(`<button class="btn" data-pact="amzship">Create Amazon shipment</button>`);
@@ -2846,6 +2851,7 @@
     if (f === "pbo") { const n = markBackordered(ed, ""); note("info", `${n} product${n === 1 ? "" : "s"} marked backordered. Add an ETA on each if you have one, then Save.`); render(); return; }
     if (f === "orecv") return act("recv");
     if (f === "oshort") return act("short");
+    if (f === "onoprod") return act("noprod");
     if (f === "ppaid") { const i = +d.arg; if (ed.invoices[i]) { ed.cur = i; markPaid(ed, ed.invoices[i]); if (S.mode !== "inv") showInvoicePage(); else render(); focusArg("pe-paymethod"); } return; }
     if (f === "onext") { if (NEXT[ed.status]) goStage(NEXT[ed.status][0]); return; }
     if (f === "oship") return act("amzship");
@@ -3025,6 +3031,8 @@
         .catch(e => { S.busy = ""; render(); note("bad", "Couldn't close it as over: " + esc(JT.message(e))); });
       return;
     }
+    if (a === "noprod") { ed.confirm = "noprod"; render(); return; }
+    if (a === "do-noprod") { ed.confirm = false; if (ed.dirty || !ed.id) { save("received"); return; } return setStatus2("received", "Marked complete — nothing to receive on this PO."); }
     if (a === "do-short") { if (ed.dirty) { save("received"); return; } return setStatus2("received", "Closed short — the PO is complete."); }
     if (a === "pay" && iv) { markPaid(ed, iv); render(); focusArg("pe-paymethod"); return; }
     if (a === "unpay" && iv) { iv.paidOn = ""; iv.paidAmount = null; iv.payRef = ""; ed.dirty = true; render(); return; }
@@ -3696,7 +3704,7 @@
       if (b.dataset.fix) { fix(b.dataset); return; }
       if (b.dataset.hedit) { openHead(b.dataset.hedit); return; }
       if (b.dataset.pact) { act(b.dataset.pact, b.dataset.k); return; }
-      if (b.dataset.pgo) { return goStage(b.dataset.pgo); }
+      if (b.dataset.pgo) { if (b.dataset.pgo === "complete" && noProducts(ed)) { ed.confirm = "noprod"; render(); return; } return goStage(b.dataset.pgo); }
       if (b.dataset.pkind) { ed.kind = b.dataset.pkind; ed.dirty = true; render(); return; }
       if (b.dataset.paddto) { ed.addTo = b.dataset.paddto; render(); return; }
       if (b.dataset.pdest) { const l = ed.lines.find(x => x.id === b.dataset.k); if (!l || l.dest === b.dataset.pdest) return;
