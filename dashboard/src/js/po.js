@@ -2291,6 +2291,15 @@
   // item you want to change had not been received" — so per line: a received product's lines stay as they are.
   const verifiedOpen = (iv) => !!iv.completeAt && !!iv.id && !iv.isNew && !iv.recvAt && !iv.qbo;
   // a line whose product was already received on this invoice keeps its product (un-receive first to change it)
+  // Received per line (Nov 3, Brian): a product on several lines (e.g. billed + a NO CHARGE line) fills its lines in
+  // order — the first up to its quantity, then the next — and only the last line shows more than it bills.
+  function rowAlloc(iv) {
+    const gotBy = new Map(), left = new Map(), last = new Map();
+    for (const r of iv.rows) if (r.vid && !r.skip) { const k = String(r.vid); last.set(k, r.id); if (!left.has(k)) left.set(k, Number((iv.got && (iv.got.get(r.vid) ?? iv.got.get(k))) || 0)); }
+    for (const r of iv.rows) if (r.vid && !r.skip) { const k = String(r.vid), q = Math.max(0, Number(r.qty) || 0), l = left.get(k);
+      const g = last.get(k) === r.id ? l : Math.min(q, l); gotBy.set(r.id, g); left.set(k, l - g); }
+    return gotBy;
+  }
   const rowGot = (iv, r) => r.vid && iv.got ? Number(iv.got.get(String(r.vid)) || iv.got.get(r.vid) || 0) : 0;
   function invDetailHtml(ed, ro, pdfOn) {
     const iv = cur(ed);
@@ -2304,18 +2313,19 @@
     const rowText = (r) => { const v = variant(r.vid) || {}; return [r.src.item_code, r.src.upc, r.src.description, v.title, v.sku].join(" ").toLowerCase(); };
     const rows = iv.rows.filter(r => iv.filter === "all" || (iv.filter === "none" ? !r.vid && !r.skip : iv.filter === "check" ? needsCheck(r) : iv.filter === "charge" ? r.skip : true)).filter(r => !fq || rowText(r).includes(fq));
     const t = invTot(iv), iss = invIssues(ed, iv);
-    const gotShown = new Set();
+    const gotBy = rowAlloc(iv);
     // not for resale (demo units): the PO line's place is 'demo' — received, never added to inventory (migration 172)
     const demoCell = (r) => { if (!r.vid || r.skip || ed.alone) return ""; const l = ed.lines.find(x => String(x.vid) === String(r.vid)); if (!l) return "";
       if (lockL || l.received > 0) return l.dest === "demo" ? '<div><span class="pill other" title="Received, not added to inventory">Not for resale</span></div>' : "";
       return `<label class="inline small ivdemo"><input type="checkbox" data-f="ivdemo" data-k="${r.id}" ${l.dest === "demo" ? "checked" : ""}> Not for resale (demo)</label>`; };
     const rowsH = rows.map(r => {
-      const rg = rowGot(iv, r), rl = lockL || rg > 0;
+      const rg = gotBy.get(r.id) || 0, rl = lockL || rg > 0;
       const badQ = r.qty !== "" && isNaN(Number(r.qty)), badC = r.cost !== "" && !(Number(r.cost) >= 0);
       const cls = r.skip ? "skipped" : !r.vid ? "nomatch" : needsCheck(r) ? "guess" : "";
       const n = iv.rows.indexOf(r) + 1;
       let got = '<span class="dim">—</span>';
-      if (r.vid && !r.skip && iv.got && !gotShown.has(r.vid)) { gotShown.add(r.vid); const g = iv.got.get(r.vid) || 0, q = Number(r.qty) || 0; got = `<span class="${g >= q && q > 0 ? "okt" : g > 0 ? "warnt" : "dim"}">${n0(g)}</span>`; }
+      if (r.vid && !r.skip && gotBy.has(r.id)) { const g = gotBy.get(r.id), q = Number(r.qty) || 0;
+        got = `<span class="${g > q ? "neg" : g >= q && q > 0 ? "okt" : g > 0 ? "warnt" : "dim"}" ${g > q ? `title="${n0(g - q)} more than this invoice bills for this product"` : ""}>${n0(g)}</span>`; }
       const handle = !lockL && iv.rows.length > 1 ? `<button type="button" class="dragh" id="drag-${r.id}" draggable="true" data-drag="${r.id}" data-dkind="row" aria-label="Move line ${n}: drag it, or Alt+Up / Alt+Down" title="Drag to reorder (or Alt+↑ / Alt+↓)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>` : "";
       return `<tr class="${cls} ${handle ? "dragrow" : ""}" data-row="${r.id}">
         <td class="l nowrap ivn">${handle}<span class="muted">${n}</span></td>
@@ -2719,7 +2729,8 @@
   function openPeek() {
     const ed = S.ed, iv = ed && cur(ed); if (!iv) return;
     const d = pkHost(), t = invTot(iv), hasPdf = !!(iv.file || iv.parts);
-    const rows = iv.rows.map(r => { const v = variant(r.vid), q = Number(r.qty) || 0, c = r.cost === "" ? (v || {}).cost : Number(r.cost), got = r.vid && iv.got ? iv.got.get(String(r.vid)) || iv.got.get(r.vid) || 0 : 0;
+    const alloc = rowAlloc(iv);
+    const rows = iv.rows.map(r => { const v = variant(r.vid), q = Number(r.qty) || 0, c = r.cost === "" ? (v || {}).cost : Number(r.cost), got = alloc.get(r.id) || 0;
       const name = v ? `${esc(v.title)}<div class="small muted mono">${esc(v.sku)}</div>` : `${esc((r.src && (r.src.description || r.src.item_code)) || "—")}<div class="small muted">${r.skip ? "skipped" : "not matched to a product"}</div>`;
       return `<tr class="${r.skip ? "dim" : ""}"><td class="l">${name}</td><td>${n0(q)}</td><td>${r.vid && !r.skip ? n0(got) : ""}</td><td>${c == null || isNaN(c) ? "" : m(c)}</td><td>${m(rowAmt(r) || 0)}</td></tr>`; }).join("");
     const lineSum = iv.rows.filter(r => !r.skip).reduce((a, r) => a + (rowAmt(r) || 0), 0);
