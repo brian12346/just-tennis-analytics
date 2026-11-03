@@ -8,6 +8,9 @@
 //   buy  {fulfillment_order_id, order_id, order_name, carrier, service, service_name, box: {name, l, w, h, weight_oz},
 //         weight_oz, notify}                -> {ok, status, labels: [{tracking, company, url, docs: [{type, format, url}]}], log_id}
 //   result {log_id}                         -> the same, for a purchase that was still processing
+//   printq {days?}                          -> {labels: [...]}  Shopify Shipping labels bought in Shopify (or here) in the
+//                                              last few days, with their PDF links — "buy in Shopify, print from Seller Sage"
+//   pdf {url}                               -> {b64}  a label PDF (Shopify's S3 links can't be read from the page itself)
 // Callers: signed-in app users (Supabase JWT). Credentials come from
 // Vault through public.jt_ship_creds() (service role only): shopify_<store>_shop, _client_id, _client_secret.
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -80,6 +83,41 @@ async function queue(store: string) {
   return out;
 }
 
+// labels bought in the last few days: fulfillments with a Shopify Shipping label
+const PRINTQ_Q = `query P($q: String!, $after: String) { orders(first: 50, after: $after, sortKey: UPDATED_AT, reverse: true, query: $q) {
+  pageInfo { hasNextPage endCursor }
+  nodes { id name customer { displayName } shippingAddress { name city provinceCode countryCodeV2 }
+    fulfillments(first: 10) { id createdAt trackingInfo { company number }
+      fulfillmentLineItems(first: 30) { nodes { quantity lineItem { sku name image { url(transform: {maxWidth: 120}) } } } }
+      shippingLabel { id printed shippingDocuments { documentType format url } } } } } }`;
+async function printq(store: string, days: number) {
+  const since = new Date(Date.now() - days * 864e5), out: unknown[] = []; let after: string | null = null;
+  for (let i = 0; i < 6; i++) {
+    const d = await gql(store, PRINTQ_Q, { q: `updated_at:>'${since.toISOString().slice(0, 19)}Z' fulfillment_status:shipped`, after });
+    for (const o of d.orders.nodes) for (const f of o.fulfillments || []) {
+      const l = f.shippingLabel; if (!l || Date.parse(f.createdAt) < since.getTime()) continue;
+      const doc = (l.shippingDocuments || []).find((x: any) => x.url && /LABEL/i.test(x.documentType || "")) || (l.shippingDocuments || []).find((x: any) => x.url);
+      out.push({ label_id: l.id, order_id: o.id, order: o.name, customer: o.customer?.displayName || o.shippingAddress?.name || "",
+        to: [o.shippingAddress?.city, o.shippingAddress?.provinceCode, o.shippingAddress?.countryCodeV2 !== "US" ? o.shippingAddress?.countryCodeV2 : ""].filter(Boolean).join(", "),
+        at: f.createdAt, company: f.trackingInfo?.[0]?.company || "", tracking: f.trackingInfo?.[0]?.number || "", shopify_printed: !!l.printed,
+        url: doc?.url || "", format: doc?.format || "",
+        items: (f.fulfillmentLineItems?.nodes || []).map((x: any) => ({ qty: x.quantity, sku: x.lineItem?.sku || "", title: x.lineItem?.name || "", img: x.lineItem?.image?.url || "" })) });
+    }
+    if (!d.orders.pageInfo.hasNextPage) break;
+    after = d.orders.pageInfo.endCursor;
+  }
+  return out.sort((a: any, b: any) => String(b.at).localeCompare(String(a.at)));
+}
+const okPdfHost = (h: string) => /^shopify-shipify\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/i.test(h) || /(^|\.)amazonaws\.com$/i.test(h) && /shopify/i.test(h) || /(^|\.)shopify\.com$/i.test(h) || /(^|\.)shopifycdn\.com$/i.test(h);
+async function pdf(url: string) {
+  let u: URL; try { u = new URL(url); } catch { throw new Error("bad label link"); }
+  if (u.protocol !== "https:" || !okPdfHost(u.hostname)) throw new Error("only Shopify label links");
+  const r = await fetch(u.toString()); if (!r.ok) throw new Error(r.status === 403 ? "That label link has expired (Shopify keeps them 7 days) — reprint it from Shopify." : `label download failed (${r.status})`);
+  const b = new Uint8Array(await r.arrayBuffer()); if (b.length > 8 * 1024 * 1024) throw new Error("label too big");
+  let s = ""; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192));
+  return btoa(s);
+}
+
 const BUY_M = `mutation B($i: ShippingLabelPurchaseInput!) { shippingLabelPurchase(shippingLabelPurchase: $i) { shippingLabelPurchaseResult { id status } userErrors { field code message } } }`;
 const RESULT_Q = `query R($id: ID!) { node(id: $id) { ... on ShippingLabelPurchaseResult { id status done errors { code message }
   shippingLabels { id trackingInfo { number company url } shippingDocuments { documentType format url } } } } }`;
@@ -108,6 +146,8 @@ Deno.serve(async (req) => {
     const p = await req.json().catch(() => ({}));
     const store = String(p.store || "jt"); if (!STORES[store]) return json({ ok: false, error: "unknown store" }, 400);
     if (p.action === "queue") return json({ ok: true, store, orders: await queue(store) });
+    if (p.action === "printq") return json({ ok: true, store, labels: await printq(store, Math.min(7, Math.max(1, Number(p.days) || 3))) });
+    if (p.action === "pdf") return json({ ok: true, b64: await pdf(String(p.url || "")) });
     if (p.action === "result") {
       const { data: row } = await admin.rpc("jt_ship_log_get", { p: { id: Number(p.log_id) } });
       if (!row?.result_id) return json({ ok: false, error: "not found" }, 404);

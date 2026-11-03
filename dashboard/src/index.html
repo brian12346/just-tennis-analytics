@@ -400,16 +400,17 @@
   </div>
   <div id="tab-labels" hidden>
     <header class="top po-hdr">
-      <div class="title"><span class="eyebrow">Shopify Shipping · Just Tennis &amp; Ace n Rally · one order at a time</span><h1>Ship orders</h1><span class="status" id="lb-sum"></span></div>
-      <div class="controls"><div class="seg" id="lb-store" role="group" aria-label="Store"><button type="button" data-lb-store="jt" aria-pressed="true">Just Tennis</button><button type="button" data-lb-store="anr" aria-pressed="false">Ace n Rally</button></div>
+      <div class="title"><span class="eyebrow">Shopify Shipping · Just Tennis &amp; Ace n Rally</span><h1>Ship orders</h1><span class="status" id="lb-sum"></span></div>
+      <div class="controls"><div class="seg" id="lb-mode" role="group" aria-label="Print or buy"><button type="button" data-lb-mode="print" aria-pressed="true">To print</button><button type="button" data-lb-mode="buy" aria-pressed="false">Buy &amp; pack</button></div><div class="seg" id="lb-store" role="group" aria-label="Store"><button type="button" data-lb-store="jt" aria-pressed="true">Just Tennis</button><button type="button" data-lb-store="anr" aria-pressed="false">Ace n Rally</button></div>
         <button class="btn icon" type="button" data-lb-act="refresh" title="Reload the orders from Shopify" aria-label="Refresh">↻</button></div>
     </header>
     <div class="note warn" id="lb-note" hidden></div>
-    <div class="lb-grid">
+    <section class="panel" id="lb-printv"></section>
+    <div class="lb-grid" hidden>
       <section class="panel lb-left"><input id="lb-scan" class="inp" type="search" placeholder="Scan a packing slip or item, or search" aria-label="Scan or search"><div id="lb-queue" class="lb-queue"></div></section>
       <section class="panel lb-right" id="lb-pack"></section>
     </div>
-    <section class="panel"><div class="panel-head"><h2>Labels bought here</h2><span class="muted small">last 3 days · costs show in profit once Shopify reports them</span></div><div class="tbl-wrap" id="lb-recent"></div></section>
+    <section class="panel" id="lb-recent-panel" hidden><div class="panel-head"><h2>Labels bought here</h2><span class="muted small">last 3 days · costs show in profit once Shopify reports them</span></div><div class="tbl-wrap" id="lb-recent"></div></section>
   </div>
   <div id="tab-pack" hidden>
     <header class="top po-hdr">

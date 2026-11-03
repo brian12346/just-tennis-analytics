@@ -22,7 +22,57 @@
   // the service to start with, from what the customer picked at checkout
   const guessSvc = (o) => { const m = (o.method || "").toLowerCase();
     return /next|overnight|1 ?day/.test(m) ? "ups_shipping|01" : /2 ?day|two day|expedit/.test(m) ? "ups_shipping|02" : /3 ?day/.test(m) ? "ups_shipping|12" : "ups_shipping|03"; };
-  const S = { store: "jt", orders: null, err: "", sel: null, q: "", boxes: null, recent: [], busy: "", res: null, picks: {} };
+  // ---------- printing labels so they're easy to read (Nov 3, Brian: "make it so that the printer sizing makes it easy to
+  // read the printed labels"). Each label PDF is drawn at print resolution, trimmed to the label itself (no white margins
+  // or letter-page blank space), turned upright, and fitted edge to edge on the paper: a 4×6 label (thermal printer), or a
+  // 4×6 area on letter paper. The print page has no browser margins or scaling. ----------
+  const PAPER = { "4x6": { w: 4, h: 6, page: "4in 6in" }, letter: { w: 4, h: 6, page: "letter", letter: true } };
+  let paper = "4x6"; try { paper = localStorage.getItem("jt.lb.paper") || "4x6"; } catch (_) {}
+  const DPI = 300;
+  async function pdfBytes(url) { const r = await call({ action: "pdf", store: S.store, url }); const bin = atob(r.b64 || ""), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+  // content box of a page, in PDF points: where the non-white pixels are
+  async function contentBox(page) {
+    const vp = page.getViewport({ scale: 1 }), c = document.createElement("canvas"); c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+    const x = c.getContext("2d", { willReadFrequently: true }); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: x, viewport: vp }).promise;
+    const d = x.getImageData(0, 0, c.width, c.height).data; let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+    for (let y = 0; y < c.height; y++) for (let i = y * c.width * 4, xx = 0; xx < c.width; xx++, i += 4) if (d[i] < 200 || d[i + 1] < 200 || d[i + 2] < 200) { if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 < 0) return { x0: 0, y0: 0, w: vp.width, h: vp.height };
+    const pad = 4; x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(c.width, x1 + pad); y1 = Math.min(c.height, y1 + pad);
+    return { x0, y0, w: x1 - x0, h: y1 - y0 };
+  }
+  // one page → a PNG exactly the label size (4×6 at 300 dpi), upright, filling it
+  async function pageToLabel(page) {
+    const bx = await contentBox(page), land = bx.w > bx.h, Wt = 4 * DPI, Ht = 6 * DPI;
+    const fw = land ? Ht : Wt, fh = land ? Wt : Ht, sc = Math.min(fw / bx.w, fh / bx.h);
+    const c = document.createElement("canvas"); c.width = Math.round(bx.w * sc); c.height = Math.round(bx.h * sc);
+    const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: x, viewport: page.getViewport({ scale: sc }), transform: [1, 0, 0, 1, -bx.x0 * sc, -bx.y0 * sc] }).promise;
+    const out = document.createElement("canvas"); out.width = Wt; out.height = Ht;
+    const o = out.getContext("2d"); o.fillStyle = "#fff"; o.fillRect(0, 0, Wt, Ht); o.imageSmoothingEnabled = false;
+    if (land) { o.translate(Wt / 2, Ht / 2); o.rotate(Math.PI / 2); o.drawImage(c, -c.width / 2, -c.height / 2); }
+    else o.drawImage(c, (Wt - c.width) / 2, (Ht - c.height) / 2);
+    return out.toDataURL("image/png");
+  }
+  async function printLabels(urls) {
+    const lib = await window.JTInvParse.pdfLib(), imgs = [];
+    for (const u of urls) { const doc = await lib.getDocument({ data: await pdfBytes(u), isEvalSupported: false }).promise;
+      for (let i = 1; i <= Math.min(doc.numPages, 4); i++) imgs.push(await pageToLabel(await doc.getPage(i))); }
+    if (!imgs.length) throw { message: "No label pages to print." };
+    const pp = PAPER[paper] || PAPER["4x6"], f = document.createElement("iframe");
+    f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden"; document.body.appendChild(f);
+    const css = `@page{size:${pp.page};margin:0}html,body{margin:0;padding:0;background:#fff}
+      .pg{width:${pp.letter ? "8.5in" : "4in"};height:${pp.letter ? "11in" : "6in"};display:flex;align-items:${pp.letter ? "flex-start" : "center"};justify-content:center;${pp.letter ? "padding-top:.5in;box-sizing:border-box;" : ""}page-break-after:always;break-after:page;overflow:hidden}
+      .pg:last-child{page-break-after:auto;break-after:auto}img{width:4in;height:6in;display:block;image-rendering:pixelated}`;
+    f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>${css}</style></head><body>${imgs.map(s2 => `<div class="pg"><img src="${s2}"></div>`).join("")}</body></html>`;
+    await new Promise(r => { f.onload = r; });
+    await Promise.all([...f.contentDocument.images].map(im => im.complete ? 0 : new Promise(r => { im.onload = im.onerror = r; })));
+    f.contentWindow.focus(); f.contentWindow.print();
+    setTimeout(() => f.remove(), 60000);
+    return imgs.length;
+  }
+
+  const S = { mode: "print", pq: null, pqErr: "", printed: new Set(), pf: "todo", psel: new Set(), store: "jt", orders: null, err: "", sel: null, q: "", boxes: null, recent: [], busy: "", res: null, picks: {} };
   // per order on screen: {box, l, w, h, boxOz, lb, oz, svc, notify, ticks: {lineId: n}}
   const pick = (o) => S.picks[o.id] || (S.picks[o.id] = { box: "", l: "", w: "", h: "", boxOz: 0, lb: "", oz: "", svc: guessSvc(o), notify: true, ticks: {} });
 
@@ -47,8 +97,48 @@
   const units = (o) => lines(o).reduce((a, l) => a + l.qty, 0);
   const shopW = (o) => { let oz = 0; for (const l of lines(o)) { const w = l.weight || {}; const f = { POUNDS: 16, OUNCES: 1, KILOGRAMS: 35.274, GRAMS: 0.035274 }[w.unit] || 0; oz += (Number(w.value) || 0) * f * l.qty; } return oz; };
 
+  // ---------- To print: labels bought in Shopify, printed from here (Nov 3, Brian: "buy the shipping from within shopify
+  // but then print the labels from seller sage") ----------
+  async function loadPrintQ() {
+    S.pq = null; S.pqErr = ""; render();
+    try { const [r, pr] = await Promise.all([call({ action: "printq", store: S.store, days: 3 }), JT.rows(["label_id"], "from jt.ship_printed where printed_at > now() - interval '10 days'", true)]);
+      S.pq = r.labels || []; S.printed = new Set(pr.map(x => x[0])); }
+    catch (e) { S.pq = []; S.pqErr = JT.message ? JT.message(e) : String(e.message || e); }
+    S.psel = new Set([...S.psel].filter(id => (S.pq || []).some(l => l.label_id === id))); render();
+  }
+  async function doPrint(ls) {
+    const go = ls.filter(l => l.url); if (!go.length) { alertNote("No label file to print."); return; }
+    S.busy = "print"; render();
+    try { const n = await printLabels(go.map(l => l.url));
+      await W().write("jt_ship_printed", { p: { store: S.store, labels: go.map(l => ({ label_id: l.label_id, order: l.order })) } });
+      go.forEach(l => S.printed.add(l.label_id)); S.psel.clear(); alertNote(`Sent ${n} label${n === 1 ? "" : "s"} to the printer.`, true); }
+    catch (e) { alertNote("Couldn't print: " + (JT.message ? JT.message(e) : e.message)); }
+    S.busy = ""; render();
+  }
+  function printView() {
+    const all = S.pq || [], todo = all.filter(l => !S.printed.has(l.label_id)), list = S.pf === "todo" ? todo : all;
+    const q = S.q.trim().toLowerCase().replace(/^#/, ""), shown = list.filter(l => !q || [l.order, l.customer, l.tracking, ...l.items.map(i => i.sku + " " + i.title)].join(" ").toLowerCase().replace(/#/g, "").includes(q));
+    const nSel = S.psel.size;
+    return `<div class="panel-head"><h2>To print <span class="muted small">${S.pq ? `${n0(todo.length)} not printed · ${n0(all.length)} bought in the last 3 days` : ""}</span></h2>
+        <span class="seg sm"><button type="button" data-lb-pf="todo" aria-pressed="${S.pf === "todo"}">Not printed</button><button type="button" data-lb-pf="all" aria-pressed="${S.pf === "all"}">All</button></span>
+        <label class="small">Paper <select id="lb-paper" class="inp sm">${[["4x6", "4×6 label (thermal)"], ["letter", "Letter (4×6 label on the page)"]].map(([k, n]) => `<option value="${k}" ${paper === k ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+        <span class="dbtns right">${nSel ? `<button class="btn" data-lb-act="print-sel" ${S.busy ? "disabled" : ""}>Print ${n0(nSel)} selected</button>` : ""}<button class="btn primary" data-lb-act="print-todo" ${S.busy || !todo.length ? "disabled" : ""}>${S.busy === "print" ? "Preparing…" : `Print all not printed (${n0(todo.length)})`}</button></span></div>
+      <p class="small muted">Buy the labels in Shopify (you see the prices there), then print them here: each label is trimmed and fitted to fill the label, upright, at full resolution. In the print window pick your label printer, paper ${paper === "4x6" ? "4×6 in" : "Letter"}, margins none, scale 100%.</p>
+      ${S.pqErr ? `<div class="note warn small">${esc(S.pqErr)}</div>` : !S.pq ? '<div class="muted small">Loading labels from Shopify…</div>' : shown.length ? `<div class="tbl-wrap"><table class="prept lb-pt"><thead><tr><th><input type="checkbox" data-lb-pall ${shown.length && shown.every(l => S.psel.has(l.label_id)) ? "checked" : ""} aria-label="Select all"></th><th class="l">Order</th><th class="l">What's in it</th><th class="l">Label</th><th class="l">Bought</th><th></th></tr></thead><tbody>${
+        shown.map(l => `<tr class="${S.printed.has(l.label_id) ? "dim" : ""}"><td><input type="checkbox" data-lb-psel="${esc(l.label_id)}" ${S.psel.has(l.label_id) ? "checked" : ""}></td>
+          <td class="l"><b>${esc(l.order)}</b><div class="small">${esc(l.customer)}${l.to ? " · " + esc(l.to) : ""}</div></td>
+          <td class="l small lb-pitems">${l.items.map(i => `<span class="lb-pi">${i.img ? `<img src="${esc(i.img)}" alt="">` : ""}<span>${i.qty > 1 ? `<b class="warnt">${i.qty}×</b> ` : ""}${esc(i.title)}<span class="muted mono"> ${esc(i.sku)}</span></span></span>`).join("")}</td>
+          <td class="l small">${esc(l.company)}<div class="mono">${esc(l.tracking)}</div></td>
+          <td class="l small">${esc(when(l.at))}${S.printed.has(l.label_id) ? '<div><span class="pill ok">printed</span></div>' : ""}</td>
+          <td class="l nowrap">${l.url ? `<button class="btn sm ${S.printed.has(l.label_id) ? "" : "primary"}" data-lb-print="${esc(l.label_id)}" ${S.busy ? "disabled" : ""}>${S.printed.has(l.label_id) ? "Reprint" : "Print"}</button>` : '<span class="small muted">no file</span>'}</td></tr>`).join("")}</tbody></table></div>`
+        : `<div class="muted small">${all.length ? "Everything's printed. 🎾" : "No Shopify Shipping labels bought in the last 3 days."}</div>`}`;
+  }
+
   function render() {
     if ($("tab-labels").hidden) return;
+    for (const b of document.querySelectorAll("#lb-mode [data-lb-mode]")) b.setAttribute("aria-pressed", String(b.dataset.lbMode === S.mode));
+    const grid = host.querySelector(".lb-grid"), pv = $("lb-printv"), rec = $("lb-recent-panel");
+    if (grid) grid.hidden = S.mode === "print"; if (rec) rec.hidden = S.mode === "print"; if (pv) { pv.hidden = S.mode !== "print"; if (S.mode === "print") { pv.innerHTML = printView(); for (const b of document.querySelectorAll("#lb-store [data-lb-store]")) b.setAttribute("aria-pressed", String(b.dataset.lbStore === S.store)); $("lb-sum").textContent = ""; return; } }
     for (const b of document.querySelectorAll("#lb-store [data-lb-store]")) b.setAttribute("aria-pressed", String(b.dataset.lbStore === S.store));
     const list = S.orders || [], q = S.q.trim().toLowerCase().replace(/^#/, "");
     const shown = list.filter(o => !q || [o.name, o.customer, o.address && o.address.city, ...lines(o).map(l => l.sku + " " + l.title)].join(" ").toLowerCase().replace(/#/g, "").includes(q));
@@ -118,7 +208,7 @@
         box: { name: b ? b.name : "Custom", l: Number(p.l), w: Number(p.w), h: Number(p.h), weight_oz: b ? b.oz : 0 }, weight_oz: (Number(p.lb) || 0) * 16 + (Number(p.oz) || 0), notify: p.notify, again: !!again });
       const l0 = (r.labels || [])[0] || {}, url = ((l0.docs || []).find(d => d.url && /LABEL/i.test(d.type || "")) || (l0.docs || []).find(d => d.url) || {}).url || "";
       S.res = { order: o.id, ok: !!r.ok, status: r.status, error: r.error, tracking: l0.tracking || "", company: l0.company || svc[2], url, log_id: r.log_id };
-      if (r.ok) { p.done = true; if (url) window.open(url, "_blank", "noopener"); }
+      if (r.ok) { p.done = true; if (url) printLabels([url]).catch(e2 => alertNote("Couldn't print it here: " + (JT.message ? JT.message(e2) : e2.message) + " — use the Print label link.")); }
     } catch (e) { S.res = { order: o.id, ok: false, status: "ERROR", error: JT.message ? JT.message(e) : String(e.message || e) }; }
     S.busy = ""; if (W() && W().clearCache) W().clearCache(); window.dispatchEvent(new CustomEvent("jt:changed"));
     loadRecent().then(render).catch(() => {}); render();
@@ -137,7 +227,12 @@
 
   const host = $("tab-labels");
   host.addEventListener("click", async (e) => {
-    const st = e.target.closest("[data-lb-store]"); if (st) { S.store = st.dataset.lbStore; S.sel = null; S.res = null; loadQueue(); return; }
+    const md = e.target.closest("[data-lb-mode]"); if (md) { S.mode = md.dataset.lbMode; if (S.mode === "print" && !S.pq) loadPrintQ(); else if (S.mode === "buy" && !S.orders) loadQueue(); else render(); return; }
+    const st = e.target.closest("[data-lb-store]"); if (st) { S.store = st.dataset.lbStore; S.sel = null; S.res = null; S.pq = null; S.orders = null; S.mode === "print" ? loadPrintQ() : loadQueue(); return; }
+    const pf = e.target.closest("[data-lb-pf]"); if (pf) { S.pf = pf.dataset.lbPf; render(); return; }
+    if (e.target.matches("[data-lb-psel]")) { e.target.checked ? S.psel.add(e.target.dataset.lbPsel) : S.psel.delete(e.target.dataset.lbPsel); render(); return; }
+    if (e.target.matches("[data-lb-pall]")) { const vis = [...host.querySelectorAll("[data-lb-psel]")].map(x => x.dataset.lbPsel); vis.forEach(id => e.target.checked ? S.psel.add(id) : S.psel.delete(id)); render(); return; }
+    const pr = e.target.closest("[data-lb-print]"); if (pr) { const l = (S.pq || []).find(x => x.label_id === pr.dataset.lbPrint); if (l) doPrint([l]); return; }
     const sel = e.target.closest("[data-lb-sel]"); if (sel) { S.sel = sel.dataset.lbSel; S.res = null; render(); return; }
     const o = (S.orders || []).find(x => x.id === S.sel);
     const tk = e.target.closest("[data-lb-tick]"); if (tk && o) { const p = pick(o), l = lines(o).find(x => x.id === tk.dataset.lbTick); if (l) p.ticks[l.id] = (p.ticks[l.id] || 0) >= l.qty ? 0 : (p.ticks[l.id] || 0) + 1; render(); return; }
@@ -152,13 +247,15 @@
     const br = e.target.closest("[data-lb-brm]"); if (br) { try { await W().write("jt_ship_box", { p: { id: Number(br.dataset.lbBrm), remove: true } }); await loadBoxes(); render(); } catch (err) { alertNote(JT.message(err)); } return; }
     const a = e.target.closest("[data-lb-act]"); if (!a) return;
     const k = a.dataset.lbAct;
-    if (k === "refresh") { loadQueue(); loadRecent().then(render).catch(() => {}); return; }
+    if (k === "refresh") { if (S.mode === "print") { loadPrintQ(); return; } loadQueue(); loadRecent().then(render).catch(() => {}); return; }
+    if (k === "print-todo") { doPrint((S.pq || []).filter(l => !S.printed.has(l.label_id))); return; }
+    if (k === "print-sel") { doPrint((S.pq || []).filter(l => S.psel.has(l.label_id))); return; }
     if (k === "boxes") { S.boxEdit = !S.boxEdit; render(); return; }
     if (k === "buy" && o) return buy(o, false);
     if (k === "again" && o) return buy(o, true);
     if (k === "next") { const list = (S.orders || []).filter(x => !(S.picks[x.id] && S.picks[x.id].done)); S.sel = list.length ? list[0].id : null; S.res = null; render(); const s = $("lb-scan"); if (s) s.focus(); return; }
   });
-  const alertNote = (t) => { const n = $("lb-note"); if (n) { n.hidden = false; n.textContent = t; setTimeout(() => { n.hidden = true; }, 6000); } };
+  const alertNote = (t, ok) => { const n = $("lb-note"); if (n) { n.hidden = false; n.className = "note " + (ok ? "info" : "warn"); n.textContent = t; clearTimeout(n._t); n._t = setTimeout(() => { n.hidden = true; }, 6000); } };
   host.addEventListener("input", (e) => {
     const o = (S.orders || []).find(x => x.id === S.sel), t = e.target;
     if (t.id === "lb-scan") { S.q = t.value; clearTimeout(t._t); t._t = setTimeout(render, 150); return; }
@@ -169,11 +266,14 @@
   // typing in a field updates the Buy button without redrawing (keeps the cursor)
   const syncBuy = (o) => { const p = pick(o), b = host.querySelector(".lb-go"); if (!b) return; const ok = ((Number(p.lb) || 0) * 16 + (Number(p.oz) || 0)) > 0 && Number(p.l) > 0 && Number(p.w) > 0 && Number(p.h) > 0 && !S.busy; b.disabled = !ok; };
   host.addEventListener("change", (e) => {
+    if (e.target.id === "lb-paper") { paper = e.target.value; try { localStorage.setItem("jt.lb.paper", paper); } catch (_) {} render(); return; }
     const o = (S.orders || []).find(x => x.id === S.sel), t = e.target; if (!o) return; const p = pick(o);
     if (t.id === "lb-svc") { p.svc = t.value; render(); }
     if (t.id === "lb-notify") p.notify = t.checked;
   });
   host.addEventListener("keydown", (e) => {
+    if (e.target.id === "lb-scan" && e.key === "Enter" && S.mode === "print") { e.preventDefault(); const v = e.target.value.trim().replace(/^#/, "").toLowerCase(); e.target.value = ""; S.q = "";
+      const l = (S.pq || []).find(x => x.order.replace(/^#/, "").toLowerCase() === v || x.tracking.toLowerCase() === v); if (l) doPrint([l]); else { S.q = v; render(); } return; }
     if (e.target.id === "lb-scan" && e.key === "Enter") { e.preventDefault(); const v = e.target.value; e.target.value = ""; scan(v); setTimeout(() => { const s = $("lb-scan"); if (s) s.focus(); }, 0); return; }
     if ((e.target.id === "lb-lb" || e.target.id === "lb-oz") && e.key === "Enter") { e.preventDefault(); const b = host.querySelector(".lb-go"); if (b && !b.disabled) b.click(); }
   });
@@ -181,7 +281,7 @@
     if (!W()) { $("lb-pack").innerHTML = '<div class="note info">Buying labels works on the web version — open <b>dashboard.andersenlifestyle.com</b> › Shipping › Ship orders.</div>'; return; }
     if (!S.boxes) loadBoxes().then(render).catch(() => {});
     loadRecent().then(render).catch(() => {});
-    if (!S.orders) loadQueue(); else render();
+    if (S.mode === "print") { if (!S.pq) loadPrintQ(); else render(); } else if (!S.orders) loadQueue(); else render();
     setTimeout(() => { const s = $("lb-scan"); if (s) s.focus(); }, 50);
   };
   window.JTLabels = { _state: S };
