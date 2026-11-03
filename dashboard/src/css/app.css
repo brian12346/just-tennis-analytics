@@ -1635,3 +1635,28 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .pn-body{white-space:normal;overflow-wrap:anywhere}
 .pn-new{display:flex;gap:8px;align-items:flex-end}
 .pn-new textarea{flex:1;resize:vertical;min-height:44px;font:inherit}
+/* Shipping › Ship orders */
+.lb-grid{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.lb-grid{grid-template-columns:1fr}}
+.lb-left{position:sticky;top:calc(var(--appbar-h,0px) + 8px);max-height:calc(100vh - var(--appbar-h,0px) - 24px);display:flex;flex-direction:column;gap:8px}
+.lb-queue{overflow:auto;display:flex;flex-direction:column;gap:6px}
+.lb-card{all:unset;display:flex;flex-direction:column;gap:2px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;cursor:pointer;background:var(--panel)}
+.lb-card:hover{border-color:var(--primary)}.lb-card.on{border:2px solid var(--primary);padding:8px 10px}.lb-card.done{opacity:.6}
+.lb-top{display:flex;justify-content:space-between;gap:8px}
+.lb-head{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.lb-head h2{margin:2px 0 6px}.lb-addr{line-height:1.4}
+.lb-meth{display:flex;flex-direction:column;align-items:flex-end;gap:4px;text-align:right}
+.lb-h3{margin:16px 0 8px;font-size:15px;display:flex;gap:10px;align-items:baseline}
+.lb-items{display:flex;flex-direction:column;gap:6px}
+.lb-item{all:unset;display:flex;gap:10px;align-items:center;padding:6px 10px;border:1px solid var(--line);border-radius:10px;cursor:pointer}
+.lb-item.ok{border-color:var(--good);background:var(--good-bg)}
+.lb-item img,.lb-noimg{width:48px;height:48px;object-fit:contain;border-radius:6px;background:#fff;flex:0 0 48px}
+.lb-it{display:flex;flex-direction:column;flex:1;min-width:0}
+.lb-q{font-weight:700;font-variant-numeric:tabular-nums}.lb-q.multi{color:var(--warn)}
+.lb-boxes{display:flex;gap:8px;flex-wrap:wrap}
+.lb-box{all:unset;display:flex;flex-direction:column;padding:8px 12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;min-width:110px}
+.lb-box.on{border:2px solid var(--primary);padding:7px 11px}
+.lb-dims,.lb-wt{gap:10px;align-items:center;margin-top:8px}.lb-dims input{width:64px}.lb-wt input{width:80px;font-size:18px}
+.lb-buy{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:18px}
+.lb-go{font-size:16px;padding:10px 18px}
+.lb-boxedit{margin-top:8px}.lb-boxedit input{width:70px}.lb-boxedit input[data-bf=name]{width:140px}
