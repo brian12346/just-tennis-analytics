@@ -35,7 +35,7 @@
   async function load(refresh) {
     S.loading = true; S.err = null; render();
     try {
-      const [r, l] = await Promise.all([
+      const [r, l, g] = await Promise.all([
         window.JT.rows(["v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "v.product_type",
           "jt.shopify_qty_now(v.variant_id)::text", "so.day::text", "so.start_units::text", "so.sold::text",
           "c.at::text", "c.counted::text", "c.by", "m.status", "m.error", "(select max(seen_at) from jt.stockouts)::text",
@@ -55,19 +55,29 @@
           "pl.par::text", "pl.target_days::text",
           `(select coalesce(sum(greatest(l.qty_ordered - l.qty_received, 0)), 0) from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id
              where l.variant_id = v.variant_id and l.dest = 'shopify' and o.status in ('ordered', 'invoiced', 'partial') and o.id is distinct from i.order_id)::text`,
-          "(select coalesce(sum(s.units), 0) from jt.shopify_sales s where s.variant_id = v.variant_id and s.day > current_date - 90)::text"],
+          "(select coalesce(sum(s.units), 0) from jt.shopify_sales s where s.variant_id = v.variant_id and s.day > current_date - 90)::text",
+          "(select c.pack from jt.case_packs c where c.variant_id = v.variant_id)::text", "(select c.pack from jt.case_packs c where lower(c.vendor) = lower(v.vendor))::text", "pl.round"],
           `from jt.prep_list i join jt.variants v on v.variant_id = i.variant_id left join jt.prep_orders o on o.id = i.order_id
            left join jt.par_levels pl on pl.variant_id = v.variant_id
            where i.closed_at is null and i.dest = 'shopify' order by v.vendor, v.product_title, v.variant_title`, refresh),
+        // ignored (migration 203): kept visible in their own table; a product that goes to 0 again after it was ignored comes back
+        window.JT.rows(["g.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "g.at::text", "g.by", "g.note",
+          "jt.shopify_qty_now(v.variant_id)::text", "(select max(day) from jt.stockouts s where s.variant_id = g.variant_id)::text", "coalesce(v.status, '')"],
+          `from jt.oos_ignored g join jt.variants v on v.variant_id = g.variant_id order by g.at desc`, refresh).catch(() => null),
       ]);
       S.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2], vt: x[3] && x[3] !== "Default Title" ? x[3] : "", sku: x[4] || "", vendor: x[5] || "", type: x[6] || "",
         qty: +x[7] || 0, day: x[8], start: +x[9] || 0, sold: +x[10] || 0, how: howOf(+x[9] || 0, +x[10] || 0),
         countAt: x[11], counted: x[12] == null ? null : +x[12], countBy: x[13] || "", moveSt: x[14] || "", moveErr: x[15] || "",
         others: +x[17] || 0, nvar: +x[18] || 1, arSt: x[19] || "", arErr: x[20] || "", arAt: x[21] }));
       S.seen = r.length ? r[0][16] : null;
+      S.ign = g ? g.map(x => ({ vid: x[0], pid: x[1], title: x[2], vt: x[3] && x[3] !== "Default Title" ? x[3] : "", sku: x[4] || "", vendor: x[5] || "", at: x[6], by: x[7] || "", note: x[8] || "",
+        now: +x[9] || 0, day: x[10] || "", status: x[11] || "" })) : null;
+      { const ig = new Map((S.ign || []).map(x => [x.vid, x])); const ymd = (t) => { const d = window.JTDate ? window.JTDate.parseTime(t) : new Date(t); return isNaN(d) ? "" : d.toLocaleDateString("en-CA", { timeZone: TZ }); };
+        S.rows = S.rows.filter(x => { const i = ig.get(x.vid); return !i || (x.day && x.day > ymd(i.at)); }); }
       S.list = l.map(x => ({ id: x[0], vid: x[1], pid: x[2], title: x[3], vt: x[4] && x[4] !== "Default Title" ? x[4] : "", sku: x[5] || "", vendor: x[6] || "",
         qty: x[7] == null ? null : +x[7], at: x[8], by: x[9] || "", oid: x[10], ost: x[11] || "", po: x[12] || "", now: +x[13] || 0, cost: x[14] == null ? null : +x[14], src: x[15] || "",
-        par: x[16] == null ? null : +x[16], days: x[17] == null ? null : +x[17], onOrder: +x[18] || 0, sold90: +x[19] || 0 }));
+        par: x[16] == null ? null : +x[16], days: x[17] == null ? null : +x[17], onOrder: +x[18] || 0, sold90: +x[19] || 0,
+        ownPack: x[20] == null ? null : +x[20], venPack: x[21] == null ? null : +x[21], round: x[22] || "up" }));
     } catch (e) { S.err = e; }
     S.loading = false; render();
   }
@@ -91,6 +101,7 @@
     const canArch = r.others <= 0;
     return `<span class="oos-btns"><button class="btn sm" type="button" data-oos-count="${esc(r.vid)}" ${sending ? "disabled title='Waiting for Shopify to take the last count'" : ""}>Count</button>`
       + (discontinued(r.title) ? `<button class="btn sm" type="button" disabled title="TF-X1 racquets are discontinued — not reordered">Reorder</button>` : `<button class="btn sm" type="button" data-oos-reorder="${esc(r.vid)}" ${dis} title="Put it on the To order list below — analyze it there to set how many">${busy ? "Adding…" : "Reorder"}</button>`)
+      + (S.ign ? `<button class="btn sm" type="button" data-oos-ignore="${esc(r.vid)}" ${dis} title="Take it off this list and into Ignored below">Ignore</button>` : "")
       + `<button class="btn sm" type="button" data-oos-archive="${esc(r.vid)}" ${canArch ? `title="Not carrying it any more: archive the product in Shopify"` : `disabled title="${n0(r.others)} unit${r.others === 1 ? "" : "s"} of other variants still in stock — archiving takes the whole product off the store"`}>Archive</button></span>`;
   }
 
@@ -127,10 +138,27 @@
         <td class="l">${last}</td>
         <td class="oos-act">${actCell(r)}</td></tr>${confirmRow(r)}`; }).join("")}</tbody></table></div>`
       : `<div class="muted small" style="padding:14px">${all.length ? "Nothing matches." : "Nothing out of stock waiting on a decision."}</div>`;
-    renderList();
+    renderList(); renderIgn();
     if (S.open && S.open.kind === "count") { const i = $("oos-n"); if (i && !S.busy) i.focus(); }
   }
 
+  function renderIgn() {
+    const sec = $("oos-ign-sec"), L = S.ign; if (!sec) return;
+    sec.hidden = !L; if (!L) return;
+    $("oos-ign-sum").textContent = L.length ? `${n0(L.length)} product${L.length === 1 ? "" : "s"}` : "";
+    $("oos-ign").innerHTML = !L.length ? `<div class="muted small" style="padding:14px">Nothing ignored. <b>Ignore</b> takes a product off the out-of-stock list and keeps it here; it comes back if it goes to 0 again.</div>`
+      : `<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th><th></th></tr></thead><tbody>${L.map(i => `<tr>
+        <td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}${i.status && i.status !== "ACTIVE" ? ` · ${esc(i.status.toLowerCase())}` : ""}</div></td>
+        <td class="l">${esc(i.vendor)}</td><td class="l">${i.day ? esc(day(i.day)) : '<span class="dim">—</span>'}</td>
+        <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
+        <td class="${i.now > 0 ? "okt" : "dim"}">${n0(i.now)}</td>
+        <td class="oos-act"><button class="btn sm" type="button" data-oos-unignore="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the out-of-stock list (while it's still at 0)">${S.busy === "g:" + i.vid ? "…" : "Un-ignore"}</button></td></tr>`).join("")}</tbody></table></div>`;
+  }
+  async function ignore(vid, on) {
+    S.busy = on ? vid : "g:" + vid; render();
+    try { await call("jt_oos_ignore", "jt.oos_ignore", { variant_id: Number(vid), on }); S.busy = null; await load(true); }
+    catch (e) { S.busy = null; render(); note(`<span class="neg">Couldn't ${on ? "ignore" : "un-ignore"} it: ${esc(msg(e))}</span>`); }
+  }
   function renderList() {
     const L = S.list || [], box = $("oos-list");
     $("oos-list-sum").textContent = L.length ? `${n0(L.length)} product${L.length === 1 ? "" : "s"} · ${n0(new Set(L.map(i => i.vendor)).size)} vendor${new Set(L.map(i => i.vendor)).size === 1 ? "" : "s"}` : "";
@@ -145,7 +173,7 @@
           return `<tr><td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}</div></td>
             <td class="${i.now <= 0 ? "dim" : ""}">${n0(i.now)}</td><td class="${i.onOrder ? "" : "dim"}">${i.onOrder ? n0(i.onOrder) : "—"}</td><td>${n0(i.sold90)}</td>
             <td>${i.par == null ? `<span class="dim">—</span>` : `<b>${n0(i.par)}</b>${i.days ? `<div class="dim small">${n0(i.days)} days</div>` : ""}`}${i.par != null && toPar(i) !== (i.qty || 0) && !(i.oid && i.ost !== "draft") ? `<div><button class="linkbtn small" type="button" data-oos-topar="${esc(i.id)}" title="Set To order to PAR − on hand − on order">order ${n0(toPar(i))}</button></div>` : ""}</td>
-            <td><input class="inp sm oos-qty" type="number" min="0" step="1" inputmode="numeric" value="${i.qty == null ? "" : i.qty}" placeholder="—" data-oos-qty="${esc(i.id)}" aria-label="How many to order" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${i.oid && i.ost !== "draft" ? "disabled title='Already ordered'" : ""}></td>
+            <td><input class="inp sm oos-qty" type="number" min="0" step="1" inputmode="numeric" value="${i.qty == null ? "" : i.qty}" placeholder="—" data-oos-qty="${esc(i.id)}" aria-label="How many to order" title="${packOf(i) > 1 ? `Case of ${packOf(i)}` : ""}" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${i.oid && i.ost !== "draft" ? "disabled title='Already ordered'" : ""}>${packOf(i) > 1 ? `<div class="dim small">case of ${n0(packOf(i))}${i.qty != null && i.qty % packOf(i) ? ' · <span class="warnt">not full cases</span>' : ""}</div>` : ""}</td>
             <td>${m2(i.cost)}</td>
             <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
             <td class="l">${po}</td>
@@ -210,11 +238,15 @@
     catch (e) { note(`<span class="neg">Couldn't save the quantity: ${esc(msg(e))}</span>`); }
   }
   // ---------- Analyze: sales, days on hand, PAR (migration 201) ----------
-  const toPar = (i) => i.par == null ? null : Math.max(0, i.par - Math.max(0, i.now) - i.onOrder);
+  // case packs (migration 202): a product's own, else its vendor's; Order to PAR rounds to it, up or down
+  const packOf = (i) => i.ownPack || i.venPack || 1;
+  const roundTo = (q, pack, how) => pack > 1 && how !== "none" ? (how === "down" ? Math.floor(q / pack) : Math.ceil(q / pack)) * pack : q;
+  const toPar = (i) => i.par == null ? null : roundTo(Math.max(0, i.par - Math.max(0, i.now) - i.onOrder), packOf(i), i.round);
   const BASIS = [["30", "Last 30 days"], ["90", "Last 90 days"], ["365", "Last 12 months"], ["ly", "Same 90 days last year"]];
   async function analyze(id) {
     const it = (S.list || []).find(x => x.id === id); if (!it) return;
-    S.an = { id, it, loading: true, basis: "90", days: it.days || 90, par: it.par == null ? "" : String(it.par), parTouched: it.par != null };
+    S.an = { id, it, loading: true, basis: "90", days: it.days || 90, par: it.par == null ? "" : String(it.par), parTouched: it.par != null,
+      pack: String(packOf(it) > 1 ? packOf(it) : ""), round: it.round || "up" };
     openModal(); renderAn();
     try {
       const v = window.JT.int(it.vid);
@@ -244,7 +276,10 @@
     const per = { "30": 30, "90": 90, "365": 365, ly: 90 }[a.basis], units = (a.sold || {})[a.basis] || 0, rate = units / per;
     const days = Math.max(1, Number(a.days) || 90), sug = Math.ceil(rate * days);
     const par = a.par === "" ? sug : Number(a.par), it = a.it, have = Math.max(0, it.now) + it.onOrder;   // blank PAR = the suggested one
-    return { rate, units, days, sug, par, have, order: par == null || isNaN(par) ? null : Math.max(0, par - have), cover: rate > 0 ? have / rate : null };
+    const raw = par == null || isNaN(par) ? null : Math.max(0, par - have), pack = Math.max(1, Math.floor(Number(a.pack) || 1));
+    const up = raw == null ? null : roundTo(raw, pack, "up"), down = raw == null ? null : roundTo(raw, pack, "down");
+    const order = raw == null ? null : pack > 1 && a.round !== "none" ? (a.round === "down" ? down : up) : raw;
+    return { rate, units, days, sug, par, have, raw, pack, up, down, order, cover: rate > 0 ? have / rate : null };
   }
   function openModal() {
     let d = $("oos-an"); if (!d) {
@@ -293,7 +328,12 @@
           <div><span class="eyebrow">Suggested PAR</span><div class="v">${n0(c.sug)}</div><div class="small muted">${n0(c.days)} days × the sales rate ${c.par !== c.sug ? `<button type="button" class="linkbtn small" data-an="usesug">use it</button>` : ""}</div></div>
           <label class="stack"><span class="eyebrow">PAR level${saved ? ` <span class="pill ok">saved ${n0(it.par)}</span>` : ""}</span><input class="inp" id="an-par" type="number" min="0" step="1" value="${esc(a.par)}" placeholder="${n0(c.sug)}" autocomplete="off" data-lpignore="true" data-jtnofill="1"><span class="small muted">the stock to hold in the store</span></label>
         </div>
-        <div class="oos-an-order">${c.order == null ? `<span class="muted">Enter a PAR level to order to it.</span>` : `${a.par === "" ? '<span class="pill other">suggested</span> ' : ""}Order to PAR: <b>${n0(c.par)}</b> PAR − <b>${n0(Math.max(0, it.now))}</b> on hand − <b>${n0(it.onOrder)}</b> on order = <b class="oos-big">${n0(c.order)}</b> to order${c.cover != null ? ` <span class="muted small">· on hand + on order covers ${n0(c.cover)} days now</span>` : ""}`}</div>
+        <div class="row oos-an-pack small"><label class="inline">Case pack <input class="inp sm" id="an-pack" type="number" min="1" step="1" value="${esc(a.pack)}" placeholder="none" style="width:72px" autocomplete="off" data-lpignore="true" data-jtnofill="1"></label>
+          <span class="muted">${it.ownPack ? `this product: ${n0(it.ownPack)}` : it.venPack ? `${esc(it.vendor)} default: ${n0(it.venPack)}` : "none set"}</span>
+          ${String(a.pack) !== String(packOf(it) > 1 ? packOf(it) : "") ? `<span class="dbtns"><button class="mini" type="button" data-an="pack-v" ${S.busy ? "disabled" : ""} title="Every ${esc(it.vendor)} product without its own pack">Save for all ${esc(it.vendor || "this vendor")}</button><button class="mini" type="button" data-an="pack-p" ${S.busy ? "disabled" : ""}>Save for this product</button></span>` : ""}
+          ${it.ownPack ? `<button class="linkbtn small" type="button" data-an="pack-clear" title="Use the vendor's pack${it.venPack ? ` (${n0(it.venPack)})` : ""} instead">use the vendor's</button>` : ""}
+          ${c.pack > 1 && c.raw != null ? `<span class="seg sm" role="group" aria-label="Round to the case pack"><button type="button" data-an-round="down" aria-pressed="${a.round === "down"}">Round down · ${n0(c.down)}</button><button type="button" data-an-round="up" aria-pressed="${a.round === "up"}">Round up · ${n0(c.up)}</button><button type="button" data-an-round="none" aria-pressed="${a.round === "none"}">Exact · ${n0(c.raw)}</button></span>` : ""}</div>
+        <div class="oos-an-order">${c.order == null ? `<span class="muted">Enter a PAR level to order to it.</span>` : `${a.par === "" ? '<span class="pill other">suggested</span> ' : ""}Order to PAR: <b>${n0(c.par)}</b> PAR − <b>${n0(Math.max(0, it.now))}</b> on hand − <b>${n0(it.onOrder)}</b> on order = ${c.order !== c.raw ? `${n0(c.raw)}, rounded ${a.round} to ${c.pack}s: ` : ""}<b class="oos-big">${n0(c.order)}</b> to order${c.pack > 1 && c.order ? ` <span class="muted small">(${n0(c.order / c.pack)} case${c.order / c.pack === 1 ? "" : "s"})</span>` : ""}${c.cover != null ? ` <span class="muted small">· on hand + on order covers ${n0(c.cover)} days now</span>` : ""}`}</div>
         <div class="row oos-an-acts"><span class="dbtns">
           <button class="btn primary" type="button" data-an="order" ${c.order == null || S.busy ? "disabled" : ""} title="Save the PAR level and set To order to ${c.order == null ? "it" : n0(c.order)}">Order to PAR${c.order != null ? ` (${n0(c.order)})` : ""}</button>
           <button class="btn" type="button" data-an="save" ${c.par == null || isNaN(c.par) || S.busy ? "disabled" : ""}>${saved ? "Update PAR" : "Save PAR"}</button>
@@ -306,6 +346,7 @@
     const a = S.an; if (!a) return;
     if (t.id === "an-days") { a.days = t.value; if (!a.parTouched) a.par = ""; }
     else if (t.id === "an-par") { a.par = t.value.trim(); a.parTouched = true; }
+    else if (t.id === "an-pack") { a.pack = t.value.trim(); }
     else return;
     const pos = t.selectionStart, id = t.id; renderAn(); const i = $(id); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch (_) {} }
   }
@@ -318,8 +359,8 @@
     if (c.par == null || isNaN(c.par) || c.par < 0 || !Number.isInteger(c.par)) { a.msg = "The PAR level is a whole number, 0 or more."; a.bad = true; renderAn(); return; }
     S.busy = "an"; renderAn();
     try {
-      await call("jt_par_set", "jt.par_set", { variant_id: Number(it.vid), par: c.par, target_days: c.days });
-      it.par = c.par; it.days = c.days;
+      await call("jt_par_set", "jt.par_set", { variant_id: Number(it.vid), par: c.par, target_days: c.days, round: a.round });
+      it.par = c.par; it.days = c.days; it.round = a.round;
       if (order) { await call("jt_prep_list_add", "jt.prep_list_add", { variant_id: Number(it.vid), dest: "shopify", amazon_sku: "", qty: c.order }); it.qty = c.order; }
       a.msg = order ? `PAR saved at <b>${n0(c.par)}</b>; To order set to <b>${n0(c.order)}</b>${it.oid && it.ost === "draft" ? " (the draft PO too)" : ""}.` : `PAR saved at <b>${n0(c.par)}</b> (${n0(c.days)} days).`; a.bad = false;
     } catch (e) { a.msg = "Couldn't save: " + esc(msg(e)); a.bad = true; }
@@ -330,10 +371,27 @@
     if (b.dataset.an === "close") return closeModal();
     if (b.dataset.anBasis) { a.basis = b.dataset.anBasis; if (!a.parTouched) a.par = ""; a.msg = ""; renderAn(); return; }
     if (b.dataset.anDays) { a.days = b.dataset.anDays; if (!a.parTouched) a.par = ""; renderAn(); return; }
+    if (b.dataset.anRound) { a.round = b.dataset.anRound; renderAn(); return; }
+    if (b.dataset.an === "pack-v" || b.dataset.an === "pack-p" || b.dataset.an === "pack-clear") return packSave(b.dataset.an);
     if (b.dataset.an === "usesug") { a.par = String(anCalc(a).sug); a.parTouched = true; renderAn(); return; }
     if (b.dataset.an === "save") return anSave(false);
     if (b.dataset.an === "order") return anSave(true);
     if (b.dataset.an === "clear") return anSave("clear");
+  }
+  async function packSave(kind) {
+    const a = S.an, it = a.it, n = kind === "pack-clear" ? "" : a.pack;
+    if (n !== "" && !(Number.isInteger(Number(n)) && Number(n) >= 1)) { a.msg = "A case pack is a whole number."; a.bad = true; renderAn(); return; }
+    S.busy = "an"; renderAn();
+    try {
+      const vendor = kind === "pack-v";
+      await call("jt_case_pack_set", "jt.case_pack_set", vendor ? { vendor: it.vendor, pack: n } : { variant_id: Number(it.vid), pack: n });
+      const v = n === "" || Number(n) === 1 ? null : Number(n);
+      if (vendor) for (const x of S.list || []) { if (x.vendor.toLowerCase() === it.vendor.toLowerCase()) x.venPack = v; }
+      else it.ownPack = v;
+      a.pack = String(packOf(it) > 1 ? packOf(it) : "");
+      a.msg = vendor ? `Case pack for <b>${esc(it.vendor)}</b>: ${v ? n0(v) : "none"} (products with their own pack keep theirs).` : kind === "pack-clear" ? "This product uses the vendor's case pack again." : `Case pack for this product: ${v ? n0(v) : "none"}.`; a.bad = false;
+    } catch (e) { a.msg = "Couldn't save the case pack: " + esc(msg(e)); a.bad = true; }
+    S.busy = null; renderAn(); renderList();
   }
   async function orderToPar(id) {
     const it = (S.list || []).find(x => x.id === id); if (!it || it.par == null) return;
@@ -362,6 +420,8 @@
     if (b.dataset.oosTopoV != null) { const ven = b.dataset.oosTopoV; toPo((S.list || []).filter(i => i.vendor === ven && !i.oid).map(i => i.id), "v:" + ven); return; }
     if (b.dataset.oosUnlist) { unlist(b.dataset.oosUnlist); return; }
     if (b.dataset.oosAn) { analyze(b.dataset.oosAn); return; }
+    if (b.dataset.oosIgnore) { ignore(b.dataset.oosIgnore, true); return; }
+    if (b.dataset.oosUnignore) { ignore(b.dataset.oosUnignore, false); return; }
     if (b.dataset.oosTopar) { orderToPar(b.dataset.oosTopar); return; }
   });
   tab.addEventListener("keydown", (e) => {

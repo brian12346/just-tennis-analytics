@@ -1704,3 +1704,4 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .oos-an-order{font-size:15px}
 .oos-big{font-size:20px;color:var(--sales)}
 .oos-an-acts{align-items:center;gap:10px}
+.oos-an-pack{align-items:center;gap:10px;flex-wrap:wrap}
