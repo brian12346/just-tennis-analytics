@@ -1705,3 +1705,10 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .oos-big{font-size:20px;color:var(--sales)}
 .oos-an-acts{align-items:center;gap:10px}
 .oos-an-pack{align-items:center;gap:10px;flex-wrap:wrap}
+/* Active products › Amazon ASINs: FBA / FBM switches (dashed = Amazon's suggestion, not set yet) */
+.az-togs{display:inline-flex;gap:4px;align-items:center;white-space:nowrap}
+.az-tog{border:1px solid var(--line);background:var(--panel);color:var(--ink-muted);border-radius:var(--radius-pill);padding:2px 10px;font-size:12px;font-weight:600;cursor:pointer;line-height:18px}
+.az-tog.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.az-tog.auto{border-style:dashed}
+.az-tog.on.auto{background:transparent;color:var(--primary)}
+.ap-quick.az-quick{display:flex;flex-wrap:wrap;margin:4px 0 0}

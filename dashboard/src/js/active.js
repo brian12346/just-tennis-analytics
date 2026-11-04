@@ -9,6 +9,8 @@
   // Seasonal or Hold (don't reorder) — saved per size/color (jt.active_status, migration 187); "Not assessed" lists what's
   // left, with a suggestion. Separately, a stock state worked out from stock and sales: New, In stock, Low stock (under 4
   // weeks at the 90-day pace), Out of stock, On order, Slow (nothing sold in 90 days), Dead stock (nothing in 12 months).
+  // Amazon ASINs (Nov 4, migration 210): a third view — per-ASIN status (Active / Inactive – out of stock / Inactive – other /
+  // Closed) and FBA / FBM switches, kept in Seller Sage; see the block above refresh().
   const JT = window.JT, $ = (id) => document.getElementById(id);
   if (!JT || !$("tab-active")) return;
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -128,6 +130,12 @@
 
   function render() {
     if ($("tab-active").hidden) return;
+    if (S.view === "asins") {
+      for (const b of document.querySelectorAll("#ap-view [data-ap-view]")) b.setAttribute("aria-pressed", String(b.dataset.apView === "asins"));
+      for (const id of ["ap-seg", "ap-stock", "ap-miss", "ap-by", "ap-dl"]) { const el = $(id); if (el) el.hidden = true; }
+      $("ap-bulk").hidden = false;
+      return renderAsins();
+    }
     const st = $("ap-status");
     if (S.err) { st.innerHTML = `<span class="neg">Couldn't load the list: ${esc(JT.message(S.err))}</span>`; return; }
     if (!S.prods) { st.textContent = "Loading products, stock and 12 months of sales… (a few seconds)"; $("ap-table").innerHTML = ""; return; }
@@ -242,6 +250,151 @@
     $("ap-more").hidden = list.length <= S.limit;
   }
 
+  // ---------- Amazon ASINs (Nov 4, Brian: "we need a good way to curate our master data on amazon … the following states
+  // for the asins - active, inactive - out of stock, inactive - other reasons, closed/deleted. and we also want to have a
+  // clear toggle for FBA and FBM"). One row per ASIN (its seller SKUs fold out), from Amazon's daily All Listings pull plus
+  // anything sold on Amazon in 12 months or with Amazon stock. The status and FBA / FBM are ours (jt.asin_master, migration
+  // 210) — nothing is sent to Amazon. Until one is set, Amazon's data suggests it; a set status Amazon disagrees with is
+  // flagged. Data: jt.amazon_asins(); writes: public.jt_asin_master(p {asins, status?, fba?, fbm?, note?}).
+  const AZ = { active: ["Active", "ok", "Selling on Amazon"], inactive_oos: ["Inactive – out of stock", "warn", "Listing inactive because there's no stock"],
+    inactive_other: ["Inactive – other", "miss", "Listing inactive for another reason (suppressed, missing info, pricing…) — needs a look"],
+    closed: ["Closed / deleted", "pos", "Listing closed or deleted on Amazon"] };
+  const AZK = Object.keys(AZ);
+  const AZF = [["all", "All"], ["todo", "Not set"], ...AZK.map(k => [k, AZ[k][0]]), ["differs", "Amazon differs"], ["both", "FBA + FBM"]];
+  const AZCH = [["", "Any fulfillment"], ["fba", "FBA"], ["fbm", "FBM"], ["both", "FBA and FBM"], ["none", "Neither"]];
+  const AZSORT = { sold: (a) => -a.s365, s90: (a) => -a.s90, stock: (a) => -a.stock, name: (a) => a.title.toLowerCase(), last: (a) => -(a.last ? Date.parse(a.last) : 0), vendor: (a) => (a.vendor + " " + a.title).toLowerCase() };
+  Object.assign(S, { az: null, azErr: null, azf: "all", azch: "", azsort: "sold", azsel: new Set(), azopen: new Set() });
+  const azSt = (a) => a.status || a.sug;                                    // what it is: set, else suggested
+  const azFba = (a) => a.fba != null ? a.fba : a.sfba, azFbm = (a) => a.fbm != null ? a.fbm : a.sfbm;
+  const azDiff = (a) => !!a.status && a.status !== a.sug;
+  async function loadAsins() {
+    S.azErr = null;
+    const b = (x) => x === true || x === "true" || x === "t";
+    const r = await JT.rows(["asin", "title", "skus::text", "in_listings", "amz_active", "fba_sku", "fbm_sku", "fbm_qty", "fba_available", "fba_inbound", "awd", "prep",
+      "sold30", "sold90", "sold365", "fba365", "last_sold::text", "variant_id::text", "product_id::text", "vendor", "shopify_title", "suggest", "suggest_fba", "suggest_fbm",
+      "status", "fba", "fbm", "note", "set_by", "set_at::text", "listings_file"], "from jt.amazon_asins()", true);
+    S.az = r.map(x => { const a = { asin: x[0], title: x[1] || "", skus: (() => { try { return JSON.parse(x[2] || "[]"); } catch (_) { return []; } })(),
+      listed: b(x[3]), amzAct: b(x[4]), fbaSku: b(x[5]), fbmSku: b(x[6]), fbmQty: +x[7] || 0, fba: null, fbm: null,
+      avail: +x[8] || 0, inbound: +x[9] || 0, awd: +x[10] || 0, prep: +x[11] || 0, s30: +x[12] || 0, s90: +x[13] || 0, s365: +x[14] || 0, f365: +x[15] || 0, last: x[16] || "",
+      vid: x[17] || "", pid: x[18] || "", vendor: x[19] || "", stitle: x[20] || "", sug: x[21] || "", sfba: b(x[22]), sfbm: b(x[23]),
+      status: x[24] || "", note: x[27] || "", by: x[28] || "", at: x[29] || "", file: x[30] || "" };
+      a.fba = x[25] == null || x[25] === "" ? null : b(x[25]); a.fbm = x[26] == null || x[26] === "" ? null : b(x[26]);
+      a.stock = a.avail + a.inbound + a.awd + a.prep; return a; });
+  }
+  const azChOk = (a, k = S.azch) => { const f = azFba(a), m = azFbm(a);
+    return !k ? true : k === "fba" ? f : k === "fbm" ? m : k === "both" ? f && m : !f && !m; };
+  const azFOk = (a, f) => f === "all" ? true : f === "todo" ? !a.status : f === "differs" ? azDiff(a) : f === "both" ? azFba(a) && azFbm(a) : azSt(a) === f;
+  function azShown() {
+    const q = S.q.trim().toLowerCase(), k = AZSORT[S.azsort] || AZSORT.sold;
+    return (S.az || []).filter(a => azFOk(a, S.azf) && azChOk(a) && (!S.vendor || a.vendor === S.vendor)
+      && (!q || (a.asin + " " + a.title + " " + a.vendor + " " + a.stitle + " " + a.skus.map(s => s.sku).join(" ")).toLowerCase().includes(q)))
+      .sort((x, y) => { const p = k(x), r = k(y); return p < r ? -1 : p > r ? 1 : x.title.localeCompare(y.title); });
+  }
+  const azPill = (k, extra) => AZ[k] ? `<span class="pill ${AZ[k][1]}" title="${esc(AZ[k][2])}${extra ? " · " + esc(extra) : ""}">${AZ[k][0]}</span>` : "";
+  const azStCell = (a) => {
+    if (a.status) return `${azPill(a.status, [a.note, a.by && "set by " + a.by, a.at && a.at.slice(0, 10)].filter(Boolean).join(" · "))} <button class="linkbtn small" data-az-st="${esc(a.asin)}:" title="Back to Amazon's suggestion">×</button>${azDiff(a) ? `<div class="meta"><span class="pill warn" title="Worked out from Amazon's listings and stock today">Amazon: ${esc(AZ[a.sug] ? AZ[a.sug][0] : a.sug)}</span></div>` : ""}`;
+    return `<span class="ap-todo" title="Not set yet — the highlighted one is what Amazon's data suggests">Not set</span><div class="ap-quick az-quick">${AZK.map(k => `<button class="mini ${k === a.sug ? "sug" : ""}" data-az-st="${esc(a.asin)}:${k}" title="${k === a.sug ? "Suggested · " : ""}${esc(AZ[k][2])}">${AZ[k][0].replace("Inactive – ", "Inact. – ").replace("Closed / deleted", "Closed")}</button>`).join("")}</div>`;
+  };
+  // FBA / FBM: two switches; an outlined one is Amazon's suggestion (not set yet) — clicking sets it
+  const azTog = (a, ch) => { const set = a[ch] != null, on = ch === "fba" ? azFba(a) : azFbm(a);
+    return `<button type="button" class="az-tog ${on ? "on" : ""} ${set ? "" : "auto"}" data-az-ch="${esc(a.asin)}:${ch}" aria-pressed="${on}" title="${ch.toUpperCase()} ${on ? "on" : "off"}${set ? "" : " (suggested from Amazon — click to set)"}">${ch.toUpperCase()}</button>`; };
+  const azChCell = (a) => `<span class="az-togs">${azTog(a, "fba")}${azTog(a, "fbm")}${a.fba != null || a.fbm != null ? ` <button class="linkbtn small" data-az-chclr="${esc(a.asin)}" title="Back to Amazon's suggestion">×</button>` : ""}</span>${azFba(a) && azFbm(a) && a.avail + a.inbound + a.awd > 0 ? '<div class="meta"><span class="pill warn" title="Stocked at FBA — we don\'t also sell it FBM">FBA stock + FBM</span></div>' : ""}`;
+  const azAmz = (a) => {
+    if (!a.listed) return '<span class="pill pos" title="Not in Amazon\'s listings report any more">not listed</span>';
+    const by = (ch) => { const s = a.skus.filter(x => x.ch === ch); if (!s.length) return ""; const act = s.filter(x => x.st === "Active").length;
+      return `<span class="pill ${act ? "ok" : "pos"}" title="${esc(s.map(x => `${x.sku} · ${x.st}${ch === "FBM" && x.qty != null ? " · qty " + x.qty : ""}`).join("\n"))}">${ch} ${act ? "active" : (s[0].st || "inactive").toLowerCase()}${s.length > 1 ? ` ×${s.length}` : ""}</span>`; };
+    return [by("FBA"), by("FBM")].filter(Boolean).join(" ");
+  };
+  const azStock = (a) => a.stock ? `<span title="FBA ${n0(a.avail)} · inbound ${n0(a.inbound)} · AWD ${n0(a.awd)} · prep center ${n0(a.prep)}">${n0(a.stock)}</span>` : '<span class="dim">0</span>';
+  const azWhere = (a) => [["FBA", a.avail], ["Inbound", a.inbound], ["AWD", a.awd], ["Prep", a.prep], ["FBM qty", a.fbmQty]].filter(x => x[1]).map(x => `${x[0]} ${n0(x[1])}`).join(" · ");
+  function renderAsins() {
+    const st = $("ap-status");
+    if (S.azErr) { st.innerHTML = `<span class="neg">Couldn't load the ASINs: ${esc(JT.message(S.azErr))}</span>`; $("ap-table").innerHTML = ""; return; }
+    if (!S.az && !S.azErr && !S.azLoading) { S.azLoading = true; loadAsins().catch(e => { S.azErr = e; }).finally(() => { S.azLoading = false; render(); }); }
+    if (!S.az) { st.textContent = "Loading Amazon listings, stock and sales…"; $("ap-table").innerHTML = ""; $("ap-kpis").innerHTML = ""; $("ap-bulk").innerHTML = ""; return; }
+    const all = S.az, cnt = (f) => all.filter(a => azFOk(a, f)).length, set = all.filter(a => a.status).length;
+    const K = [["todo", "Set", `${n0(set)} <small>of ${n0(all.length)}</small>`, `${n0(all.length - set)} ASIN${all.length - set === 1 ? "" : "s"} still to set`],
+      ...AZK.map(k => [k, AZ[k][0], n0(cnt(k)), `${n0(all.filter(a => a.status === k).length)} set · ${n0(all.filter(a => !a.status && a.sug === k).length)} suggested`]),
+      ["differs", "Amazon differs", n0(cnt("differs")), "set here, Amazon's data says otherwise"],
+      ["both", "FBA + FBM", n0(cnt("both")), `${n0(all.filter(a => azFba(a) && azFbm(a) && a.avail + a.inbound + a.awd > 0).length)} with FBA stock`]];
+    $("ap-kpis").innerHTML = K.map(([f, l, v, s]) => `<div class="kpi ${S.azf === f ? "on" : ""}"><button class="kpi-go" type="button" data-az-f="${f}" aria-pressed="${S.azf === f}" title="${S.azf === f ? "Show all" : "Show these below"}"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${s}</span></button></div>`).join("");
+    const vs = [...new Set(all.map(a => a.vendor).filter(Boolean))].sort();
+    $("ap-vendor").innerHTML = `<option value="">All vendors</option>` + vs.map(v => `<option ${v === S.vendor ? "selected" : ""}>${esc(v)}</option>`).join("");
+    $("ap-type").innerHTML = AZCH.map(([k, n]) => `<option value="${k}" ${S.azch === k ? "selected" : ""}>${n}${k ? ` (${n0(all.filter(a => azFOk(a, S.azf) && azChOk(a, k)).length)})` : ""}</option>`).join("");
+    const list = azShown(), page = list.slice(0, S.limit);
+    const file = (all.find(a => a.file) || {}).file || "";
+    st.textContent = `${n0(list.length)} ASIN${list.length === 1 ? "" : "s"}${list.length > page.length ? ` · showing ${n0(page.length)}` : ""}${file ? ` · from ${file}` : ""}`;
+    const nSel = S.azsel.size;
+    $("ap-bulk").innerHTML = nSel ? `<b>${n0(nSel)}</b> selected · Status: ${AZK.map(k => `<button class="btn sm" data-az-bulk="st:${k}" ${S.busy ? "disabled" : ""}>${AZ[k][0]}</button>`).join("")} <button class="linkbtn small" data-az-bulk="st:" title="Back to Amazon's suggestion">clear</button>
+      <span class="ap-sep">·</span> FBA <button class="btn sm" data-az-bulk="fba:true">on</button><button class="btn sm" data-az-bulk="fba:false">off</button>
+      <span class="ap-sep">·</span> FBM <button class="btn sm" data-az-bulk="fbm:true">on</button><button class="btn sm" data-az-bulk="fbm:false">off</button>
+      <span class="ap-sep">·</span> <button class="btn sm primary" data-az-bulk="sug" ${S.busy ? "disabled" : ""} title="Each one gets Amazon's suggestion for status, FBA and FBM">Use suggestions</button>
+      <input id="az-note" class="inp sm" placeholder="Note (optional)" style="width:160px"> <button class="linkbtn small" data-az-bulk="none">Clear selection</button>`
+      : `<span class="muted small">Set each ASIN's status and FBA / FBM on its row (outlined = Amazon's suggestion, not set yet), or tick several to set them together. Seller Sage only — nothing is changed on Amazon.</span>`;
+    const th = (k, l, left) => `<th class="${left ? "l" : ""} sortable" data-az-sort="${k}" aria-sort="${S.azsort === k ? "descending" : "none"}">${l}${S.azsort === k ? " ↓" : ""}</th>`;
+    const allOn = page.length && page.every(a => S.azsel.has(a.asin));
+    const seg = `<tr class="ap-useg"><td colspan="11" class="l"><span class="seg sm">${AZF.map(([k, n]) => `<button type="button" data-az-f="${k}" aria-pressed="${S.azf === k}">${n} <span class="cnt">${n0(cnt(k))}</span></button>`).join("")}</span></td></tr>`;
+    $("ap-table").innerHTML = `<thead>${seg}<tr><th><input type="checkbox" data-az-all ${allOn ? "checked" : ""} aria-label="Select all shown"></th><th></th>${th("name", "ASIN", 1)}<th class="l">Status</th><th class="l">Fulfillment</th><th class="l">On Amazon now</th>${th("vendor", "Vendor · Shopify", 1)}${th("stock", "Stock")}<th class="l">Where</th>${th("sold", "Sold 12 mo")}${th("last", "Last sold", 1)}</tr></thead><tbody>${
+      page.map(a => { const o = S.azopen.has(a.asin);
+        return `<tr class="po-row ap-p ${o ? "on" : ""}" data-az-open="${esc(a.asin)}">
+          <td><input type="checkbox" data-az-sel="${esc(a.asin)}" ${S.azsel.has(a.asin) ? "checked" : ""} aria-label="Select ${esc(a.asin)}"></td>
+          <td class="rl-car" aria-hidden="true">${a.skus.length ? (o ? "▾" : "▸") : ""}</td>
+          <td class="l"><a class="olink" href="https://www.amazon.com/dp/${esc(a.asin)}" target="_blank" rel="noopener">${esc(a.title || a.asin)}</a>
+            <div class="meta"><span class="mono">${esc(a.asin)}</span> · ${n0(a.skus.length)} SKU${a.skus.length === 1 ? "" : "s"} · <a class="olink" href="https://sellercentral.amazon.com/myinventory/inventory?searchField=all&searchTerm=${esc(a.asin)}" target="_blank" rel="noopener">Seller Central</a></div></td>
+          <td class="l ap-stc">${azStCell(a)}</td>
+          <td class="l">${azChCell(a)}</td>
+          <td class="l small">${azAmz(a)}</td>
+          <td class="l small">${esc(a.vendor || "—")}<div class="meta">${a.pid ? `<a class="olink" href="${ADMIN}/products/${esc(a.pid)}${a.vid ? "/variants/" + esc(a.vid) : ""}" target="_blank" rel="noopener">${esc(a.stitle || "Shopify")}</a>` : '<span class="dim">no Shopify product</span>'}</div></td>
+          <td class="num">${azStock(a)}</td><td class="l small muted">${azWhere(a)}</td>
+          <td class="num"><span title="30 days ${n0(a.s30)} · 90 days ${n0(a.s90)} · FBA ${n0(a.f365)} of 12 mo">${a.s365 ? n0(a.s365) : '<span class="dim">0</span>'}</span>${a.s90 ? `<div class="meta">${n0(a.s90)} in 90 d</div>` : ""}</td>
+          <td class="l small">${a.last ? esc(sd(a.last)) : '<span class="dim">—</span>'}</td></tr>
+          ${o ? a.skus.map(s => `<tr class="ap-v"><td></td><td></td><td class="l"><span class="mono">${esc(s.sku)}</span></td>
+            <td class="l"><span class="pill ${s.st === "Active" ? "ok" : "pos"}">${esc(s.st || "—")}</span></td><td class="l"><span class="pill ${s.ch === "FBA" ? "other" : "pos"}">${esc(s.ch)}</span></td>
+            <td class="l small muted">${s.price != null ? "$" + Number(s.price).toFixed(2) : ""}${s.ch === "FBM" && s.qty != null ? ` · qty ${n0(s.qty)}` : ""}</td><td class="l small muted" colspan="3">${s.opened ? "listed " + esc(sd(String(s.opened).slice(0, 10))) : ""}</td><td></td><td></td></tr>`).join("") : ""}`;
+      }).join("") || `<tr><td colspan="11" class="l muted">${all.length ? "Nothing matches." : "No ASINs yet — Amazon's listings report hasn't been read."}</td></tr>`}</tbody>`;
+    $("ap-more").hidden = list.length <= page.length;
+  }
+  async function azSave(groups) {   // groups: [{asins, ...fields}]
+    S.busy = true; render();
+    const b = $("ap-note2");
+    try {
+      const W = window.JTWeb || null;
+      for (const g of groups) {
+        if (!g.asins.length) continue;
+        if (W) await W.write("jt_asin_master", { p: g });
+        else await JT.run(`select jt.asin_master_set(${JT.q(JSON.stringify({ ...g, by: "Claude dashboard" }))}::jsonb)::text as r`, true);
+        const now = new Date().toISOString();
+        for (const a of S.az) if (g.asins.includes(a.asin)) {
+          if ("status" in g) a.status = g.status || ""; if ("fba" in g) a.fba = g.fba; if ("fbm" in g) a.fbm = g.fbm; if ("note" in g) a.note = g.note; a.at = now;
+        }
+      }
+      b.hidden = true;
+    } catch (e) { b.hidden = false; b.className = "note bad"; b.textContent = "Couldn't save that: " + JT.message(e); }
+    S.busy = false; render();
+  }
+  async function azRefresh() { if (S.azLoading) return; S.az = null; S.azLoading = true; render(); try { await loadAsins(); } catch (e) { S.azErr = e; } S.azLoading = false; render(); }
+  $("tab-active").addEventListener("click", (e) => {
+    if (S.view !== "asins") return;
+    const f = e.target.closest("[data-az-f]"); if (f) { const k = f.dataset.azF; S.azf = S.azf === k && f.classList.contains("kpi-go") ? "all" : k; S.azsel.clear(); S.limit = 150; render(); return; }
+    const so = e.target.closest("[data-az-sort]"); if (so) { S.azsort = so.dataset.azSort; render(); return; }
+    const q1 = e.target.closest("[data-az-st]"); if (q1) { const [asin, k] = q1.dataset.azSt.split(":"); azSave([{ asins: [asin], status: k }]); return; }
+    const c1 = e.target.closest("[data-az-ch]"); if (c1) { const [asin, ch] = c1.dataset.azCh.split(":"), a = S.az.find(x => x.asin === asin); if (!a) return;
+      azSave([{ asins: [asin], [ch]: !(ch === "fba" ? azFba(a) : azFbm(a)) }]); return; }
+    const cc = e.target.closest("[data-az-chclr]"); if (cc) { azSave([{ asins: [cc.dataset.azChclr], fba: null, fbm: null }]); return; }
+    const bk = e.target.closest("[data-az-bulk]");
+    if (bk) { const v = bk.dataset.azBulk, asins = [...S.azsel], note = $("az-note") ? $("az-note").value.trim() : "", withNote = (g) => note ? { ...g, note } : g;
+      if (v === "none") { S.azsel.clear(); render(); return; }
+      if (v === "sug") { const by = new Map(); for (const a of S.az.filter(x => S.azsel.has(x.asin))) { const k = `${a.sug}|${a.sfba}|${a.sfbm}`; if (!by.has(k)) by.set(k, { status: a.sug, fba: a.sfba, fbm: a.sfbm, asins: [] }); by.get(k).asins.push(a.asin); }
+        azSave([...by.values()].map(withNote)).then(() => { S.azsel.clear(); render(); }); return; }
+      const [key, val] = v.split(":");
+      azSave([withNote(key === "st" ? { asins, status: val } : { asins, [key]: val === "true" })]).then(() => { S.azsel.clear(); render(); }); return; }
+    if (e.target.matches("[data-az-all]")) { for (const a of azShown().slice(0, S.limit)) e.target.checked ? S.azsel.add(a.asin) : S.azsel.delete(a.asin); render(); return; }
+    const sel = e.target.closest("[data-az-sel]"); if (sel) { sel.checked ? S.azsel.add(sel.dataset.azSel) : S.azsel.delete(sel.dataset.azSel); render(); return; }
+    if (e.target.closest("#ap-refresh")) { azRefresh(); e.stopImmediatePropagation(); return; }
+    const row = e.target.closest("[data-az-open]");
+    if (row && !e.target.closest("a, button, input")) { const id = row.dataset.azOpen; S.azopen.has(id) ? S.azopen.delete(id) : S.azopen.add(id); render(); }
+  }, true);
+
   async function refresh() {
     S.prods = S.prods || null; render();
     try { await load(); } catch (e) { S.err = e; }
@@ -313,7 +466,7 @@
   });
   $("ap-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(() => { S.limit = 150; render(); }, 150); });
   $("ap-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; S.limit = 150; render(); });
-  $("ap-type").addEventListener("change", (e) => { S.type = e.target.value; S.limit = 150; render(); });
+  $("ap-type").addEventListener("change", (e) => { if (S.view === "asins") S.azch = e.target.value; else S.type = e.target.value; S.limit = 150; render(); });
   $("ap-stock").addEventListener("change", (e) => { S.sf = e.target.value; S.limit = 150; render(); });
   $("ap-miss").addEventListener("change", (e) => { S.mf = e.target.value; S.limit = 150; render(); });
   // the list to fill in (one row per size / color that's missing something), e.g. to work through in Shopify's bulk editor
