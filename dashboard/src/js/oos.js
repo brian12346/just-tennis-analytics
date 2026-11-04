@@ -54,14 +54,15 @@
            where (jt.shopify_qty_now(v.variant_id) <= 0 or m.status = 'pending' or so.rc)
              and coalesce(a.status, '') <> 'done'
              and not exists (select 1 from jt.prep_list i where i.variant_id = v.variant_id and i.dest = 'shopify' and i.closed_at is null)`, refresh)
-    .catch(() => window.JT.rows(MAIN_COLS, `from (select distinct on (variant_id) variant_id, day, start_units, sold, false as rc from jt.stockouts where day >= current_date - 7 order by variant_id, day desc) so
+    .then(r => { S.hasRecount = true; return r; })
+    .catch(() => { S.hasRecount = false; return window.JT.rows(MAIN_COLS, `from (select distinct on (variant_id) variant_id, day, start_units, sold, false as rc from jt.stockouts where day >= current_date - 7 order by variant_id, day desc) so
            join jt.variants v on v.variant_id = so.variant_id and v.removed_at is null and coalesce(v.status, '') <> 'ARCHIVED'
            left join lateral (select at, counted, by, move_id from jt.stock_counts k where k.variant_id = v.variant_id order by at desc limit 1) c on true
            left join jt.shopify_stock_moves m on m.id = c.move_id
            left join lateral (select status, error, created_at from jt.product_archives x where x.product_id = v.product_id order by created_at desc limit 1) a on true
            where (jt.shopify_qty_now(v.variant_id) <= 0 or m.status = 'pending')
              and coalesce(a.status, '') <> 'done'
-             and not exists (select 1 from jt.prep_list i where i.variant_id = v.variant_id and i.dest = 'shopify' and i.closed_at is null)`, refresh));
+             and not exists (select 1 from jt.prep_list i where i.variant_id = v.variant_id and i.dest = 'shopify' and i.closed_at is null)`, refresh); });
   async function load(refresh) {
     S.loading = true; S.err = null; render();
     try {
@@ -169,7 +170,7 @@
         <td class="l">${esc(i.vendor)}</td><td class="l">${i.day ? esc(day(i.day)) : '<span class="dim">—</span>'}</td>
         <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
         <td class="${i.now > 0 ? "okt" : "dim"}">${n0(i.now)}</td>
-        <td class="oos-act"><button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button></td></tr>`).join("")}</tbody></table></div>`;
+        <td class="oos-act">${S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : `<button class="btn sm" type="button" data-oos-unignore="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Back on the list above while it's still within 7 days of going to 0">Un-ignore</button>`}</td></tr>`).join("")}</tbody></table></div>`;
   }
   async function toCount(vid) {
     S.busy = "c:" + vid; render();
@@ -199,7 +200,7 @@
             <td>${m2(i.cost)}</td>
             <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
             <td class="l">${po}</td>
-            <td class="oos-act"><span class="oos-btns">${!i.oid ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Take it off To order and back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : ""}<button class="btn sm" type="button" data-oos-an="${esc(i.id)}" title="Sales, days on hand and PAR level">Analyze</button>${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
+            <td class="oos-act"><span class="oos-btns">${!i.oid && S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Take it off To order and back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : ""}<button class="btn sm" type="button" data-oos-an="${esc(i.id)}" title="Sales, days on hand and PAR level">Analyze</button>${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
     }).join("");
   }
 
