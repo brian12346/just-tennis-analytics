@@ -1705,10 +1705,32 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .oos-big{font-size:20px;color:var(--sales)}
 .oos-an-acts{align-items:center;gap:10px}
 .oos-an-pack{align-items:center;gap:10px;flex-wrap:wrap}
-/* Active products › Amazon ASINs: FBA / FBM switches (dashed = Amazon's suggestion, not set yet) */
+/* Active products › Amazon ASINs: one block per ASIN (tinted row), its seller SKUs under it */
+.ap-t tbody.az-g{border-top:2px solid var(--line)}
+.ap-t tr.az-a td{background:var(--line-soft);padding-top:9px;padding-bottom:9px}
+.ap-t tr.az-a .az-t{font-weight:600}
+.ap-t tr.az-s td{padding-top:5px;padding-bottom:5px}
+.ap-t tr.az-s td:nth-child(2){padding-left:26px}
+.ap-t td.az-ck,.ap-t th.az-ck{width:28px}
+.meta-i{font-size:11px;color:var(--ink-muted);margin-left:6px}
+.pos-t{color:var(--good);font-weight:600}
+.az-bulk{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.az-bulk #az-bst{min-width:150px}
+/* FBA / FBM: ASIN switches (two, independent) and the SKU's one-of-two switch; dashed = Amazon's suggestion, not set */
 .az-togs{display:inline-flex;gap:4px;align-items:center;white-space:nowrap}
 .az-tog{border:1px solid var(--line);background:var(--panel);color:var(--ink-muted);border-radius:var(--radius-pill);padding:2px 10px;font-size:12px;font-weight:600;cursor:pointer;line-height:18px}
 .az-tog.on{background:var(--primary);border-color:var(--primary);color:#fff}
 .az-tog.auto{border-style:dashed}
 .az-tog.on.auto{background:transparent;color:var(--primary)}
-.ap-quick.az-quick{display:flex;flex-wrap:wrap;margin:4px 0 0}
+.az-sw{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius-pill);overflow:hidden;white-space:nowrap}
+.az-sw button{border:0;background:var(--panel);color:var(--ink-muted);font-size:11px;font-weight:600;padding:2px 9px;cursor:pointer;line-height:18px}
+.az-sw button[aria-pressed="true"]{background:var(--primary);color:#fff}
+.az-sw.auto{border-style:dashed}
+.az-sw.auto button[aria-pressed="true"]{background:var(--line-soft);color:var(--primary);outline:1px dashed var(--primary);outline-offset:-3px;border-radius:var(--radius-pill)}
+/* status select: dashed = suggestion; colored once set */
+.az-sel{font-size:12px;border:1px solid var(--line);border-radius:6px;padding:2px 4px;background:var(--panel);color:var(--ink);max-width:200px}
+.az-sel.auto{border-style:dashed;color:var(--ink-muted)}
+.az-sel.s-ok{background:var(--sales-soft);color:var(--sales);border-color:transparent;font-weight:600}
+.az-sel.s-warn,.az-sel.s-miss{background:var(--warn-bg);color:var(--warn);border-color:transparent;font-weight:600}
+.az-sel.s-pos{background:var(--line);color:var(--muted);border-color:transparent;font-weight:600}
+.az-diff{font-size:11px;color:var(--warn);margin-top:2px;font-weight:600}
