@@ -32,24 +32,41 @@
     return out[0] && out[0].r;
   }
 
-  async function load(refresh) {
-    S.loading = true; S.err = null; render();
-    try {
-      const [r, l, g] = await Promise.all([
-        window.JT.rows(["v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "v.product_type",
+  // the out-of-stock list: went to 0 in the last 7 days, plus what was put back To count (migration 204; the page works
+  // without it until it's applied)
+  const MAIN_COLS = ["v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "v.product_type",
           "jt.shopify_qty_now(v.variant_id)::text", "so.day::text", "so.start_units::text", "so.sold::text",
           "c.at::text", "c.counted::text", "c.by", "m.status", "m.error", "(select max(seen_at) from jt.stockouts)::text",
           "(select coalesce(sum(greatest(jt.shopify_qty_now(o.variant_id), 0)), 0) from jt.variants o where o.product_id = v.product_id and o.variant_id <> v.variant_id and o.removed_at is null)::text",
           "(select count(*) from jt.variants o where o.product_id = v.product_id and o.removed_at is null)::text",
-          "a.status", "a.error", "a.created_at::text"],
-          `from (select distinct on (variant_id) variant_id, day, start_units, sold from jt.stockouts where day >= current_date - 7 order by variant_id, day desc) so
+          "a.status", "a.error", "a.created_at::text", "so.rc::text"];
+  const mainRows = (refresh) => window.JT.rows(MAIN_COLS, `from (select a.variant_id, a.day, a.start_units, a.sold, false as rc
+                   from (select distinct on (variant_id) variant_id, day, start_units, sold from jt.stockouts where day >= current_date - 7 order by variant_id, day desc) a
+                   where not exists (select 1 from jt.oos_recount r where r.variant_id = a.variant_id)
+                 union all
+                 select r.variant_id, s.day, coalesce(s.start_units, 0), coalesce(s.sold, 0), true from jt.oos_recount r
+                   left join lateral (select day, start_units, sold from jt.stockouts s where s.variant_id = r.variant_id order by day desc limit 1) s on true
+                   where not exists (select 1 from jt.stock_counts k where k.variant_id = r.variant_id and k.at > r.at and k.counted > 0)) so
+           join jt.variants v on v.variant_id = so.variant_id and v.removed_at is null and coalesce(v.status, '') <> 'ARCHIVED'
+           left join lateral (select at, counted, by, move_id from jt.stock_counts k where k.variant_id = v.variant_id order by at desc limit 1) c on true
+           left join jt.shopify_stock_moves m on m.id = c.move_id
+           left join lateral (select status, error, created_at from jt.product_archives x where x.product_id = v.product_id order by created_at desc limit 1) a on true
+           where (jt.shopify_qty_now(v.variant_id) <= 0 or m.status = 'pending' or so.rc)
+             and coalesce(a.status, '') <> 'done'
+             and not exists (select 1 from jt.prep_list i where i.variant_id = v.variant_id and i.dest = 'shopify' and i.closed_at is null)`, refresh)
+    .catch(() => window.JT.rows(MAIN_COLS, `from (select distinct on (variant_id) variant_id, day, start_units, sold, false as rc from jt.stockouts where day >= current_date - 7 order by variant_id, day desc) so
            join jt.variants v on v.variant_id = so.variant_id and v.removed_at is null and coalesce(v.status, '') <> 'ARCHIVED'
            left join lateral (select at, counted, by, move_id from jt.stock_counts k where k.variant_id = v.variant_id order by at desc limit 1) c on true
            left join jt.shopify_stock_moves m on m.id = c.move_id
            left join lateral (select status, error, created_at from jt.product_archives x where x.product_id = v.product_id order by created_at desc limit 1) a on true
            where (jt.shopify_qty_now(v.variant_id) <= 0 or m.status = 'pending')
              and coalesce(a.status, '') <> 'done'
-             and not exists (select 1 from jt.prep_list i where i.variant_id = v.variant_id and i.dest = 'shopify' and i.closed_at is null)`, refresh),
+             and not exists (select 1 from jt.prep_list i where i.variant_id = v.variant_id and i.dest = 'shopify' and i.closed_at is null)`, refresh));
+  async function load(refresh) {
+    S.loading = true; S.err = null; render();
+    try {
+      const [r, l, g] = await Promise.all([
+        mainRows(refresh),
         window.JT.rows(["i.id::text", "v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor",
           "i.qty::text", "i.added_at::text", "i.added_by", "i.order_id::text", "o.status", "o.po_no", "jt.shopify_qty_now(v.variant_id)::text", "v.unit_cost::text", "i.source",
           "pl.par::text", "pl.target_days::text",
@@ -68,7 +85,7 @@
       S.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2], vt: x[3] && x[3] !== "Default Title" ? x[3] : "", sku: x[4] || "", vendor: x[5] || "", type: x[6] || "",
         qty: +x[7] || 0, day: x[8], start: +x[9] || 0, sold: +x[10] || 0, how: howOf(+x[9] || 0, +x[10] || 0),
         countAt: x[11], counted: x[12] == null ? null : +x[12], countBy: x[13] || "", moveSt: x[14] || "", moveErr: x[15] || "",
-        others: +x[17] || 0, nvar: +x[18] || 1, arSt: x[19] || "", arErr: x[20] || "", arAt: x[21] }));
+        others: +x[17] || 0, nvar: +x[18] || 1, arSt: x[19] || "", arErr: x[20] || "", arAt: x[21], toCount: x[22] === "true" }));
       S.seen = r.length ? r[0][16] : null;
       S.ign = g ? g.map(x => ({ vid: x[0], pid: x[1], title: x[2], vt: x[3] && x[3] !== "Default Title" ? x[3] : "", sku: x[4] || "", vendor: x[5] || "", at: x[6], by: x[7] || "", note: x[8] || "",
         now: +x[9] || 0, day: x[10] || "", status: x[11] || "" })) : null;
@@ -84,7 +101,7 @@
 
   function filtered() {
     const q = S.q.trim().toLowerCase();
-    let L = (S.rows || []).filter(r => (S.how === "all" || (S.how === "counted" ? !!r.countAt : S.how === "notcounted" ? !r.countAt : r.how === S.how || (S.how === "order" && r.how === "both")))
+    let L = (S.rows || []).filter(r => (S.how === "all" || (S.how === "counted" ? !!r.countAt : S.how === "notcounted" ? (!r.countAt || r.toCount) : r.how === S.how || (S.how === "order" && r.how === "both")))
       && (S.vendor === "all" || r.vendor === S.vendor)
       && (!q || (r.title + " " + r.vt + " " + r.sku + " " + r.vendor).toLowerCase().includes(q)));
     const key = { day: r => r.day || "", product: r => (r.title + r.vt).toLowerCase(), vendor: r => r.vendor.toLowerCase(), count: r => r.countAt || "" }[S.sort];
@@ -117,7 +134,7 @@
       k("Out of stock", n0(all.length), "went to 0 in the last 7 days, not decided yet", "all"),
       k("Sold out", n0(all.filter(r => r.how !== "adjust").length), "the last units went on orders", "order"),
       k("Adjusted to 0", n0(all.filter(r => r.how === "adjust").length), "an inventory adjustment, not a sale", "adjust", all.some(r => r.how === "adjust") ? "warnk" : ""),
-      k("Not counted yet", n0(all.filter(r => !r.countAt).length), "no physical count since", "notcounted"),
+      k("Not counted yet", n0(all.filter(r => !r.countAt || r.toCount).length), all.some(r => r.toCount) ? `${n0(all.filter(r => r.toCount).length)} put back To count` : "no physical count since", "notcounted"),
       k("To order", n0((S.list || []).length), (S.list || []).filter(i => !i.oid).length ? `${n0(S.list.filter(i => !i.oid).length)} not on a PO yet` : "below", "toorder"),
     ].join("");
     const vendors = [...new Set(all.map(r => r.vendor).filter(Boolean))].sort();
@@ -133,8 +150,8 @@
       return `<tr>
         <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>${r.vt ? `<div class="small">${esc(r.vt)}</div>` : ""}<div class="dim small">${esc(r.sku || "no SKU")}</div>${r.arSt === "failed" ? `<div class="neg small">Couldn't archive: ${esc(r.arErr)}</div>` : ""}</td>
         <td class="l">${esc(r.vendor)}</td>
-        <td class="l">${esc(day(r.day))}<div class="dim small">had ${n0(r.start)}</div></td>
-        <td class="l"><span class="pill ${r.how === "adjust" ? "warn" : "other"}" title="${n0(r.sold)} of ${n0(r.start)} sold that day">${HOW[r.how]}</span></td>
+        <td class="l">${r.day ? `${esc(day(r.day))}<div class="dim small">had ${n0(r.start)}</div>` : '<span class="dim">—</span>'}</td>
+        <td class="l">${r.toCount ? `<span class="pill manual" title="Put back on the list to be counted">To count</span> ` : ""}${r.day ? `<span class="pill ${r.how === "adjust" ? "warn" : "other"}" title="${n0(r.sold)} of ${n0(r.start)} sold that day">${HOW[r.how]}</span>` : ""}</td>
         <td class="l">${last}</td>
         <td class="oos-act">${actCell(r)}</td></tr>${confirmRow(r)}`; }).join("")}</tbody></table></div>`
       : `<div class="muted small" style="padding:14px">${all.length ? "Nothing matches." : "Nothing out of stock waiting on a decision."}</div>`;
@@ -146,13 +163,18 @@
     const sec = $("oos-ign-sec"), L = S.ign; if (!sec) return;
     sec.hidden = !L; if (!L) return;
     $("oos-ign-sum").textContent = L.length ? `${n0(L.length)} product${L.length === 1 ? "" : "s"}` : "";
-    $("oos-ign").innerHTML = !L.length ? `<div class="muted small" style="padding:14px">Nothing ignored. <b>Ignore</b> takes a product off the out-of-stock list and keeps it here; it comes back if it goes to 0 again.</div>`
+    $("oos-ign").innerHTML = !L.length ? `<div class="muted small" style="padding:14px">Nothing ignored. <b>Ignore</b> takes a product off the out-of-stock list and keeps it here; <b>To count</b> puts it back on the list above.</div>`
       : `<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th><th></th></tr></thead><tbody>${L.map(i => `<tr>
         <td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}${i.status && i.status !== "ACTIVE" ? ` · ${esc(i.status.toLowerCase())}` : ""}</div></td>
         <td class="l">${esc(i.vendor)}</td><td class="l">${i.day ? esc(day(i.day)) : '<span class="dim">—</span>'}</td>
         <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
         <td class="${i.now > 0 ? "okt" : "dim"}">${n0(i.now)}</td>
-        <td class="oos-act"><button class="btn sm" type="button" data-oos-unignore="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the out-of-stock list (while it's still at 0)">${S.busy === "g:" + i.vid ? "…" : "Un-ignore"}</button></td></tr>`).join("")}</tbody></table></div>`;
+        <td class="oos-act"><button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button></td></tr>`).join("")}</tbody></table></div>`;
+  }
+  async function toCount(vid) {
+    S.busy = "c:" + vid; render();
+    try { await call("jt_oos_to_count", "jt.oos_to_count", { variant_id: Number(vid) }); S.busy = null; note("Back on the list above, marked <b>To count</b>."); await load(true); }
+    catch (e) { S.busy = null; render(); note(`<span class="neg">Couldn't put it back: ${esc(msg(e))}</span>`); }
   }
   async function ignore(vid, on) {
     S.busy = on ? vid : "g:" + vid; render();
@@ -177,7 +199,7 @@
             <td>${m2(i.cost)}</td>
             <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
             <td class="l">${po}</td>
-            <td class="oos-act"><span class="oos-btns"><button class="btn sm" type="button" data-oos-an="${esc(i.id)}" title="Sales, days on hand and PAR level">Analyze</button>${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
+            <td class="oos-act"><span class="oos-btns">${!i.oid ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Take it off To order and back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : ""}<button class="btn sm" type="button" data-oos-an="${esc(i.id)}" title="Sales, days on hand and PAR level">Analyze</button>${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
     }).join("");
   }
 
@@ -422,6 +444,7 @@
     if (b.dataset.oosAn) { analyze(b.dataset.oosAn); return; }
     if (b.dataset.oosIgnore) { ignore(b.dataset.oosIgnore, true); return; }
     if (b.dataset.oosUnignore) { ignore(b.dataset.oosUnignore, false); return; }
+    if (b.dataset.oosTocount) { toCount(b.dataset.oosTocount); return; }
     if (b.dataset.oosTopar) { orderToPar(b.dataset.oosTopar); return; }
   });
   tab.addEventListener("keydown", (e) => {
