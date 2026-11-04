@@ -88,16 +88,18 @@ def test_finances_build_a_day_like_the_transaction_report(conn):
     cur.execute("select data from jt.docs where collection = 'amzdays_api' and id = '2026-09-15'")
     d = cur.fetchone()[0]
     t = d["totals"]
-    assert (t["orders"], t["units"]) == (2, 2)
-    assert D(str(t["sales"])) == D("319.99") and D(str(t["orders_net"])) == D("241.69")
+    # Amazon.com.mx is in the totals (migration 077) and also broken out as mx_orders / mx_sales / mx_net
+    assert (t["orders"], t["units"]) == (3, 3)
+    assert D(str(t["sales"])) == D("379.99") and D(str(t["orders_net"])) == D("291.69")
+    assert (t["mx_orders"], D(str(t["mx_sales"])), D(str(t["mx_net"]))) == (1, D("60.00"), D("50.00"))
     assert D(str(t["sellfees"])) == D("-48.00") and D(str(t["fbafees"])) == D("-30.30")
     assert D(str(t["ship"])) == D("1.50") and D(str(t["promo"])) == D("-1.50")
     assert D(str(t["refunds_net"])) == D("-8.79") and D(str(t["refund_sales"])) == D("-9.99")
     assert {k: D(str(v)) for k, v in d["other"].items()} == {"fbaother": D("-154.01")}
-    assert d["skus"] == ["A", "B"] and d["orders"][0][1] == "111-1" and d["refunds"][0][2] == 0
+    assert d["skus"] == ["A", "B", "C"] and {o[1] for o in d["orders"]} == {"111-1", "113-2", "701-1"} and d["refunds"][0][2] == 0
     cur.execute("select data->'skus', data->'totals'->>'sales' from jt.docs where collection = 'amzmonths_api' and id = '2026-09'")
     skus, sales = cur.fetchone()
-    assert skus["B"][0] == 1 and D(sales) == D("319.99")
+    assert skus["B"][0] == 1 and D(sales) == D("379.99")
 
 
 def test_listings_save_chunks_and_guard(conn):

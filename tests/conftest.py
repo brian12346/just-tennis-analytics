@@ -17,11 +17,23 @@ def db_url():
     return url
 
 
+# Supabase-only schemas the migrations touch (pg_cron, pg_net, Vault, Storage), stood in for by tests/supabase_stubs.sql
+STUB_SCHEMAS = ("cron", "net", "vault", "storage", "extensions")
+STUBS = (ROOT / "tests" / "supabase_stubs.sql").read_text()
+
+
+def _reset(c):
+    c.execute("drop schema if exists jt cascade")
+    for s in STUB_SCHEMAS:
+        c.execute(f"drop schema if exists {s} cascade")
+
+
 @pytest.fixture()
 def conn(db_url, monkeypatch):
     """Fresh jt schema with all migrations applied, dropped again afterwards."""
     with psycopg.connect(db_url, autocommit=True) as c:
-        c.execute("drop schema if exists jt cascade")
+        _reset(c)
+        c.execute(STUBS)
     monkeypatch.setenv("DATABASE_URL", db_url)
     from sync import migrate
     migrate.main()
@@ -29,4 +41,4 @@ def conn(db_url, monkeypatch):
     yield c
     c.close()
     with psycopg.connect(db_url, autocommit=True) as c2:
-        c2.execute("drop schema if exists jt cascade")
+        _reset(c2)
