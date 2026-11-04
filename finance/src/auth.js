@@ -82,7 +82,7 @@
   window.FIN = { ready, sql, fn, write, rpc, download, clear: () => cache.clear() };
   // pages: #payables (default), #cash, #fba, #profit, #amz, #shop (Just Tennis's Shopify), #anr (Ace n Rally's Shopify —
   // the same page as #shop, for the other store: FIN.store says which)
-  const PAGES = ["payables", "cash", "fba", "profit", "amz", "shop", "anr"];
+  const PAGES = ["payables", "cash", "cards", "fba", "profit", "amz", "shop", "anr"];
   const MAIN = { anr: "shop" };
   window.FIN.store = "justtennis";
   function route() {

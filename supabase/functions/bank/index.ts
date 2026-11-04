@@ -1,5 +1,10 @@
 // Card and bank transactions for the finance dashboard (Finance › Transactions): Plaid in, QuickBooks out.
 // POST {action: "status"}                     -> is Plaid set up (keys in Vault), the linked banks
+// POST {action: "link_token", kind: "card"}   -> a Plaid Link token for a credit card login: Liabilities only (Finance ›
+//                                               Credit cards, migration 205) — no transactions, so no Transactions fee
+// POST {action: "exchange", kind: "card", …}  -> saves the card login, its cards, statements and due dates
+// POST {action: "liab", item_id?}             -> every card login's balances, statements, minimums and due dates
+//                                               (/liabilities/get). Daily by pg_cron (fin-card-sync).
 // POST {action: "link_token", item_id?}       -> a Plaid Link token (item_id: re-link a bank that needs signing in again)
 // POST {action: "exchange", public_token, institution?} -> Link's result: keeps the access token in Vault, saves the
 //                                               bank's accounts and pulls its transactions
@@ -242,6 +247,14 @@ async function post(c: Creds, ids: string[], by: string, force: boolean) {
   return { ok: out.every(r => r.ok), results: out, posted: out.filter(r => r.posted).length, linked: out.filter(r => r.linked).length, failed: out.filter(r => !r.ok).length };
 }
 
+// a card login: balances (incl. credit limit) and the statement, minimum, due date, last payment and APRs per card
+async function cardItem(c: Creds, item: Record<string, unknown>, token: string) {
+  const r = await plaid(c, "/liabilities/get", { access_token: token });
+  const credit = (r.liabilities && r.liabilities.credit) || [];
+  const n = await rpc("fin_card_save", { p: { item, accounts: r.accounts || [], credit } });
+  return { cards: (r.accounts || []).filter((a: any) => a.type === "credit").length, statements: Number(n) || 0 };
+}
+
 async function caller(req: Request, c: Creds): Promise<{ by: string; sched: boolean } | null> {
   const k = req.headers.get("x-jt-key");
   if (k && c.jt_fn_key && k === c.jt_fn_key) return { by: "scheduler", sched: true };
@@ -261,16 +274,17 @@ Deno.serve(async (req) => {
     const who = await caller(req, c);
     if (!who) return json({ ok: false, error: "not allowed" }, 403);
     const p = await req.json().catch(() => ({}));
-    if (who.sched && !["sync", "match", "learn"].includes(p.action)) return json({ ok: false, error: "not allowed" }, 403);
+    if (who.sched && !["sync", "match", "learn", "liab"].includes(p.action)) return json({ ok: false, error: "not allowed" }, 403);
     const plaidReady = !!(c.plaid_client_id && c.plaid_secret);
     const items = async () => await data("items");
 
     if (p.action === "status") return json({ ok: true, plaid: plaidReady, env: c.plaid_env || "production", items: (await items()).map(i => ({ item_id: i.item_id, institution: i.institution, status: i.status, error: i.error, synced_at: i.synced_at })) });
-    if (["link_token", "exchange", "sync"].includes(p.action) && !plaidReady)
+    if (["link_token", "exchange", "sync", "liab"].includes(p.action) && !plaidReady)
       return json({ ok: false, error: "Plaid isn't set up yet: add plaid_client_id, plaid_secret and plaid_env to the Supabase Vault." }, 400);
     if (p.action === "link_token") {
       const base: any = { client_name: "Just Tennis Finance", user: { client_user_id: who.by.replace(/[^a-z0-9]/gi, "_").slice(0, 60) }, country_codes: ["US"], language: "en" };
       if (p.item_id) { const tok = pc.tokens[String(p.item_id)]; if (!tok) return json({ ok: false, error: "that bank isn't linked" }, 400); base.access_token = tok; }
+      else if (p.kind === "card") { base.products = ["liabilities"]; base.account_filters = { credit: { account_subtypes: ["credit card"] } }; }
       else { base.products = ["transactions"]; base.transactions = { days_requested: 730 }; }
       const r = await plaid(c, "/link/token/create", base);
       return json({ ok: true, link_token: r.link_token, expiration: r.expiration });
@@ -279,14 +293,30 @@ Deno.serve(async (req) => {
       if (!p.public_token) return json({ ok: false, error: "public_token is required" }, 400);
       const r = await plaid(c, "/item/public_token/exchange", { public_token: String(p.public_token) });
       await rpc("fin_plaid_token_save", { item: r.item_id, tok: r.access_token });
+      if (p.kind === "card") {
+        const l = await cardItem(c, { item_id: r.item_id, institution: p.institution?.name || "", institution_id: p.institution?.institution_id || "", linked_by: who.by }, r.access_token);
+        return json({ ok: true, item_id: r.item_id, ...l });
+      }
       await rpc("fin_bank_save", { p: { item: { item_id: r.item_id, institution: p.institution?.name || "", institution_id: p.institution?.institution_id || "", linked_by: who.by } } });
       const s = await syncItem(c, { item_id: r.item_id, cursor: null }, r.access_token);
       return json({ ok: true, item_id: r.item_id, ...s });
+    }
+    if (p.action === "liab") {
+      const out: any[] = [];
+      for (const it of await items()) {
+        if (p.item_id && it.item_id !== p.item_id) continue;
+        if (!(it.products || []).includes("liabilities")) continue;
+        const tok = pc.tokens[it.item_id]; if (!tok) continue;
+        try { out.push({ item_id: it.item_id, institution: it.institution, ...(await cardItem(c, { item_id: it.item_id }, tok)) }); }
+        catch (e) { await rpc("fin_bank_item_error", { item: it.item_id, err: (e as Error).message }); out.push({ item_id: it.item_id, institution: it.institution, error: (e as Error).message, code: (e as any).code || "" }); }
+      }
+      return json({ ok: true, items: out });
     }
     if (p.action === "sync") {
       const out: any[] = [];
       for (const it of await items()) {
         if (p.item_id && it.item_id !== p.item_id) continue;
+        if (!(it.products || ["transactions"]).includes("transactions")) continue;   // card logins: Liabilities only
         const tok = pc.tokens[it.item_id]; if (!tok) continue;
         try { out.push(await syncItem(c, it, tok)); } catch (e) { out.push({ item_id: it.item_id, error: (e as Error).message }); }
       }

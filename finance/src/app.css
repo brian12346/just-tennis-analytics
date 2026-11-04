@@ -332,3 +332,11 @@ button.pill.subm.sb{border:0;cursor:pointer;font:inherit;font-size:11px}
 button.pill.subm.sb:hover{text-decoration:line-through}
 .sb-add{margin-top:4px;padding:1px 8px;border:1px dashed var(--rule);border-radius:999px;background:none;color:var(--muted,#777);font:600 11px var(--sans);cursor:pointer}
 .sb-add:hover{border-color:#3B6EA5;color:#2F5F93}
+/* Credit cards (cards.js) */
+#cards .neg{color:var(--red)}
+#cards .small{font-size:12px}
+#cards .card.warn .v{color:var(--amber)}
+#cards tr.dim td{color:var(--ink2)}
+#cards td select{max-width:220px;font-size:12px}
+#cc-table{max-height:none}
+#cc-setup code{font-size:12px;background:var(--rule2);padding:1px 5px;border-radius:4px}
