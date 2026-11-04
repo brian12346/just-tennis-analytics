@@ -340,3 +340,4 @@ button.pill.subm.sb:hover{text-decoration:line-through}
 #cards td select{max-width:220px;font-size:12px}
 #cc-table{max-height:none}
 #cc-setup code{font-size:12px;background:var(--rule2);padding:1px 5px;border-radius:4px}
+.cc-consent{margin:-4px 0 4px}.cc-consent a{color:var(--green)}

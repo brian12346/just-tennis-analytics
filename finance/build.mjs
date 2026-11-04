@@ -18,4 +18,6 @@ if (!sha) { try { sha = execSync("git rev-parse HEAD", { cwd: here, stdio: ["ign
 html = html.replace(/__BUILD__/g, (sha || "local").slice(0, 7)).replace(/__VERSION__/g, readFileSync(join(here, "VERSION"), "utf8").trim());
 mkdirSync(DIST, { recursive: true });
 writeFileSync(join(DIST, "index.html"), html);
+// the privacy policy (public: Plaid asks for a link; finance.andersenlifestyle.com/privacy)
+writeFileSync(join(DIST, "privacy.html"), readFileSync(join(SRC, "privacy.html"), "utf8"));
 console.log(`built finance/dist/index.html (${Math.round(html.length / 1024)} KB)`);
