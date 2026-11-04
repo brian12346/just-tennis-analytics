@@ -1683,3 +1683,24 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .oos-confirm .note{text-align:left;white-space:normal}
 .iv-lock.open{color:var(--ok, #1a7f37);border:1px solid currentColor;border-radius:999px;padding:1px 8px;font-size:12px}
 .addask .dbtns{flex-wrap:wrap}
+
+/* Out of stock › Analyze (oos.js) */
+.oos-an-card{width:min(980px,100%);max-height:calc(100vh - var(--appbar-h,0px) - 56px);overflow:auto}
+.oos-an-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:12px}
+.oos-an-head h2{margin:2px 0;font-size:20px}
+.oos-an-kpis{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+.oos-an-chart{margin:14px 0}
+.oos-bars{display:grid;grid-template-columns:repeat(13,1fr);gap:6px;align-items:end;height:150px;margin-top:8px}
+.oos-bar{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;min-width:0}
+.oos-bv{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;min-height:14px}
+.oos-bf{width:100%;max-width:34px;background:var(--sales);border-radius:3px 3px 0 0;display:flex;flex-direction:column;justify-content:flex-end;min-height:1px}
+.oos-bfbm{width:100%;background:var(--cost);border-radius:0}
+.oos-bl{font-size:11px;color:var(--muted);margin-top:4px}
+.oos-key{display:inline-block;width:10px;height:10px;background:var(--cost);border-radius:2px;vertical-align:-1px}
+.oos-an-plan{border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:12px}
+.oos-an-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}
+.oos-an-grid .v{font-family:var(--display);font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.oos-an-grid .inp{max-width:140px}
+.oos-an-order{font-size:15px}
+.oos-big{font-size:20px;color:var(--sales)}
+.oos-an-acts{align-items:center;gap:10px}

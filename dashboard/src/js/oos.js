@@ -51,8 +51,13 @@
              and coalesce(a.status, '') <> 'done'
              and not exists (select 1 from jt.prep_list i where i.variant_id = v.variant_id and i.dest = 'shopify' and i.closed_at is null)`, refresh),
         window.JT.rows(["i.id::text", "v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor",
-          "i.qty::text", "i.added_at::text", "i.added_by", "i.order_id::text", "o.status", "o.po_no", "jt.shopify_qty_now(v.variant_id)::text", "v.unit_cost::text", "i.source"],
+          "i.qty::text", "i.added_at::text", "i.added_by", "i.order_id::text", "o.status", "o.po_no", "jt.shopify_qty_now(v.variant_id)::text", "v.unit_cost::text", "i.source",
+          "pl.par::text", "pl.target_days::text",
+          `(select coalesce(sum(greatest(l.qty_ordered - l.qty_received, 0)), 0) from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id
+             where l.variant_id = v.variant_id and l.dest = 'shopify' and o.status in ('ordered', 'invoiced', 'partial') and o.id is distinct from i.order_id)::text`,
+          "(select coalesce(sum(s.units), 0) from jt.shopify_sales s where s.variant_id = v.variant_id and s.day > current_date - 90)::text"],
           `from jt.prep_list i join jt.variants v on v.variant_id = i.variant_id left join jt.prep_orders o on o.id = i.order_id
+           left join jt.par_levels pl on pl.variant_id = v.variant_id
            where i.closed_at is null and i.dest = 'shopify' order by v.vendor, v.product_title, v.variant_title`, refresh),
       ]);
       S.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2], vt: x[3] && x[3] !== "Default Title" ? x[3] : "", sku: x[4] || "", vendor: x[5] || "", type: x[6] || "",
@@ -61,7 +66,8 @@
         others: +x[17] || 0, nvar: +x[18] || 1, arSt: x[19] || "", arErr: x[20] || "", arAt: x[21] }));
       S.seen = r.length ? r[0][16] : null;
       S.list = l.map(x => ({ id: x[0], vid: x[1], pid: x[2], title: x[3], vt: x[4] && x[4] !== "Default Title" ? x[4] : "", sku: x[5] || "", vendor: x[6] || "",
-        qty: x[7] == null ? null : +x[7], at: x[8], by: x[9] || "", oid: x[10], ost: x[11] || "", po: x[12] || "", now: +x[13] || 0, cost: x[14] == null ? null : +x[14], src: x[15] || "" }));
+        qty: x[7] == null ? null : +x[7], at: x[8], by: x[9] || "", oid: x[10], ost: x[11] || "", po: x[12] || "", now: +x[13] || 0, cost: x[14] == null ? null : +x[14], src: x[15] || "",
+        par: x[16] == null ? null : +x[16], days: x[17] == null ? null : +x[17], onOrder: +x[18] || 0, sold90: +x[19] || 0 }));
     } catch (e) { S.err = e; }
     S.loading = false; render();
   }
@@ -81,11 +87,10 @@
     const busy = S.busy === r.vid, dis = busy ? "disabled" : "";
     const sending = r.moveSt === "pending", archiving = r.arSt === "pending";
     if (isOpen(r.vid, "count")) return `<span class="oos-count"><input class="inp sm" id="oos-n" type="number" min="0" step="1" inputmode="numeric" placeholder="Count" aria-label="How many are on the shelf" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${dis}><button class="btn sm primary" type="button" data-oos-save="${esc(r.vid)}" ${dis}>${busy ? "Saving…" : "Save"}</button><button class="btn sm" type="button" data-oos-cancel="1" ${dis}>Cancel</button></span>`;
-    if (isOpen(r.vid, "reorder")) return `<span class="oos-count"><input class="inp sm" id="oos-rq" type="number" min="1" step="1" inputmode="numeric" placeholder="Qty" aria-label="How many to order (optional)" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${dis}><button class="btn sm primary" type="button" data-oos-reorder-go="${esc(r.vid)}" ${dis}>${busy ? "Adding…" : "Add to To order"}</button><button class="btn sm" type="button" data-oos-cancel="1" ${dis}>Cancel</button></span>`;
     if (archiving) return `<span class="pill warn">Archiving in Shopify…</span>`;
     const canArch = r.others <= 0;
     return `<span class="oos-btns"><button class="btn sm" type="button" data-oos-count="${esc(r.vid)}" ${sending ? "disabled title='Waiting for Shopify to take the last count'" : ""}>Count</button>`
-      + (discontinued(r.title) ? `<button class="btn sm" type="button" disabled title="TF-X1 racquets are discontinued — not reordered">Reorder</button>` : `<button class="btn sm" type="button" data-oos-reorder="${esc(r.vid)}" title="Put it on the To order list below">Reorder</button>`)
+      + (discontinued(r.title) ? `<button class="btn sm" type="button" disabled title="TF-X1 racquets are discontinued — not reordered">Reorder</button>` : `<button class="btn sm" type="button" data-oos-reorder="${esc(r.vid)}" ${dis} title="Put it on the To order list below — analyze it there to set how many">${busy ? "Adding…" : "Reorder"}</button>`)
       + `<button class="btn sm" type="button" data-oos-archive="${esc(r.vid)}" ${canArch ? `title="Not carrying it any more: archive the product in Shopify"` : `disabled title="${n0(r.others)} unit${r.others === 1 ? "" : "s"} of other variants still in stock — archiving takes the whole product off the store"`}>Archive</button></span>`;
   }
 
@@ -124,7 +129,6 @@
       : `<div class="muted small" style="padding:14px">${all.length ? "Nothing matches." : "Nothing out of stock waiting on a decision."}</div>`;
     renderList();
     if (S.open && S.open.kind === "count") { const i = $("oos-n"); if (i && !S.busy) i.focus(); }
-    if (S.open && S.open.kind === "reorder") { const i = $("oos-rq"); if (i && !S.busy) i.focus(); }
   }
 
   function renderList() {
@@ -136,14 +140,16 @@
       const loose = items.filter(i => !i.oid), busyV = S.busy === "v:" + ven;
       return `<div class="oos-ven"><div class="row oos-vhead"><b>${esc(ven || "No vendor")}</b><span class="muted small">${n0(items.length)} product${items.length === 1 ? "" : "s"}</span>
         ${loose.length ? `<button class="btn sm right" type="button" data-oos-topo-v="${esc(ven)}" ${S.busy ? "disabled" : ""} title="Put the ${loose.length} not on a PO yet on ${esc(ven)}'s draft PO (one is started if there isn't one)">${busyV ? "Adding…" : `Put ${loose.length === items.length ? "all" : loose.length} on the draft PO`}</button>` : ""}</div>
-        <div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th>Qty</th><th>Cost</th><th class="l">Added</th><th class="l">PO</th><th></th></tr></thead><tbody>${items.map(i => {
+        <div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th title="Shopify available now">On hand</th><th title="On placed POs, not received yet">On order</th><th>Sold 90d</th><th>PAR</th><th>To order</th><th>Cost</th><th class="l">Added</th><th class="l">PO</th><th></th></tr></thead><tbody>${items.map(i => {
           const po = i.oid ? `<a class="olink" href="#po/${esc(i.oid)}">${esc(i.po ? i.po : "PO #" + i.oid)}</a> <span class="pill ${i.ost === "draft" ? "pos" : "other"}">${esc(STAGE[i.ost] || i.ost)}</span>` : `<span class="dim">not on a PO</span>`;
-          return `<tr><td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}${i.now > 0 ? ` · ${n0(i.now)} in stock now` : ""}</div></td>
+          return `<tr><td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}</div></td>
+            <td class="${i.now <= 0 ? "dim" : ""}">${n0(i.now)}</td><td class="${i.onOrder ? "" : "dim"}">${i.onOrder ? n0(i.onOrder) : "—"}</td><td>${n0(i.sold90)}</td>
+            <td>${i.par == null ? `<span class="dim">—</span>` : `<b>${n0(i.par)}</b>${i.days ? `<div class="dim small">${n0(i.days)} days</div>` : ""}`}${i.par != null && toPar(i) !== (i.qty || 0) && !(i.oid && i.ost !== "draft") ? `<div><button class="linkbtn small" type="button" data-oos-topar="${esc(i.id)}" title="Set To order to PAR − on hand − on order">order ${n0(toPar(i))}</button></div>` : ""}</td>
             <td><input class="inp sm oos-qty" type="number" min="0" step="1" inputmode="numeric" value="${i.qty == null ? "" : i.qty}" placeholder="—" data-oos-qty="${esc(i.id)}" aria-label="How many to order" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${i.oid && i.ost !== "draft" ? "disabled title='Already ordered'" : ""}></td>
             <td>${m2(i.cost)}</td>
             <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
             <td class="l">${po}</td>
-            <td class="oos-act"><span class="oos-btns">${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
+            <td class="oos-act"><span class="oos-btns"><button class="btn sm" type="button" data-oos-an="${esc(i.id)}" title="Sales, days on hand and PAR level">Analyze</button>${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
     }).join("");
   }
 
@@ -161,13 +167,12 @@
     } catch (e) { S.busy = null; render(); note(`<span class="neg">Couldn't save the count: ${esc(msg(e))}</span>`); }
   }
   async function reorder(vid) {
-    const i = $("oos-rq"), v = i ? i.value.trim() : "", r = S.rows.find(x => x.vid === vid);
-    if (v && !/^\d+$/.test(v)) { note(`<span class="neg">The quantity is a whole number (or leave it blank to decide later).</span>`); return; }
+    const r = S.rows.find(x => x.vid === vid);
     S.busy = vid; render();
     try {
-      await call("jt_prep_list_add", "jt.prep_list_add", { variant_id: Number(vid), dest: "shopify", amazon_sku: "", source: "oos", ...(v ? { qty: Number(v) } : {}) });
+      await call("jt_prep_list_add", "jt.prep_list_add", { variant_id: Number(vid), dest: "shopify", amazon_sku: "", source: "oos" });
       S.open = null; S.busy = null;
-      note(`<b>${esc(r ? r.title : "It")}</b>${r && r.vt ? " " + esc(r.vt) : ""} is on the To order list below.`);
+      note(`<b>${esc(r ? r.title : "It")}</b>${r && r.vt ? " " + esc(r.vt) : ""} is on the To order list below. <b>Analyze</b> it there to see its sales and set a PAR level and how many to order.`);
       await load(true);
     } catch (e) { S.busy = null; render(); note(`<span class="neg">Couldn't add it: ${esc(msg(e))}</span>`); }
   }
@@ -204,6 +209,139 @@
     try { await call("jt_prep_list_add", "jt.prep_list_add", { variant_id: Number(it.vid), dest: "shopify", amazon_sku: "", qty: v }); it.qty = v === "" ? null : Number(v); }
     catch (e) { note(`<span class="neg">Couldn't save the quantity: ${esc(msg(e))}</span>`); }
   }
+  // ---------- Analyze: sales, days on hand, PAR (migration 201) ----------
+  const toPar = (i) => i.par == null ? null : Math.max(0, i.par - Math.max(0, i.now) - i.onOrder);
+  const BASIS = [["30", "Last 30 days"], ["90", "Last 90 days"], ["365", "Last 12 months"], ["ly", "Same 90 days last year"]];
+  async function analyze(id) {
+    const it = (S.list || []).find(x => x.id === id); if (!it) return;
+    S.an = { id, it, loading: true, basis: "90", days: it.days || 90, par: it.par == null ? "" : String(it.par), parTouched: it.par != null };
+    openModal(); renderAn();
+    try {
+      const v = window.JT.int(it.vid);
+      const [m, t] = await Promise.all([
+        window.JT.rows(["to_char(mo, 'YYYY-MM')", "coalesce(sum(u), 0)::text", "coalesce(sum(f), 0)::text"],
+          `from (select date_trunc('month', day)::date mo, units u, 0 f from jt.shopify_sales where variant_id = ${v} and day >= (date_trunc('month', current_date) - interval '12 months')::date
+                 union all select date_trunc('month', decided_at)::date, 0, units from jt.fbm_decisions where variant_id = ${v} and decision = 'decrement' and status = 'done'
+                   and decided_at >= date_trunc('month', current_date) - interval '12 months') x group by mo order by mo`, true),
+        window.JT.rows(["coalesce(sum(units) filter (where day > current_date - 30), 0)::text", "coalesce(sum(units) filter (where day > current_date - 90), 0)::text",
+          "coalesce(sum(units) filter (where day > current_date - 365), 0)::text", "coalesce(sum(units) filter (where day > current_date - 365 and day <= current_date - 275), 0)::text",
+          "max(day)::text", "min(day)::text",
+          `(select coalesce(sum(units) filter (where decided_at > now() - interval '30 days'), 0) || ',' || coalesce(sum(units) filter (where decided_at > now() - interval '90 days'), 0) || ',' || coalesce(sum(units) filter (where decided_at > now() - interval '365 days'), 0) || ',' || coalesce(sum(units) filter (where decided_at > now() - interval '365 days' and decided_at <= now() - interval '275 days'), 0)
+             from jt.fbm_decisions where variant_id = ${v} and decision = 'decrement' and status = 'done')`],
+          `from jt.shopify_sales where variant_id = ${v}`, true),
+      ]);
+      const f = String((t[0] || [])[6] || "0,0,0,0").split(",").map(Number), x = t[0] || [];
+      S.an.months = m.map(r => ({ mo: r[0], shop: +r[1] || 0, fbm: +r[2] || 0 }));
+      S.an.sold = { "30": (+x[0] || 0) + f[0], "90": (+x[1] || 0) + f[1], "365": (+x[2] || 0) + f[2], ly: (+x[3] || 0) + f[3] };
+      S.an.fbm = { "30": f[0], "90": f[1], "365": f[2], ly: f[3] };
+      S.an.last = x[4] || ""; S.an.first = x[5] || "";
+      // a product with no sales in the last 90 days but some in the year: start from the year
+      if (!S.an.sold["90"] && S.an.sold["365"]) S.an.basis = "365";
+    } catch (e) { S.an.err = e; }
+    S.an.loading = false; renderAn();
+  }
+  function anCalc(a) {
+    const per = { "30": 30, "90": 90, "365": 365, ly: 90 }[a.basis], units = (a.sold || {})[a.basis] || 0, rate = units / per;
+    const days = Math.max(1, Number(a.days) || 90), sug = Math.ceil(rate * days);
+    const par = a.par === "" ? sug : Number(a.par), it = a.it, have = Math.max(0, it.now) + it.onOrder;   // blank PAR = the suggested one
+    return { rate, units, days, sug, par, have, order: par == null || isNaN(par) ? null : Math.max(0, par - have), cover: rate > 0 ? have / rate : null };
+  }
+  function openModal() {
+    let d = $("oos-an"); if (!d) {
+      d = document.createElement("div"); d.className = "modal"; d.id = "oos-an"; d.hidden = true;
+      d.innerHTML = '<div class="modal-card oos-an-card" id="oos-an-card" role="dialog" aria-modal="true" aria-label="Analyze"></div>';
+      document.body.appendChild(d);
+      d.addEventListener("click", (e) => { if (e.target === d) return closeModal(); const b = e.target.closest("button"); if (b) anClick(b); });
+      d.addEventListener("input", (e) => anInput(e.target));
+      d.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeModal(); } });
+    }
+    d.hidden = false; document.body.classList.add("modal-open");
+  }
+  function closeModal() { const d = $("oos-an"); if (d) d.hidden = true; document.body.classList.remove("modal-open"); S.an = null; }
+  function renderAn() {
+    const a = S.an, card = $("oos-an-card"); if (!a || !card) return;
+    const it = a.it, c = anCalc(a);
+    const head = `<div class="oos-an-head"><div><span class="eyebrow">${esc(it.vendor)} · Analyze</span><h2>${esc(it.title)}</h2>${it.vt ? `<div class="small">${esc(it.vt)}</div>` : ""}<div class="dim small mono">${esc(it.sku || "no SKU")}</div></div>
+      <button class="btn" type="button" data-an="close" title="Close (Esc)">Close</button></div>`;
+    if (a.loading) { card.innerHTML = head + `<div class="muted small" style="padding:16px">Loading sales…</div>`; return; }
+    if (a.err) { card.innerHTML = head + `<div class="neg small" style="padding:16px">Couldn't load the sales: ${esc(msg(a.err))}</div>`; return; }
+    const k = (l, v, sub) => `<div class="kpi"><span class="eyebrow">${l}</span><span class="v">${v}</span><span class="s">${esc(sub || "")}</span></div>`;
+    const sd = (b) => `${n0(a.sold[b])}${a.fbm[b] ? "" : ""}`;
+    const kpis = [
+      k("On hand", n0(it.now), "Shopify available now"),
+      k("On order", n0(it.onOrder), "placed POs, not received"),
+      k("Sold 30 days", sd("30"), a.fbm["30"] ? `incl. ${n0(a.fbm["30"])} Amazon FBM` : ""),
+      k("Sold 90 days", sd("90"), a.fbm["90"] ? `incl. ${n0(a.fbm["90"])} Amazon FBM` : ""),
+      k("Sold 12 months", sd("365"), a.fbm["365"] ? `incl. ${n0(a.fbm["365"])} Amazon FBM` : ""),
+      k("Next 90 days, last year", sd("ly"), "what sold this season a year ago"),
+    ].join("");
+    // the last 13 months, Shopify + FBM
+    const months = []; { const d0 = new Date(); for (let i = 12; i >= 0; i--) { const d = new Date(d0.getFullYear(), d0.getMonth() - i, 1); months.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")); } }
+    const by = new Map((a.months || []).map(x => [x.mo, x])), max = Math.max(1, ...months.map(mo => { const x = by.get(mo); return x ? x.shop + x.fbm : 0; }));
+    const bars = months.map(mo => { const x = by.get(mo) || { shop: 0, fbm: 0 }, tot = x.shop + x.fbm, lab = new Date(mo + "-15").toLocaleDateString("en-US", { month: "short" });
+      return `<div class="oos-bar" title="${esc(lab)} ${mo.slice(0, 4)}: ${n0(tot)} sold${x.fbm ? ` (${n0(x.fbm)} Amazon FBM)` : ""}"><span class="oos-bv">${tot ? n0(tot) : ""}</span><span class="oos-bf" style="height:${Math.round(tot / max * 100)}%"><span class="oos-bfbm" style="height:${tot ? Math.round(x.fbm / tot * 100) : 0}%"></span></span><span class="oos-bl">${esc(lab)}</span></div>`; }).join("");
+    const seg = BASIS.map(([b, n]) => `<button type="button" data-an-basis="${b}" aria-pressed="${a.basis === b}">${n}</button>`).join("");
+    const saved = it.par != null;
+    card.innerHTML = head + `
+      <section class="kpis oos-an-kpis">${kpis}</section>
+      <div class="oos-an-chart"><div class="row small"><b>Units sold by month</b><span class="muted">Shopify${(a.months || []).some(x => x.fbm) ? ' · <span class="oos-key"></span> Amazon FBM (from store stock)' : ""}${a.last ? ` · last sold ${esc(day(a.last))}` : " · never sold"}</span></div><div class="oos-bars">${bars}</div></div>
+      <div class="oos-an-plan">
+        <div class="row small"><b>Sales rate from</b><span class="seg sm" role="group" aria-label="Sales rate from">${seg}</span></div>
+        <div class="oos-an-grid">
+          <div><span class="eyebrow">Sales rate</span><div class="v">${c.rate >= 1 ? c.rate.toFixed(1) : c.rate.toFixed(2)}<span class="small muted"> / day</span></div><div class="small muted">${n0(c.rate * 30)} a month · ${n0(c.units)} in ${a.basis === "ly" ? "those 90 days" : BASIS.find(x => x[0] === a.basis)[1].toLowerCase()}</div></div>
+          <label class="stack"><span class="eyebrow">Target days on hand</span><input class="inp" id="an-days" type="number" min="1" max="730" step="1" value="${esc(a.days)}" autocomplete="off" data-lpignore="true" data-jtnofill="1"><span class="small muted">${[30, 60, 90, 120].map(n => `<button type="button" class="linkbtn small" data-an-days="${n}">${n}</button>`).join(" · ")}</span></label>
+          <div><span class="eyebrow">Suggested PAR</span><div class="v">${n0(c.sug)}</div><div class="small muted">${n0(c.days)} days × the sales rate ${c.par !== c.sug ? `<button type="button" class="linkbtn small" data-an="usesug">use it</button>` : ""}</div></div>
+          <label class="stack"><span class="eyebrow">PAR level${saved ? ` <span class="pill ok">saved ${n0(it.par)}</span>` : ""}</span><input class="inp" id="an-par" type="number" min="0" step="1" value="${esc(a.par)}" placeholder="${n0(c.sug)}" autocomplete="off" data-lpignore="true" data-jtnofill="1"><span class="small muted">the stock to hold in the store</span></label>
+        </div>
+        <div class="oos-an-order">${c.order == null ? `<span class="muted">Enter a PAR level to order to it.</span>` : `${a.par === "" ? '<span class="pill other">suggested</span> ' : ""}Order to PAR: <b>${n0(c.par)}</b> PAR − <b>${n0(Math.max(0, it.now))}</b> on hand − <b>${n0(it.onOrder)}</b> on order = <b class="oos-big">${n0(c.order)}</b> to order${c.cover != null ? ` <span class="muted small">· on hand + on order covers ${n0(c.cover)} days now</span>` : ""}`}</div>
+        <div class="row oos-an-acts"><span class="dbtns">
+          <button class="btn primary" type="button" data-an="order" ${c.order == null || S.busy ? "disabled" : ""} title="Save the PAR level and set To order to ${c.order == null ? "it" : n0(c.order)}">Order to PAR${c.order != null ? ` (${n0(c.order)})` : ""}</button>
+          <button class="btn" type="button" data-an="save" ${c.par == null || isNaN(c.par) || S.busy ? "disabled" : ""}>${saved ? "Update PAR" : "Save PAR"}</button>
+          ${saved ? `<button class="btn" type="button" data-an="clear" ${S.busy ? "disabled" : ""} title="Take the PAR level off this product">Clear PAR</button>` : ""}</span>
+          <span class="muted small right">To order now: <b>${it.qty == null ? "not set" : n0(it.qty)}</b></span></div>
+        ${a.msg ? `<div class="note ${a.bad ? "bad" : "info"} small">${a.msg}</div>` : ""}
+      </div>`;
+  }
+  function anInput(t) {
+    const a = S.an; if (!a) return;
+    if (t.id === "an-days") { a.days = t.value; if (!a.parTouched) a.par = ""; }
+    else if (t.id === "an-par") { a.par = t.value.trim(); a.parTouched = true; }
+    else return;
+    const pos = t.selectionStart, id = t.id; renderAn(); const i = $(id); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch (_) {} }
+  }
+  async function anSave(order) {
+    const a = S.an, c = anCalc(a), it = a.it;
+    if (order === "clear") { S.busy = "an"; renderAn();
+      try { await call("jt_par_set", "jt.par_set", { variant_id: Number(it.vid), par: "" }); it.par = null; it.days = null; a.par = ""; a.parTouched = false; a.msg = "PAR cleared."; a.bad = false; }
+      catch (e) { a.msg = "Couldn't clear it: " + esc(msg(e)); a.bad = true; }
+      S.busy = null; renderAn(); renderList(); return; }
+    if (c.par == null || isNaN(c.par) || c.par < 0 || !Number.isInteger(c.par)) { a.msg = "The PAR level is a whole number, 0 or more."; a.bad = true; renderAn(); return; }
+    S.busy = "an"; renderAn();
+    try {
+      await call("jt_par_set", "jt.par_set", { variant_id: Number(it.vid), par: c.par, target_days: c.days });
+      it.par = c.par; it.days = c.days;
+      if (order) { await call("jt_prep_list_add", "jt.prep_list_add", { variant_id: Number(it.vid), dest: "shopify", amazon_sku: "", qty: c.order }); it.qty = c.order; }
+      a.msg = order ? `PAR saved at <b>${n0(c.par)}</b>; To order set to <b>${n0(c.order)}</b>${it.oid && it.ost === "draft" ? " (the draft PO too)" : ""}.` : `PAR saved at <b>${n0(c.par)}</b> (${n0(c.days)} days).`; a.bad = false;
+    } catch (e) { a.msg = "Couldn't save: " + esc(msg(e)); a.bad = true; }
+    S.busy = null; renderAn(); renderList();
+  }
+  function anClick(b) {
+    const a = S.an; if (!a) return;
+    if (b.dataset.an === "close") return closeModal();
+    if (b.dataset.anBasis) { a.basis = b.dataset.anBasis; if (!a.parTouched) a.par = ""; a.msg = ""; renderAn(); return; }
+    if (b.dataset.anDays) { a.days = b.dataset.anDays; if (!a.parTouched) a.par = ""; renderAn(); return; }
+    if (b.dataset.an === "usesug") { a.par = String(anCalc(a).sug); a.parTouched = true; renderAn(); return; }
+    if (b.dataset.an === "save") return anSave(false);
+    if (b.dataset.an === "order") return anSave(true);
+    if (b.dataset.an === "clear") return anSave("clear");
+  }
+  async function orderToPar(id) {
+    const it = (S.list || []).find(x => x.id === id); if (!it || it.par == null) return;
+    const q = toPar(it); S.busy = "i:" + id; render();
+    try { await call("jt_prep_list_add", "jt.prep_list_add", { variant_id: Number(it.vid), dest: "shopify", amazon_sku: "", qty: q }); it.qty = q; }
+    catch (e) { note(`<span class="neg">Couldn't set it: ${esc(msg(e))}</span>`); }
+    S.busy = null; render();
+  }
   function note(h) { const n = $("oos-note"); n.innerHTML = h; n.hidden = false; }
 
   const tab = $("tab-oos");
@@ -215,19 +353,20 @@
     }
     if (b.dataset.oosSort) { const k = b.dataset.oosSort; if (S.sort === k) S.dir = -S.dir; else { S.sort = k; S.dir = k === "day" || k === "count" ? -1 : 1; } render(); return; }
     if (b.dataset.oosCount) { S.open = { vid: b.dataset.oosCount, kind: "count" }; render(); return; }
-    if (b.dataset.oosReorder) { S.open = { vid: b.dataset.oosReorder, kind: "reorder" }; render(); return; }
+    if (b.dataset.oosReorder) { reorder(b.dataset.oosReorder); return; }
     if (b.dataset.oosArchive) { S.open = { vid: b.dataset.oosArchive, kind: "archive" }; render(); return; }
     if (b.dataset.oosCancel) { S.open = null; render(); return; }
     if (b.dataset.oosSave) { saveCount(b.dataset.oosSave); return; }
-    if (b.dataset.oosReorderGo) { reorder(b.dataset.oosReorderGo); return; }
     if (b.dataset.oosArchiveGo) { archive(b.dataset.oosArchiveGo); return; }
     if (b.dataset.oosTopo) { toPo([b.dataset.oosTopo], "i:" + b.dataset.oosTopo); return; }
     if (b.dataset.oosTopoV != null) { const ven = b.dataset.oosTopoV; toPo((S.list || []).filter(i => i.vendor === ven && !i.oid).map(i => i.id), "v:" + ven); return; }
     if (b.dataset.oosUnlist) { unlist(b.dataset.oosUnlist); return; }
+    if (b.dataset.oosAn) { analyze(b.dataset.oosAn); return; }
+    if (b.dataset.oosTopar) { orderToPar(b.dataset.oosTopar); return; }
   });
   tab.addEventListener("keydown", (e) => {
-    if (e.target.id !== "oos-n" && e.target.id !== "oos-rq") return;
-    if (e.key === "Enter") { e.preventDefault(); if (S.open && S.open.kind === "count") saveCount(S.open.vid); else if (S.open) reorder(S.open.vid); }
+    if (e.target.id !== "oos-n") return;
+    if (e.key === "Enter") { e.preventDefault(); if (S.open && S.open.kind === "count") saveCount(S.open.vid); }
     else if (e.key === "Escape") { S.open = null; render(); }
   });
   tab.addEventListener("change", (e) => {
