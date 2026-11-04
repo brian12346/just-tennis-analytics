@@ -41,7 +41,7 @@
     <nav class="nav" aria-label="Finance sections">
       <a href="#payables" data-page="payables" class="on" aria-current="page"><span class="ico">⇄</span>Payables</a>
       <a href="#cash" data-page="cash"><span class="ico">◎</span>Cash flow</a>
-      <a href="#cards" data-page="cards"><span class="ico">▭</span>Credit cards</a>
+      <a href="#cards" data-page="cards"><span class="ico">▭</span>Banks &amp; cards</a>
       <a href="#fba" data-page="fba"><span class="ico">▤</span>FBA forecast</a>
       <a href="#profit" data-page="profit"><span class="ico">≡</span>Profit</a>
       <div class="nav-h" aria-hidden="true">Payouts → QuickBooks</div>
@@ -142,18 +142,22 @@
   <main class="main" id="cards" hidden>
     <header class="head">
       <div>
-        <div class="eyebrow">Balances, statements and due dates · from the banks through Plaid</div>
-        <h1>Credit cards</h1>
+        <div class="eyebrow">Balances, transactions, statements and due dates · from the banks through Plaid</div>
+        <h1>Banks &amp; cards</h1>
         <div class="sub" id="cc-sub">Loading…</div>
       </div>
       <div class="head-actions">
         <button class="btn" type="button" id="cc-refresh">Refresh from banks</button>
-        <button class="btn primary" type="button" id="cc-link">Link a card account</button>
+        <button class="btn primary" type="button" id="cc-link">Link a bank or card</button>
       </div>
     </header>
     <div id="cc-setup" class="note" hidden></div>
     <div id="cc-note" class="note" hidden></div>
     <section class="cards" id="cc-cards" aria-label="Credit card summary"></section>
+    <section class="panel">
+      <div class="panel-h wrap"><h2>Bank accounts</h2><span class="hint">Balances and transactions from the bank, hourly · matched accounts give Cash flow its starting cash</span></div>
+      <div class="tbl" id="bk-table"></div>
+    </section>
     <section class="panel">
       <div class="panel-h wrap"><h2>Cards</h2><span class="hint">Soonest due first · each card's close and due days also feed the Cash flow forecast · match a card to its QuickBooks card if it didn't match by its last 4</span></div>
       <div class="tbl" id="cc-table"></div>

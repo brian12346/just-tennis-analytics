@@ -3,6 +3,10 @@
 // POST {action: "link_token", kind: "card"}   -> a Plaid Link token for a credit card login: Liabilities only (Finance ›
 //                                               Credit cards, migration 205) — no transactions, so no Transactions fee
 // POST {action: "exchange", kind: "card", …}  -> saves the card login, its cards, statements and due dates
+// POST {action: "link_token", kind: "all"}    -> a bank login's bank accounts and cards: Transactions, plus Liabilities
+//                                               when the login has cards (migration 206)
+// POST {action: "exchange", kind: "all", …}   -> saves the login, pulls its transactions, its cards' statements, and
+//                                               matches each account to QuickBooks by its last 4
 // POST {action: "liab", item_id?}             -> every card login's balances, statements, minimums and due dates
 //                                               (/liabilities/get). Daily by pg_cron (fin-card-sync).
 // POST {action: "link_token", item_id?}       -> a Plaid Link token (item_id: re-link a bank that needs signing in again)
@@ -61,6 +65,7 @@ async function syncItem(c: Creds, item: { item_id: string; cursor: string | null
     catch (e) {
       const code = (e as any).code || "";
       if (code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION") { cursor = item.cursor || null; continue; }
+      if (code === "PRODUCT_NOT_READY") break;   // a new link: Plaid is still pulling the history; the hourly sync gets it
       await rpc("fin_bank_save", { p: { item: { item_id: item.item_id }, error: (e as Error).message } });
       throw e;
     }
@@ -284,6 +289,7 @@ Deno.serve(async (req) => {
     if (p.action === "link_token") {
       const base: any = { client_name: "Just Tennis Finance", user: { client_user_id: who.by.replace(/[^a-z0-9]/gi, "_").slice(0, 60) }, country_codes: ["US"], language: "en" };
       if (p.item_id) { const tok = pc.tokens[String(p.item_id)]; if (!tok) return json({ ok: false, error: "that bank isn't linked" }, 400); base.access_token = tok; }
+      else if (p.kind === "all") { base.products = ["transactions"]; base.required_if_supported_products = ["liabilities"]; base.transactions = { days_requested: 730 }; }
       else if (p.kind === "card") { base.products = ["liabilities"]; base.account_filters = { credit: { account_subtypes: ["credit card"] } }; }
       else { base.products = ["transactions"]; base.transactions = { days_requested: 730 }; }
       const r = await plaid(c, "/link/token/create", base);
@@ -295,11 +301,17 @@ Deno.serve(async (req) => {
       await rpc("fin_plaid_token_save", { item: r.item_id, tok: r.access_token });
       if (p.kind === "card") {
         const l = await cardItem(c, { item_id: r.item_id, institution: p.institution?.name || "", institution_id: p.institution?.institution_id || "", linked_by: who.by }, r.access_token);
+        await rpc("fin_bank_automatch", { item: r.item_id }).catch(() => 0);
         return json({ ok: true, item_id: r.item_id, ...l });
       }
       await rpc("fin_bank_save", { p: { item: { item_id: r.item_id, institution: p.institution?.name || "", institution_id: p.institution?.institution_id || "", linked_by: who.by } } });
-      const s = await syncItem(c, { item_id: r.item_id, cursor: null }, r.access_token);
-      return json({ ok: true, item_id: r.item_id, ...s });
+      const s: any = await syncItem(c, { item_id: r.item_id, cursor: null }, r.access_token).catch(e => ({ sync_error: (e as Error).message }));
+      // its cards: statements and due dates too (a login without cards just has no Liabilities)
+      let l: any = { cards: 0 };
+      try { l = await cardItem(c, { item_id: r.item_id }, r.access_token); }
+      catch (e) { const code = (e as any).code || ""; if (!/PRODUCTS_NOT_SUPPORTED|NO_LIABILITY_ACCOUNTS|PRODUCT_NOT_READY|NO_ACCOUNTS/.test(code)) l = { cards: 0, liab_error: (e as Error).message }; }
+      const matched = await rpc("fin_bank_automatch", { item: r.item_id }).catch(() => 0);
+      return json({ ok: true, item_id: r.item_id, ...s, ...l, matched });
     }
     if (p.action === "liab") {
       const out: any[] = [];

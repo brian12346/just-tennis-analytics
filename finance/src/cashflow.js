@@ -24,7 +24,7 @@
   async function load(refresh) {
     S.loading = true; render();
     try {
-      const [amz, sp, sd, bills, fc, st, ac, as, pl, cr] = await Promise.all([
+      const [amz, sp, sd, bills, fc, st, ac, as, pl, cr, pbk] = await Promise.all([
         FIN.sql("select id, day, marketplace, currency, amount_local, amount from fin.v_amazon_payouts order by day", refresh),
         FIN.sql("select id, (issued_at at time zone 'America/Los_Angeles')::date as day, status, amount from fin.shopify_payouts where issued_at > now() - interval '200 days' order by issued_at", refresh),
         FIN.sql("select day, total from jt.shopify_daily where day >= current_date - 42 order by day", refresh),
@@ -38,11 +38,14 @@
         // how each open bill will be paid and when its cash goes out; each card's close / due day (migration 127)
         FIN.sql("select bill_id, account_id, account_name, account_type, pay_on, cash_on, card_needs_terms from fin.v_bill_plan", refresh).catch(() => []),
         FIN.sql("select account_id, name, balance, owed, qbo_updated, close_day, due_day, last_close, next_close, balance_due_on, next_due from fin.v_cards order by owed desc, name", refresh).catch(() => []),
+        // the bank's own balance for QuickBooks bank accounts linked through Plaid (Banks & cards, migration 206)
+        FIN.sql("select qbo_account_id, sum(current) as current, max(updated_at) as updated_at from fin.bank_accounts where type = 'depository' and active and qbo_account_id is not null and current is not null group by qbo_account_id", refresh).catch(() => []),
       ]);
       S.plan = new Map(pl.map(x => [x.bill_id, x]));
       S.cardRows = cr.map(c => ({ ...c, balance: +c.balance, owed: +c.owed }));
       S.amzSales = new Map(as.map(r => [`${r.marketplace}|${r.day}`, +r.sales || 0]));
-      S.accts = ac.map(a => ({ ...a, balance: +a.balance }));
+      { const pb = new Map(pbk.map(x => [x.qbo_account_id, x]));
+        S.accts = ac.map(a => { const b = a.type === "Bank" && pb.get(a.id); return b ? { ...a, balance: +b.current, qbo_balance: +a.balance, plaid: true, synced_at: b.updated_at } : { ...a, balance: +a.balance }; }); }
       S.amz = amz.map(x => ({ ...x, amount: +x.amount })); S.shopPay = sp.map(x => ({ ...x, amount: +x.amount }));
       S.shopDays = sd.map(x => ({ day: x.day, total: +x.total })); S.bills = bills.map(b => ({ ...b, balance: +b.balance }));
       S.fc = fc.map(x => ({ ...x, amount: +x.amount }));
@@ -136,6 +139,7 @@
     return { id: "shopify", kind: "shopify", label: "Shopify", weekday: wd, gap: 7, avg, basis, actuals: weeks, last: weeks.length ? weeks[weeks.length - 1].day : null, n: weeks.length };
   }
 
+  const inc0 = () => new Set(includedBanks().map(a => a.id));
   // ---------- starting cash: QuickBooks bank balances (the accounts ticked) or a typed number ----------
   const banks = () => S.accts.filter(a => a.type === "Bank");
   const cards = () => S.accts.filter(a => a.type === "Credit Card");
@@ -225,7 +229,7 @@
     const amzIn = ws.reduce((a, w) => a + w.amazon, 0), shIn = ws.reduce((a, w) => a + w.shopify, 0);
     const card = (cls, k, v, s) => `<div class="card ${cls}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s}</span></div>`;
     $("cf-cards").innerHTML = [
-      card("", "Cash now", hasBal ? short(C.balance) : "—", hasBal ? (C.source === "qbo" ? `QuickBooks bank balances · ${C.n} account${C.n === 1 ? "" : "s"}` : `typed, as of ${fmtD(C.as_of)}`) : "Pick bank accounts below, or type a number"),
+      card("", "Cash now", hasBal ? short(C.balance) : "—", hasBal ? (C.source === "qbo" ? `${S.accts.some(x => x.plaid && inc0().has(x.id)) ? "bank balances (Plaid / QuickBooks)" : "QuickBooks bank balances"} · ${C.n} account${C.n === 1 ? "" : "s"}` : `typed, as of ${fmtD(C.as_of)}`) : "Pick bank accounts below, or type a number"),
       card("green", "Coming in, 4 months", short(tin), `Amazon ${short(amzIn)} · Shopify ${short(shIn)}${tin - amzIn - shIn ? ` · other ${short(tin - amzIn - shIn)}` : ""}`),
       card("red", "Going out, 4 months", short(tout), `${short(ws.reduce((a, w) => a + w.bills, 0))} in bills${ws.reduce((a, w) => a + w.cards, 0) ? ` · ${short(ws.reduce((a, w) => a + w.cards, 0))} cards` : ""}${ws.reduce((a, w) => a + w.other_out, 0) ? ` · ${short(ws.reduce((a, w) => a + w.other_out, 0))} other` : ""}`),
       card(hasBal && ws[ws.length - 1].bal < 0 ? "red" : "", "Cash in 4 months", hasBal ? short(ws[ws.length - 1].bal) : short(tin - tout), hasBal ? `net ${short(tin - tout)}` : "net change (no starting balance yet)"),
@@ -293,7 +297,7 @@
     const bk = banks();
     if (!S.accts.length) { $("cf-bank").innerHTML = '<p class="m">No bank accounts from QuickBooks yet — they come in with the next QuickBooks refresh (hourly, or Refresh on Payables).</p>'; return; }
     $("cf-bank").innerHTML = `<div class="det"><div><h3>Bank accounts${C.source === "qbo" ? " · ticked ones are your starting cash" : ""}</h3><table>
-      ${bk.map(a => `<tr><td><input type="checkbox" data-acct="${esc(a.id)}" ${inc.has(a.id) ? "checked" : ""} ${C.source !== "qbo" ? "disabled" : ""} aria-label="Count ${esc(a.name)}"></td><td>${esc(a.name)}<div class="m">${esc(a.subtype)} · updated in QuickBooks ${esc(upd(a))}</div></td><td class="n"><b>${money(a.balance)}</b></td></tr>`).join("")}
+      ${bk.map(a => `<tr><td><input type="checkbox" data-acct="${esc(a.id)}" ${inc.has(a.id) ? "checked" : ""} ${C.source !== "qbo" ? "disabled" : ""} aria-label="Count ${esc(a.name)}"></td><td>${esc(a.name)}<div class="m">${esc(a.subtype)} · ${a.plaid ? `from the bank (Plaid) · QuickBooks shows ${money(a.qbo_balance)}` : `updated in QuickBooks ${esc(upd(a))}`}</div></td><td class="n"><b>${money(a.balance)}</b></td></tr>`).join("")}
       <tr><td></td><td><b>Ticked</b></td><td class="n"><b>${money(bk.filter(a => inc.has(a.id)).reduce((x, a) => x + a.balance, 0))}</b></td></tr></table></div>
       <div>${cardPanel()}</div></div>
       <p class="m">These are QuickBooks' balances for each account — what's been entered or matched there — not a live bank feed. They refresh every hour with the rest of QuickBooks.</p>`;
