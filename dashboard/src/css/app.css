@@ -1752,5 +1752,7 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .it-asin td{background:var(--line-soft);padding-top:6px;padding-bottom:6px}
 .it-tot td{border-top:2px solid var(--line)}
 .it-card>*,.it-body>*{flex-shrink:0}
+.it-inv{background:var(--sales)}.it-inv-now{background:color-mix(in srgb,var(--sales) 55%,var(--panel))}.it-inv-none{background:var(--line)}
+.it-burn{gap:18px;flex-wrap:wrap}
 #tab-oos tbody tr[data-oos-row],#pc-table tbody tr[data-item-row]{cursor:pointer}
 #tab-oos tbody tr[data-oos-row]:hover td,#pc-table tbody tr[data-item-row]:hover td{background:var(--line-soft)}

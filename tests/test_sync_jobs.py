@@ -293,3 +293,34 @@ def test_catalog_change_log(conn):
     assert cur.fetchall() == [(5, "cost", "8.50", "7.25"), (5, "price", "13.99", "14.99"), (5, "sku", "HG17", "HG17-X"), (5, "stock", "14", "11"),
                               (6, "removed", None, None), (7, "new", None, None)]
     assert out["logged"] == 6
+
+
+class FakeInvShopify:
+    """FROM inventory … GROUP BY product_variant_id, paged with LIMIT / OFFSET (rows shaped like a real call)."""
+    def __init__(self):
+        self.qs = []
+
+    def shopifyql(self, q):
+        self.qs.append(q)
+        if "SINCE 2026-11-01" in q:
+            rows = [{"product_variant_id": "gid://shopify/ProductVariant/%d" % (100 + i), "starting_inventory_units": "5",
+                     "ending_inventory_units": "3", "inventory_units_sold": "2"} for i in range(3)]
+        else:
+            rows = [{"product_variant_id": "44225646002461", "starting_inventory_units": "37", "ending_inventory_units": "183", "inventory_units_sold": "0"}]
+        off = int(q.split("OFFSET ")[1]); n = int(q.split("LIMIT ")[1].split()[0])
+        return rows[off:off + n]
+
+
+def test_inventory_monthly(conn):
+    """Item detail › Inventory (migration 213): 13 months once, then only the months asked to refresh; pages of `page`."""
+    shop = FakeInvShopify()
+    assert sh.sync_inventory_monthly(shop, conn, dt.date(2026, 11, 5), page=2) == 3 + 12
+    assert sum("SINCE 2026-11-01 UNTIL 2026-11-05" in q for q in shop.qs) == 2          # 3 rows, pages of 2
+    cur = conn.cursor()
+    cur.execute("select count(distinct month), min(month) from jt.inventory_monthly")
+    assert cur.fetchone() == (13, dt.date(2025, 11, 1))
+    cur.execute("select start_units, end_units, sold from jt.inventory_monthly where variant_id = 101")
+    assert cur.fetchone() == (5, 3, 2)
+    shop.qs.clear()
+    assert sh.sync_inventory_monthly(shop, conn, dt.date(2026, 11, 5), refresh=2, page=2) == 3 + 1
+    assert len(shop.qs) == 3                                                            # Nov (2 pages) and Oct

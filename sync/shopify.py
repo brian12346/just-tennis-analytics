@@ -165,6 +165,49 @@ STOCKOUTS_Q = ("FROM inventory SHOW starting_inventory_units, ending_inventory_u
 VARIANT_QTY_Q = """query($ids: [ID!]!) { nodes(ids: $ids) { ... on ProductVariant { id inventoryQuantity } } }"""
 
 
+INV_MONTH_Q = ("FROM inventory SHOW starting_inventory_units, ending_inventory_units, inventory_units_sold "
+               "GROUP BY product_variant_id SINCE {s} UNTIL {e} "
+               "HAVING starting_inventory_units != 0 OR ending_inventory_units != 0 OR inventory_units_sold != 0 "
+               "ORDER BY product_variant_id LIMIT {n} OFFSET {o}")
+
+
+def _month_add(d: dt.date, n: int) -> dt.date:
+    y, m = divmod(d.year * 12 + d.month - 1 + n, 12)
+    return dt.date(y, m + 1, 1)
+
+
+def sync_inventory_monthly(shop: Shopify, conn, today: dt.date, refresh: int = 1, months: int = 13, page: int = 1000) -> int:
+    """Shopify's inventory by month per variant -> jt.inventory_monthly (migration 213). Re-reads the last `refresh`
+    months (1 = this month) and any of the last `months` months not stored yet."""
+    first = today.replace(day=1)
+    want = [_month_add(first, -i) for i in range(months)]
+    with conn.cursor() as cur:
+        cur.execute("select distinct month from jt.inventory_monthly where month >= %s", (want[-1],))
+        have = {r[0] for r in cur.fetchall()}
+    todo = [m for i, m in enumerate(want) if i < refresh or m not in have]
+    n = 0
+    for m in todo:
+        end = min(today, _month_add(m, 1) - dt.timedelta(days=1))
+        out, off = [], 0
+        while True:
+            rows = shop.shopifyql(INV_MONTH_Q.format(s=m, e=end, n=page, o=off))
+            for r in rows:
+                vid = str(r.get("product_variant_id") or "").split("/")[-1]
+                if vid.isdigit():
+                    out.append((int(vid), m, _int(r.get("starting_inventory_units")), _int(r.get("ending_inventory_units")), _int(r.get("inventory_units_sold"))))
+            if len(rows) < page:
+                break
+            off += page
+        with conn.cursor() as cur:
+            cur.execute("delete from jt.inventory_monthly where month = %s", (m,))
+            cur.executemany("""insert into jt.inventory_monthly (variant_id, month, start_units, end_units, sold) values (%s, %s, %s, %s, %s)
+                               on conflict (variant_id, month) do update set start_units = excluded.start_units, end_units = excluded.end_units,
+                               sold = excluded.sold, seen_at = now()""", out)
+        conn.commit()
+        n += len(out)
+    return n
+
+
 def sync_stockouts(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
     rows = shop.shopifyql(STOCKOUTS_Q.format(s=start, e=end))
     out = []
