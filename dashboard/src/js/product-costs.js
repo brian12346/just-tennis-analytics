@@ -204,7 +204,7 @@
         const bad = edited && (noCost(c) || c < 0);
         const u = unitsAt(r), tu = totalUnits(u), x = locs().by.get(r.vid);
         const pill = P.pending.has(r.vid) && !edited ? '<span class="pill warn">Saving to Shopify</span>' : noCost(c) ? (tu ? '<span class="pill miss">No cost</span>' : '<span class="pill">No cost</span>') : "";
-        return `<tr class="${noCost(c) && tu ? "flag-bad" : ""}">
+        return `<tr data-item-row="${esc(r.vid)}" title="Click for sales, cost and inventory history" class="${noCost(c) && tu ? "flag-bad" : ""}">
           <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span>${r.status !== "ACTIVE" ? " · " + esc(r.status.toLowerCase()) : ""}${x && x.skus.length ? ` · <span title="Amazon seller SKUs">${esc(x.skus.slice(0, 3).join(", "))}${x.skus.length > 3 ? "…" : ""}</span>` : ""}</div></td>
           <td class="l">${esc(r.vendor)}<div class="meta">${esc(r.type || "—")}</div></td>
           <td><input class="pcin ${edited ? "edited" : ""} ${bad ? "bad" : ""}" data-vid="${esc(r.vid)}" value="${esc(v)}" inputmode="decimal" aria-label="Unit cost for ${esc(r.title)}">${edited && r.cost != null ? `<div class="meta">was ${m(r.cost)}</div>` : layered(r) ? `<div class="meta" title="${esc(window.JTCost.describe(r.vid))}">FIFO ${m(vc)}</div>` : ""}</td>
@@ -301,6 +301,8 @@
     t.addEventListener("click", (e) => {
       const g = e.target.closest("button[data-go]"); if (g) { const b = document.querySelector(`.tabs button[data-tab="${g.dataset.go}"]`); if (b) b.click(); return; }
       const mv = e.target.closest("button[data-move]"); if (mv && window.JTMove) { window.JTMove.open(mv.dataset.move); return; }
+      const row = e.target.closest("tr[data-item-row]");
+      if (row && !e.target.closest("button, a, input, select, label, textarea") && !String(window.getSelection() || "") && window.JTItem) window.JTItem.open(row.dataset.itemRow);
     });
     $("pc-inv").addEventListener("click", (e) => {
       if (e.target.closest("[data-extra]")) { P.issue = "extra"; P.where = "stock"; P.page = 0; $("pc-issue").value = "extra"; $("pc-where").value = "stock"; render(); $("pc-table").scrollIntoView({ block: "start" }); return; }

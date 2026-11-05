@@ -1745,5 +1745,5 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .it-body{display:flex;flex-direction:column;gap:10px;min-height:200px}
 .it-body .h3{margin:10px 0 4px}
 .it-t td,.it-t th{font-variant-numeric:tabular-nums}
-#tab-oos tbody tr[data-oos-row]{cursor:pointer}
-#tab-oos tbody tr[data-oos-row]:hover td{background:var(--line-soft)}
+#tab-oos tbody tr[data-oos-row],#pc-table tbody tr[data-item-row]{cursor:pointer}
+#tab-oos tbody tr[data-oos-row]:hover td,#pc-table tbody tr[data-item-row]:hover td{background:var(--line-soft)}
