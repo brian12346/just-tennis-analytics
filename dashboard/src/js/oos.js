@@ -66,7 +66,7 @@
   async function load(refresh) {
     S.loading = true; S.err = null; render();
     try {
-      const [r, l, g] = await Promise.all([
+      const [r, l, g, nt] = await Promise.all([
         mainRows(refresh),
         window.JT.rows(["i.id::text", "v.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor",
           "i.qty::text", "i.added_at::text", "i.added_by", "i.order_id::text", "o.status", "o.po_no", "jt.shopify_qty_now(v.variant_id)::text", "v.unit_cost::text", "i.source",
@@ -82,7 +82,10 @@
         window.JT.rows(["g.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "g.at::text", "g.by", "g.note",
           "jt.shopify_qty_now(v.variant_id)::text", "(select max(day) from jt.stockouts s where s.variant_id = g.variant_id)::text", "coalesce(v.status, '')"],
           `from jt.oos_ignored g join jt.variants v on v.variant_id = g.variant_id order by g.at desc`, refresh).catch(() => null),
+        // notes (migration 215): one per product, on its row in every table
+        window.JT.rows(["variant_id::text", "note", "by", "at::text"], "from jt.oos_notes", refresh).catch(() => null),
       ]);
+      S.notes = nt ? new Map(nt.map(x => [x[0], { note: x[1] || "", by: x[2] || "", at: x[3] }])) : null;
       S.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2], vt: x[3] && x[3] !== "Default Title" ? x[3] : "", sku: x[4] || "", vendor: x[5] || "", type: x[6] || "",
         qty: +x[7] || 0, day: x[8], start: +x[9] || 0, sold: +x[10] || 0, how: howOf(+x[9] || 0, +x[10] || 0),
         countAt: x[11], counted: x[12] == null ? null : +x[12], countBy: x[13] || "", moveSt: x[14] || "", moveErr: x[15] || "",
@@ -111,6 +114,24 @@
     const key = { day: r => r.day || "", product: r => (r.title + r.vt).toLowerCase(), vendor: r => r.vendor.toLowerCase(), cat: r => catOf(r).toLowerCase(), count: r => r.countAt || "" }[S.sort];
     L.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * S.dir || a.title.localeCompare(b.title); });
     return L;
+  }
+
+  // the note box on a row (saves when you leave it or press Enter)
+  function noteCell(vid) {
+    if (!S.notes) return "";
+    const n = S.notes.get(String(vid)), saving = S.busy === "n:" + vid;
+    return `<td class="l oos-notec"><input class="inp sm oos-note" type="text" maxlength="500" value="${esc(n ? n.note : "")}" placeholder="Add a note" data-oos-note="${esc(vid)}" aria-label="Note"
+      title="${n ? esc(`${who(n.by) || "someone"} · ${when(n.at)}`) : "A note for the team: status, who's on it, what the vendor said…"}" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${saving ? "disabled" : ""}>${n ? `<div class="dim small">${esc(who(n.by))}${n.by ? " · " : ""}${esc(when(n.at))}</div>` : ""}</td>`;
+  }
+  async function saveNote(vid, text) {
+    const old = S.notes && S.notes.get(String(vid));
+    if ((old ? old.note : "") === text.trim()) return;
+    S.busy = "n:" + vid;
+    try { await call("jt_oos_note", "jt.oos_note", { variant_id: Number(vid), note: text });
+      if (text.trim()) S.notes.set(String(vid), { note: text.trim().slice(0, 500), by: ((document.getElementById("whoami") || {}).textContent || "").trim() || (old && old.by) || "", at: new Date().toISOString() });
+      else S.notes.delete(String(vid));
+      S.busy = null; render(); }
+    catch (e) { S.busy = null; render(); note(`<span class="neg">Couldn't save the note: ${esc(msg(e))}</span>`); }
   }
 
   const isOpen = (vid, kind) => S.open && S.open.vid === vid && S.open.kind === kind;
@@ -148,9 +169,9 @@
       <input class="inp" type="search" id="oos-q" value="${esc(S.q)}" placeholder="Product, SKU, vendor or category" style="max-width:240px" autocomplete="off" data-lpignore="true" data-jtnofill="1">
       ${S.how !== "all" ? `<button class="linkbtn small" type="button" data-oos-how="all">Show all</button>` : ""}<span class="muted small right">${n0(L.length)} shown</span>`;
     const th = (k, n, cls) => `<th class="${cls || ""}"><button type="button" class="oos-sort" data-oos-sort="${k}">${n}${S.sort === k ? (S.dir > 0 ? " ▲" : " ▼") : ""}</button></th>`;
-    const confirmRow = (r) => isOpen(r.vid, "archive") ? `<tr class="oos-confirm"><td colspan="7"><div class="note warn">Archive <b>${esc(r.title)}</b> in Shopify?${r.nvar > 1 ? ` That's the whole product (${n0(r.nvar)} variants), none of which has stock.` : ""} It comes off the store and out of Seller Sage's lists; you can un-archive it in Shopify later.
+    const confirmRow = (r) => isOpen(r.vid, "archive") ? `<tr class="oos-confirm"><td colspan="${S.notes ? 8 : 7}"><div class="note warn">Archive <b>${esc(r.title)}</b> in Shopify?${r.nvar > 1 ? ` That's the whole product (${n0(r.nvar)} variants), none of which has stock.` : ""} It comes off the store and out of Seller Sage's lists; you can un-archive it in Shopify later.
         <span class="dbtns"><button class="mini primary" type="button" data-oos-archive-go="${esc(r.vid)}" ${S.busy ? "disabled" : ""}>${S.busy === r.vid ? "Archiving…" : "Yes, archive it"}</button><button class="mini" type="button" data-oos-cancel="1">Cancel</button></span></div></td></tr>` : "";
-    $("oos-body").innerHTML = L.length ? `<div class="tbl-wrap"><table class="oos-t"><thead><tr>${th("product", "Product", "l")}${th("vendor", "Vendor", "l")}${th("cat", "Category", "l")}${th("day", "Went to 0", "l")}<th class="l">How</th>${th("count", "Last count", "l")}<th></th></tr></thead><tbody>${L.map(r => {
+    $("oos-body").innerHTML = L.length ? `<div class="tbl-wrap"><table class="oos-t"><thead><tr>${th("product", "Product", "l")}${th("vendor", "Vendor", "l")}${th("cat", "Category", "l")}${th("day", "Went to 0", "l")}<th class="l">How</th>${th("count", "Last count", "l")}${S.notes ? '<th class="l">Notes</th>' : ""}<th></th></tr></thead><tbody>${L.map(r => {
       const sending = r.moveSt === "pending", failed = r.moveSt === "failed";
       const last = r.countAt ? `<b>${n0(r.counted)}</b> · ${esc(when(r.countAt))}${r.countBy ? ` · ${esc(who(r.countBy))}` : ""}${sending ? `<br><span class="pill warn">Sending to Shopify…</span>` : ""}${failed ? `<br><span class="neg small">Shopify didn't take it: ${esc(r.moveErr)}</span>` : ""}` : `<span class="dim">not counted</span>`;
       return `<tr data-oos-row="${esc(r.vid)}" title="Click for sales, cost and inventory history">
@@ -160,7 +181,7 @@
         <td class="l">${r.day ? `${esc(day(r.day))}<div class="dim small">had ${n0(r.start)}</div>` : '<span class="dim">—</span>'}</td>
         <td class="l">${r.toCount ? `<span class="pill manual" title="Put back on the list to be counted">To count</span> ` : ""}${r.day ? `<span class="pill ${r.how === "adjust" ? "warn" : "other"}" title="${n0(r.sold)} of ${n0(r.start)} sold that day">${HOW[r.how]}</span>` : ""}</td>
         <td class="l">${last}</td>
-        <td class="oos-act">${actCell(r)}</td></tr>${confirmRow(r)}`; }).join("")}</tbody></table></div>`
+        ${noteCell(r.vid)}<td class="oos-act">${actCell(r)}</td></tr>${confirmRow(r)}`; }).join("")}</tbody></table></div>`
       : `<div class="muted small" style="padding:14px">${all.length ? "Nothing matches." : "Nothing out of stock waiting on a decision."}</div>`;
     renderList(); renderIgn();
     if (S.open && S.open.kind === "count") { const i = $("oos-n"); if (i && !S.busy) i.focus(); }
@@ -171,12 +192,12 @@
     sec.hidden = !L; if (!L) return;
     $("oos-ign-sum").textContent = L.length ? `${n0(L.length)} product${L.length === 1 ? "" : "s"}` : "";
     $("oos-ign").innerHTML = !L.length ? `<div class="muted small" style="padding:14px">Nothing ignored. <b>Ignore</b> takes a product off the out-of-stock list and keeps it here; <b>To count</b> puts it back on the list above.</div>`
-      : `<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th><th></th></tr></thead><tbody>${L.map(i => `<tr data-oos-row="${esc(i.vid)}" title="Click for sales, cost and inventory history">
+      : `<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th>${S.notes ? '<th class="l">Notes</th>' : ""}<th></th></tr></thead><tbody>${L.map(i => `<tr data-oos-row="${esc(i.vid)}" title="Click for sales, cost and inventory history">
         <td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}${i.status && i.status !== "ACTIVE" ? ` · ${esc(i.status.toLowerCase())}` : ""}</div></td>
         <td class="l">${esc(i.vendor)}</td><td class="l">${i.day ? esc(day(i.day)) : '<span class="dim">—</span>'}</td>
         <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
         <td class="${i.now > 0 ? "okt" : "dim"}">${n0(i.now)}</td>
-        <td class="oos-act">${S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : `<button class="btn sm" type="button" data-oos-unignore="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Back on the list above while it's still within 7 days of going to 0">Un-ignore</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+        ${noteCell(i.vid)}<td class="oos-act">${S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : `<button class="btn sm" type="button" data-oos-unignore="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Back on the list above while it's still within 7 days of going to 0">Un-ignore</button>`}</td></tr>`).join("")}</tbody></table></div>`;
   }
   async function toCount(vid) {
     S.busy = "c:" + vid; render();
@@ -197,7 +218,7 @@
       const loose = items.filter(i => !i.oid), busyV = S.busy === "v:" + ven;
       return `<div class="oos-ven"><div class="row oos-vhead"><b>${esc(ven || "No vendor")}</b><span class="muted small">${n0(items.length)} product${items.length === 1 ? "" : "s"}</span>
         ${loose.length ? `<button class="btn sm right" type="button" data-oos-topo-v="${esc(ven)}" ${S.busy ? "disabled" : ""} title="Put the ${loose.length} not on a PO yet on ${esc(ven)}'s draft PO (one is started if there isn't one)">${busyV ? "Adding…" : `Put ${loose.length === items.length ? "all" : loose.length} on the draft PO`}</button>` : ""}</div>
-        <div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th title="Shopify available now">On hand</th><th title="On placed POs, not received yet">On order</th><th>Sold 90d</th><th>PAR</th><th>To order</th><th>Cost</th><th class="l">Added</th><th class="l">PO</th><th></th></tr></thead><tbody>${items.map(i => {
+        <div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th title="Shopify available now">On hand</th><th title="On placed POs, not received yet">On order</th><th>Sold 90d</th><th>PAR</th><th>To order</th><th>Cost</th><th class="l">Added</th><th class="l">PO</th>${S.notes ? '<th class="l">Notes</th>' : ""}<th></th></tr></thead><tbody>${items.map(i => {
           const po = i.oid ? `<a class="olink" href="#po/${esc(i.oid)}">${esc(i.po ? i.po : "PO #" + i.oid)}</a> <span class="pill ${i.ost === "draft" ? "pos" : "other"}">${esc(STAGE[i.ost] || i.ost)}</span>` : `<span class="dim">not on a PO</span>`;
           return `<tr data-oos-row="${esc(i.vid)}" title="Click for sales, cost and inventory history"><td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")} · ${esc(catOf(i))}</div></td>
             <td class="${i.now <= 0 ? "dim" : ""}">${n0(i.now)}</td><td class="${i.onOrder ? "" : "dim"}">${i.onOrder ? n0(i.onOrder) : "—"}</td><td>${n0(i.sold90)}</td>
@@ -206,7 +227,7 @@
             <td>${m2(i.cost)}</td>
             <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
             <td class="l">${po}</td>
-            <td class="oos-act"><span class="oos-btns">${!i.oid && S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Take it off To order and back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : ""}<button class="btn sm" type="button" data-oos-an="${esc(i.id)}" title="Sales, days on hand and PAR level">Analyze</button>${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
+            ${noteCell(i.vid)}<td class="oos-act"><span class="oos-btns">${!i.oid && S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Take it off To order and back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : ""}<button class="btn sm" type="button" data-oos-an="${esc(i.id)}" title="Sales, days on hand and PAR level">Analyze</button>${!i.oid ? `<button class="btn sm" type="button" data-oos-topo="${esc(i.id)}" ${S.busy ? "disabled" : ""}>${S.busy === "i:" + i.id ? "Adding…" : "Put on draft PO"}</button>` : ""}${!i.oid || i.ost === "draft" ? `<button class="btn sm" type="button" data-oos-unlist="${esc(i.id)}" ${S.busy ? "disabled" : ""} title="Take it off the To order list${i.oid ? " and the draft PO" : ""}">Remove</button>` : ""}</span></td></tr>`; }).join("")}</tbody></table></div></div>`;
     }).join("");
   }
 
@@ -457,6 +478,11 @@
     if (b.dataset.oosTopar) { orderToPar(b.dataset.oosTopar); return; }
   });
   tab.addEventListener("keydown", (e) => {
+    if (e.target.dataset && e.target.dataset.oosNote) {
+      if (e.key === "Enter") { e.preventDefault(); e.target.blur(); }
+      else if (e.key === "Escape") { const n = S.notes && S.notes.get(e.target.dataset.oosNote); e.target.value = n ? n.note : ""; e.target.blur(); }
+      return;
+    }
     if (e.target.id !== "oos-n") return;
     if (e.key === "Enter") { e.preventDefault(); if (S.open && S.open.kind === "count") saveCount(S.open.vid); }
     else if (e.key === "Escape") { S.open = null; render(); }
@@ -465,6 +491,7 @@
     if (e.target.id === "oos-vendor") { S.vendor = e.target.value; render(); }
     else if (e.target.id === "oos-cat") { S.cat = e.target.value; render(); }
     else if (e.target.dataset.oosQty) setQty(e.target.dataset.oosQty, e.target.value.trim());
+    else if (e.target.dataset.oosNote) saveNote(e.target.dataset.oosNote, e.target.value);
   });
   tab.addEventListener("input", (e) => {
     if (e.target.id !== "oos-q") return;

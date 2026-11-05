@@ -40,3 +40,17 @@ def test_item_stock_months(conn):
     cur.execute("select public.jt_fba_ledger_report('{\"op\":\"state\"}')")
     st = cur.fetchone()[0]
     assert st["pending"] == "r1" and st["fresh"] and st["have"] == 1
+
+
+def test_oos_note(conn):
+    """Out of stock › Notes (migration 215): set, replace, clear with an empty note."""
+    cur = conn.cursor()
+    cur.execute("select jt.oos_note('{\"variant_id\": 7, \"note\": \"  vendor says Dec  \", \"by\": \"b@x.com\"}')")
+    assert cur.fetchone()[0] is True
+    cur.execute("select jt.oos_note('{\"variant_id\": 7, \"note\": \"ships 11/12\", \"by\": \"brit@x.com\"}')")
+    cur.execute("select note, by from jt.oos_notes where variant_id = 7")
+    assert cur.fetchone() == ("ships 11/12", "brit@x.com")
+    cur.execute("select jt.oos_note('{\"variant_id\": 7, \"note\": \"\"}')")
+    assert cur.fetchone()[0] is False
+    cur.execute("select count(*) from jt.oos_notes")
+    assert cur.fetchone()[0] == 0
