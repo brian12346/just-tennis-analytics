@@ -1745,5 +1745,12 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .it-body{display:flex;flex-direction:column;gap:10px;min-height:200px}
 .it-body .h3{margin:10px 0 4px}
 .it-t td,.it-t th{font-variant-numeric:tabular-nums}
+.it-stack{background:none}
+.it-seg{display:block;width:100%}.it-stack .it-seg:first-child{border-radius:3px 3px 0 0}
+.it-jt{background:var(--ch-jt)}.it-anr{background:var(--ch-anr)}.it-fba{background:var(--ch-amz)}.it-fbm{background:color-mix(in srgb,var(--ch-amz) 45%,var(--panel))}
+.it-key{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px}
+.it-asin td{background:var(--line-soft);padding-top:6px;padding-bottom:6px}
+.it-tot td{border-top:2px solid var(--line)}
+.it-card>*,.it-body>*{flex-shrink:0}
 #tab-oos tbody tr[data-oos-row],#pc-table tbody tr[data-item-row]{cursor:pointer}
 #tab-oos tbody tr[data-oos-row]:hover td,#pc-table tbody tr[data-item-row]:hover td{background:var(--line-soft)}

@@ -1,8 +1,11 @@
 // Item detail popup (Nov 4, Brian: on Out of stock, "when you click on a item row, we should pop up the item detail
 // page that has all the sales, cost, and inventory history on that item"). Any page can open it:
 // window.JTItem.open(variantId). One Shopify variant:
-//   Sales     — units, net sales and profit for 30 / 90 / 365 days (Shopify, jt.shopify_sales; plus Amazon FBM orders
-//               shipped from store stock, jt.fbm_decisions), and a 13-month units chart.
+//   Sales     — every channel (Nov 4, Brian: "include sales for all channels including fba … and for all asins"):
+//               Just Tennis (jt.shopify_sales), Ace N Rally (jt.v_anr_sales_costed), and Amazon FBA and FBM from every
+//               seller SKU mapped to the variant (jt.mv_amz_sku_cost → jt.amazon_sku_daily; units × the map's units per
+//               listing; a SKU-day with FBA fees is FBA, else FBM). 30 / 90 / 365 days, a 13-month chart by channel, and
+//               the ASINs and SKUs (jt.amazon_skus()).
 //   Cost      — Shopify cost changes (jt.variant_cost_changes) and every purchase: invoice lines (vendor, invoice, qty,
 //               unit cost) and PO lines.
 //   Inventory — on hand, on order, and the history: went to 0 (jt.stockouts), physical counts (jt.stock_counts),
@@ -45,16 +48,26 @@
     const v = window.JT.int(vid), mine = M.vid;
     try {
       const T = "(now() at time zone 'America/Los_Angeles')::date";
-      const [vr, sum, mon, fbm, costs, bought, pos, inv] = await Promise.all([
+      const U = `(select day, 'jt' ch, units, net, net - net_no_cost - cogs profit from jt.shopify_sales where variant_id = ${v}
+          union all select day, 'anr', units, net, net - net_no_cost - cogs from jt.v_anr_sales_costed where jt_variant_id = ${v}
+          union all select k.day, case when k.fbafees <> 0 then 'fba' else 'fbm' end, k.units * coalesce(m.map_units, 1), k.sales,
+                           case when m.cost is null then 0 else k.net - k.units * m.cost end
+            from jt.mv_amz_sku_cost m join jt.amazon_sku_daily k on k.sku = m.sku where m.variant_id = ${v} and k.lines > 0) u`;
+      const W = (n) => `day > ${T} - ${n}`;
+      const [vr, sum, mon, skus, ksum, costs, bought, pos, inv] = await Promise.all([
         window.JT.rows(["v.product_title", "v.variant_title", "v.sku", "v.barcode", "v.vendor", "v.product_type", "v.status", "v.price::text", "v.unit_cost::text", "v.product_id::text",
           "jt.shopify_qty_now(v.variant_id)::text", "v.tracked::text"], `from jt.variants v where v.variant_id = ${v}`, true),
-        window.JT.rows([30, 90, 365].flatMap(n => [`coalesce(sum(units) filter (where day > ${T} - ${n}), 0)::text`, `coalesce(sum(net) filter (where day > ${T} - ${n}), 0)::text`,
-          `coalesce(sum(net - net_no_cost - cogs) filter (where day > ${T} - ${n}), 0)::text`]).concat(["max(day)::text", "min(day)::text", "coalesce(sum(units), 0)::text"]),
-          `from jt.shopify_sales where variant_id = ${v}`, true),
-        window.JT.rows(["to_char(date_trunc('month', day), 'YYYY-MM')", "sum(units)::text", "sum(net)::text"],
-          `from jt.shopify_sales where variant_id = ${v} and day >= (date_trunc('month', current_date) - interval '12 months')::date group by 1 order by 1`, true),
-        window.JT.rows(["to_char(date_trunc('month', decided_at), 'YYYY-MM')", "sum(units)::text"],
-          `from jt.fbm_decisions where variant_id = ${v} and decision = 'decrement' and status = 'done' and decided_at >= date_trunc('month', current_date) - interval '12 months' group by 1`, true).catch(() => []),
+        window.JT.rows(["ch"].concat([30, 90, 365].flatMap(n => [`coalesce(sum(units) filter (where ${W(n)}), 0)::text`, `coalesce(sum(net) filter (where ${W(n)}), 0)::text`,
+          `coalesce(sum(profit) filter (where ${W(n)}), 0)::text`]), ["max(day)::text", "min(day)::text", "coalesce(sum(units), 0)::text"]),
+          `from ${U} group by ch`, true),
+        window.JT.rows(["to_char(date_trunc('month', day), 'YYYY-MM')", "ch", "sum(units)::text", "sum(net)::text"],
+          `from ${U} where day >= (date_trunc('month', current_date) - interval '12 months')::date group by 1, 2 order by 1`, true),
+        window.JT.rows(["m.sku", "coalesce(s.asin, '')", "coalesce(s.title, '')", "coalesce(s.ch, '')", "coalesce(s.amz_status, '')", "coalesce(s.status, s.suggest, '')", "coalesce(s.ful, s.suggest_ful, '')",
+          "coalesce(s.fba_available, 0)::text", "coalesce(s.fba_inbound, 0)::text", "coalesce(s.awd, 0)::text", "coalesce(s.qty, 0)::text", "coalesce(s.price, 0)::text", "coalesce(m.map_units, 1)::text"],
+          `from jt.mv_amz_sku_cost m left join jt.amazon_skus() s on s.sku = m.sku where m.variant_id = ${v}`, true).catch(() => []),
+        window.JT.rows(["k.sku"].concat([30, 90, 365].map(n => `coalesce(sum(k.units) filter (where k.day > ${T} - ${n}), 0)::text`),
+          [`coalesce(sum(k.sales) filter (where k.day > ${T} - 365), 0)::text`, "max(k.day)::text", "bool_or(k.fbafees <> 0)::text"]),
+          `from jt.mv_amz_sku_cost m join jt.amazon_sku_daily k on k.sku = m.sku where m.variant_id = ${v} and k.lines > 0 group by 1`, true).catch(() => []),
         window.JT.rows(["changed_on::text", "old_cost::text", "new_cost::text", "price::text", "coalesce(flag, '')"],
           `from jt.variant_cost_changes where variant_id = ${v} order by changed_on desc, id desc limit 60`, true).catch(() => []),
         window.JT.rows(["i.id::text", "coalesce(i.invoice_date, i.created_at::date)::text", "i.vendor", "i.invoice_no", "sum(l.qty)::text", "(sum(l.amount) / nullif(sum(l.qty), 0))::text",
@@ -75,14 +88,20 @@
                    from jt.prep_moves p where p.variant_id = ${v}) t order by at desc limit 150`, true).catch(() => []),
       ]);
       if (M.vid !== mine) return;
-      const x = vr[0] || [], s = sum[0] || [];
+      const x = vr[0] || [];
+      const chans = new Map(sum.map(r => [r[0], { win: [0, 1, 2].map(i => ({ units: +r[1 + i * 3] || 0, net: +r[2 + i * 3] || 0, profit: +r[3 + i * 3] || 0 })), last: r[10] || "", first: r[11] || "", all: +r[12] || 0 }]));
+      const ks = new Map(ksum.map(r => [r[0], { u30: +r[1] || 0, u90: +r[2] || 0, u365: +r[3] || 0, net365: +r[4] || 0, last: r[5] || "", fba: r[6] === "true" }]));
+      const tot = (f) => [...chans.values()].reduce((a, c) => a + f(c), 0);
+      const lastOf = [...chans.values()].map(c => c.last).filter(Boolean).sort(), firstOf = [...chans.values()].map(c => c.first).filter(Boolean).sort();
       const onOrder = pos.filter(p => ["ordered", "invoiced", "partial"].includes(p[3])).reduce((a, p) => a + Math.max(0, (+p[4] || 0) - (+p[5] || 0)), 0);
       M.data = {
         title: x[0] || "", vt: x[1] && x[1] !== "Default Title" ? x[1] : "", sku: x[2] || "", upc: x[3] || "", vendor: x[4] || "", type: x[5] || "", status: x[6] || "",
         price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8], pid: x[9] || "", qty: +x[10] || 0, tracked: x[11] !== "false", onOrder,
-        win: [30, 90, 365].map((n, i) => ({ n, units: +s[i * 3] || 0, net: +s[i * 3 + 1] || 0, profit: +s[i * 3 + 2] || 0 })),
-        last: s[9] || "", first: s[10] || "", allUnits: +s[11] || 0,
-        months: mon.map(r => ({ mo: r[0], units: +r[1] || 0, net: +r[2] || 0 })), fbm: new Map(fbm.map(r => [r[0], +r[1] || 0])),
+        win: [30, 90, 365].map((n, i) => ({ n, units: tot(c => c.win[i].units), net: tot(c => c.win[i].net), profit: tot(c => c.win[i].profit) })),
+        last: lastOf[lastOf.length - 1] || "", first: firstOf[0] || "", allUnits: tot(c => c.all), chans,
+        months: mon.map(r => ({ mo: r[0], ch: r[1], units: +r[2] || 0, net: +r[3] || 0 })),
+        skus: skus.map(r => ({ sku: r[0], asin: r[1], title: r[2], lch: r[3], amz: r[4], status: r[5], ful: r[6] || r[3] || (ks.get(r[0]) && ks.get(r[0]).fba ? "FBA" : ""), fba: (+r[7] || 0) + (+r[8] || 0), awd: +r[9] || 0,
+          qty: +r[10] || 0, price: +r[11] || 0, per: +r[12] || 1, sold: ks.get(r[0]) || { u30: 0, u90: 0, u365: 0, net365: 0, last: "" } })),
         costs: costs.map(r => ({ day: r[0], old: r[1] == null ? null : +r[1], neu: r[2] == null ? null : +r[2], price: r[3] == null ? null : +r[3], flag: r[4] })),
         bought: bought.map(r => ({ id: r[0], day: r[1], vendor: r[2] || "", no: r[3] || "", qty: +r[4] || 0, unit: r[5] == null ? (r[6] == null ? null : +r[6]) : +r[5], list: r[6] == null ? null : +r[6], oid: r[7], got: r[8] == null ? null : +r[8] })),
         pos: pos.map(r => ({ id: r[0], vendor: r[1] || "", po: r[2] || "", st: r[3] || "", ordered: +r[4] || 0, got: +r[5] || 0, cost: r[6] == null ? null : +r[6], day: r[7] || "", eta: r[8] || "" })),
@@ -105,7 +124,7 @@
         `${esc(D.vendor || "No vendor")} · ${esc(D.type || "No category")}${D.status && D.status !== "ACTIVE" ? ` · ${esc(D.status.toLowerCase())}` : ""}`)}
       <div class="small muted it-ids"><span class="mono">${esc(D.sku || "no SKU")}</span>${D.upc ? ` · UPC <span class="mono">${esc(D.upc)}</span>` : ""} · price <b>${m2(D.price)}</b> · cost <b>${m2(D.cost)}</b>${margin != null ? ` · margin <b>${Math.round(margin * 100)}%</b>` : ""}</div>
       <section class="kpis it-kpis">
-        ${k("On hand", n0(D.qty), D.tracked ? "Shopify available now" : "not tracked in Shopify", D.qty <= 0 ? "warnk" : "")}
+        ${k("On hand", n0(D.qty), `${D.tracked ? "Shopify available now" : "not tracked in Shopify"}${amzStock(D) ? ` · ${n0(amzStock(D))} at Amazon` : ""}`, D.qty <= 0 ? "warnk" : "")}
         ${k("On order", n0(D.onOrder), "placed POs, not received")}
         ${k("Sold 30 days", n0(w[0].units), `${m0(w[0].net)} net`)}
         ${k("Sold 90 days", n0(w[1].units), `${m0(w[1].net)} net · ${m0(w[1].profit)} profit`)}
@@ -116,20 +135,52 @@
     card.innerHTML = top + `<div class="it-body">${M.tab === "sales" ? sales(D) : M.tab === "cost" ? cost(D) : inventory(D)}</div>`;
   }
 
+  const CH = [["jt", "Just Tennis"], ["anr", "Ace N Rally"], ["fba", "Amazon FBA"], ["fbm", "Amazon FBM"]];
+  const amzStock = (D) => D.skus.reduce((a, k) => a + (k.fba + k.awd) * k.per, 0);
+  const STAT = { active: "Active", inactive_oos: "Inactive – out of stock", inactive_other: "Inactive – other", closed: "Closed" };
+
   function sales(D) {
     const months = []; { const d0 = new Date(); for (let i = 12; i >= 0; i--) { const d = new Date(d0.getFullYear(), d0.getMonth() - i, 1); months.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")); } }
-    const by = new Map(D.months.map(x => [x.mo, x]));
-    const rows = months.map(mo => { const x = by.get(mo) || { units: 0, net: 0 }, f = D.fbm.get(mo) || 0; return { mo, units: x.units, net: x.net, fbm: f, tot: x.units + f }; });
+    const by = new Map(); for (const x of D.months) { const o = by.get(x.mo) || { net: 0 }; o[x.ch] = (o[x.ch] || 0) + x.units; o.net += x.net; by.set(x.mo, o); }
+    const used = CH.filter(([c]) => D.chans.has(c));
+    const rows = months.map(mo => { const o = by.get(mo) || { net: 0 }; return { mo, o, tot: CH.reduce((a, [c]) => a + (o[c] || 0), 0) }; });
     const max = Math.max(1, ...rows.map(r => r.tot));
     const bars = rows.map(r => { const lab = new Date(r.mo + "-15").toLocaleDateString("en-US", { month: "short" });
-      return `<div class="oos-bar" title="${esc(lab)} ${r.mo.slice(0, 4)}: ${n0(r.tot)} sold${r.fbm ? ` (${n0(r.fbm)} Amazon FBM)` : ""} · ${m0(r.net)} net"><span class="oos-bv">${r.tot ? n0(r.tot) : ""}</span><span class="oos-bf" style="height:${Math.round(r.tot / max * 100)}%"><span class="oos-bfbm" style="height:${r.tot ? Math.round(r.fbm / r.tot * 100) : 0}%"></span></span><span class="oos-bl">${esc(lab)}</span></div>`; }).join("");
+      const segs = CH.slice().reverse().filter(([c]) => r.o[c] > 0).map(([c]) => `<span class="it-seg it-${c}" style="height:${(r.o[c] / r.tot * 100).toFixed(1)}%"></span>`).join("");
+      const tip = `${lab} ${r.mo.slice(0, 4)}: ${n0(r.tot)} sold${used.length > 1 ? " (" + CH.filter(([c]) => r.o[c] > 0).map(([c, n]) => `${n} ${n0(r.o[c])}`).join(", ") + ")" : ""} · ${m0(r.o.net)} net`;
+      return `<div class="oos-bar" title="${esc(tip)}"><span class="oos-bv">${r.tot ? n0(r.tot) : ""}</span><span class="oos-bf it-stack" style="height:${Math.round(r.tot / max * 100)}%">${segs}</span><span class="oos-bl">${esc(lab)}</span></div>`; }).join("");
     const avg = (wn) => wn.units > 0 ? m2(wn.net / wn.units) : "—";
-    return `<div class="row small"><b>Units sold by month</b><span class="muted">Shopify${rows.some(r => r.fbm) ? ' · <span class="oos-key"></span> Amazon FBM (from store stock)' : ""}</span></div>
+    const key = used.map(([c, n]) => `<span class="it-key it-${c}"></span> ${n}`).join(" &nbsp; ");
+    const chRow = ([c, n]) => { const x = D.chans.get(c);
+      return `<tr><td class="l"><span class="it-key it-${c}"></span> ${n}</td>${x.win.map(wn => `<td>${n0(wn.units)}<div class="meta">${m0(wn.net)}</div></td>`).join("")}<td class="${x.win[2].profit < 0 ? "neg" : ""}">${m0(x.win[2].profit)}</td><td class="l small muted">${x.last ? day(x.last) : ""}</td></tr>`; };
+    const chTbl = used.length ? `<div class="tbl-wrap"><table class="it-t"><thead><tr><th class="l">Channel</th><th>30 days</th><th>90 days</th><th>12 months</th><th>Profit 12 mo</th><th class="l">Last sold</th></tr></thead><tbody>${used.map(chRow).join("")}
+        <tr class="it-tot"><td class="l"><b>All channels</b></td>${D.win.map(wn => `<td><b>${n0(wn.units)}</b><div class="meta">${m0(wn.net)}</div></td>`).join("")}<td class="${D.win[2].profit < 0 ? "neg" : ""}"><b>${m0(D.win[2].profit)}</b></td><td class="l small muted">${D.last ? day(D.last) : ""}</td></tr></tbody></table></div>`
+      : '<div class="muted small">No sales recorded on any channel.</div>';
+    return `<div class="row small"><b>Units sold by month</b><span class="muted">${key}</span></div>
       <div class="oos-bars">${bars}</div>
-      <div class="tbl-wrap"><table class="it-t"><thead><tr><th class="l">Period</th><th>Units</th><th>Net sales</th><th>Avg price</th><th>Profit</th></tr></thead><tbody>
+      <h3 class="h3">By channel</h3>${chTbl}
+      <div class="tbl-wrap"><table class="it-t"><thead><tr><th class="l">All channels</th><th>Units</th><th>Net sales</th><th>Avg price</th><th>Profit</th></tr></thead><tbody>
         ${D.win.map(wn => `<tr><td class="l">Last ${wn.n === 365 ? "12 months" : wn.n + " days"}</td><td>${n0(wn.units)}</td><td>${m0(wn.net)}</td><td>${avg(wn)}</td><td class="${wn.profit < 0 ? "neg" : ""}">${m0(wn.profit)}</td></tr>`).join("")}
         <tr><td class="l">All time</td><td>${n0(D.allUnits)}</td><td colspan="3" class="muted small">${D.first ? `since ${day(D.first)}` : ""}</td></tr></tbody></table></div>
-      <div class="muted small">Profit = net sales − cost of goods (sales recorded without a cost are left out). Amazon FBA sales of this product's ASINs are on the Amazon pages.</div>`;
+      ${asins(D)}
+      <div class="muted small">Units are of this item (a 2-pack listing sold once counts 2). Profit = net sales − cost of goods; for Amazon it's after Amazon's selling and FBA fees. Sales recorded without a cost are left out of profit. Amazon sales count every seller SKU mapped to this item.</div>`;
+  }
+
+  function asins(D) {
+    if (!D.skus.length) return `<h3 class="h3">Amazon ASINs</h3><div class="muted small">No Amazon listings are mapped to this item. Map them on Setup › Amazon mapping.</div>`;
+    const g = new Map(); for (const k of D.skus) { const a = k.asin || ""; if (!g.has(a)) g.set(a, []); g.get(a).push(k); }
+    const list = [...g.entries()].map(([a, L]) => ({ a, L: L.sort((x, y) => y.sold.u365 - x.sold.u365 || x.sku.localeCompare(y.sku)), u: L.reduce((s, k) => s + k.sold.u365 * k.per, 0) })).sort((x, y) => y.u - x.u);
+    const rows = list.map(({ a, L }) => {
+      const t = L.find(k => k.title);
+      const head = `<tr class="it-asin"><td class="l" colspan="8">${a ? `<a class="olink mono" href="https://www.amazon.com/dp/${esc(a)}" target="_blank" rel="noopener">${esc(a)}</a>` : '<span class="muted">No ASIN</span>'}${t ? ` <span class="small muted">${esc(t.title.slice(0, 90))}</span>` : ""}</td></tr>`;
+      return head + L.map(k => `<tr><td class="l"><span class="mono small">${esc(k.sku)}</span>${k.per !== 1 ? ` <span class="pill other" title="Units of this item per listing unit">×${+k.per.toFixed(2)}</span>` : ""}</td>
+        <td class="l">${k.ful ? `<span class="pill ${k.ful === "FBA" ? "ok" : "pos"}">${esc(k.ful)}</span>` : ""}</td>
+        <td class="l small">${esc(STAT[k.status] || k.status || k.amz || "")}${k.price ? ` <span class="muted">· ${m2(k.price)}</span>` : ""}</td>
+        <td title="FBA available + inbound${k.awd ? ", plus AWD" : ""}">${k.fba || k.awd ? n0(k.fba + k.awd) : '<span class="dim">—</span>'}</td>
+        <td>${n0(k.sold.u30)}</td><td>${n0(k.sold.u90)}</td><td>${n0(k.sold.u365)}<div class="meta">${m0(k.sold.net365)}</div></td><td class="l small muted">${k.sold.last ? day(k.sold.last) : ""}</td></tr>`).join("");
+    }).join("");
+    return `<h3 class="h3">Amazon ASINs · ${g.size} ASIN${g.size === 1 ? "" : "s"}, ${D.skus.length} seller SKU${D.skus.length === 1 ? "" : "s"}</h3>
+      <div class="tbl-wrap"><table class="it-t"><thead><tr><th class="l">Seller SKU</th><th class="l">Ships</th><th class="l">Status</th><th>FBA stock</th><th>Sold 30d</th><th>90d</th><th>12 mo</th><th class="l">Last sold</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
   function cost(D) {
