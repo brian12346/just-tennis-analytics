@@ -16,7 +16,7 @@
   const m2 = (x) => x == null ? "—" : "$" + Number(x).toFixed(2);
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const TZ = "America/Los_Angeles";
-  const S = { rows: null, list: null, err: null, loading: false, how: "all", vendor: "all", cat: "all", q: "", open: null, busy: null, sort: "day", dir: -1 };
+  const S = { isel: new Set(),  rows: null, list: null, err: null, loading: false, how: "all", vendor: "all", cat: "all", q: "", open: null, busy: null, sort: "day", dir: -1 };
   const msg = (e) => (window.JT.message ? window.JT.message(e) : (e && e.message) || String(e));
   const day = (d) => d ? new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : "";
   const when = (t) => { const d = window.JTDate ? window.JTDate.parseTime(t) : new Date(t); return !t || isNaN(d) ? "" : d.toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); };
@@ -80,8 +80,12 @@
            where i.closed_at is null and i.dest = 'shopify' order by v.vendor, v.product_title, v.variant_title`, refresh),
         // ignored (migration 203): kept visible in their own table; a product that goes to 0 again after it was ignored comes back
         window.JT.rows(["g.variant_id::text", "v.product_id::text", "v.product_title", "v.variant_title", "v.sku", "v.vendor", "g.at::text", "g.by", "g.note",
-          "jt.shopify_qty_now(v.variant_id)::text", "(select max(day) from jt.stockouts s where s.variant_id = g.variant_id)::text", "coalesce(v.status, '')"],
-          `from jt.oos_ignored g join jt.variants v on v.variant_id = g.variant_id order by g.at desc`, refresh).catch(() => null),
+          "jt.shopify_qty_now(v.variant_id)::text", "(select max(day) from jt.stockouts s where s.variant_id = g.variant_id)::text", "coalesce(v.status, '')",
+          "(select coalesce(sum(greatest(jt.shopify_qty_now(o.variant_id), 0)), 0) from jt.variants o where o.product_id = v.product_id and o.removed_at is null)::text",
+          "(select count(*) from jt.variants o where o.product_id = v.product_id and o.removed_at is null)::text", "a.status", "a.error"],
+          `from jt.oos_ignored g join jt.variants v on v.variant_id = g.variant_id
+           left join lateral (select status, error from jt.product_archives x where x.product_id = v.product_id order by created_at desc limit 1) a on true
+           where coalesce(v.status, '') <> 'ARCHIVED' and coalesce(a.status, '') <> 'done' order by g.at desc`, refresh).catch(() => null),
         // notes (migration 215): one per product, on its row in every table
         window.JT.rows(["variant_id::text", "note", "by", "at::text"], "from jt.oos_notes", refresh).catch(() => null),
       ]);
@@ -92,7 +96,8 @@
         others: +x[17] || 0, nvar: +x[18] || 1, arSt: x[19] || "", arErr: x[20] || "", arAt: x[21], toCount: x[22] === "true" }));
       S.seen = r.length ? r[0][16] : null;
       S.ign = g ? g.map(x => ({ vid: x[0], pid: x[1], title: x[2], vt: x[3] && x[3] !== "Default Title" ? x[3] : "", sku: x[4] || "", vendor: x[5] || "", at: x[6], by: x[7] || "", note: x[8] || "",
-        now: +x[9] || 0, day: x[10] || "", status: x[11] || "" })) : null;
+        now: +x[9] || 0, day: x[10] || "", status: x[11] || "", stock: +x[12] || 0, nvar: +x[13] || 1, arSt: x[14] || "", arErr: x[15] || "" })) : null;
+      if (S.ign) { const keep = new Set(S.ign.map(i => i.vid)); for (const v of [...S.isel]) if (!keep.has(v)) S.isel.delete(v); }
       { const ig = new Map((S.ign || []).map(x => [x.vid, x])); const ymd = (t) => { const d = window.JTDate ? window.JTDate.parseTime(t) : new Date(t); return isNaN(d) ? "" : d.toLocaleDateString("en-CA", { timeZone: TZ }); };
         S.rows = S.rows.filter(x => { const i = ig.get(x.vid); return !i || (x.day && x.day > ymd(i.at)); }); }
       S.list = l.map(x => ({ id: x[0], vid: x[1], pid: x[2], title: x[3], vt: x[4] && x[4] !== "Default Title" ? x[4] : "", sku: x[5] || "", vendor: x[6] || "",
@@ -187,17 +192,55 @@
     if (S.open && S.open.kind === "count") { const i = $("oos-n"); if (i && !S.busy) i.focus(); }
   }
 
+  // Ignored: tick several to put them back To count or archive them together (Nov 5, Brian: "ignore for a bit and then
+  // archive in bunches later"). Archiving takes the whole product off the store, so a product with stock in any variant
+  // can't be archived; two ticked variants of one product archive it once.
+  const canArchIgn = (i) => i.stock <= 0 && i.arSt !== "pending";
   function renderIgn() {
     const sec = $("oos-ign-sec"), L = S.ign; if (!sec) return;
     sec.hidden = !L; if (!L) return;
     $("oos-ign-sum").textContent = L.length ? `${n0(L.length)} product${L.length === 1 ? "" : "s"}` : "";
-    $("oos-ign").innerHTML = !L.length ? `<div class="muted small" style="padding:14px">Nothing ignored. <b>Ignore</b> takes a product off the out-of-stock list and keeps it here; <b>To count</b> puts it back on the list above.</div>`
-      : `<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th>${S.notes ? '<th class="l">Notes</th>' : ""}<th></th></tr></thead><tbody>${L.map(i => `<tr data-oos-row="${esc(i.vid)}" title="Click for sales, cost and inventory history">
-        <td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}${i.status && i.status !== "ACTIVE" ? ` · ${esc(i.status.toLowerCase())}` : ""}</div></td>
+    if (!L.length) { $("oos-ign").innerHTML = `<div class="muted small" style="padding:14px">Nothing ignored. <b>Ignore</b> takes a product off the out-of-stock list and keeps it here; <b>To count</b> puts it back on the list above; <b>Archive</b> takes it off the store.</div>`; return; }
+    const sel = L.filter(i => S.isel.has(i.vid)), arch = sel.filter(canArchIgn), prods = new Set(arch.map(i => i.pid)), busy = !!S.busy;
+    const all = L.length && sel.length === L.length;
+    const bar = sel.length ? `<div class="row oos-bulk"><b>${n0(sel.length)} selected</b>
+        ${S.hasRecount ? `<button class="btn sm" type="button" data-oos-ibulk="tocount" ${busy ? "disabled" : ""}>${S.busy === "ib:tocount" ? "Putting back…" : "To count"}</button>` : ""}
+        <button class="btn sm" type="button" data-oos-ibulk="archive" ${busy || !arch.length ? "disabled" : ""} title="${arch.length < sel.length ? `${n0(sel.length - arch.length)} still have stock in a variant (or are archiving already) and are skipped` : "Archive these products in Shopify"}">${S.busy === "ib:archive" ? "Archiving…" : `Archive ${n0(prods.size)} product${prods.size === 1 ? "" : "s"}`}</button>
+        ${arch.length < sel.length ? `<span class="small muted">${n0(sel.length - arch.length)} can't be archived: stock left in a variant</span>` : ""}
+        <button class="linkbtn small right" type="button" data-oos-ibulk="clear">Clear</button></div>` : "";
+    const conf = S.open && S.open.kind === "iarch" ? `<div class="note warn">Archive <b>${n0(prods.size)} product${prods.size === 1 ? "" : "s"}</b> in Shopify? ${[...new Set(arch.map(i => i.title))].slice(0, 6).map(esc).join(", ")}${prods.size > 6 ? "…" : ""}. Each comes off the store with all its variants and out of Seller Sage's lists; you can un-archive in Shopify later.
+        <span class="dbtns"><button class="mini primary" type="button" data-oos-ibulk="archive-go" ${busy ? "disabled" : ""}>${S.busy === "ib:archive" ? "Archiving…" : "Yes, archive them"}</button><button class="mini" type="button" data-oos-cancel="1">Cancel</button></span></div>` : "";
+    const one = (i) => isOpen(i.vid, "iarchive") ? `<tr class="oos-confirm"><td colspan="${S.notes ? 9 : 8}"><div class="note warn">Archive <b>${esc(i.title)}</b> in Shopify?${i.nvar > 1 ? ` That's the whole product (${n0(i.nvar)} variants), none of which has stock.` : ""} It comes off the store and out of Seller Sage's lists; you can un-archive it in Shopify later.
+        <span class="dbtns"><button class="mini primary" type="button" data-oos-iarch-go="${esc(i.vid)}" ${busy ? "disabled" : ""}>${S.busy === "ia:" + i.vid ? "Archiving…" : "Yes, archive it"}</button><button class="mini" type="button" data-oos-cancel="1">Cancel</button></span></div></td></tr>` : "";
+    $("oos-ign").innerHTML = `${bar}${conf}<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="oos-ck"><input type="checkbox" id="oos-isel-all" aria-label="Select all ignored" ${all ? "checked" : ""}></th><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th>${S.notes ? '<th class="l">Notes</th>' : ""}<th></th></tr></thead><tbody>${L.map(i => `<tr data-oos-row="${esc(i.vid)}" title="Click for sales, cost and inventory history" class="${S.isel.has(i.vid) ? "oos-sel" : ""}">
+        <td class="oos-ck"><input type="checkbox" data-oos-isel="${esc(i.vid)}" aria-label="Select ${esc(i.title)}" ${S.isel.has(i.vid) ? "checked" : ""}></td>
+        <td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}${i.status && i.status !== "ACTIVE" ? ` · ${esc(i.status.toLowerCase())}` : ""}</div>${i.arSt === "failed" ? `<div class="neg small">Couldn't archive: ${esc(i.arErr)}</div>` : ""}</td>
         <td class="l">${esc(i.vendor)}</td><td class="l">${i.day ? esc(day(i.day)) : '<span class="dim">—</span>'}</td>
         <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
-        <td class="${i.now > 0 ? "okt" : "dim"}">${n0(i.now)}</td>
-        ${noteCell(i.vid)}<td class="oos-act">${S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Put it back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : `<button class="btn sm" type="button" data-oos-unignore="${esc(i.vid)}" ${S.busy ? "disabled" : ""} title="Back on the list above while it's still within 7 days of going to 0">Un-ignore</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+        <td class="${i.now > 0 ? "okt" : "dim"}">${n0(i.now)}${i.stock > i.now ? `<div class="dim small" title="Stock in the product's other variants">${n0(i.stock - i.now)} in other variants</div>` : ""}</td>
+        ${noteCell(i.vid)}<td class="oos-act">${i.arSt === "pending" ? '<span class="pill warn">Archiving in Shopify…</span>' : `<span class="oos-btns">${S.hasRecount ? `<button class="btn sm" type="button" data-oos-tocount="${esc(i.vid)}" ${busy ? "disabled" : ""} title="Put it back on the list above to be counted">${S.busy === "c:" + i.vid ? "…" : "To count"}</button>` : `<button class="btn sm" type="button" data-oos-unignore="${esc(i.vid)}" ${busy ? "disabled" : ""} title="Back on the list above while it's still within 7 days of going to 0">Un-ignore</button>`}
+          <button class="btn sm" type="button" data-oos-iarch="${esc(i.vid)}" ${busy || !canArchIgn(i) ? "disabled" : ""} title="${canArchIgn(i) ? "Not carrying it any more: archive the product in Shopify" : `${n0(i.stock)} unit${i.stock === 1 ? "" : "s"} still in stock — archiving takes the whole product off the store`}">Archive</button></span>`}</td></tr>${one(i)}`).join("")}</tbody></table></div>`;
+  }
+  async function archiveIgn(vids, key) {
+    const list = (S.ign || []).filter(i => vids.includes(i.vid) && canArchIgn(i)), seen = new Set(), done = [], bad = [];
+    S.busy = key; render();
+    for (const i of list) {
+      if (seen.has(i.pid)) continue; seen.add(i.pid);
+      try { await call("jt_product_archive", "jt.product_archive", { variant_id: Number(i.vid) }); done.push(i.title); }
+      catch (e) { bad.push(`${esc(i.title)}: ${esc(msg(e))}`); }
+    }
+    S.busy = null; S.open = null; for (const v of vids) S.isel.delete(v);
+    note((done.length ? `Archiving <b>${n0(done.length)} product${done.length === 1 ? "" : "s"}</b> in Shopify. They leave this list once Shopify has them (a minute or two).` : "")
+      + (bad.length ? `<div class="neg">Couldn't archive ${bad.length}: ${bad.join("; ")}</div>` : ""));
+    await load(true);
+    if (done.length) setTimeout(() => load(true), 90000);
+  }
+  async function toCountMany(vids) {
+    S.busy = "ib:tocount"; render(); let n = 0; const bad = [];
+    for (const v of vids) { try { await call("jt_oos_to_count", "jt.oos_to_count", { variant_id: Number(v) }); n++; S.isel.delete(v); } catch (e) { bad.push(esc(msg(e))); } }
+    S.busy = null;
+    note(`${n ? `<b>${n0(n)}</b> back on the list above, marked <b>To count</b>.` : ""}${bad.length ? `<div class="neg">${bad.length} couldn't be put back: ${bad[0]}</div>` : ""}`);
+    await load(true);
   }
   async function toCount(vid) {
     S.busy = "c:" + vid; render();
@@ -475,6 +518,16 @@
     if (b.dataset.oosIgnore) { ignore(b.dataset.oosIgnore, true); return; }
     if (b.dataset.oosUnignore) { ignore(b.dataset.oosUnignore, false); return; }
     if (b.dataset.oosTocount) { toCount(b.dataset.oosTocount); return; }
+    if (b.dataset.oosIarch) { S.open = { vid: b.dataset.oosIarch, kind: "iarchive" }; render(); return; }
+    if (b.dataset.oosIarchGo) { archiveIgn([b.dataset.oosIarchGo], "ia:" + b.dataset.oosIarchGo); return; }
+    if (b.dataset.oosIbulk) {
+      const k = b.dataset.oosIbulk, vids = [...S.isel];
+      if (k === "clear") { S.isel.clear(); S.open = null; render(); }
+      else if (k === "tocount") toCountMany(vids);
+      else if (k === "archive") { S.open = { kind: "iarch" }; render(); }
+      else if (k === "archive-go") archiveIgn(vids, "ib:archive");
+      return;
+    }
     if (b.dataset.oosTopar) { orderToPar(b.dataset.oosTopar); return; }
   });
   tab.addEventListener("keydown", (e) => {
@@ -492,6 +545,8 @@
     else if (e.target.id === "oos-cat") { S.cat = e.target.value; render(); }
     else if (e.target.dataset.oosQty) setQty(e.target.dataset.oosQty, e.target.value.trim());
     else if (e.target.dataset.oosNote) saveNote(e.target.dataset.oosNote, e.target.value);
+    else if (e.target.dataset.oosIsel) { if (e.target.checked) S.isel.add(e.target.dataset.oosIsel); else S.isel.delete(e.target.dataset.oosIsel); if (S.open && S.open.kind === "iarch") S.open = null; render(); }
+    else if (e.target.id === "oos-isel-all") { if (e.target.checked) (S.ign || []).forEach(i => S.isel.add(i.vid)); else S.isel.clear(); S.open = null; render(); }
   });
   tab.addEventListener("input", (e) => {
     if (e.target.id !== "oos-q") return;

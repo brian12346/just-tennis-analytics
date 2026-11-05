@@ -1755,6 +1755,7 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .it-l-store{background:var(--ch-jt)}.it-l-prep{background:var(--brand-gold)}.it-l-fba{background:var(--ch-amz)}.it-l-awd{background:color-mix(in srgb,var(--ch-amz) 45%,var(--panel))}
 .it-now{opacity:.75}
 .it-burn{gap:18px;flex-wrap:wrap}
+#tab-oos .oos-ck{width:28px;text-align:center}#tab-oos tr.oos-sel td{background:var(--sales-soft)}#tab-oos .oos-bulk{gap:8px;align-items:center;padding:8px 10px;margin-bottom:6px;background:var(--line-soft);border-radius:8px}
 #tab-oos .oos-notec{min-width:150px}#tab-oos .oos-note{width:100%;min-width:130px}
 #tab-oos tbody tr[data-oos-row],#pc-table tbody tr[data-item-row]{cursor:pointer}
 #tab-oos tbody tr[data-oos-row]:hover td,#pc-table tbody tr[data-item-row]:hover td{background:var(--line-soft)}
