@@ -10,8 +10,10 @@
 //               unit cost) and PO lines.
 //   Inventory — on hand, on order, and the history: went to 0 (jt.stockouts), physical counts (jt.stock_counts),
 //               Shopify stock changes made in Seller Sage (receiving, counts, transfers; jt.shopify_stock_moves) and
-//               prep-center moves (jt.prep_moves). Above that, Shopify on hand by month (jt.inventory_monthly, migration
-//               213) as bars, and a month table with what came in and went out and the burn down / burn up rate per day.
+//               prep-center moves (jt.prep_moves). Above that, on hand at each month end in every location — Shopify store,
+//               prep center, Amazon FBA (sellable) and AWD (jt.item_stock_months, migrations 213-214) — as stacked bars, and a
+//               month table: units sold on every channel, what came in (end − start + sold, so moves between locations
+//               cancel out), and the burn down / burn up rate per day.
 (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const n0 = (x) => Math.round(Number(x) || 0).toLocaleString();
@@ -87,8 +89,7 @@
                    from jt.shopify_stock_moves m where m.variant_id = ${v} and coalesce(m.set_to, -1) < 0
                  union all select p.at, 'prep', p.kind, p.qty_change, p.qty_after, coalesce(nullif(p.note, ''), p.shipment), p.by_user, ''
                    from jt.prep_moves p where p.variant_id = ${v}) t order by at desc limit 150`, true).catch(() => []),
-        window.JT.rows(["to_char(month, 'YYYY-MM')", "start_units::text", "end_units::text", "sold::text"],
-          `from jt.inventory_monthly where variant_id = ${v} and month >= (date_trunc('month', current_date) - interval '12 months')::date order by month`, true).catch(() => []),
+        window.JT.rows(["to_char(month, 'YYYY-MM')", "store::text", "prep::text", "fba::text", "awd::text"], `from jt.item_stock_months(${v}, 14)`, true).catch(() => []),
       ]);
       if (M.vid !== mine) return;
       const x = vr[0] || [];
@@ -108,7 +109,7 @@
         costs: costs.map(r => ({ day: r[0], old: r[1] == null ? null : +r[1], neu: r[2] == null ? null : +r[2], price: r[3] == null ? null : +r[3], flag: r[4] })),
         bought: bought.map(r => ({ id: r[0], day: r[1], vendor: r[2] || "", no: r[3] || "", qty: +r[4] || 0, unit: r[5] == null ? (r[6] == null ? null : +r[6]) : +r[5], list: r[6] == null ? null : +r[6], oid: r[7], got: r[8] == null ? null : +r[8] })),
         pos: pos.map(r => ({ id: r[0], vendor: r[1] || "", po: r[2] || "", st: r[3] || "", ordered: +r[4] || 0, got: +r[5] || 0, cost: r[6] == null ? null : +r[6], day: r[7] || "", eta: r[8] || "" })),
-        invm: invm.map(r => ({ mo: r[0], start: +r[1] || 0, end: +r[2] || 0, sold: +r[3] || 0 })),
+        invm: invm.map(r => ({ mo: r[0], store: r[1] == null ? null : +r[1], prep: r[2] == null ? null : +r[2], fba: r[3] == null ? null : +r[3], awd: r[4] == null ? null : +r[4] })),
         inv: inv.map(r => ({ at: r[0], src: r[1], kind: r[2], chg: r[3] == null ? null : +r[3], after: r[4] == null ? null : +r[4], note: r[5] || "", who: r[6] || "", st: r[7] || "" })),
       };
     } catch (e) { if (M.vid === mine) M.err = e; }
@@ -202,35 +203,50 @@
       <h3 class="h3">Cost in Shopify · changes</h3><div class="tbl-wrap">${ch}</div>`;
   }
 
+  const LOC = [["store", "Store"], ["prep", "Prep center"], ["fba", "FBA"], ["awd", "AWD"]];
   function invHistory(D) {
-    const months = []; { const d0 = new Date(); for (let i = 12; i >= 0; i--) { const d = new Date(d0.getFullYear(), d0.getMonth() - i, 1); months.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")); } }
-    if (!D.invm.length) return `<h3 class="h3">On hand by month</h3><div class="muted small">Shopify's inventory history for this item isn't loaded yet. The sync fills the last 13 months on its next hourly run.</div>`;
+    const months = []; { const d0 = new Date(); for (let i = 13; i >= 0; i--) { const d = new Date(d0.getFullYear(), d0.getMonth() - i, 1); months.push(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")); } }
+    if (!D.invm.length) return `<h3 class="h3">On hand by month</h3><div class="muted small">Inventory history isn't available yet.</div>`;
     const by = new Map(D.invm.map(x => [x.mo, x]));
+    const sold = new Map(); for (const x of D.months) sold.set(x.mo, (sold.get(x.mo) || 0) + x.units);
     const now = new Date(), cur = months[months.length - 1];
     const daysIn = (mo) => mo === cur ? now.getDate() : new Date(+mo.slice(0, 4), +mo.slice(5, 7), 0).getDate();
-    const rows = months.map(mo => { const x = by.get(mo); if (!x) return { mo, none: true };
-      const got = x.end - x.start + x.sold, d = daysIn(mo);
-      return { mo, ...x, got, net: x.end - x.start, d, down: x.sold / d, up: Math.max(0, got) / d, cover: x.sold > 0 ? x.end / (x.sold / d) : null }; });
-    const first = rows.findIndex(r => !r.none), shown = rows.slice(Math.max(0, first));
-    const max = Math.max(1, ...shown.map(r => r.none ? 0 : Math.max(r.end, r.start)));
+    const all = months.map(mo => { const x = by.get(mo) || {}; const known = LOC.filter(([k]) => x[k] != null);
+      return { mo, x, full: known.length === LOC.length, tot: known.reduce((a, [k]) => a + x[k], 0), any: known.length > 0 }; });
+    const rows = all.slice(1).map((r, i) => { const prev = all[i], s = sold.get(r.mo) || 0, d = daysIn(r.mo);
+      // compare only the locations with history in both months (AWD history starts Nov 2026)
+      const both = LOC.filter(([k]) => r.x[k] != null && prev.x[k] != null), ok = both.length > 0;
+      const t1 = both.reduce((a, [k]) => a + r.x[k], 0), t0 = both.reduce((a, [k]) => a + prev.x[k], 0), got = ok ? t1 - t0 + s : null;
+      return { ...r, sold: s, d, got, net: ok ? t1 - t0 : null, down: s / d, up: got == null ? null : Math.max(0, got) / d, cover: s > 0 && r.any ? r.tot / (s / d) : null }; });
+    const max = Math.max(1, ...rows.map(r => r.tot));
     const lab = (mo, y) => new Date(mo + "-15").toLocaleDateString("en-US", y ? { month: "short", year: "numeric" } : { month: "short" });
-    const bars = rows.map(r => r.none ? `<div class="oos-bar"><span class="oos-bv"></span><span class="oos-bf it-inv-none" style="height:1px"></span><span class="oos-bl">${esc(lab(r.mo))}</span></div>`
-      : `<div class="oos-bar" title="${esc(lab(r.mo, true))}: ${n0(r.start)} at the start, +${n0(Math.max(0, r.got))} in, −${n0(r.sold)} sold, ${n0(r.end)} at the ${r.mo === cur ? "moment" : "end"}"><span class="oos-bv">${n0(r.end)}</span><span class="oos-bf it-inv${r.mo === cur ? " it-inv-now" : ""}" style="height:${Math.max(1, Math.round(r.end / max * 100))}%"></span><span class="oos-bl">${esc(lab(r.mo))}</span></div>`).join("");
-    // the last 90 days or so: the last 3 months with data, this one included
-    const recent = shown.filter(r => !r.none).slice(-3), rd = recent.reduce((a, r) => a + r.d, 0);
-    const down = rd ? recent.reduce((a, r) => a + r.sold, 0) / rd : 0, up = rd ? recent.reduce((a, r) => a + Math.max(0, r.got), 0) / rd : 0;
-    const rate = (x) => x >= 10 ? n0(x) : x >= 0.1 ? x.toFixed(1) : x > 0 ? x.toFixed(2) : "0";
-    const cover = down > 0 ? D.qty / down : null;
-    const sum = `<div class="row small it-burn"><span>Burn down <b>${rate(down)}</b>/day <span class="muted">(${n0(down * 30)}/mo)</span></span><span>Burn up <b>${rate(up)}</b>/day <span class="muted">(${n0(up * 30)}/mo)</span></span>
-      <span>Net <b class="${up - down < 0 ? "neg" : "okt"}">${up - down >= 0 ? "+" : "−"}${rate(Math.abs(up - down))}</b>/day</span><span>Days of cover now <b>${cover == null ? "—" : n0(cover)}</b></span><span class="muted">last ${n0(rd)} days, Shopify store</span></div>`;
-    const tr = shown.slice().reverse().map(r => r.none ? `<tr><td class="l">${esc(lab(r.mo, true))}</td><td colspan="8" class="l muted small">no history</td></tr>`
-      : `<tr><td class="l">${esc(lab(r.mo, true))}${r.mo === cur ? ' <span class="small muted">so far</span>' : ""}</td><td>${n0(r.start)}</td><td class="${r.got > 0 ? "okt" : r.got < 0 ? "neg" : ""}">${r.got ? (r.got > 0 ? "+" : "−") + n0(Math.abs(r.got)) : '<span class="dim">0</span>'}</td>
-        <td class="${r.sold ? "neg" : ""}">${r.sold ? "−" + n0(r.sold) : '<span class="dim">0</span>'}</td><td><b>${n0(r.end)}</b></td><td class="${r.net < 0 ? "neg" : r.net > 0 ? "okt" : ""}">${r.net > 0 ? "+" : r.net < 0 ? "−" : ""}${n0(Math.abs(r.net))}</td>
+    const used = LOC.filter(([k]) => rows.some(r => r.x[k] > 0));
+    const bars = rows.map(r => {
+      const segs = LOC.slice().reverse().filter(([k]) => r.x[k] > 0).map(([k]) => `<span class="it-seg it-l-${k}" style="height:${(r.x[k] / r.tot * 100).toFixed(1)}%"></span>`).join("");
+      const tip = `${lab(r.mo, true)} ${r.mo === cur ? "now" : "end"}: ${n0(r.tot)} on hand (${LOC.map(([k, n]) => `${n} ${r.x[k] == null ? "?" : n0(r.x[k])}`).join(", ")}) · ${n0(r.sold)} sold`;
+      return `<div class="oos-bar" title="${esc(tip)}"><span class="oos-bv">${r.any ? n0(r.tot) : ""}</span><span class="oos-bf it-stack${r.mo === cur ? " it-now" : ""}" style="height:${Math.max(r.any ? 1 : 0, Math.round(r.tot / max * 100))}%">${segs}</span><span class="oos-bl">${esc(lab(r.mo))}</span></div>`; }).join("");
+    const recent = rows.filter(r => r.up != null).slice(-3), rd = recent.reduce((a, r) => a + r.d, 0);
+    const last3 = rows.slice(-3), ld = last3.reduce((a, r) => a + r.d, 0);
+    const down = ld ? last3.reduce((a, r) => a + r.sold, 0) / ld : 0, up = rd ? recent.reduce((a, r) => a + Math.max(0, r.got), 0) / rd : null;
+    const rate = (x) => x == null ? "—" : x >= 10 ? n0(x) : x >= 0.1 ? x.toFixed(1) : x > 0 ? x.toFixed(2) : "0";
+    const nowTot = rows[rows.length - 1].tot, cover = down > 0 ? nowTot / down : null;
+    const key = used.map(([k, n]) => `<span class="it-key it-l-${k}"></span> ${n}`).join(" &nbsp; ");
+    const sum = `<div class="row small it-burn"><span>Burn down <b>${rate(down)}</b>/day <span class="muted">(${n0(down * 30)}/mo, all channels)</span></span>
+      <span>Burn up <b>${rate(up)}</b>/day${up != null ? ` <span class="muted">(${n0(up * 30)}/mo)</span>` : ""}</span>
+      ${up != null ? `<span>Net <b class="${up - down < 0 ? "neg" : "okt"}">${up - down >= 0 ? "+" : "−"}${rate(Math.abs(up - down))}</b>/day</span>` : ""}
+      <span>On hand now <b>${n0(nowTot)}</b></span><span>Days of cover <b>${cover == null ? "—" : n0(cover)}</b></span><span class="muted">last ${n0(ld)} days</span></div>`;
+    const cell = (v) => v == null ? '<span class="dim" title="No history for this month yet">—</span>' : v ? n0(v) : '<span class="dim">0</span>';
+    const sg = (v, cls) => v == null ? '<span class="dim">—</span>' : v ? `<span class="${cls || (v > 0 ? "okt" : "neg")}">${v > 0 ? "+" : "−"}${n0(Math.abs(v))}</span>` : '<span class="dim">0</span>';
+    const tr = rows.slice().reverse().map(r => `<tr><td class="l">${esc(lab(r.mo, true))}${r.mo === cur ? ' <span class="small muted">now</span>' : ""}</td>
+        ${LOC.map(([k]) => `<td>${cell(r.x[k])}</td>`).join("")}<td><b>${r.any ? n0(r.tot) : "—"}</b>${r.any && used.some(([k]) => r.x[k] == null) ? '<span class="dim" title="Some locations have no history this month">*</span>' : ""}</td>
+        <td>${r.sold ? `<span class="neg">−${n0(r.sold)}</span>` : '<span class="dim">0</span>'}</td><td>${sg(r.got)}</td><td>${sg(r.net)}</td>
         <td>${rate(r.down)}</td><td>${rate(r.up)}</td><td>${r.cover == null ? '<span class="dim">—</span>' : n0(r.cover)}</td></tr>`).join("");
-    return `<div class="row small"><b>On hand by month</b><span class="muted">Shopify store · end of each month (this month: now)</span></div>
+    return `<div class="row small"><b>On hand by month</b><span class="muted">${key || "every location"} · end of each month (this month: now)</span></div>
       <div class="oos-bars">${bars}</div>${sum}
-      <div class="tbl-wrap"><table class="it-t"><thead><tr><th class="l">Month</th><th>Start</th><th title="Received, transferred in and adjusted (end − start + sold)">In / adjusted</th><th>Sold</th><th>End</th><th>Net change</th>
-        <th title="Units sold per day">Burn down /day</th><th title="Units received or added per day">Burn up /day</th><th title="End of month ÷ that month's sales per day">Days of cover</th></tr></thead><tbody>${tr}</tbody></table></div>`;
+      <div class="tbl-wrap"><table class="it-t"><thead><tr><th class="l">Month</th>${LOC.map(([, n]) => `<th>${n}</th>`).join("")}<th>Total</th><th title="Units sold on every channel">Sold</th>
+        <th title="Bought, received and adjusted: end − start + sold, across every location (moves between locations cancel out)">In / adjusted</th><th>Net change</th>
+        <th title="Burn down: units sold per day, every channel">Down /day</th><th title="Burn up: units bought or added per day">Up /day</th><th title="Days of cover: total on hand ÷ that month's sales per day">Cover days</th></tr></thead><tbody>${tr}</tbody></table></div>
+      <div class="muted small">Store: Shopify's inventory history. Prep center: the prep center log. FBA: Amazon's inventory ledger, sellable units in Amazon's warehouses (this month: available + in transfer). AWD: Seller Sage's hourly snapshots, which start Nov 5, 2026 (Amazon keeps no AWD history). — means no history for that month; in / adjusted compares only the locations with history in both months.</div>`;
   }
 
   function inventory(D) {

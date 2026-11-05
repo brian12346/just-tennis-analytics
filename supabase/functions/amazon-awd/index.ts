@@ -5,6 +5,10 @@
 //                                   Quantities are product units.
 // POST {action: "report_request", type, start?, end?, options?} / {action: "report_get", id, limit?} -> troubleshooting:
 //                                   ask Amazon for any report (amazon.com) and read it back.
+// POST {action: "fba_ledger", force?} -> FBA Inventory Ledger by month (GET_LEDGER_SUMMARY_VIEW_DATA, country, monthly) into
+//                                   jt.fba_ledger_monthly (migration 214). Hourly at :41 (cron jt-fba-ledger): reads a pending
+//                                   report when Amazon has it ready, otherwise asks for a new one at most once a day —
+//                                   the last 13 months the first time, then last month and this month.
 // Callers: a signed-in app user (Authorization: Bearer <user JWT>), or SQL via jt.amazon_awd_call (x-jt-key).
 // Uses the same SP-API credentials as the `amazon` function (jt_spapi_creds).
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -71,6 +75,61 @@ async function caller(req: Request, c: Creds): Promise<string | null> {
   return ok ? data.user.email || "app user" : null;
 }
 
+// ---------------------------------------------------------------- FBA Inventory Ledger (monthly)
+const LEDGER = "GET_LEDGER_SUMMARY_VIEW_DATA";
+const firstOfMonth = (d: Date, back = 0) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - back, 1));
+function ledgerRows(text: string) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) return [];
+  const head = lines[0].split("\t").map((h) => h.replace(/^"|"$/g, "").trim().toLowerCase());
+  const col = (...names: string[]) => { for (const n of names) { const i = head.indexOf(n); if (i >= 0) return i; } return -1; };
+  const C = { date: col("date"), sku: col("msku", "sku"), fnsku: col("fnsku"), asin: col("asin"), disp: col("disposition"),
+    start: col("starting warehouse balance"), transit: col("in transit between warehouses"), receipts: col("receipts"),
+    ship: col("customer shipments"), ret: col("customer returns"), vret: col("vendor returns"), xfer: col("warehouse transfer in/out"),
+    found: col("found"), lost: col("lost"), dmg: col("damaged"), disposed: col("disposed"), other: col("other events"), unknown: col("unknown events"),
+    end: col("ending warehouse balance") };
+  if (C.date < 0 || C.sku < 0 || C.end < 0) throw new Error("unexpected ledger columns: " + head.join(", ").slice(0, 300));
+  const num = (v: string[], i: number) => i < 0 ? 0 : Math.round(Number(String(v[i] ?? "").replace(/[",]/g, "")) || 0);
+  const out: any[] = [];
+  for (const l of lines.slice(1)) {
+    const v = l.split("\t").map((x) => x.replace(/^"|"$/g, "").trim());
+    const dm = (v[C.date] || "").match(/^(\d{1,2})\/(?:\d{1,2}\/)?(\d{4})$/) || (v[C.date] || "").match(/^(\d{4})-(\d{2})/);
+    if (!dm) continue;
+    const [y, mo] = dm[0].includes("-") ? [dm[1], dm[2]] : [dm[2], dm[1]];
+    out.push({ month: `${y}-${String(mo).padStart(2, "0")}-01`, sku: v[C.sku], fnsku: C.fnsku < 0 ? "" : v[C.fnsku], asin: C.asin < 0 ? "" : v[C.asin],
+      disposition: C.disp < 0 ? "" : v[C.disp], start: num(v, C.start), receipts: num(v, C.receipts), shipments: num(v, C.ship), returns: num(v, C.ret),
+      transfers: num(v, C.xfer), in_transit: num(v, C.transit), end: num(v, C.end),
+      adjustments: num(v, C.vret) + num(v, C.found) + num(v, C.lost) + num(v, C.dmg) + num(v, C.disposed) + num(v, C.other) + num(v, C.unknown) });
+  }
+  return out;
+}
+async function fbaLedger(c: Creds, p: any, t0: number) {
+  const st = (await rpc("jt_fba_ledger_report", { p: { op: "state" } })) || {};
+  if (st.pending) {
+    const rep = await sp(c, `/reports/2021-06-30/reports/${encodeURIComponent(st.pending)}`);
+    if (rep.processingStatus === "DONE" && rep.reportDocumentId) {
+      const rows = ledgerRows(await documentText(c, rep.reportDocumentId));
+      const months = [...new Set(rows.map((r) => r.month))];
+      let saved = 0;
+      for (let i = 0; i < rows.length; i += 2000) saved += await rpc("jt_fba_ledger_save", { p: { rows: rows.slice(i, i + 2000), months, first: i === 0 } });
+      await rpc("jt_fba_ledger_report", { p: { op: "done", report_id: st.pending, rows: saved, detail: months.sort().join(",") } });
+      return { ok: true, report: st.pending, rows: saved, months: months.length, ms: Date.now() - t0 };
+    }
+    if (["CANCELLED", "FATAL"].includes(rep.processingStatus)) {
+      await rpc("jt_fba_ledger_report", { p: { op: rep.processingStatus === "CANCELLED" ? "done" : "failed", report_id: st.pending, rows: 0, detail: rep.processingStatus } });
+      return { ok: true, report: st.pending, status: rep.processingStatus };
+    }
+    return { ok: true, report: st.pending, status: rep.processingStatus, waiting: true };
+  }
+  if (st.fresh && !p.force) return { ok: true, idle: true };
+  const now = new Date(), start = firstOfMonth(now, (st.have || 0) >= 12 ? 1 : 12);
+  const end = new Date(now.getTime() - 36 * 3600 * 1000);         // the ledger runs about a day behind
+  const r = await spPost(c, "/reports/2021-06-30/reports", { reportType: LEDGER, marketplaceIds: ["ATVPDKIKX0DER"], dataStartTime: start.toISOString(),
+    dataEndTime: end.toISOString(), reportOptions: { aggregateByLocation: "COUNTRY", aggregatedByTimePeriod: "MONTHLY" } });
+  await rpc("jt_fba_ledger_report", { p: { op: "requested", report_id: r.reportId, start: start.toISOString(), end: end.toISOString() } });
+  return { ok: true, requested: r.reportId, start: start.toISOString().slice(0, 10) };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   const t0 = Date.now();
@@ -93,6 +152,7 @@ Deno.serve(async (req) => {
       if (rep.processingStatus === "DONE" && rep.reportDocumentId) text = await documentText(c, rep.reportDocumentId);
       return json({ ok: true, report: rep, length: text.length, text: text.slice(0, Number(p.limit) || 3000) });
     }
+    if (p.action === "fba_ledger") return json(await fbaLedger(c, p, t0));
     if (p.action !== "awd_inventory") return json({ ok: false, error: "unknown action" }, 400);
 
     const rows: any[] = []; let next = "", pages = 0;
