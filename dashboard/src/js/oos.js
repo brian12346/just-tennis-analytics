@@ -16,7 +16,7 @@
   const m2 = (x) => x == null ? "—" : "$" + Number(x).toFixed(2);
   const ADMIN = "https://admin.shopify.com/store/justtennis-822";
   const TZ = "America/Los_Angeles";
-  const S = { rows: null, list: null, err: null, loading: false, how: "all", vendor: "all", q: "", open: null, busy: null, sort: "day", dir: -1 };
+  const S = { rows: null, list: null, err: null, loading: false, how: "all", vendor: "all", cat: "all", q: "", open: null, busy: null, sort: "day", dir: -1 };
   const msg = (e) => (window.JT.message ? window.JT.message(e) : (e && e.message) || String(e));
   const day = (d) => d ? new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : "";
   const when = (t) => { const d = window.JTDate ? window.JTDate.parseTime(t) : new Date(t); return !t || isNaN(d) ? "" : d.toLocaleString("en-US", { timeZone: TZ, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); };
@@ -74,7 +74,7 @@
           `(select coalesce(sum(greatest(l.qty_ordered - l.qty_received, 0)), 0) from jt.prep_order_lines l join jt.prep_orders o on o.id = l.order_id
              where l.variant_id = v.variant_id and l.dest = 'shopify' and o.status in ('ordered', 'invoiced', 'partial') and o.id is distinct from i.order_id)::text`,
           "(select coalesce(sum(s.units), 0) from jt.shopify_sales s where s.variant_id = v.variant_id and s.day > current_date - 90)::text",
-          "(select c.pack from jt.case_packs c where c.variant_id = v.variant_id)::text", "(select c.pack from jt.case_packs c where lower(c.vendor) = lower(v.vendor))::text", "pl.round"],
+          "(select c.pack from jt.case_packs c where c.variant_id = v.variant_id)::text", "(select c.pack from jt.case_packs c where lower(c.vendor) = lower(v.vendor))::text", "pl.round", "coalesce(v.product_type, '')"],
           `from jt.prep_list i join jt.variants v on v.variant_id = i.variant_id left join jt.prep_orders o on o.id = i.order_id
            left join jt.par_levels pl on pl.variant_id = v.variant_id
            where i.closed_at is null and i.dest = 'shopify' order by v.vendor, v.product_title, v.variant_title`, refresh),
@@ -95,17 +95,20 @@
       S.list = l.map(x => ({ id: x[0], vid: x[1], pid: x[2], title: x[3], vt: x[4] && x[4] !== "Default Title" ? x[4] : "", sku: x[5] || "", vendor: x[6] || "",
         qty: x[7] == null ? null : +x[7], at: x[8], by: x[9] || "", oid: x[10], ost: x[11] || "", po: x[12] || "", now: +x[13] || 0, cost: x[14] == null ? null : +x[14], src: x[15] || "",
         par: x[16] == null ? null : +x[16], days: x[17] == null ? null : +x[17], onOrder: +x[18] || 0, sold90: +x[19] || 0,
-        ownPack: x[20] == null ? null : +x[20], venPack: x[21] == null ? null : +x[21], round: x[22] || "up" }));
+        ownPack: x[20] == null ? null : +x[20], venPack: x[21] == null ? null : +x[21], round: x[22] || "up", type: x[23] || "" }));
     } catch (e) { S.err = e; }
     S.loading = false; render();
   }
 
+  // category = the Shopify product type (Active products calls it category too)
+  const catOf = (r) => (r.type || "").trim() || "No category";
   function filtered() {
     const q = S.q.trim().toLowerCase();
     let L = (S.rows || []).filter(r => (S.how === "all" || (S.how === "counted" ? !!r.countAt : S.how === "notcounted" ? (!r.countAt || r.toCount) : r.how === S.how || (S.how === "order" && r.how === "both")))
       && (S.vendor === "all" || r.vendor === S.vendor)
-      && (!q || (r.title + " " + r.vt + " " + r.sku + " " + r.vendor).toLowerCase().includes(q)));
-    const key = { day: r => r.day || "", product: r => (r.title + r.vt).toLowerCase(), vendor: r => r.vendor.toLowerCase(), count: r => r.countAt || "" }[S.sort];
+      && (S.cat === "all" || catOf(r) === S.cat)
+      && (!q || (r.title + " " + r.vt + " " + r.sku + " " + r.vendor + " " + r.type).toLowerCase().includes(q)));
+    const key = { day: r => r.day || "", product: r => (r.title + r.vt).toLowerCase(), vendor: r => r.vendor.toLowerCase(), cat: r => catOf(r).toLowerCase(), count: r => r.countAt || "" }[S.sort];
     L.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * S.dir || a.title.localeCompare(b.title); });
     return L;
   }
@@ -139,18 +142,21 @@
       k("To order", n0((S.list || []).length), (S.list || []).filter(i => !i.oid).length ? `${n0(S.list.filter(i => !i.oid).length)} not on a PO yet` : "below", "toorder"),
     ].join("");
     const vendors = [...new Set(all.map(r => r.vendor).filter(Boolean))].sort();
-    $("oos-filters").innerHTML = `<label class="small">Vendor <select class="inp sm" id="oos-vendor" style="width:auto"><option value="all">All vendors</option>${vendors.map(v => `<option value="${esc(v)}" ${S.vendor === v ? "selected" : ""}>${esc(v)} (${all.filter(r => r.vendor === v).length})</option>`).join("")}</select></label>
-      <input class="inp" type="search" id="oos-q" value="${esc(S.q)}" placeholder="Product, SKU or vendor" style="max-width:240px" autocomplete="off" data-lpignore="true" data-jtnofill="1">
+    const cats = [...new Set([...all, ...(S.list || [])].map(catOf))].sort((a, b) => (a === "No category") - (b === "No category") || a.localeCompare(b));
+    $("oos-filters").innerHTML = `<label class="small">Category <select class="inp sm" id="oos-cat" style="width:auto"><option value="all">All categories</option>${cats.map(c => `<option value="${esc(c)}" ${S.cat === c ? "selected" : ""}>${esc(c)} (${all.filter(r => catOf(r) === c).length})</option>`).join("")}</select></label>
+      <label class="small">Vendor <select class="inp sm" id="oos-vendor" style="width:auto"><option value="all">All vendors</option>${vendors.map(v => `<option value="${esc(v)}" ${S.vendor === v ? "selected" : ""}>${esc(v)} (${all.filter(r => r.vendor === v).length})</option>`).join("")}</select></label>
+      <input class="inp" type="search" id="oos-q" value="${esc(S.q)}" placeholder="Product, SKU, vendor or category" style="max-width:240px" autocomplete="off" data-lpignore="true" data-jtnofill="1">
       ${S.how !== "all" ? `<button class="linkbtn small" type="button" data-oos-how="all">Show all</button>` : ""}<span class="muted small right">${n0(L.length)} shown</span>`;
     const th = (k, n, cls) => `<th class="${cls || ""}"><button type="button" class="oos-sort" data-oos-sort="${k}">${n}${S.sort === k ? (S.dir > 0 ? " ▲" : " ▼") : ""}</button></th>`;
-    const confirmRow = (r) => isOpen(r.vid, "archive") ? `<tr class="oos-confirm"><td colspan="6"><div class="note warn">Archive <b>${esc(r.title)}</b> in Shopify?${r.nvar > 1 ? ` That's the whole product (${n0(r.nvar)} variants), none of which has stock.` : ""} It comes off the store and out of Seller Sage's lists; you can un-archive it in Shopify later.
+    const confirmRow = (r) => isOpen(r.vid, "archive") ? `<tr class="oos-confirm"><td colspan="7"><div class="note warn">Archive <b>${esc(r.title)}</b> in Shopify?${r.nvar > 1 ? ` That's the whole product (${n0(r.nvar)} variants), none of which has stock.` : ""} It comes off the store and out of Seller Sage's lists; you can un-archive it in Shopify later.
         <span class="dbtns"><button class="mini primary" type="button" data-oos-archive-go="${esc(r.vid)}" ${S.busy ? "disabled" : ""}>${S.busy === r.vid ? "Archiving…" : "Yes, archive it"}</button><button class="mini" type="button" data-oos-cancel="1">Cancel</button></span></div></td></tr>` : "";
-    $("oos-body").innerHTML = L.length ? `<div class="tbl-wrap"><table class="oos-t"><thead><tr>${th("product", "Product", "l")}${th("vendor", "Vendor", "l")}${th("day", "Went to 0", "l")}<th class="l">How</th>${th("count", "Last count", "l")}<th></th></tr></thead><tbody>${L.map(r => {
+    $("oos-body").innerHTML = L.length ? `<div class="tbl-wrap"><table class="oos-t"><thead><tr>${th("product", "Product", "l")}${th("vendor", "Vendor", "l")}${th("cat", "Category", "l")}${th("day", "Went to 0", "l")}<th class="l">How</th>${th("count", "Last count", "l")}<th></th></tr></thead><tbody>${L.map(r => {
       const sending = r.moveSt === "pending", failed = r.moveSt === "failed";
       const last = r.countAt ? `<b>${n0(r.counted)}</b> · ${esc(when(r.countAt))}${r.countBy ? ` · ${esc(who(r.countBy))}` : ""}${sending ? `<br><span class="pill warn">Sending to Shopify…</span>` : ""}${failed ? `<br><span class="neg small">Shopify didn't take it: ${esc(r.moveErr)}</span>` : ""}` : `<span class="dim">not counted</span>`;
-      return `<tr>
+      return `<tr data-oos-row="${esc(r.vid)}" title="Click for sales, cost and inventory history">
         <td class="l"><a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>${r.vt ? `<div class="small">${esc(r.vt)}</div>` : ""}<div class="dim small">${esc(r.sku || "no SKU")}</div>${r.arSt === "failed" ? `<div class="neg small">Couldn't archive: ${esc(r.arErr)}</div>` : ""}</td>
         <td class="l">${esc(r.vendor)}</td>
+        <td class="l small">${esc(catOf(r))}</td>
         <td class="l">${r.day ? `${esc(day(r.day))}<div class="dim small">had ${n0(r.start)}</div>` : '<span class="dim">—</span>'}</td>
         <td class="l">${r.toCount ? `<span class="pill manual" title="Put back on the list to be counted">To count</span> ` : ""}${r.day ? `<span class="pill ${r.how === "adjust" ? "warn" : "other"}" title="${n0(r.sold)} of ${n0(r.start)} sold that day">${HOW[r.how]}</span>` : ""}</td>
         <td class="l">${last}</td>
@@ -165,7 +171,7 @@
     sec.hidden = !L; if (!L) return;
     $("oos-ign-sum").textContent = L.length ? `${n0(L.length)} product${L.length === 1 ? "" : "s"}` : "";
     $("oos-ign").innerHTML = !L.length ? `<div class="muted small" style="padding:14px">Nothing ignored. <b>Ignore</b> takes a product off the out-of-stock list and keeps it here; <b>To count</b> puts it back on the list above.</div>`
-      : `<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th><th></th></tr></thead><tbody>${L.map(i => `<tr>
+      : `<div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th class="l">Vendor</th><th class="l">Went to 0</th><th class="l">Ignored</th><th>Stock now</th><th></th></tr></thead><tbody>${L.map(i => `<tr data-oos-row="${esc(i.vid)}" title="Click for sales, cost and inventory history">
         <td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}${i.status && i.status !== "ACTIVE" ? ` · ${esc(i.status.toLowerCase())}` : ""}</div></td>
         <td class="l">${esc(i.vendor)}</td><td class="l">${i.day ? esc(day(i.day)) : '<span class="dim">—</span>'}</td>
         <td class="l small">${esc(when(i.at))}${i.by ? ` · ${esc(who(i.by))}` : ""}</td>
@@ -183,7 +189,7 @@
     catch (e) { S.busy = null; render(); note(`<span class="neg">Couldn't ${on ? "ignore" : "un-ignore"} it: ${esc(msg(e))}</span>`); }
   }
   function renderList() {
-    const L = S.list || [], box = $("oos-list");
+    const L = (S.list || []).filter(i => S.cat === "all" || catOf(i) === S.cat), box = $("oos-list");
     $("oos-list-sum").textContent = L.length ? `${n0(L.length)} product${L.length === 1 ? "" : "s"} · ${n0(new Set(L.map(i => i.vendor)).size)} vendor${new Set(L.map(i => i.vendor)).size === 1 ? "" : "s"}` : "";
     if (!L.length) { box.innerHTML = `<div class="muted small" style="padding:14px">Nothing to order yet. <b>Reorder</b> on an out-of-stock product puts it here; from here it goes on the vendor's draft PO.</div>`; return; }
     const by = new Map(); for (const i of L) { if (!by.has(i.vendor)) by.set(i.vendor, []); by.get(i.vendor).push(i); }
@@ -193,7 +199,7 @@
         ${loose.length ? `<button class="btn sm right" type="button" data-oos-topo-v="${esc(ven)}" ${S.busy ? "disabled" : ""} title="Put the ${loose.length} not on a PO yet on ${esc(ven)}'s draft PO (one is started if there isn't one)">${busyV ? "Adding…" : `Put ${loose.length === items.length ? "all" : loose.length} on the draft PO`}</button>` : ""}</div>
         <div class="tbl-wrap"><table class="oos-t"><thead><tr><th class="l">Product</th><th title="Shopify available now">On hand</th><th title="On placed POs, not received yet">On order</th><th>Sold 90d</th><th>PAR</th><th>To order</th><th>Cost</th><th class="l">Added</th><th class="l">PO</th><th></th></tr></thead><tbody>${items.map(i => {
           const po = i.oid ? `<a class="olink" href="#po/${esc(i.oid)}">${esc(i.po ? i.po : "PO #" + i.oid)}</a> <span class="pill ${i.ost === "draft" ? "pos" : "other"}">${esc(STAGE[i.ost] || i.ost)}</span>` : `<span class="dim">not on a PO</span>`;
-          return `<tr><td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")}</div></td>
+          return `<tr data-oos-row="${esc(i.vid)}" title="Click for sales, cost and inventory history"><td class="l"><a class="olink" href="${ADMIN}/products/${esc(i.pid)}/variants/${esc(i.vid)}" target="_blank" rel="noopener">${esc(i.title)}</a>${i.vt ? `<div class="small">${esc(i.vt)}</div>` : ""}<div class="dim small">${esc(i.sku || "no SKU")} · ${esc(catOf(i))}</div></td>
             <td class="${i.now <= 0 ? "dim" : ""}">${n0(i.now)}</td><td class="${i.onOrder ? "" : "dim"}">${i.onOrder ? n0(i.onOrder) : "—"}</td><td>${n0(i.sold90)}</td>
             <td>${i.par == null ? `<span class="dim">—</span>` : `<b>${n0(i.par)}</b>${i.days ? `<div class="dim small">${n0(i.days)} days</div>` : ""}`}${i.par != null && toPar(i) !== (i.qty || 0) && !(i.oid && i.ost !== "draft") ? `<div><button class="linkbtn small" type="button" data-oos-topar="${esc(i.id)}" title="Set To order to PAR − on hand − on order">order ${n0(toPar(i))}</button></div>` : ""}</td>
             <td><input class="inp sm oos-qty" type="number" min="0" step="1" inputmode="numeric" value="${i.qty == null ? "" : i.qty}" placeholder="—" data-oos-qty="${esc(i.id)}" aria-label="How many to order" title="${packOf(i) > 1 ? `Case of ${packOf(i)}` : ""}" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${i.oid && i.ost !== "draft" ? "disabled title='Already ordered'" : ""}>${packOf(i) > 1 ? `<div class="dim small">case of ${n0(packOf(i))}${i.qty != null && i.qty % packOf(i) ? ' · <span class="warnt">not full cases</span>' : ""}</div>` : ""}</td>
@@ -427,6 +433,8 @@
 
   const tab = $("tab-oos");
   tab.addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-oos-row]");
+    if (row && !e.target.closest("button, a, input, select, label, textarea") && !String(window.getSelection() || "") && window.JTItem) { window.JTItem.open(row.dataset.oosRow); return; }
     const b = e.target.closest("button"); if (!b) return;
     if (b.dataset.oosHow != null) {
       if (b.dataset.oosHow === "toorder") { $("oos-list-sec").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
@@ -455,6 +463,7 @@
   });
   tab.addEventListener("change", (e) => {
     if (e.target.id === "oos-vendor") { S.vendor = e.target.value; render(); }
+    else if (e.target.id === "oos-cat") { S.cat = e.target.value; render(); }
     else if (e.target.dataset.oosQty) setQty(e.target.dataset.oosQty, e.target.value.trim());
   });
   tab.addEventListener("input", (e) => {

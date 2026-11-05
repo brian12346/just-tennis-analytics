@@ -1734,3 +1734,16 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .az-sel.s-warn,.az-sel.s-miss{background:var(--warn-bg);color:var(--warn);border-color:transparent;font-weight:600}
 .az-sel.s-pos{background:var(--line);color:var(--muted);border-color:transparent;font-weight:600}
 .az-diff{font-size:11px;color:var(--warn);margin-top:2px;font-weight:600}
+
+/* Item detail popup (item.js) */
+.it-card{width:min(1040px,100%);max-height:calc(100vh - var(--appbar-h,0px) - 56px);overflow:auto}
+.it-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.it-head h2{margin:2px 0;font-size:20px}
+.it-vt{font-weight:400;color:var(--muted);font-size:16px}
+.it-kpis{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+.it-tabs{align-self:flex-start}
+.it-body{display:flex;flex-direction:column;gap:10px;min-height:200px}
+.it-body .h3{margin:10px 0 4px}
+.it-t td,.it-t th{font-variant-numeric:tabular-nums}
+#tab-oos tbody tr[data-oos-row]{cursor:pointer}
+#tab-oos tbody tr[data-oos-row]:hover td{background:var(--line-soft)}
