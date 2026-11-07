@@ -103,6 +103,8 @@ def main(argv: list[str] | None = None) -> None:
             # orders changed since the start of the window (tracking numbers match combined ShipStation shipments)
             run("acenrally_orders", lambda: sh4.sync_orders(anr, conn, _utc(asince - dt.timedelta(days=1)), prefix="jt.anr"))
             run("acenrally_pickups", lambda: sh4.sync_pickups(anr, conn, "jt.anr_orders"))
+            # Shopify Shipping labels bought in Ace n Rally's admin (14 days back on the hourly run, like Just Tennis')
+            run("acenrally_labels", lambda: sh4.sync_shopify_labels(anr, conn, asince - dt.timedelta(days=14 if a.job == "hourly" else 0), until, prefix="jt.anr"))
         if a.job in ("nightly", "acenrally", "acenrally-catalog"):
             run("acenrally_catalog", lambda: sh4.sync_anr_catalog(anr, conn))
 

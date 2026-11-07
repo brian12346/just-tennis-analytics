@@ -324,3 +324,33 @@ def test_inventory_monthly(conn):
     shop.qs.clear()
     assert sh.sync_inventory_monthly(shop, conn, dt.date(2026, 11, 5), refresh=2, page=2) == 3 + 1
     assert len(shop.qs) == 3                                                            # Nov (2 pages) and Oct
+
+
+class FakeLabelShopify:
+    """FROM shipping_labels … GROUP BY order_name, day, shipping_service (row shape from a real call, Nov 7)."""
+    def __init__(self, rows):
+        self.rows = rows
+
+    def shopifyql(self, q):
+        assert q.startswith("FROM shipping_labels")
+        return self.rows
+
+
+def test_shopify_labels_both_stores(conn):
+    """Shopify Shipping labels for Just Tennis and Ace n Rally: each tied to its own store's order, replaced per window."""
+    cur = conn.cursor()
+    cur.execute("insert into jt.shopify_orders (order_id, name, created_at, order_day) values (1, '#23516', now(), '2026-11-06')")
+    cur.execute("insert into jt.anr_orders (order_id, name, created_at, order_day) values (2, '#ANR4137', now(), '2026-11-06')")
+    jt_rows = [{"order_name": "#23516", "day": "2026-11-06", "shipping_service": "UPS® Ground", "shipping_labels": "1", "shipping_label_costs": "17.86"}]
+    anr_rows = [{"order_name": "#ANR4137", "day": "2026-11-06", "shipping_service": "USPS Ground Advantage", "shipping_labels": "1", "shipping_label_costs": "6.19"}]
+    d0, d1 = dt.date(2026, 11, 1), dt.date(2026, 11, 7)
+    assert sh.sync_shopify_labels(FakeLabelShopify(jt_rows), conn, d0, d1) == 1
+    assert sh.sync_shopify_labels(FakeLabelShopify(anr_rows), conn, d0, d1, prefix="jt.anr") == 1
+    assert sh.sync_shopify_labels(FakeLabelShopify(anr_rows), conn, d0, d1, prefix="jt.anr") == 1     # re-sync replaces
+    cur.execute("select label_id, order_id, cost, service from jt.shipstation_labels order by label_id")
+    assert cur.fetchall() == [("shopify-anr:#ANR4137:2026-11-06:USPS Ground Advantage", 2, D("6.19"), "Shopify (Ace n Rally) · USPS Ground Advantage"),
+                              ("shopify:#23516:2026-11-06:UPS® Ground", 1, D("17.86"), "Shopify · UPS® Ground")]
+    # a Just Tennis re-sync with nothing leaves Ace n Rally's labels alone
+    assert sh.sync_shopify_labels(FakeLabelShopify([]), conn, d0, d1) == 0
+    cur.execute("select count(*) from jt.shipstation_labels where label_id like 'shopify-anr:%'")
+    assert cur.fetchone()[0] == 1

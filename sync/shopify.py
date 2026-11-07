@@ -131,7 +131,14 @@ LABELS_Q = ("FROM shipping_labels SHOW shipping_labels, shipping_label_costs GRO
             "SINCE {s} UNTIL {e}")
 
 
-def sync_shopify_labels(shop: Shopify, conn, start: dt.date, end: dt.date) -> int:
+# Each store's labels: Just Tennis ("shopify:…", orders in jt.shopify_orders) and Ace n Rally ("shopify-anr:…", orders in
+# jt.anr_orders; Nov 7, Brian: "make sure we pull in shipping costs when shipping is purchased in shipstation and/or
+# shopify"). The order is found by its name in that store, so an Ace n Rally label counts toward Ace n Rally's shipping.
+LABEL_STORES = {"jt.shopify": ("shopify:", "Shopify"), "jt.anr": ("shopify-anr:", "Shopify (Ace n Rally)")}
+
+
+def sync_shopify_labels(shop: Shopify, conn, start: dt.date, end: dt.date, prefix: str = "jt.shopify") -> int:
+    tag, label = LABEL_STORES[prefix]
     rows = shop.shopifyql(LABELS_Q.format(s=start, e=end))
     out = []
     for r in rows:
@@ -139,16 +146,16 @@ def sync_shopify_labels(shop: Shopify, conn, start: dt.date, end: dt.date) -> in
         if not day:
             continue
         svc = str(r.get("shipping_service") or "")
-        out.append((f"shopify:{name}:{day}:{svc}"[:200], name, day, ("Shopify · " + svc) if svc else "Shopify Shipping",
+        out.append((f"{tag}{name}:{day}:{svc}"[:200], name, day, f"{label} · {svc}" if svc else f"{label} Shipping",
                     money(r.get("shipping_label_costs")), _int(r.get("shipping_labels"))))
     with conn.cursor() as cur:
-        cur.execute("delete from jt.shipstation_labels where label_id like 'shopify:%%' and ship_date between %s and %s", (start, end))
+        cur.execute("delete from jt.shipstation_labels where label_id like %s and ship_date between %s and %s", (tag + "%", start, end))
         n = 0
         for lid, name, day, svc, cost, cnt in out:
             if cost is None or (cost == 0 and cnt == 0):
                 continue
-            cur.execute("""insert into jt.shipstation_labels (label_id, tracking, order_id, ship_date, service, cost, voided, created_at, synced_at)
-                           select %s, '', (select o.order_id from jt.shopify_orders o where o.name = %s order by o.created_at desc limit 1),
+            cur.execute(f"""insert into jt.shipstation_labels (label_id, tracking, order_id, ship_date, service, cost, voided, created_at, synced_at)
+                           select %s, '', (select o.order_id from {prefix}_orders o where o.name = %s order by o.created_at desc limit 1),
                                   %s, %s, %s, false, %s::date, now()
                            on conflict (label_id) do update set order_id = excluded.order_id, cost = excluded.cost, service = excluded.service,
                                   synced_at = now()""", (lid, name, day, svc, cost, day))
