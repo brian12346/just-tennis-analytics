@@ -3721,7 +3721,12 @@
         const f = findProducts(ed.add), sel = ed.addSel || (ed.addSel = new Map());
         if (t.dataset.pselall) { for (const x of f) if (!onPo(ed, x)) { if (t.checked) sel.set(selKey(x), x); else sel.delete(selKey(x)); } }
         else { const x = f[+t.dataset.psel]; if (x) { if (t.checked) sel.set(selKey(x), x); else sel.delete(selKey(x)); } }
-        const keep = $("po-add") && document.activeElement === $("po-add"); render(); if (keep) focusArg("po-add"); return; }
+        // keep the list where it was (Nov 9, Brian: "don't reset spot in the list"): same scroll, focus back on the same box
+        const box0 = document.querySelector(".addbox .mres"), top = box0 ? box0.scrollTop : 0, y = window.scrollY, idx = t.dataset.psel;
+        render();
+        const box1 = document.querySelector(".addbox .mres"); if (box1) box1.scrollTop = top; window.scrollTo(window.scrollX, y);
+        const again = idx != null ? document.querySelector(`.addbox [data-psel="${idx}"]`) : document.querySelector(".addbox [data-pselall]");
+        if (again) again.focus({ preventScroll: true }); return; }
       if (t.id === "po-addqty") { ed.addQty = t.value; return; }
       if (t.dataset.f === "ivdemo" && iv) { const r = iv.rows.find(x => x.id === t.dataset.k), l = r && ed.lines.find(x => String(x.vid) === String(r.vid));
         if (l && !(l.received > 0)) { l.dest = t.checked ? "demo" : newDest(ed) === "demo" ? "shopify" : newDest(ed); l.asku = ""; mergeLines(ed); ed.dirty = true; render(); } return; }
