@@ -347,9 +347,9 @@ def test_shopify_labels_both_stores(conn):
     assert sh.sync_shopify_labels(FakeLabelShopify(jt_rows), conn, d0, d1) == 1
     assert sh.sync_shopify_labels(FakeLabelShopify(anr_rows), conn, d0, d1, prefix="jt.anr") == 1
     assert sh.sync_shopify_labels(FakeLabelShopify(anr_rows), conn, d0, d1, prefix="jt.anr") == 1     # re-sync replaces
-    cur.execute("select label_id, order_id, cost, service from jt.shipstation_labels order by label_id")
-    assert cur.fetchall() == [("shopify-anr:#ANR4137:2026-11-06:USPS Ground Advantage", 2, D("6.19"), "Shopify (Ace n Rally) · USPS Ground Advantage"),
-                              ("shopify:#23516:2026-11-06:UPS® Ground", 1, D("17.86"), "Shopify · UPS® Ground")]
+    cur.execute("select label_id, order_id, cost, service from jt.shipstation_labels order by order_id")   # not by label_id: collation-dependent
+    assert cur.fetchall() == [("shopify:#23516:2026-11-06:UPS® Ground", 1, D("17.86"), "Shopify · UPS® Ground"),
+                              ("shopify-anr:#ANR4137:2026-11-06:USPS Ground Advantage", 2, D("6.19"), "Shopify (Ace n Rally) · USPS Ground Advantage")]
     # a Just Tennis re-sync with nothing leaves Ace n Rally's labels alone
     assert sh.sync_shopify_labels(FakeLabelShopify([]), conn, d0, d1) == 0
     cur.execute("select count(*) from jt.shipstation_labels where label_id like 'shopify-anr:%'")
