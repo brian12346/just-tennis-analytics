@@ -263,6 +263,9 @@ table.invt tr.skip td{opacity:.55}
 .mres{display:flex;flex-direction:column;gap:2px;margin-top:4px;max-height:220px;overflow:auto}
 .mres button{text-align:left;border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:4px 6px;font-size:12px;cursor:pointer;color:var(--ink)}
 .mres button:hover{border-color:var(--sales)}
+.mres .mrow{display:flex;gap:6px;align-items:center}.mres .mrow>button{flex:1}.mres .mrow.sel>button{border-color:var(--sales);background:var(--sales-soft)}
+.po-addsel{gap:8px;align-items:center;flex-wrap:wrap;padding:6px 8px;margin-top:6px;background:var(--line-soft);border-radius:8px}.po-addall{margin-top:6px;gap:10px}
+#po-edit-view .addbox .mres{max-height:340px}
 .up{color:var(--bad)}.down{color:var(--good,#1f7a4d)}
 pre.invraw{max-height:280px;overflow:auto;font-size:11px;background:var(--ground);padding:8px;border-radius:8px;white-space:pre-wrap}
 

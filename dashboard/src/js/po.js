@@ -258,6 +258,21 @@
     } catch (e) { if (my === pdfToken) host.innerHTML = `<div class="note bad">Couldn't show the PDF: ${esc(e && e.message || "unknown error")}</div>`; }
   }
   // ---------- products added by hand ----------
+  // the Add product results: tick any number (the ticks stay while you search again), then "Add N"; clicking a name still adds just that one
+  function addResults(ed, found) {
+    const sel = ed.addSel || (ed.addSel = new Map());
+    const bar = sel.size ? `<div class="row small po-addsel"><b>${n0(sel.size)} selected</b>
+        <label class="small">Qty each <input id="po-addqty" class="inp sm" type="number" min="0" step="1" inputmode="numeric" value="${esc(ed.addQty || "")}" placeholder="—" style="width:64px" aria-label="Quantity for each selected product (blank: fill in per line)"></label>
+        <button class="btn sm primary" type="button" data-pact="add-sel">Add ${n0(sel.size)} to the PO</button><button class="linkbtn small" type="button" data-pact="add-clear">Clear</button>
+        <span class="muted small">${esc([...sel.values()].slice(0, 4).map(x => x.v.title).join(", "))}${sel.size > 4 ? "…" : ""}</span></div>` : "";
+    if (!ed.add.trim()) return bar;
+    if (!S.cat) return bar + '<div class="mres"><span class="muted small">Loading the Shopify catalog…</span></div>';
+    if (!found.length) return bar + '<div class="mres"><span class="muted small">No products match.</span></div>';
+    const can = found.filter(x => !onPo(ed, x)), allOn = can.length && can.every(x => sel.has(selKey(x)));
+    return bar + `<div class="row small po-addall"><label><input type="checkbox" data-pselall="1" ${allOn ? "checked" : ""} ${can.length ? "" : "disabled"}> Select all ${n0(can.length)} shown</label>${found.length >= 80 ? '<span class="muted">first 80 — narrow the search for more</span>' : ""}</div>
+      <div class="mres">${found.map((x, i) => { const on = onPo(ed, x), k = selKey(x);
+        return `<div class="mrow${sel.has(k) ? " sel" : ""}"><input type="checkbox" data-psel="${i}" ${sel.has(k) ? "checked" : ""} ${on ? "disabled" : ""} aria-label="Select ${esc(x.v.title)}"><button data-padd="${i}" ${on ? 'title="Already on this PO"' : ""}><b>${esc(x.v.title)}</b>${on ? ' <span class="pill other">on PO</span>' : ""}<br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}${x.v.status && x.v.status !== "ACTIVE" ? " · " + esc(String(x.v.status).toLowerCase()) : ""}</span></button></div>`; }).join("")}</div>`;
+  }
   function findProducts(text) {
     const t = String(text || "").trim(); if (!t || !S.cat) return [];
     const a = S.byAmz.get(t.toLowerCase());
@@ -267,7 +282,7 @@
     const w = t.toLowerCase().split(/\s+/).filter(Boolean);
     return S.cat.filter(v => w.every(x => v.text.includes(x)))
       .sort((a, b) => (a.status === "ACTIVE" ? 0 : 1) - (b.status === "ACTIVE" ? 0 : 1) || (S.ed && S.ed.vendor ? (a.vendor === S.ed.vendor ? 0 : 1) - (b.vendor === S.ed.vendor ? 0 : 1) : 0) || a.title.localeCompare(b.title))
-      .slice(0, 12).map(v => ({ v, asku: "" }));
+      .slice(0, 80).map(v => ({ v, asku: "" }));
   }
 
   // ---------- the editor's model ----------
@@ -1920,7 +1935,7 @@
           : `<div class="muted small">No products yet. Add them below, or upload the vendor's invoice PDF.</div>`}
         ${!ro && !ed.recv && mode !== "left" ? `<div class="addbox">${both ? `<div class="row small">Add to <span class="seg sm"><button data-paddto="shopify" aria-pressed="${ed.addTo !== "prep"}">Shopify store</button><button data-paddto="prep" aria-pressed="${ed.addTo === "prep"}">Prep center</button></span></div>` : ""}<label class="stack" for="po-add">Add product<input id="po-add" class="inp mono" value="${esc(ed.add)}" placeholder="Shopify SKU, UPC, product name, ASIN or Amazon SKU" autocomplete="off"></label>
           ${ed.status === "draft" ? `<div class="row small addcsv"><span class="muted">or from a spreadsheet:</span><button class="btn sm" type="button" data-pact="csv-up" title="A CSV or Excel file of products (Shopify SKU, UPC or Amazon SKU) and quantities: added to this order">Upload CSV</button><button class="linkbtn small" type="button" data-pact="csv-tmpl" title="A blank CSV to fill in: Shopify SKU, UPC or Amazon SKU, Qty, and optionally Unit cost">Download template</button></div>` : ""}
-          ${ed.add.trim() ? `<div class="mres">${!S.cat ? '<span class="muted small">Loading the Shopify catalog…</span>' : found.map((x, i) => `<button data-padd="${i}"><b>${esc(x.v.title)}</b><br><span class="dim">${esc(x.v.sku)} · ${esc(x.v.vendor)}${x.asku ? " · for " + esc(x.asku) : ""} · cost ${m(x.v.cost)}</span></button>`).join("") || '<span class="muted small">No products match.</span>'}</div>` : ""}</div>` : ""}`}
+          ${addResults(ed, found)}</div>` : ""}`}
         ${ed.confirm === "del" ? `<div class="note warn">Delete this purchase order and its draft invoices? Nothing has been received, so no stock changes. <span class="dbtns"><button class="mini primary" data-pact="do-del">Yes, delete</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "unrecv" ? `<div class="note warn">Move this order back to invoiced? What was received into the prep center comes back out (refused if some of it already shipped out). <span class="dbtns"><button class="mini primary" data-pact="do-back">Yes, move it back</button><button class="mini" data-pact="no">Cancel</button></span></div>` : ""}
         ${ed.confirm === "over" ? (() => { const ov = overUnits(ed); return `<div class="note warn">Close the <b>${n0(ov.units)}</b> unit${ov.units === 1 ? "" : "s"} in the <b>Not billed</b> column (${ov.by.size} product${ov.by.size === 1 ? "" : "s"}) as a vendor overage? They came in with no invoice billing them. They stay in stock; no invoice is expected for them and the <b>no invoice yet</b> card goes away. If an invoice for them shows up later, it still counts them. <span class="dbtns"><button class="mini primary" data-pact="do-over">Close as over</button><button class="mini" data-pact="no">Cancel</button></span></div>`; })() : ""}
@@ -2974,6 +2989,8 @@
       return;
     }
     if (a === "lines-done") { ed.lineEdit = false; ed.search = null; render(); return; }
+    if (a === "add-sel") { addMany(ed); return; }
+    if (a === "add-clear") { ed.addSel = new Map(); render(); return; }
     if (a === "add-prod") { if (ed.view === "inv" || ed.view === "left") ed.view = "all"; ed.search = null; render(); focusArg("po-add");
       setTimeout(() => { const el = $("po-add"); if (el) el.scrollIntoView({ behavior: "smooth", block: "center" }); }, 0); return; }
     if (a === "print-slip") { printSlip(ed, cur(ed)); return; }
@@ -3218,6 +3235,23 @@
     ed.split = null; ed.dirty = true; render();
     const sh = want.get("shopify|") || 0, prepParts = [...want].filter(([k2, q]) => k2.startsWith("prep|") && q > 0);
     note("info", `Split ${n0(total)}: ${[sh ? `${n0(sh)} to the Shopify store` : "", ...prepParts.map(([k2, q]) => `${n0(q)} to the prep center${k2.slice(5) ? " for " + esc(k2.slice(5)) : " (any ASIN)"}`)].filter(Boolean).join(", ")}. Save to keep it.`);
+  }
+  // Several at once (Nov 9, Brian: "we really need a way to multi select products to add to a purchase order"): tick
+  // results — across several searches — and add them together, each with the same quantity (blank = type it per line).
+  const selKey = (x) => x.v.vid + "|" + (x.asku || "");
+  const onPo = (ed, x) => { const dest = x.asku ? "prep" : newDest(ed); return ed.lines.some(y => keyOf(y) === keyOf({ vid: x.v.vid, asku: x.asku || "", dest })); };
+  function addMany(ed) {
+    const list = [...(ed.addSel || new Map()).values()], q = String(ed.addQty || "").trim();
+    const qty = /^\d+$/.test(q) ? q : "";
+    let n = 0, dup = 0;
+    for (const x of list) {
+      if (onPo(ed, x)) { dup++; continue; }
+      ed.lines.push({ id: newId(), vid: x.v.vid, asku: x.asku || "", dest: x.asku ? "prep" : newDest(ed), qty, cost: "", received: 0, backorder: false, eta: "", auto: false });
+      n++;
+    }
+    ed.addSel = new Map(); ed.add = ""; if (n) ed.dirty = true;
+    note(n ? "info" : "warn", n ? `Added <b>${n0(n)} product${n === 1 ? "" : "s"}</b>${qty ? ` × ${n0(+qty)} each` : " — fill in the quantities"}.${dup ? ` ${n0(dup)} already on this PO, skipped.` : ""} Save to keep them.` : "Those are all on this PO already.");
+    render();
   }
   function addLine(x) {
     const ed = S.ed, dest = x.asku ? "prep" : newDest(ed);
@@ -3683,6 +3717,12 @@
       const ed = S.ed, t = e.target; if (!ed) return;
       const iv = cur(ed);
       if (t.id === "pe-cat" || t.id === "pe-budget") { savePlan(ed, t.id === "pe-cat" ? "category" : "budget", t.value); return; }
+      if (t.dataset.psel != null || t.dataset.pselall) {
+        const f = findProducts(ed.add), sel = ed.addSel || (ed.addSel = new Map());
+        if (t.dataset.pselall) { for (const x of f) if (!onPo(ed, x)) { if (t.checked) sel.set(selKey(x), x); else sel.delete(selKey(x)); } }
+        else { const x = f[+t.dataset.psel]; if (x) { if (t.checked) sel.set(selKey(x), x); else sel.delete(selKey(x)); } }
+        const keep = $("po-add") && document.activeElement === $("po-add"); render(); if (keep) focusArg("po-add"); return; }
+      if (t.id === "po-addqty") { ed.addQty = t.value; return; }
       if (t.dataset.f === "ivdemo" && iv) { const r = iv.rows.find(x => x.id === t.dataset.k), l = r && ed.lines.find(x => String(x.vid) === String(r.vid));
         if (l && !(l.received > 0)) { l.dest = t.checked ? "demo" : newDest(ed) === "demo" ? "shopify" : newDest(ed); l.asku = ""; mergeLines(ed); ed.dirty = true; render(); } return; }
       if (t.id === "inv-arrange") { const how = t.value; t.value = ""; if (how && iv && arrangeRows(ed, iv, how)) { ed.dirty = true; render(); note("info", "Lines reorganized. Save to keep the order."); } return; }
@@ -3730,6 +3770,7 @@
       if (t.id === "pe-paidfrom" && iv) { iv.paidFrom = t.value; ed.dirty = true; return; }
       if (t.id === "pe-invtotal" && iv) { iv.total = IP.numOf(t.value); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 500); return; }
       if (t.id === "pe-invsub" && iv) { iv.subtotal = IP.numOf(t.value); ed.dirty = true; clearTimeout(box._t); box._t = setTimeout(render, 500); return; }
+      if (t.id === "po-addqty") { ed.addQty = t.value; return; }
       if (t.id === "po-add") { ed.add = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); if (!S.cat) catalog().then(render).catch(() => {}); return; }
       if (t.id === "pe-sq") { ed.search.q = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); return; }
       if (t.id === "pe-lsq" && ed.lsearch) { ed.lsearch.q = t.value; clearTimeout(box._t); box._t = setTimeout(render, 150); return; }
@@ -3777,6 +3818,7 @@
         if (i >= 0 && j >= 0 && j < rows.length && (rowK ? moveRow(cur(ed), id, rows[j], e.key === "ArrowDown") : moveLine(ed, id, rows[j], e.key === "ArrowDown"))) { ed.dirty = true; render(); }
         return;
       }
+      if (e.target.id === "po-addqty" && e.key === "Enter") { e.preventDefault(); ed.addQty = e.target.value; addMany(ed); return; }
       if (e.target.id === "po-add" && e.key === "Enter") { e.preventDefault(); clearTimeout(box._t); const f = findProducts(ed.add); if (f.length) addLine(f[0]); else render(); }
       if (e.target.id === "pe-sq" && e.key === "Enter") { e.preventDefault(); const b = box.querySelector(".mres button[data-ppick]"); if (b) b.click(); }
       if (e.target.id === "pe-sq" && e.key === "Escape") { ed.search = null; render(); }
