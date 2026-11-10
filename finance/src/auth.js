@@ -47,11 +47,18 @@
     if ((e && e.code === "42501") || /not allowed/i.test(m)) return { code: "not_allowed", message: "This account doesn't have finance access." };
     return { code: "error", message: m };
   };
-  async function rpc(fn, args) {
+  // a read that hits the database's statement timeout (busy for a moment, e.g. a background job running) is tried once
+  // more after a short wait (Nov 10: the Shopify payouts page failed to load when six reads timed out together)
+  const busyErr = (e) => !!e && (e.code === "57014" || /statement timeout|canceling statement/i.test(e.message || ""));
+  async function rpc(fn, args, retried) {
     await ready;
     let timer;
     const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej({ message: "The database took too long to answer." }), 30000); });
-    try { const { data, error } = await Promise.race([sb.rpc(fn, args), timeout]); if (error) throw toErr(error); return data; }
+    try {
+      const { data, error } = await Promise.race([sb.rpc(fn, args), timeout]);
+      if (error) { if (!retried && fn === "fin_sql" && busyErr(error)) { clearTimeout(timer); await new Promise(f => setTimeout(f, 2500)); return rpc(fn, args, true); } throw toErr(error); }
+      return data;
+    }
     finally { clearTimeout(timer); }
   }
   // reads are kept 10 minutes; Refresh clears them
