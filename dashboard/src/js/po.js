@@ -2781,6 +2781,7 @@
       const b = e.target.closest("button"); if (!b || !S.rm) return;
       const a = b.dataset.rm, r = S.rm.rows[Number(b.dataset.i)];
       if (a === "close") return rmClose();
+      if (a === "unrecv" && r) return rmUnrecv(r);
       if (a === "one" && r) { r.val = String(r.left); S.rm.ask = false; rmPaint(); rmFocus(Number(b.dataset.i) + 1); return; }
       if (a === "zero" && r) { r.val = ""; S.rm.ask = false; rmPaint(); return; }
       if (a === "all") { S.rm.rows.forEach(x => { x.val = String(x.left); }); S.rm.ask = false; rmPaint(); return; }
@@ -2815,6 +2816,16 @@
   const rmUnits = () => S.rm.rows.reduce((a, r) => a + (rmRowBad(r) ? 0 : Number(r.val) || 0), 0);
   const rmDirty = () => S.rm && S.rm.rows.some(r => (Number(r.val) || 0) > 0);
   function rmFocus(i) { setTimeout(() => { const el = document.querySelector(`#rcv-modal [data-rmq="${i}"]`); if (el) { el.focus(); el.select(); } else { const b = document.querySelector('#rcv-modal [data-rm="save"]'); if (b) b.focus(); } }, 0); }
+  // un-receive from the Receive window (Nov 10, Brian: "how do you un-receive? i don't see a way"): it closes the window
+  // and opens the line's un-receive box on the PO (All lines), with everything received on it filled in
+  const rmCanUn = (r) => { const ed = S.ed, l = ed && ed.id && ed.lines.find(x => x.id === r.lid); return !!(l && l.received > 0); };
+  function rmUnrecv(r) {
+    const ed = S.ed, l = ed && ed.lines.find(x => x.id === r.lid); if (!l) return;
+    if (rmDirty()) { S.rm.msg = "Save or clear what you entered first, then un-receive."; return rmPaint(); }
+    S.rm = null; $("rcv-modal").hidden = true; document.body.classList.remove("modal-open");
+    ed.view = "all"; ed.search = null; ed.unrecv = { id: l.id, n: String(l.received) }; render();
+    setTimeout(() => { const i = document.querySelector('[data-f="unrq"]'); if (i) { i.scrollIntoView({ block: "center" }); i.focus(); i.select(); } }, 0);
+  }
   function rmClose() { if (!S.rm) return; if (rmDirty()) { S.rm.ask = "close"; rmPaint(); return; } S.rm = null; $("rcv-modal").hidden = true; document.body.classList.remove("modal-open"); }
   function openRecv(invId) {
     const ed = S.ed; if (!ed) return;
@@ -2849,7 +2860,7 @@
     const demoN = R.rows.filter(r => r.dest === "demo" && !rmRowBad(r)).reduce((a, r) => a + (Number(r.val) || 0), 0);
     const extra = over.reduce((a, r) => a + Number(r.val) - r.left, 0);
     const row = (r, i) => `<tr class="${Number(r.val) > 0 ? "on" : ""}"><td class="l"><b>${esc(r.title)}</b><div class="meta mono">${esc(r.sku || "no SKU")}${r.dest === "prep" && r.asku ? " · " + esc(r.asku) : ""}</div></td>
-      <td class="l small">${esc(DESTN[r.dest] || r.dest)}</td><td>${n0(r.billed)}</td><td>${r.got ? n0(r.got) : '<span class="dim">—</span>'}</td><td>${r.left ? n0(r.left) : '<span class="pill ok">All in</span>'}</td>
+      <td class="l small">${esc(DESTN[r.dest] || r.dest)}</td><td>${n0(r.billed)}</td><td>${r.got ? n0(r.got) : '<span class="dim">—</span>'}${rmCanUn(r) ? `<div><button class="linkbtn small" data-rm="unrecv" data-i="${i}" title="Take some or all of what was received on this line back off (and out of the prep center)">un-receive</button></div>` : ""}</td><td>${r.left ? n0(r.left) : '<span class="pill ok">All in</span>'}</td>
       <td class="rcv"><input class="inp num sm ${rmRowBad(r) ? "bad" : ""}" data-rmq="${i}" value="${esc(r.val)}" inputmode="numeric" placeholder="0" style="width:68px" aria-label="Arrived now: ${esc(r.title)}">${Number(r.val) > r.left && !rmRowBad(r) ? `<div class="meta">+${n0(Number(r.val) - r.left)} extra</div>` : ""}</td>
       <td class="l nowrap">${r.left > 0 ? `<button class="mini" data-rm="one" data-i="${i}" title="Receive all ${n0(r.left)} still to come">All ${n0(r.left)}</button>` : ""}${r.val !== "" ? ` <button class="linkbtn small" data-rm="zero" data-i="${i}" title="Clear this row">clear</button>` : ""}</td></tr>`;
     const ask = R.ask ? `<div class="note ${R.ask === "close" ? "warn" : "info"} rcv-ask"><b>${R.ask === "close" ? "You've entered units that aren't received yet." : `Receive ${n0(u)} unit${u === 1 ? "" : "s"}?`}</b>
