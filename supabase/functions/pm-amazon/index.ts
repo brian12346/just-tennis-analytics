@@ -9,6 +9,8 @@
 // POST {action: "offers"} reads our minimum / maximum price per in-stock SKU (159; daily, and from the page).
 // POST {action: "map_lookup", file_id} / {action: "map_apply"}: MAP files (160) — UPC -> ASIN, and the scheduled price changes.
 // POST {action: "map_floor", skus?, auto?}: MAP floors (166) — minimum price = MAP on every listing of a MAP product.
+// POST {action: "map_scan", brand?, scan_id?}: MAP scan (216) — every offer on each of our ASINs of a MAP brand; a new scan
+//   when no scan_id, then about 20 ASINs every 10 seconds until the time limit; call again with the scan_id to go on.
 // POST {action: "set_price", items: [{sku, asin, price?, min?}]} sets our price and/or minimum price on amazon.com (signed-in app users, or the Claude dashboard through jt.pm_amazon_call; 158).
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -127,6 +129,38 @@ async function buybox(c: Creds, deadline: number) {
       await rpc("jt_pm_amazon_save", { p: { prices: rows } });
       res.asins += chunk.length;
       if (i + 20 < asins.length) await wait(10_500);
+    }
+  } catch (e) { res.error = (e as Error).message; }
+  return res;
+}
+
+// ---- POST {action: "map_scan"}: everyone's new offers on our ASINs of a MAP brand (migration 216)
+async function mapScan(c: Creds, p: any, deadline: number) {
+  let sid = Number(p.scan_id) || 0, started = 0;
+  if (!sid) { const st = await rpc("jt_map_scan", { p: { op: "start", brand: String(p.brand || "Wilson"), by: String(p.by || "") } }); sid = st.scan_id; started = st.asins; }
+  const todo: string[] = await rpc("jt_map_scan", { p: { op: "todo", scan_id: sid, limit: 400 } });
+  const res: any = { scan_id: sid, started, checked: 0, errors: 0, left: todo.length, error: "" };
+  const num = (x: any) => x == null || x === "" ? null : Math.round(Number(x) * 100) / 100;
+  try {
+    for (let i = 0; i < todo.length && Date.now() < deadline - 12_000; i += 20) {
+      const chunk = todo.slice(i, i + 20);
+      const body = { requests: chunk.map((a) => ({ uri: `/products/pricing/v0/items/${a}/offers`, method: "GET", MarketplaceId: US_MKT, ItemCondition: "New", CustomerType: "Consumer" })) };
+      const r = await sp(c, "POST", "/batches/products/pricing/v0/itemOffers", body);
+      const rows: any[] = [];
+      (r.responses || []).forEach((resp: any, k: number) => {
+        const pl = resp.body?.payload, asin = pl?.ASIN || chunk[k];
+        if (!pl || (resp.status?.statusCode && resp.status.statusCode >= 400)) {
+          rows.push({ asin, error: (resp.body?.errors || [])[0]?.message || `status ${resp.status?.statusCode || "?"}`, offers: [] }); res.errors++; return;
+        }
+        const offers = (pl.Offers || []).filter((o: any) => !o.SubCondition || String(o.SubCondition).toLowerCase() === "new").map((o: any) => ({
+          seller_id: o.SellerId || "", fba: !!o.IsFulfilledByAmazon, listing_price: num(o.ListingPrice?.Amount), shipping: num(o.Shipping?.Amount),
+          buybox: !!o.IsBuyBoxWinner, prime: !!(o.PrimeInformation?.IsPrime), feedback_count: o.SellerFeedbackRating?.FeedbackCount ?? null,
+          feedback_pct: o.SellerFeedbackRating?.SellerPositiveFeedbackRating ?? null, ships_from: o.ShipsFrom?.Country || "" }));
+        rows.push({ asin, offers_total: pl.Summary?.TotalOfferCount ?? offers.length, error: "", offers });
+      });
+      const sv = await rpc("jt_map_scan", { p: { op: "save", scan_id: sid, rows } });
+      res.checked += chunk.length; res.left = sv.left;
+      if (i + 20 < todo.length) await wait(10_500);
     }
   } catch (e) { res.error = (e as Error).message; }
   return res;
@@ -324,6 +358,7 @@ Deno.serve(async (req) => {
     if (p.action === "offers") return json({ ok: true, ...(await readOffers(c, Array.isArray(p.skus) ? p.skus.slice(0, 300).map(String) : null, t0 + 110_000)) });
     if (p.action === "map_lookup") return json({ ok: true, ...(await mapLookup(c, Number(p.file_id), t0 + 100_000)) });
     if (p.action === "map_apply") return json({ ok: true, ...(await mapApply(c, t0 + 100_000)) });
+    if (p.action === "map_scan") return json({ ok: true, ...(await mapScan(c, p, t0 + 110_000)) });
     if (p.action === "map_floor") return json({ ok: true, ...(await mapFloor(c, p, t0 + 110_000)) });
     if (p.action === "set_price") {
       // x-jt-key callers are SQL through jt.pm_amazon_call (owner only: the Claude dashboard); they name themselves
