@@ -83,8 +83,10 @@
       const fd = JT.fba && JT.fba.data;
       if (fd) for (const it of fd.items) { const l = listing.get(it.sku) || { sku: it.sku, asin: it.asin, title: it.name }; if (it.price) l.price = it.price; listing.set(it.sku, l); }
       const byVariant = new Map();    // variant id -> Amazon listings mapped to it
+      const skuOwner = new Map();     // Amazon SKU -> the variant it's mapped to (a prep row on another variant is a wrong mapping)
       for (const [sku, vid, units, kind] of maps) {
         if (kind !== "shopify" || !vid) continue;
+        skuOwner.set(sku, vid);
         const l = listing.get(sku) || { sku, asin: "", title: "", price: null };
         const a = byVariant.get(vid) || []; a.push({ ...l, sku, units: +units || 1 }); byVariant.set(vid, a);
       }
@@ -92,11 +94,12 @@
         const [vid, asku, qty, note, upd, pid, sku, title, vendor, type, cost, price, shopQty] = x;
         const listings = byVariant.get(vid) || [];
         const target = asku ? (listings.find(l => l.sku === asku) || { ...(listing.get(asku) || {}), sku: asku, units: 1 }) : null;
+        const owner = asku ? skuOwner.get(asku) : null, wrongMap = owner && owner !== vid ? owner : null;
         // Amazon value: the earmarked listing, else the only listing mapped to this product
         const val = target || (listings.length === 1 ? listings[0] : null);
         const amzUnits = val ? qty / (val.units || 1) : null;
         return { vid, asku, qty: +qty, note: note || "", upd, pid, sku: sku || "", title: title || `(variant ${vid} not in Shopify)`, vendor: vendor || "", type: type || "",
-          cost: cost == null ? null : +cost, price: price == null ? null : +price, shopQty, listings, target, val,
+          cost: cost == null ? null : +cost, price: price == null ? null : +price, shopQty, listings, target, val, wrongMap,
           amzUnits, amzPrice: val && val.price != null ? val.price : null, amzValue: val && val.price != null ? amzUnits * val.price : null };
       });
       // seed lines whose seller SKU(s) have no Shopify mapping: not in the prep center until mapped and counted in
@@ -277,6 +280,15 @@
 
   // ---------- render ----------
   const EMPTY_ICON = `<svg viewBox="0 0 64 64" width="56" height="56" aria-hidden="true"><path d="M8 22 32 10l24 12v22L32 56 8 44z" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M8 22l24 12 24-12M32 34v22" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M20 16l24 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-dasharray="3 4"/></svg>`;
+  // a prep row whose Amazon SKU is mapped (Amazon › Mapping) to a different Shopify product — e.g. the Sep 29 seed used a
+  // mapping that was corrected minutes later. Offer to move the units onto the product the SKU belongs to.
+  function mapWarn(r) {
+    if (!cat && !P.catAsked) { P.catAsked = true; catalog().then(() => render()).catch(() => {}); }
+    const o = cat && cat.find(v => v.vid === r.wrongMap), name = o ? `${o.title}${o.sku ? " · " + o.sku : ""}` : `variant ${r.wrongMap}`, k = r.vid + "|" + r.asku;
+    return `<div class="meta warnt">⚠ This SKU is mapped to <b>${esc(name)}</b>, not this product.</div>
+      <div class="meta">${P.mapFix === k ? `Move ${n0(r.qty)} to ${esc(name)}? <button class="mini" data-act="mapfix-go" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" data-to="${esc(r.wrongMap)}">Yes, move</button> <button class="linkbtn" data-act="mapfix-no">cancel</button>`
+        : `<button class="linkbtn" data-act="mapfix" data-k="${esc(k)}">Move the units to that product</button> or use Assign to change the listing.`}</div>`;
+  }
   function render() {
     if ($("tab-prep").hidden) return;
     const d = cache, st = $("prep-status");
@@ -322,7 +334,7 @@
           const lst = tg ? `${tg.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(tg.asin)}" target="_blank" rel="noopener">${esc(tg.title || tg.asin)}</a>` : esc(tg.title || "")}<div class="meta"><span class="mono">${esc(r.asku)}</span>${tg.asin ? ` · <span class="mono">${esc(tg.asin)}</span>` : ""}${tg.units > 1 ? ` · ${tg.units} per Amazon unit` : ""}</div>`
             : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
           return `<tr class="prodrow" data-prod="${esc(r.vid)}" data-psku="${esc(r.asku)}" title="Click for everything about this product"><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}${r.type ? " · " + esc(r.type) : ""}</div></td>
-            <td class="l">${lst}</td>
+            <td class="l">${lst}${r.wrongMap ? mapWarn(r) : ""}</td>
             <td><b>${n0(r.qty)}</b>${d.alloc.get(r.vid + "|" + r.asku) ? `<div class="meta ${d.alloc.get(r.vid + "|" + r.asku) > r.qty + comingOf(r.vid + "|" + r.asku) ? "neg" : ""}">${n0(d.alloc.get(r.vid + "|" + r.asku))} in shipments${d.alloc.get(r.vid + "|" + r.asku) > r.qty && d.alloc.get(r.vid + "|" + r.asku) <= r.qty + comingOf(r.vid + "|" + r.asku) ? " (some incoming)" : ""}</div>` : ""}${comingOf(r.vid + "|" + r.asku) ? `<div class="meta">+ ${n0(comingOf(r.vid + "|" + r.asku))} incoming</div>` : ""}${r.amzUnits != null && r.val && r.val.units !== 1 ? `<div class="meta">≈ ${n0(r.amzUnits)} Amazon units</div>` : ""}</td>
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
             <td>${r.amzPrice == null ? dash : m(r.amzPrice)}</td><td>${r.amzValue == null ? dash : m0(r.amzValue)}</td>
@@ -1891,6 +1903,17 @@
         JT.prep.incomingHide({ order_id: Number(b.dataset.oid), variant_id: Number(b.dataset.vid), amazon_sku: b.dataset.sku || "", dest: "prep", hide })
           .then(async () => { await load(true); render(); note("info", hide ? `<b>${esc(r ? r.title : "Product")}</b> removed from Incoming products. It's still on ${esc(r ? r.name : "the PO")}; <button class="linkbtn" data-act="inc-hidden">show removed</button> to put it back.` : `<b>${esc(r ? r.title : "Product")}</b> is back on Incoming products.`); })
           .catch(err => { b.disabled = false; note("bad", "Couldn't update the list: " + esc(JT.message(err))); });
+      }
+      if (b.dataset.act === "mapfix") { P.mapFix = b.dataset.k; render(); }
+      if (b.dataset.act === "mapfix-no") { P.mapFix = null; render(); }
+      if (b.dataset.act === "mapfix-go") {
+        const r = cache.rows.find(x => x.vid === b.dataset.vid && x.asku === (b.dataset.sku || "")); if (!r) return;
+        const have = (cache.rows.find(x => x.vid === b.dataset.to && x.asku === r.asku) || {}).qty || 0;
+        b.disabled = true;
+        JT.prep.adjust({ lines: [{ variant_id: Number(r.vid), amazon_sku: r.asku, qty: 0, note: "SKU mapped to another product — moved to variant " + b.dataset.to },
+                                 { variant_id: Number(b.dataset.to), amazon_sku: r.asku, qty: have + r.qty, note: "moved from " + r.title + " (SKU mapped here)" }] })
+          .then(async () => { P.mapFix = null; await load(true); render(); note("info", `Moved <b>${n0(r.qty)}</b> × ${esc(r.asku)} to the product it's mapped to.`); })
+          .catch(err => { b.disabled = false; note("bad", "Couldn't move them: " + esc(JT.message(err))); });
       }
       if (b.dataset.act === "assign") openAssign(b.dataset.vid, b.dataset.sku);
       if (b.dataset.act === "move" && window.JTMove) window.JTMove.open(b.dataset.vid);
