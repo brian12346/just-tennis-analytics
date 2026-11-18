@@ -101,8 +101,13 @@
   <section class="kpis" id="kpis" aria-label="Range totals"></section>
 
   <section class="panel">
-    <div class="panel-head"><h2>Net sales: where it went</h2><span class="muted small">Shipping is label cost minus shipping charged. Sales with no cost set are shown on their own, not counted as profit.</span></div>
+    <div class="panel-head"><h2>Net sales: where it went</h2><span class="muted small">Shipping is label cost minus shipping charged. Advertising is Google Ads, Meta and ChatGPT spend. Sales with no cost set are shown on their own, not counted as profit.</span></div>
     <div class="chart" id="jt-where"><div class="skel">Loading…</div></div>
+  </section>
+  <section class="panel" id="jt-ads-panel">
+    <div class="panel-head"><h2>Advertising</h2><span class="muted small" id="jt-ads-sub"></span></div>
+    <div class="kpis adk" id="jt-ads-kpis"></div>
+    <div class="tbl-wrap"><table id="jt-ads-camps"></table></div>
   </section>
   <section class="panel" id="jt-grp"></section>
   <section class="panel" id="jt-prods-panel">

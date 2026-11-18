@@ -151,6 +151,7 @@
       const ncP = loadNoCostRows(refresh).then(r => { if (cur()) state.ncRows = r; }).catch(() => { if (cur()) state.ncRows = null; });
       groupsFor(!!refresh);
       loadProds(refresh, cur);
+      AD.camps = null; AD.byDay = null; loadAds(refresh, cur);
       const shipP = loadLabels(refresh, cur).catch(() => { if (cur()) { state.dbReady = true; state.shipErr = true; } });
       await dailyP; if (cur()) { safeRender(); state.shownRange = range; $("tab-shopify").classList.remove("stale"); }
       await Promise.all([ordersP, costsP, ncP, shipP]);
@@ -243,7 +244,7 @@
 
   function render() {
     const dv = derive();
-    renderKpis(dv); renderChart(dv); renderWhere(dv); renderDaily(dv); renderOrders(); renderShipSummary(); renderAttn(dv);
+    renderKpis(dv); renderChart(dv); renderWhere(dv); renderAds(); renderDaily(dv); renderOrders(); renderShipSummary(); renderAttn(dv);
     note("daily-note", "bad", state.dailyErr ? esc(mcpMessage(state.dailyErr)) : "");
     note("orders-note", state.ordersErr ? "bad" : "warn",
       state.ordersErr ? esc(mcpMessage(state.ordersErr)) :
@@ -324,16 +325,57 @@
   }
 
   // Net sales: where it went (js/salesviz.js) — product cost, shipping (labels − shipping charged), sales with no cost, profit
-  const WHERE_SEGS = [["cogs", "Product cost", "var(--azs-cogs)"], ["ship", "Shipping", "var(--sv-ship)"], ["nocost", "No cost set", "var(--sv-nocost)"], ["profit", "Profit after shipping", "var(--azs-profit)"]];
+  const WHERE_SEGS = [["cogs", "Product cost", "var(--azs-cogs)"], ["ship", "Shipping", "var(--sv-ship)"], ["ads", "Advertising", "var(--sv-ads)"], ["nocost", "No cost set", "var(--sv-nocost)"], ["profit", "Profit after ads", "var(--azs-profit)"]];
   function renderWhere(dv) {
     const host = $("jt-where"); if (!host || !window.JTViz) return;
     if (!state.daily) { host.innerHTML = `<div class="skel">${state.dailyErr ? "No data" : "Loading…"}</div>`; return; }
     const rows = adjustedDaily(dv).map(r => {
       const lab = (dv.perDay.get(r.day) || {}).cost || 0, ship = lab - r.shipping, nocost = Math.max(0, r.nocost);
-      return { day: r.day, orders: r.orders, sales: r.net, cogs: r.cogs, ship: Math.max(0, ship), nocost, profit: r.gp - ship };
+      const ads = AD.byDay ? AD.byDay.get(r.day) || 0 : 0;
+      return { day: r.day, orders: r.orders, sales: r.net, cogs: r.cogs, ship: Math.max(0, ship), ads, nocost, profit: r.gp - ship - ads };
     });
     window.JTViz.where(host, rows, WHERE_SEGS);
   }
+  // ---------- Advertising: Google Ads, Meta, ChatGPT (jt.v_ad_spend_daily, migration 219) ----------
+  // Google Ads posts hourly from its script; Meta and ChatGPT have a place (jt.ad_spend_daily) but no feed yet.
+  const PLATFORMS = [["google", "Google Ads"], ["meta", "Meta (Facebook & Instagram)"], ["chatgpt", "ChatGPT"]];
+  const AD = { byDay: null, plat: null, camps: null, err: null };
+  async function loadAds(refresh, cur) {
+    const w = `from jt.v_ad_spend_daily where store = 'justtennis' and day between ${JT.day(state.start)} and ${JT.day(state.end)}`;
+    try {
+      const [days, camps] = await Promise.all([
+        JT.rows(["day::text", "sum(cost)"], `${w} group by 1`, refresh),
+        JT.rows(["platform", "campaign_id", "max(campaign)", "sum(cost)", "sum(clicks)", "sum(conversions)", "sum(conv_value)"], `${w} group by 1, 2`, refresh),
+      ]);
+      if (cur && !cur()) return;
+      AD.byDay = new Map(days.map(x => [x[0], num(x[1])]));
+      AD.camps = camps.map(x => ({ plat: x[0], id: x[1], name: x[2] || x[1], cost: num(x[3]), clicks: num(x[4]), conv: num(x[5]), value: num(x[6]) }));
+      AD.err = null;
+    } catch (e) { if (!cur || cur()) AD.err = e; }
+    safeRender();
+  }
+  function renderAds() {
+    const k = $("jt-ads-kpis"); if (!k) return;
+    if (AD.err) { k.innerHTML = `<div class="dim small">Ad spend didn't load: ${esc(mcpMessage(AD.err))}</div>`; $("jt-ads-camps").innerHTML = ""; return; }
+    if (!AD.camps) { k.innerHTML = '<div class="skel">Loading ad spend…</div>'; return; }
+    const net = (state.daily || []).reduce((a, r) => a + r.net, 0), roas = (v, c) => c > 0 ? (v / c).toFixed(1) + "×" : "—";
+    const P2 = new Map(PLATFORMS.map(([id]) => [id, { cost: 0, clicks: 0, conv: 0, value: 0, n: 0 }]));
+    for (const c of AD.camps) { const p = P2.get(c.plat) || { cost: 0, clicks: 0, conv: 0, value: 0, n: 0 }; p.cost += c.cost; p.clicks += c.clicks; p.conv += c.conv; p.value += c.value; p.n++; P2.set(c.plat, p); }
+    const tot = [...P2.values()].reduce((a, p) => a + p.cost, 0), totV = [...P2.values()].reduce((a, p) => a + p.value, 0);
+    const live = new Set(AD.camps.map(c => c.plat));
+    $("jt-ads-sub").textContent = `${m0(tot)} spent · ${net ? pct(tot / net) : "—"} of net sales · platforms' own attributed sales ${m0(totV)} (${roas(totV, tot)})`;
+    k.innerHTML = [...P2.entries()].map(([id, p]) => {
+      const name = (PLATFORMS.find(x => x[0] === id) || [id, id])[1];
+      if (!live.has(id) && !p.cost) return `<div class="kpi"><span class="eyebrow">${esc(name)}</span><span class="v dimv">—</span><span class="s">Not connected yet: no spend recorded for this range.</span></div>`;
+      return `<div class="kpi"><span class="eyebrow">${esc(name)}</span><span class="v">${m0(p.cost)}</span><span class="s">${net ? pct(p.cost / net) + " of net sales · " : ""}${p.clicks.toLocaleString()} clicks${p.clicks ? ` · ${m(p.cost / p.clicks)} each` : ""}<br>Attributed sales ${m0(p.value)} · ROAS ${roas(p.value, p.cost)}</span></div>`;
+    }).join("");
+    const C = AD.camps.filter(c => c.cost > 0.005 || c.value > 0.005).sort((a, b) => b.cost - a.cost);
+    const PN = Object.fromEntries(PLATFORMS.map(([a, b]) => [a, b.split(" (")[0]]));
+    $("jt-ads-camps").innerHTML = C.length ? `<thead><tr><th class="l">Campaign</th><th class="l">Platform</th><th>Spend</th><th>Share</th><th>Clicks</th><th>Conversions</th><th>Attributed sales</th><th>ROAS</th></tr></thead><tbody>${
+      C.slice(0, 25).map(c => `<tr><td class="l">${esc(c.name)}</td><td class="l">${esc(PN[c.plat] || c.plat)}</td><td><b>${m(c.cost)}</b></td><td class="dim">${tot ? pct(c.cost / tot) : ""}</td><td>${c.clicks.toLocaleString()}</td><td>${(Math.round(c.conv * 10) / 10).toLocaleString()}</td><td>${m(c.value)}</td><td class="${c.cost > 0 && c.value / c.cost < 1 ? "neg" : ""}">${roas(c.value, c.cost)}</td></tr>`).join("")
+    }</tbody>` : "";
+  }
+
   // ---------- By product (Shopify products sold in the range; variants on ▸; a variant opens the item detail) ----------
   const P = { rows: null, err: null, shown: 100, open: new Set(), loading: false };
   async function loadProds(refresh, cur) {

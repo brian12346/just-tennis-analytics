@@ -1791,9 +1791,9 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .azs-keys{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px;font-size:12px;color:var(--muted)}
 .azs-keys b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:0}
 .azs-keys strong{color:var(--ink);font-weight:600}
-:root{--sv-ship:#f0a24a;--sv-nocost:#d9c7a0}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--sv-ship:#d98a33;--sv-nocost:#7d6e4c}}
-:root[data-theme="dark"]{--sv-ship:#d98a33;--sv-nocost:#7d6e4c}
+:root{--sv-ship:#f0a24a;--sv-nocost:#d9c7a0;--sv-ads:#b48ae6}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--sv-ship:#d98a33;--sv-nocost:#7d6e4c;--sv-ads:#9672cc}}
+:root[data-theme="dark"]{--sv-ship:#d98a33;--sv-nocost:#7d6e4c;--sv-ads:#9672cc}
 
 /* Just Tennis › By product */
 #jt-prods tr.jtp-row,#jt-prods tr.jtp-var{cursor:pointer}
@@ -1801,3 +1801,4 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 #jt-prods .jtp-ind{padding-left:22px;display:inline-block}
 #jt-prods .jtp-var .meta{padding-left:22px}
 #jt-prods .jtp-tog{font-size:12px;width:16px;display:inline-block;text-decoration:none}
+#jt-ads-panel .adk{margin:6px 0 12px}
