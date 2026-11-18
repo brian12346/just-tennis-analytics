@@ -798,6 +798,25 @@
       <div class="chart" id="az-chart"><div class="skel">Loading…</div></div>
     </section>
 
+    <section class="panel" id="az-grp-panel">
+      <div class="panel-head">
+        <h2>Brands &amp; categories</h2>
+        <div class="filters">
+          <div class="seg" id="az-grp-dim" role="group" aria-label="Group by"><button type="button" data-dim="brand" aria-pressed="true">Brands</button><button type="button" data-dim="cat" aria-pressed="false">Categories</button></div>
+          <div class="seg" id="az-grp-metric" role="group" aria-label="Measure"><button type="button" data-m="sales" aria-pressed="true">Sales</button><button type="button" data-m="profit" aria-pressed="false">Profit</button><button type="button" data-m="units" aria-pressed="false">Units</button><button type="button" data-m="margin" aria-pressed="false">Margin</button><button type="button" data-m="share" aria-pressed="false">Share</button></div>
+        </div>
+      </div>
+      <p class="muted small" id="az-grp-help">Brand is the Shopify vendor of the mapped product (else the brand in the Amazon title); category is the Shopify product type. Pick lines in the table: each one on its own, or combined into Set A–D to compare groups of brands or categories.</p>
+      <div class="legend" id="az-grp-legend"></div>
+      <div class="chart" id="az-grp-chart"><div class="skel">Loading…</div></div>
+      <div class="grp-two">
+        <div><h3 class="eyebrow" id="az-grp-tot-h">Total in range</h3><div id="az-grp-tot"></div></div>
+        <div><h3 class="eyebrow">Profit margin</h3><div id="az-grp-mgn"></div></div>
+      </div>
+      <div class="row" style="margin:10px 0 4px"><input id="az-grp-q" class="inp" type="search" placeholder="Filter brands or categories" style="max-width:240px" autocomplete="off" data-jtnofill="1"><button class="mini" type="button" id="az-grp-top">Top 5</button><button class="mini" type="button" id="az-grp-clear">Clear</button><span class="muted small" id="az-grp-count"></span></div>
+      <div class="tbl-wrap tall"><table id="az-grp-tbl"></table></div>
+    </section>
+
     <section class="panel daycards" id="az-daily-panel">
       <div class="panel-head">
         <h2>By day</h2>

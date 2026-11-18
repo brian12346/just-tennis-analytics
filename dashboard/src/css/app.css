@@ -1762,3 +1762,20 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 #tab-oos .oos-notec{min-width:150px}#tab-oos .oos-note{width:100%;min-width:130px}
 #tab-oos tbody tr[data-oos-row],#pc-table tbody tr[data-item-row]{cursor:pointer}
 #tab-oos tbody tr[data-oos-row]:hover td,#pc-table tbody tr[data-item-row]:hover td{background:var(--line-soft)}
+
+/* Amazon › Brands & categories */
+:root{--g1:#2a78d6;--g2:#eb6834;--g3:#1baf7a;--g4:#8b5cf6;--g5:#c99400;--g6:#e0457b;--g7:#0f9fb5;--g8:#7a8494}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--g1:#4f95ea;--g2:#f07d4e;--g3:#2cc48d;--g4:#a585fa;--g5:#e3b23c;--g6:#ee6a96;--g7:#2bb8cc;--g8:#9aa6ba}}
+:root[data-theme="dark"]{--g1:#4f95ea;--g2:#f07d4e;--g3:#2cc48d;--g4:#a585fa;--g5:#e3b23c;--g6:#ee6a96;--g7:#2bb8cc;--g8:#9aa6ba}
+.grp-two{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px}
+@media (max-width:760px){.grp-two{grid-template-columns:1fr}}
+.grp-two h3{margin:0 0 6px}
+.gbar{display:grid;grid-template-columns:minmax(90px,170px) 1fr auto;gap:8px;align-items:center;font-size:13px;margin:4px 0}
+.gbar .gn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gbar .gt{height:14px;background:var(--line-soft);border-radius:3px;position:relative;overflow:hidden}
+.gbar .gt i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
+.gbar .gv{font-family:var(--mono);font-size:12px;min-width:70px;text-align:right}
+.gsw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+#az-grp-tbl select{font-size:12px;padding:2px 4px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+#az-grp-tbl tr.gon td:first-child{font-weight:600}
+#az-grp-legend{margin:6px 0}

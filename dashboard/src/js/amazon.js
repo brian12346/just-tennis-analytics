@@ -827,7 +827,7 @@
     if (txDays.size && ag.coverage < 0.95) notes.push(["warn", `Only ${pct(ag.coverage)} of these sales are mapped to a product cost, so profit is overstated. <button class="mini" data-go="amzmap">Map listings</button>`]);
     if (gapNote) notes.push(["info", gapNote]);
     if (notes.length) { const n = $("az-note"); n.hidden = false; n.innerHTML = notes.map(([k, h]) => `<div class="note ${k}">${h}</div>`).join(""); } else azNote("", "");
-    renderAzChart(ag.byDay); renderAzDaily(ag.byDay); renderAzSkus(ag); renderAzOrders(ag);
+    renderAzChart(ag.byDay); renderAzDaily(ag.byDay); renderAzSkus(ag); renderAzOrders(ag); renderAzGroups();
   }
 
   function renderAzChart(rows) {
@@ -919,6 +919,193 @@
     $("az-omore").hidden = rows.length <= A.oShown;
     $("az-ocount").textContent = rows.length ? `Showing ${Math.min(A.oShown, rows.length)} of ${rows.length.toLocaleString()} orders` : "";
   }
+
+  // ---------- Brands & categories (Nov 17, Brian: "compare vendors against each other and also compare categories or
+  // sets of categories against each other based on the time filters at the top") ----------
+  // Each order line's Amazon SKU -> its mapped Shopify variant -> vendor (brand) and product type (category). Unmapped
+  // listings take the brand from the Amazon title and the category "Not mapped". Profit and margin count mapped lines
+  // only (their product cost is known), like the SKU table. Series: a group on its own, or Sets A–D (groups summed).
+  const G = (() => { let v = null; try { v = JSON.parse(localStorage.getItem("jt-amz-grp") || "null"); } catch (_) {} return Object.assign({ dim: "brand", metric: "sales", sel: { brand: null, cat: null }, q: "" }, v || {}); })();
+  const gSave = () => { try { localStorage.setItem("jt-amz-grp", JSON.stringify({ dim: G.dim, metric: G.metric, sel: G.sel })); } catch (_) {} };
+  let VT = null, vtBusy = false;       // Amazon SKU -> {vendor, type}, from the mappings joined to jt.variants
+  async function loadVT() {
+    if (VT || vtBusy || !window.JT || !window.JT.rows) return; vtBusy = true;
+    try {
+      const r = await window.JT.rows(["d.data->>'sku'", "coalesce(v.vendor, '')", "coalesce(v.product_type, '')"],
+        `from jt.docs d join jt.variants v on v.variant_id = nullif((regexp_match(d.data->>'variantId', '(\\d+)$'))[1], '')::bigint
+         where d.collection = 'amzmap' and d.data->>'kind' = 'shopify'`);
+      VT = new Map(r.map(([sku, ven, ty]) => [sku, { vendor: (ven || "").trim(), type: (ty || "").trim() }]));
+    } catch (_) { VT = new Map(); }
+    vtBusy = false; renderSales();
+  }
+  const titleCase = (s) => s.replace(/\b[a-zö]/g, c => c.toUpperCase());
+  const BRAND_FIX = { "luxillon": "Luxilon", "pro penn": "Penn", "propenn": "Penn", "k swiss": "K-Swiss", "kswiss": "K-Swiss", "k-swiss": "K-Swiss", "völkl": "Volkl", "crbn": "CRBN", "joola": "JOOLA" };
+  function groupOf(sku) {
+    const vt = VT && VT.get(sku);
+    let brand = vt && vt.vendor, cat = vt ? vt.type || "No category" : "Not mapped";
+    if (!brand) { const b = splitBrand(titleOf(sku)).brands[0]; brand = b ? (BRAND_FIX[b] || titleCase(b)) : "Unknown brand"; }
+    return { brand, cat };
+  }
+  // buckets follow the range: days up to 45 days, weeks (Mon) up to 26 weeks, else months
+  function bucketOf(day, kind) {
+    if (kind === "day") return day;
+    if (kind === "month") return day.slice(0, 7) + "-01";
+    const d = new Date(day + "T12:00:00Z"), wd = (d.getUTCDay() + 6) % 7; return addDays(day, -wd);
+  }
+  function groupAgg() {
+    const n = A.start && A.end ? Math.round((Date.parse(A.end) - Date.parse(A.start)) / 864e5) + 1 : 0;
+    const kind = n <= 45 ? "day" : n <= 182 ? "week" : "month";
+    const blank = () => ({ units: 0, sales: 0, fees: 0, net: 0, refunds: 0, cogs: 0, mSales: 0, mNet: 0, mRef: 0, skus: new Set() });
+    const groups = new Map(), buckets = new Set(), tot = new Map(), memo = new Map();
+    const gk = (sku) => { let g = memo.get(sku); if (!g) { g = groupOf(sku); memo.set(sku, g); } return G.dim === "brand" ? g.brand : g.cat; };
+    const cell = (k, b) => { let g = groups.get(k); if (!g) { g = { name: k, t: blank(), by: new Map() }; groups.set(k, g); } let c = g.by.get(b); if (!c) { c = blank(); g.by.set(b, c); } return [g.t, c]; };
+    for (const d of A.days || []) {
+      if (d.date < A.start || d.date > A.end) continue;
+      const b = bucketOf(d.date, kind); buckets.add(b);
+      for (const o of d.orders || []) {
+        const sku = d.skus[o[2]], uc = unitCost(sku, d.date), k = gk(sku);
+        for (const x of cell(k, b)) {
+          x.units += o[3]; x.sales += o[4]; x.fees += o[7] + o[8]; x.net += o[9]; x.skus.add(sku);
+          if (uc != null) { x.mSales += o[4]; x.mNet += o[9]; x.cogs += uc * o[3]; }
+        }
+        tot.set(b, (tot.get(b) || 0) + o[4]);
+      }
+      for (const r of d.refunds || []) {
+        if (r[2] < 0) continue; const sku = d.skus[r[2]], k = gk(sku), mapped = unitCost(sku, d.date) != null;
+        for (const x of cell(k, b)) { x.refunds += r[6]; if (mapped) x.mRef += r[6]; }
+      }
+    }
+    // a range of days with no data still gets its buckets on the x axis
+    if (A.start && A.end) for (let d = A.start; d <= A.end; d = addDays(d, 1)) buckets.add(bucketOf(d, kind));
+    let total = 0; for (const v of tot.values()) total += v;
+    // a week or month the range only partly covers (first or last) is drawn dashed and marked partial
+    const bl = [...buckets].sort(), endOf = (b) => kind === "day" ? b : kind === "week" ? addDays(b, 6) : addDays(addDays(b, 32).slice(0, 7) + "-01", -1);
+    const partial = new Set(bl.filter(b => kind !== "day" && (b < A.start || endOf(b) > A.end)));
+    return { groups, buckets: bl, kind, tot, total, partial };
+  }
+  const gProfit = (x) => x.mNet + x.mRef - x.cogs;
+  const gVal = (x, metric, tb) => !x ? 0 : metric === "sales" ? x.sales : metric === "units" ? x.units : metric === "profit" ? gProfit(x)
+    : metric === "margin" ? (x.mSales ? gProfit(x) / x.mSales : null) : (tb ? x.sales / tb : null);
+  const SLOTS = ["line", "A", "B", "C", "D"];
+  function gSeries(ag) {
+    let sel = G.sel[G.dim];
+    if (!sel) {   // first look: the top 5 by sales, each on its own
+      sel = {}; [...ag.groups.values()].sort((a, b) => b.t.sales - a.t.sales).slice(0, 5).forEach(g => { sel[g.name] = "line"; });
+      if (ag.groups.size) { G.sel[G.dim] = sel; gSave(); }
+    }
+    const out = [];
+    for (const [name, slot] of Object.entries(sel)) if (slot === "line") { const g = ag.groups.get(name); out.push({ key: "g:" + name, label: name, members: [name], g }); }
+    for (const s of ["A", "B", "C", "D"]) {
+      const mem = Object.entries(sel).filter(([, v]) => v === s).map(([k]) => k); if (!mem.length) continue;
+      out.push({ key: "s:" + s, label: `Set ${s}: ${mem.slice(0, 3).join(" + ")}${mem.length > 3 ? ` + ${mem.length - 3} more` : ""}`, short: `Set ${s}`, members: mem });
+    }
+    // sum the members of each series into one total and one cell per bucket
+    const blank = () => ({ units: 0, sales: 0, fees: 0, net: 0, refunds: 0, cogs: 0, mSales: 0, mNet: 0, mRef: 0 });
+    const add = (a, x) => { for (const k of Object.keys(a)) a[k] += x[k] || 0; };
+    for (const s of out) {
+      s.t = blank(); s.by = new Map();
+      for (const name of s.members) { const g = ag.groups.get(name); if (!g) continue; add(s.t, g.t); for (const [b, c] of g.by) { const x = s.by.get(b) || blank(); add(x, c); s.by.set(b, x); } }
+    }
+    out.sort((a, b) => b.t.sales - a.t.sales);
+    out.forEach((s, i) => { s.color = `var(--g${(i % 8) + 1})`; });
+    return out;
+  }
+  const gFmt = (v, metric) => v == null ? "—" : metric === "units" ? Math.round(v).toLocaleString() : metric === "margin" || metric === "share" ? pct(v) : m0(v);
+  const gAxis = (v, metric) => metric === "units" ? (Math.abs(v) >= 1000 ? +(v / 1000).toFixed(1) + "k" : String(Math.round(v)))
+    : metric === "margin" || metric === "share" ? Math.round(v * 100) + "%" : Math.abs(v) >= 1000 ? (v < 0 ? "-" : "") + "$" + +(Math.abs(v) / 1000).toFixed(1) + "k" : "$" + Math.round(v);
+  const gLabel = (b, kind) => kind === "month" ? new Date(b + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }) : kind === "week" ? "wk " + shortDay(b) : shortDay(b);
+
+  function renderAzGroups() {
+    const panel = $("az-grp-panel"); if (!panel) return;
+    document.querySelectorAll("#az-grp-dim button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.dim === G.dim)));
+    document.querySelectorAll("#az-grp-metric button").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.m === G.metric)));
+    if (!VT) { loadVT(); $("az-grp-chart").innerHTML = '<div class="skel">Loading brands and categories…</div>'; return; }
+    const ag = groupAgg(), series = gSeries(ag), M = G.metric;
+    $("az-grp-legend").innerHTML = series.map(s => `<span title="${esc(s.members.join(", "))}"><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join("");
+    renderGrpChart(ag, series); renderGrpBars(ag, series); renderGrpTable(ag, series);
+    $("az-grp-tot-h").textContent = M === "margin" ? "Profit in range" : M === "share" ? "Share of sales" : M === "units" ? "Units in range" : M === "profit" ? "Profit in range" : "Sales in range";
+  }
+  function renderGrpChart(ag, series) {
+    const host = $("az-grp-chart"), M = G.metric, B = ag.buckets;
+    if (!series.length) { host.innerHTML = '<div class="skel">Pick brands or categories in the table below to chart them.</div>'; return; }
+    if (!B.length) { host.innerHTML = '<div class="skel">No Amazon activity in this range.</div>'; return; }
+    const W = Math.max(320, host.clientWidth || 800), H = W < 560 ? 220 : 280, pad = { l: 60, r: 28, t: 12, b: 28 }, iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+    const val = (s, b) => gVal(s.by.get(b), M, ag.tot.get(b));
+    const vs = []; for (const s of series) for (const b of B) { const v = val(s, b); if (v != null) vs.push(v); }
+    const nice = (v) => { if (v <= 0) return 1; const e = Math.pow(10, Math.floor(Math.log10(v))); for (const f of [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (f * e >= v) return f * e; return 10 * e; };
+    let hi = Math.max(0, ...vs), lo = Math.min(0, ...vs);
+    if (M === "margin" || M === "share") { hi = Math.min(1, Math.max(0.2, Math.ceil(hi * 5 - 1e-9) / 5)); lo = lo < 0 ? Math.max(-1, Math.floor(lo * 5) / 5) : 0; } else { hi = nice(hi || 1); lo = lo < 0 ? -nice(-lo) : 0; }
+    const y = (v) => pad.t + ih - ((v - lo) / (hi - lo || 1)) * ih, step = B.length > 1 ? iw / (B.length - 1) : 0, x = (i) => B.length > 1 ? pad.l + i * step : pad.l + iw / 2;
+    const every = Math.ceil(B.length / Math.max(2, Math.floor(iw / 64)));
+    let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Amazon ${G.dim === "brand" ? "brands" : "categories"} over time">`;
+    for (let i = 0; i <= 4; i++) { const t = lo + (hi - lo) * i / 4; s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line-soft)"/><text x="${pad.l - 8}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--faint)" font-family="var(--mono)">${gAxis(t, M)}</text>`; }
+    if (lo < 0) s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/>`;
+    B.forEach((b, i) => { if (i % every === 0) s += `<text x="${x(i)}" y="${H - 8}" text-anchor="${B.length > 1 && i === B.length - 1 ? "end" : "middle"}" font-size="11" fill="var(--muted)">${gLabel(b, ag.kind)}</text>`; });
+    for (const se of series) {
+      let path = "", dash = "", prev = null;
+      B.forEach((b, i) => {
+        const v = val(se, b); if (v == null) { prev = null; return; }
+        const pt = `${x(i).toFixed(1)},${y(v).toFixed(1)}`, part = ag.partial.has(b) || (prev && prev.part);
+        if (prev && part) dash += `M${prev.pt}L${pt}`; else path += `${prev ? "L" : "M"}${pt}`;
+        if (prev && part && !ag.partial.has(b)) path += `M${pt}`;
+        prev = { pt, part: ag.partial.has(b) };
+      });
+      s += `<path d="${path}" fill="none" stroke="${se.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      if (dash) s += `<path d="${dash}" fill="none" stroke="${se.color}" stroke-width="2" stroke-dasharray="4 3" opacity="0.8"/>`;
+      if (B.length <= 40) B.forEach((b, i) => { const v = val(se, b); if (v != null) s += `<circle cx="${x(i)}" cy="${y(v)}" r="2.5" fill="${se.color}"/>`; });
+    }
+    s += `<line class="gcur" x1="0" x2="0" y1="${pad.t}" y2="${pad.t + ih}" stroke="var(--faint)" stroke-dasharray="3 3" visibility="hidden"/>`;
+    s += `<rect class="ghit" x="${pad.l - (step / 2 || iw / 2)}" y="${pad.t}" width="${iw + (step || iw)}" height="${ih}" fill="transparent"/></svg><div class="tip" hidden></div>`;
+    host.innerHTML = s;
+    const svg = host.querySelector("svg"), tip = host.querySelector(".tip"), cur = svg.querySelector(".gcur");
+    svg.addEventListener("pointermove", (ev) => {
+      const sb = svg.getBoundingClientRect(), px = (ev.clientX - sb.left) * W / sb.width;
+      const i = B.length > 1 ? Math.max(0, Math.min(B.length - 1, Math.round((px - pad.l) / step))) : 0, b = B[i];
+      cur.setAttribute("x1", x(i)); cur.setAttribute("x2", x(i)); cur.setAttribute("visibility", "visible");
+      const rows = series.map(se => [se, val(se, b)]).sort((p, q) => (q[1] ?? -1e15) - (p[1] ?? -1e15));
+      tip.innerHTML = `<b>${ag.kind === "week" ? "Week of " + shortDay(b) : ag.kind === "month" ? gLabel(b, "month") : wkDay(b) + " " + shortDay(b)}</b>${ag.partial.has(b) ? ' <span class="dim">partial</span>' : ""}` + rows.map(([se, v]) => `<br><span class="gsw" style="background:${se.color}"></span>${esc(se.short || se.label)} <b>${gFmt(v, M)}</b>`).join("");
+      tip.hidden = false; const box = host.getBoundingClientRect();
+      tip.style.left = Math.min(Math.max(x(i) * sb.width / W, 120), box.width - 120) + "px"; tip.style.top = ((pad.t + ih / 3) * sb.height / H) + "px";
+    });
+    svg.addEventListener("pointerleave", () => { tip.hidden = true; cur.setAttribute("visibility", "hidden"); });
+  }
+  function renderGrpBars(ag, series) {
+    const M = G.metric, totM = M === "margin" ? "profit" : M;
+    const tv = series.map(s => [s, totM === "profit" && !s.t.mSales ? null : gVal(s.t, totM, ag.total)]), max = Math.max(1e-9, ...tv.map(([, v]) => Math.abs(v || 0)));
+    $("az-grp-tot").innerHTML = tv.length ? tv.map(([s, v]) => `<div class="gbar" title="${esc(s.members.join(", "))}"><span class="gn"><span class="gsw" style="background:${s.color}"></span>${esc(s.short || s.label)}</span><span class="gt"><i style="width:${(Math.abs(v || 0) / max * 100).toFixed(1)}%;background:${s.color}"></i></span><span class="gv ${v < 0 ? "neg" : ""}">${gFmt(v, totM)}${totM === "sales" && ag.total ? ` <span class="dim">${pct(v / ag.total)}</span>` : ""}</span></div>`).join("") : '<p class="muted small">Nothing picked.</p>';
+    const mv = series.map(s => [s, gVal(s.t, "margin")]), mmax = Math.max(0.05, ...mv.map(([, v]) => Math.abs(v || 0)));
+    $("az-grp-mgn").innerHTML = mv.length ? mv.map(([s, v]) => `<div class="gbar" title="Profit after Amazon fees, refunds and product cost, on mapped listings (${pct(s.t.sales ? s.t.mSales / s.t.sales : 0)} of sales)"><span class="gn"><span class="gsw" style="background:${s.color}"></span>${esc(s.short || s.label)}</span><span class="gt"><i style="width:${(Math.abs(v || 0) / mmax * 100).toFixed(1)}%;background:${v < 0 ? "var(--bad)" : s.color}"></i></span><span class="gv ${v < 0 ? "neg" : ""}">${gFmt(v, "margin")}</span></div>`).join("") : "";
+  }
+  function renderGrpTable(ag, series) {
+    const sel = G.sel[G.dim] || {}, q = G.q.trim().toLowerCase(), color = new Map();
+    for (const s of series) for (const n of s.members) color.set(n, s.color);
+    const all = [...ag.groups.values()].sort((a, b) => b.t.sales - a.t.sales), rows = all.filter(g => !q || g.name.toLowerCase().includes(q) || sel[g.name]);
+    const lab = { line: "Own line", A: "Set A", B: "Set B", C: "Set C", D: "Set D" };
+    const body = rows.map(g => {
+      const t = g.t, p = gProfit(t), cov = t.sales ? t.mSales / t.sales : 0, on = sel[g.name];
+      return `<tr class="${on ? "gon" : ""}"><td class="l">${on ? `<span class="gsw" style="background:${color.get(g.name) || "var(--faint)"}"></span>` : ""}${esc(g.name)}</td>
+        <td class="l"><select data-gsel="${esc(g.name)}" aria-label="Chart ${esc(g.name)}"><option value="">—</option>${SLOTS.map(k => `<option value="${k}" ${on === k ? "selected" : ""}>${lab[k]}</option>`).join("")}</select></td>
+        <td>${t.skus.size.toLocaleString()}</td><td>${t.units.toLocaleString()}</td><td><b>${m0(t.sales)}</b></td><td class="dim">${ag.total ? pct(t.sales / ag.total) : ""}</td>
+        <td class="neg">${m0(t.fees)}</td><td class="${t.refunds < 0 ? "neg" : "dim"}">${t.refunds ? m0(t.refunds) : "—"}</td><td>${t.mSales ? m0(t.cogs) : "—"}</td>
+        <td class="${p < 0 ? "neg" : ""}">${t.mSales ? "<b>" + m0(p) + "</b>" : '<span class="dim">—</span>'}</td><td class="dim">${t.mSales ? pct(p / t.mSales) : ""}</td>
+        <td class="${cov < 0.95 ? "warnt" : "dim"}">${pct(cov)}</td></tr>`;
+    }).join("");
+    const T = all.reduce((a, g) => { for (const k of ["units", "sales", "fees", "refunds", "cogs", "mSales", "mNet", "mRef"]) a[k] += g.t[k]; return a; }, { units: 0, sales: 0, fees: 0, refunds: 0, cogs: 0, mSales: 0, mNet: 0, mRef: 0 }), tp = gProfit(T);
+    $("az-grp-tbl").innerHTML = `<thead><tr><th class="l">${G.dim === "brand" ? "Brand" : "Category"}</th><th class="l">Chart as</th><th>Listings</th><th>Units</th><th>Product sales</th><th>Share</th><th>Amazon fees</th><th>Refunds</th><th>Product cost</th><th>Profit</th><th>Margin</th><th>Mapped</th></tr></thead>
+      <tbody>${body || '<tr><td class="l dim" colspan="12">Nothing matches.</td></tr>'}</tbody>
+      <tfoot><tr><td class="l">All ${G.dim === "brand" ? "brands" : "categories"}</td><td></td><td></td><td>${T.units.toLocaleString()}</td><td>${m0(T.sales)}</td><td></td><td>${m0(T.fees)}</td><td>${m0(T.refunds)}</td><td>${m0(T.cogs)}</td><td class="${tp < 0 ? "neg" : ""}">${m0(tp)}</td><td>${T.mSales ? pct(tp / T.mSales) : ""}</td><td>${T.sales ? pct(T.mSales / T.sales) : ""}</td></tr></tfoot>`;
+    $("az-grp-count").textContent = `${all.length} ${G.dim === "brand" ? "brands" : "categories"} · profit and margin count mapped listings only`;
+  }
+  document.querySelectorAll("#az-grp-dim button").forEach(b => b.addEventListener("click", () => { G.dim = b.dataset.dim; gSave(); renderAzGroups(); }));
+  document.querySelectorAll("#az-grp-metric button").forEach(b => b.addEventListener("click", () => { G.metric = b.dataset.m; gSave(); renderAzGroups(); }));
+  $("az-grp-q").addEventListener("input", (e) => { G.q = e.target.value; renderAzGroups(); });
+  $("az-grp-clear").addEventListener("click", () => { G.sel[G.dim] = {}; gSave(); renderAzGroups(); });
+  $("az-grp-top").addEventListener("click", () => { G.sel[G.dim] = null; gSave(); renderAzGroups(); });
+  $("az-grp-tbl").addEventListener("change", (e) => {
+    const t = e.target.closest("select[data-gsel]"); if (!t) return;
+    const sel = Object.assign({}, G.sel[G.dim] || {}); if (t.value) sel[t.dataset.gsel] = t.value; else delete sel[t.dataset.gsel];
+    G.sel[G.dim] = sel; gSave(); renderAzGroups();
+  });
 
   ["az-skuq", "az-skumap"].forEach(id => $(id).addEventListener(id === "az-skuq" ? "input" : "change", () => { A.skuShown = 100; renderSales(); }));
   ["az-oq", "az-ochan"].forEach(id => $(id).addEventListener(id === "az-oq" ? "input" : "change", () => { A.oShown = 200; renderSales(); }));
