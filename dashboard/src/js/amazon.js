@@ -841,46 +841,99 @@
     const profit = r.profit, fees = Math.max(0, r.sales - r.cogs - promo - other - profit);
     return { cogs: r.cogs, fees, promo, other, profit };
   }
-  function renderAzChart(rows) {
+  // 1 day: a waterfall (sales stepping down through each cost to profit). More days: stacked bars, at most 44px wide;
+  // over 60 days they're weeks, over ~6 months months. Above the bars, the whole range as one 100% strip.
+  function azRollup(rows) {
+    const n = rows.length, kind = n > 182 ? "month" : n > 60 ? "week" : "day";
+    if (kind === "day") return { kind, rows };
+    const out = new Map();
+    for (const r of rows) {
+      const b = kind === "month" ? r.day.slice(0, 7) + "-01" : addDays(r.day, -((new Date(r.day + "T12:00:00Z").getUTCDay() + 6) % 7));
+      const o = out.get(b) || { day: b, apiOnly: true, ordered: 0, orderedOrders: 0, orders: 0, sales: 0, cogs: 0, promo: 0, refunds: 0, other: 0, labels: 0, profit: 0, days: 0 };
+      o.days++;
+      if (r.apiOnly) { o.ordered += r.ordered || 0; o.orderedOrders += r.orderedOrders || 0; }
+      else { o.apiOnly = false; for (const k of ["orders", "sales", "cogs", "promo", "refunds", "other", "labels", "profit"]) o[k] += r[k] || 0; }
+      out.set(b, o);
+    }
+    const full = (b) => kind === "week" ? 7 : new Date(Date.UTC(+b.slice(0, 4), +b.slice(5, 7), 0)).getUTCDate();
+    for (const o of out.values()) o.partial = o.days < full(o.day);   // range starts/ends mid-week or mid-month: drawn faded
+    return { kind, rows: [...out.values()].sort((a, b) => a.day.localeCompare(b.day)) };
+  }
+  const azFmt = (v) => Math.abs(v) >= 1000 ? (v < 0 ? "-" : "") + "$" + (+(Math.abs(v) / 1000).toFixed(1)) + "k" : (v < 0 ? "-$" : "$") + Math.round(Math.abs(v));
+  const azNice = (v) => { if (v <= 0) return 1; const e = Math.pow(10, Math.floor(Math.log10(v))); for (const f of [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (f * e >= v) return f * e; return 10 * e; };
+  function azStrip(rows) {
+    const T = { sales: 0, cogs: 0, fees: 0, promo: 0, other: 0, profit: 0 };
+    for (const r of rows) { const x = azSplit(r); if (!x) continue; T.sales += r.sales; for (const [k] of AZSEG) T[k] += x[k]; }
+    if (!(T.sales > 0)) return "";
+    const segs = AZSEG.map(([k, l, c]) => [k, l, k === "profit" && T.profit < 0 ? "var(--bad)" : c, T[k]]).filter(x => x[3] > 0 || x[0] === "profit");
+    const tot = segs.reduce((a, x) => a + Math.max(0, x[3]), 0) || 1;
+    return `<div class="azstrip" aria-label="Where the range's sales went"><div class="azs-bar">${segs.filter(x => x[3] > 0).map(([, l, c, v]) => `<i style="width:${(v / tot * 100).toFixed(2)}%;background:${c}" title="${esc(l)} ${m(v)}"></i>`).join("")}</div>
+      <div class="azs-keys">${segs.map(([, l, c, v]) => `<span><b style="background:${c}"></b>${esc(l)} <strong>${pct(v / T.sales)}</strong> <span class="dim">${m0(v)}</span></span>`).join("")}</div></div>`;
+  }
+  function azWaterfall(host, r) {
+    const x0 = azSplit(r), W = Math.max(320, host.clientWidth || 800), H = W < 560 ? 240 : 280, pad = { l: 60, r: 12, t: 28, b: 34 };
+    const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+    const steps = [["Product sales", r.sales, "var(--azs-sales)", 0, r.sales]];
+    let run = r.sales;
+    for (const [k, l, c] of AZSEG.slice(0, 4)) { const v = x0[k]; if (!(v > 0)) continue; steps.push([l, -v, c, run - v, run]); run -= v; }
+    steps.push(["Profit", x0.profit, x0.profit < 0 ? "var(--bad)" : "var(--azs-profit)", Math.min(0, x0.profit), Math.max(0, x0.profit)]);
+    const hi = Math.max(1, ...steps.map(s => s[4])), lo = Math.min(0, ...steps.map(s => s[3]));
+    const step = azNice((hi - lo) / 4), max = Math.ceil(hi / step) * step, min = Math.floor(lo / step) * step;
+    const y = (v) => pad.t + ih - ((v - min) / (max - min)) * ih, bw = iw / steps.length, w = Math.min(84, bw * 0.6);
+    let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(shortDay(r.day))}: product sales stepping down through costs to profit">`;
+    for (let t = min; t <= max + step / 2; t += step) s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line-soft)"/><text x="${pad.l - 8}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--faint)" font-family="var(--mono)">${azFmt(Math.abs(t) < 1e-6 ? 0 : t)}</text>`;
+    steps.forEach(([l, v, c, a, b], i) => {
+      const cx = pad.l + i * bw + bw / 2;
+      s += `<rect x="${cx - w / 2}" y="${y(b)}" width="${w}" height="${Math.max(1, y(a) - y(b))}" fill="${c}" rx="3"/>`;
+      if (i < steps.length - 1) { const nx = pad.l + (i + 1) * bw + bw / 2, lv = i === 0 ? r.sales : a; s += `<line x1="${cx + w / 2}" x2="${nx - w / 2}" y1="${y(lv)}" y2="${y(lv)}" stroke="var(--faint)" stroke-dasharray="3 3"/>`; }
+      s += `<text x="${cx}" y="${y(b) - 7}" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)" font-family="var(--mono)">${m0(v)}</text>`;
+      s += `<text x="${cx}" y="${H - 18}" text-anchor="middle" font-size="11" fill="var(--muted)">${esc(l)}</text><text x="${cx}" y="${H - 5}" text-anchor="middle" font-size="11" fill="var(--faint)">${i ? pct(Math.abs(v) / (r.sales || 1)) : r.orders + " orders"}</text>`;
+    });
+    s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/></svg>`;
+    host.innerHTML = s;
+  }
+  function renderAzChart(all) {
     const host = $("az-chart");
-    if (!rows.length) { host.innerHTML = '<div class="skel">No Amazon activity in this range.</div>'; return; }
+    if (!all.length) { host.innerHTML = '<div class="skel">No Amazon activity in this range.</div>'; return; }
+    if (all.length === 1 && !all[0].apiOnly) { azWaterfall(host, all[0]); return; }
+    const { kind, rows } = azRollup(all);
     const W = Math.max(320, host.clientWidth || 800), H = W < 560 ? 220 : 280, pad = { l: 60, r: 12, t: 12, b: 28 };
     const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
     const sp = rows.map(azSplit), top = (r, x) => r.apiOnly ? r.ordered || 0 : x.cogs + x.fees + x.promo + x.other + Math.max(0, x.profit);
     const hi = Math.max(1, ...rows.map((r, i) => Math.max(top(r, sp[i]), r.sales || 0))), lo = Math.min(0, ...sp.map(x => x ? x.profit : 0));
-    const nice = (v) => { const e = Math.pow(10, Math.floor(Math.log10(v))); for (const f of [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (f * e >= v) return f * e; return 10 * e; };
-    const step = nice((hi - lo) / 4), max = Math.ceil(hi / step) * step, min = Math.floor(lo / step) * step;
+    const step = azNice((hi - lo) / 4), max = Math.ceil(hi / step) * step, min = Math.floor(lo / step) * step;
     const y = (v) => pad.t + ih - ((v - min) / (max - min)) * ih;
-    const bw = iw / rows.length, fmt = (v) => Math.abs(v) >= 1000 ? (v < 0 ? "-" : "") + "$" + (+(Math.abs(v) / 1000).toFixed(1)) + "k" : "$" + Math.round(v);
-    const ticks = []; for (let t = min; t <= max + step / 2; t += step) ticks.push(Math.abs(t) < step / 1e6 ? 0 : t);
+    const bw = iw / rows.length, lab = (d) => kind === "month" ? new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }) : shortDay(d);
     const every = Math.ceil(rows.length / Math.max(2, Math.floor(iw / 58)));
-    let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily Amazon product sales split into product cost, Amazon fees, promos and refunds, other charges and profit">`;
-    for (const t of ticks) s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line-soft)"/><text x="${pad.l - 8}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--faint)" font-family="var(--mono)">${fmt(t)}</text>`;
+    let s = azStrip(all) + `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Amazon product sales by ${kind}, split into product cost, Amazon fees, promos and refunds, other charges and profit">`;
+    for (let t = min; t <= max + step / 2; t += step) s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line-soft)"/><text x="${pad.l - 8}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--faint)" font-family="var(--mono)">${azFmt(Math.abs(t) < 1e-6 ? 0 : t)}</text>`;
     rows.forEach((r, i) => {
-      const x = pad.l + i * bw, w = Math.max(2, bw * 0.66), bx = x + (bw - w) / 2, gap = w > 6 ? 1 : 0;
-      if (r.apiOnly) s += `<rect x="${bx}" y="${y(r.ordered || 0)}" width="${w}" height="${Math.max(0, y(0) - y(r.ordered || 0))}" fill="var(--azs-cogs)" fill-opacity="0.25" stroke="var(--faint)" stroke-dasharray="3 2"/>`;
+      const x = pad.l + i * bw, w = Math.max(2, Math.min(44, bw * 0.66)), bx = x + (bw - w) / 2, gap = w > 6 ? 1 : 0, rx = w > 10 ? 2 : 0;
+      if (r.apiOnly) s += `<rect x="${bx}" y="${y(r.ordered || 0)}" width="${w}" height="${Math.max(0, y(0) - y(r.ordered || 0))}" fill="var(--azs-cogs)" fill-opacity="0.25" stroke="var(--faint)" stroke-dasharray="3 2" rx="${rx}"/>`;
       else {
         let base = 0; const x0 = sp[i];
         for (const [k, , c] of AZSEG) {
-          const v = k === "profit" ? x0.profit : x0[k]; if (!(v > 0)) continue;
-          const h = y(base) - y(base + v); s += `<rect x="${bx}" y="${y(base + v)}" width="${w}" height="${Math.max(0, h - (h > 2 ? gap : 0))}" fill="${c}"/>`; base += v;
+          const v = x0[k]; if (!(v > 0)) continue;
+          const h = y(base) - y(base + v); s += `<rect x="${bx}" y="${y(base + v)}" width="${w}" height="${Math.max(0, h - (h > 2 ? gap : 0))}" fill="${c}"${r.partial ? ' fill-opacity="0.45"' : ""}/>`; base += v;
         }
-        if (x0.profit < 0) s += `<rect x="${bx}" y="${y(0)}" width="${w}" height="${Math.max(1, y(x0.profit) - y(0))}" fill="var(--bad)"/>`;
+        if (x0.profit < 0) s += `<rect x="${bx}" y="${y(0)}" width="${w}" height="${Math.max(1, y(x0.profit) - y(0))}" fill="var(--bad)"${r.partial ? ' fill-opacity="0.45"' : ""}/>`;
       }
-      if (i % every === 0 || (i === rows.length - 1 && i % every >= every / 2)) s += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${shortDay(r.day)}</text>`;
+      if (i % every === 0 || (i === rows.length - 1 && i % every >= every / 2)) s += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${lab(r.day)}</text>`;
     });
     s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/>`;
     rows.forEach((r, i) => { s += `<rect data-i="${i}" x="${pad.l + i * bw}" y="${pad.t}" width="${bw}" height="${ih}" fill="transparent"/>`; });
     s += `</svg><div class="tip" hidden></div>`;
     host.innerHTML = s;
     const tip = host.querySelector(".tip"), svg = host.querySelector("svg");
+    const head = (r) => kind === "week" ? `Week of ${shortDay(r.day)}` : kind === "month" ? lab(r.day) : `${wkDay(r.day)} ${shortDay(r.day)}`;
     svg.addEventListener("pointermove", (ev) => {
       const t = ev.target.closest("rect[data-i]"); if (!t) { tip.hidden = true; return; }
       const r = rows[+t.dataset.i], x0 = sp[+t.dataset.i], sb = svg.getBoundingClientRect(), box = host.getBoundingClientRect();
       const line = ([k, l, c]) => { const v = x0[k]; return `<br><span class="gsw" style="background:${k === "profit" && v < 0 ? "var(--bad)" : c}"></span>${l} <b>${m(v)}</b> <span class="dim">${r.sales ? pct(v / r.sales) : ""}</span>`; };
-      tip.innerHTML = r.apiOnly ? `<b>${wkDay(r.day)} ${shortDay(r.day)}</b><br>Ordered ${m(r.ordered)} · ${r.orderedOrders} orders<br><span class="dim">No fees &amp; profit yet</span>`
-        : `<b>${wkDay(r.day)} ${shortDay(r.day)}</b> · ${r.orders} orders<br>Product sales <b>${m(r.sales)}</b>${[...AZSEG].reverse().map(line).join("")}`;
-      tip.hidden = false; tip.style.left = Math.min(Math.max((pad.l + (+t.dataset.i) * bw + bw / 2) * sb.width / W, 120), box.width - 120) + "px"; tip.style.top = (pad.t + ih * 0.55) * sb.height / H + "px";
+      tip.innerHTML = r.apiOnly ? `<b>${head(r)}</b><br>Ordered ${m(r.ordered)} · ${r.orderedOrders} orders<br><span class="dim">No fees &amp; profit yet</span>`
+        : `<b>${head(r)}</b>${r.partial ? ` <span class="dim">(${r.days} day${r.days === 1 ? "" : "s"} in range)</span>` : ""} · ${r.orders} orders<br>Product sales <b>${m(r.sales)}</b>${[...AZSEG].reverse().map(line).join("")}`;
+      tip.hidden = false; tip.style.left = Math.min(Math.max((pad.l + (+t.dataset.i) * bw + bw / 2) * sb.width / W, 120), box.width - 120) + "px";
+      tip.style.top = (svg.offsetTop + (pad.t + ih * 0.55) * sb.height / H) + "px";
     });
     svg.addEventListener("pointerleave", () => { tip.hidden = true; });
   }

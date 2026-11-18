@@ -1781,6 +1781,13 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 #az-grp-legend{margin:6px 0}
 
 /* Amazon › daily sales split: product cost, fees, promos & refunds, other, profit */
-:root{--azs-cogs:#9aa4b2;--azs-fees:#f0a24a;--azs-promo:#b48ae6;--azs-other:#e8cf6a;--azs-profit:#1a9e6a}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--azs-cogs:#5d6778;--azs-fees:#d98a33;--azs-promo:#9672cc;--azs-other:#bfa645;--azs-profit:#2cc48d}}
-:root[data-theme="dark"]{--azs-cogs:#5d6778;--azs-fees:#d98a33;--azs-promo:#9672cc;--azs-other:#bfa645;--azs-profit:#2cc48d}
+:root{--azs-sales:#2a78d6;--azs-cogs:#9aa4b2;--azs-fees:#f0a24a;--azs-promo:#b48ae6;--azs-other:#e8cf6a;--azs-profit:#1a9e6a}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--azs-sales:#4f95ea;--azs-cogs:#5d6778;--azs-fees:#d98a33;--azs-promo:#9672cc;--azs-other:#bfa645;--azs-profit:#2cc48d}}
+:root[data-theme="dark"]{--azs-sales:#4f95ea;--azs-cogs:#5d6778;--azs-fees:#d98a33;--azs-promo:#9672cc;--azs-other:#bfa645;--azs-profit:#2cc48d}
+.azstrip{margin:2px 0 12px}
+.azs-bar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line-soft)}
+.azs-bar i{display:block;height:100%}
+.azs-bar i+i{border-left:1px solid var(--panel)}
+.azs-keys{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px;font-size:12px;color:var(--muted)}
+.azs-keys b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:0}
+.azs-keys strong{color:var(--ink);font-weight:600}
