@@ -1779,3 +1779,8 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 #az-grp-tbl select{font-size:12px;padding:2px 4px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
 #az-grp-tbl tr.gon td:first-child{font-weight:600}
 #az-grp-legend{margin:6px 0}
+
+/* Amazon › daily sales vs profit: bars and line in contrasting colors */
+:root{--az-bar:#a9c4e4;--az-line:#e4572e}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--az-bar:#2f4a6e;--az-line:#ff7a45}}
+:root[data-theme="dark"]{--az-bar:#2f4a6e;--az-line:#ff7a45}
