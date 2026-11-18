@@ -1780,7 +1780,7 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 #az-grp-tbl tr.gon td:first-child{font-weight:600}
 #az-grp-legend{margin:6px 0}
 
-/* Amazon › daily sales vs profit: bars and line in contrasting colors */
-:root{--az-bar:#a9c4e4;--az-line:#e4572e}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--az-bar:#2f4a6e;--az-line:#ff7a45}}
-:root[data-theme="dark"]{--az-bar:#2f4a6e;--az-line:#ff7a45}
+/* Amazon › daily sales split: product cost, fees, promos & refunds, other, profit */
+:root{--azs-cogs:#9aa4b2;--azs-fees:#f0a24a;--azs-promo:#b48ae6;--azs-other:#e8cf6a;--azs-profit:#1a9e6a}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--azs-cogs:#5d6778;--azs-fees:#d98a33;--azs-promo:#9672cc;--azs-other:#bfa645;--azs-profit:#2cc48d}}
+:root[data-theme="dark"]{--azs-cogs:#5d6778;--azs-fees:#d98a33;--azs-promo:#9672cc;--azs-other:#bfa645;--azs-profit:#2cc48d}

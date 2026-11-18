@@ -830,35 +830,57 @@
     renderAzChart(ag.byDay); renderAzDaily(ag.byDay); renderAzSkus(ag); renderAzOrders(ag); renderAzGroups();
   }
 
+  // Each day's bar is its product sales, split into where the money went: product cost, Amazon fees, promos & refunds,
+  // other charges (storage, inbound, Veeqo labels…) and profit. Fees are the remainder, so the stack always adds up to
+  // sales (shipping credits net against fees). A loss day shows its loss below zero, in red.
+  const AZSEG = [["cogs", "Product cost", "var(--azs-cogs)"], ["fees", "Amazon fees", "var(--azs-fees)"], ["promo", "Promos & refunds", "var(--azs-promo)"],
+    ["other", "Other charges", "var(--azs-other)"], ["profit", "Profit", "var(--azs-profit)"]];
+  function azSplit(r) {
+    if (r.apiOnly) return null;
+    const promo = Math.max(0, -(r.promo || 0) - (r.refunds || 0)), other = Math.max(0, -((r.other || 0) + (r.labels || 0)));
+    const profit = r.profit, fees = Math.max(0, r.sales - r.cogs - promo - other - profit);
+    return { cogs: r.cogs, fees, promo, other, profit };
+  }
   function renderAzChart(rows) {
     const host = $("az-chart");
     if (!rows.length) { host.innerHTML = '<div class="skel">No Amazon activity in this range.</div>'; return; }
     const W = Math.max(320, host.clientWidth || 800), H = W < 560 ? 220 : 280, pad = { l: 60, r: 12, t: 12, b: 28 };
     const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
-    const bar = (r) => r.apiOnly ? r.ordered || 0 : r.sales;
-    const hi = Math.max(1, ...rows.map(r => Math.max(bar(r), r.profit))), lo = Math.min(0, ...rows.map(r => r.profit));
+    const sp = rows.map(azSplit), top = (r, x) => r.apiOnly ? r.ordered || 0 : x.cogs + x.fees + x.promo + x.other + Math.max(0, x.profit);
+    const hi = Math.max(1, ...rows.map((r, i) => Math.max(top(r, sp[i]), r.sales || 0))), lo = Math.min(0, ...sp.map(x => x ? x.profit : 0));
     const nice = (v) => { const e = Math.pow(10, Math.floor(Math.log10(v))); for (const f of [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (f * e >= v) return f * e; return 10 * e; };
-    const max = nice(hi), min = lo < 0 ? -nice(-lo) : 0;
+    const step = nice((hi - lo) / 4), max = Math.ceil(hi / step) * step, min = Math.floor(lo / step) * step;
     const y = (v) => pad.t + ih - ((v - min) / (max - min)) * ih;
     const bw = iw / rows.length, fmt = (v) => Math.abs(v) >= 1000 ? (v < 0 ? "-" : "") + "$" + (+(Math.abs(v) / 1000).toFixed(1)) + "k" : "$" + Math.round(v);
-    const ticks = []; for (let i = 0; i <= 4; i++) ticks.push(min + (max - min) * i / 4);
+    const ticks = []; for (let t = min; t <= max + step / 2; t += step) ticks.push(Math.abs(t) < step / 1e6 ? 0 : t);
     const every = Math.ceil(rows.length / Math.max(2, Math.floor(iw / 58)));
-    let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily Amazon product sales and profit">`;
+    let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily Amazon product sales split into product cost, Amazon fees, promos and refunds, other charges and profit">`;
     for (const t of ticks) s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line-soft)"/><text x="${pad.l - 8}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--faint)" font-family="var(--mono)">${fmt(t)}</text>`;
-    if (min < 0) s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/>`;
-    rows.forEach((r, i) => { const x = pad.l + i * bw, w = Math.max(2, bw * 0.62); s += `<rect x="${x + (bw - w) / 2}" y="${y(bar(r))}" width="${w}" height="${Math.max(0, y(0) - y(bar(r)))}" fill="var(--az-bar)" ${r.apiOnly ? 'fill-opacity="0.4" stroke="var(--az-bar)" stroke-dasharray="3 2"' : ""} rx="2"/>`; if (i % every === 0 || (i === rows.length - 1 && i % every >= every / 2)) s += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${shortDay(r.day)}</text>`; });
-    s += `<polyline points="${rows.map((r, i) => r.apiOnly ? null : `${pad.l + i * bw + bw / 2},${y(r.profit)}`).filter(Boolean).join(" ")}" fill="none" stroke="var(--az-line)" stroke-width="3" stroke-linejoin="round"/>`;
-    if (rows.length <= 62) rows.forEach((r, i) => { if (!r.apiOnly) s += `<circle cx="${pad.l + i * bw + bw / 2}" cy="${y(r.profit)}" r="3" fill="var(--az-line)" stroke="var(--panel)" stroke-width="1.5"/>`; });
+    rows.forEach((r, i) => {
+      const x = pad.l + i * bw, w = Math.max(2, bw * 0.66), bx = x + (bw - w) / 2, gap = w > 6 ? 1 : 0;
+      if (r.apiOnly) s += `<rect x="${bx}" y="${y(r.ordered || 0)}" width="${w}" height="${Math.max(0, y(0) - y(r.ordered || 0))}" fill="var(--azs-cogs)" fill-opacity="0.25" stroke="var(--faint)" stroke-dasharray="3 2"/>`;
+      else {
+        let base = 0; const x0 = sp[i];
+        for (const [k, , c] of AZSEG) {
+          const v = k === "profit" ? x0.profit : x0[k]; if (!(v > 0)) continue;
+          const h = y(base) - y(base + v); s += `<rect x="${bx}" y="${y(base + v)}" width="${w}" height="${Math.max(0, h - (h > 2 ? gap : 0))}" fill="${c}"/>`; base += v;
+        }
+        if (x0.profit < 0) s += `<rect x="${bx}" y="${y(0)}" width="${w}" height="${Math.max(1, y(x0.profit) - y(0))}" fill="var(--bad)"/>`;
+      }
+      if (i % every === 0 || (i === rows.length - 1 && i % every >= every / 2)) s += `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${shortDay(r.day)}</text>`;
+    });
+    s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/>`;
     rows.forEach((r, i) => { s += `<rect data-i="${i}" x="${pad.l + i * bw}" y="${pad.t}" width="${bw}" height="${ih}" fill="transparent"/>`; });
     s += `</svg><div class="tip" hidden></div>`;
     host.innerHTML = s;
     const tip = host.querySelector(".tip"), svg = host.querySelector("svg");
     svg.addEventListener("pointermove", (ev) => {
       const t = ev.target.closest("rect[data-i]"); if (!t) { tip.hidden = true; return; }
-      const r = rows[+t.dataset.i], sb = svg.getBoundingClientRect(), box = host.getBoundingClientRect();
+      const r = rows[+t.dataset.i], x0 = sp[+t.dataset.i], sb = svg.getBoundingClientRect(), box = host.getBoundingClientRect();
+      const line = ([k, l, c]) => { const v = x0[k]; return `<br><span class="gsw" style="background:${k === "profit" && v < 0 ? "var(--bad)" : c}"></span>${l} <b>${m(v)}</b> <span class="dim">${r.sales ? pct(v / r.sales) : ""}</span>`; };
       tip.innerHTML = r.apiOnly ? `<b>${wkDay(r.day)} ${shortDay(r.day)}</b><br>Ordered ${m(r.ordered)} · ${r.orderedOrders} orders<br><span class="dim">No fees &amp; profit yet</span>`
-        : `<b>${wkDay(r.day)} ${shortDay(r.day)}</b><br>Sales ${m(r.sales)} · ${r.orders} orders${r.ordered != null ? `<br>Ordered ${m(r.ordered)}` : ""}<br>Profit ${m(r.profit)}`;
-      tip.hidden = false; tip.style.left = Math.min(Math.max((pad.l + (+t.dataset.i) * bw + bw / 2) * sb.width / W, 110), box.width - 110) + "px"; tip.style.top = (y(Math.max(bar(r), r.profit)) * sb.height / H - 8) + "px";
+        : `<b>${wkDay(r.day)} ${shortDay(r.day)}</b> · ${r.orders} orders<br>Product sales <b>${m(r.sales)}</b>${[...AZSEG].reverse().map(line).join("")}`;
+      tip.hidden = false; tip.style.left = Math.min(Math.max((pad.l + (+t.dataset.i) * bw + bw / 2) * sb.width / W, 120), box.width - 120) + "px"; tip.style.top = (pad.t + ih * 0.55) * sb.height / H + "px";
     });
     svg.addEventListener("pointerleave", () => { tip.hidden = true; });
   }
