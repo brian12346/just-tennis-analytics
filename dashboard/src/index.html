@@ -100,6 +100,12 @@
 
   <section class="kpis" id="kpis" aria-label="Range totals"></section>
 
+  <section class="panel">
+    <div class="panel-head"><h2>Net sales: where it went</h2><span class="muted small">Shipping is label cost minus shipping charged. Sales with no cost set are shown on their own, not counted as profit.</span></div>
+    <div class="chart" id="jt-where"><div class="skel">Loading…</div></div>
+  </section>
+  <section class="panel" id="jt-grp"></section>
+
   <section class="panel daycards" id="daily-panel">
     <div class="panel-head">
       <h2>By day</h2>
@@ -273,6 +279,12 @@
     <div class="status" id="anr-status" aria-live="polite">Loading Ace n Rally sales…</div>
     <div id="anr-note" hidden></div>
     <section class="kpis" id="anr-kpis" aria-label="Ace n Rally totals"></section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Net sales: where it went</h2><span class="muted small">At Just Tennis cost. Shipping is ShipStation label cost minus shipping charged. Sales with no cost are shown on their own, not counted as profit.</span></div>
+      <div class="chart" id="anr-where"><div class="skel">Loading…</div></div>
+    </section>
+    <section class="panel" id="anr-grp"></section>
     <section class="panel" id="anr-nc" hidden>
       <div class="panel-head" id="anr-nc-head"></div>
       <div class="tbl-wrap"><table id="anr-nc-t"></table></div>
@@ -1063,6 +1075,9 @@
 </script>
 <script>
 <!-- @inline js/db.js -->
+</script>
+<script>
+<!-- @inline js/salesviz.js -->
 </script>
 <script>
 <!-- @inline js/shopify.js -->

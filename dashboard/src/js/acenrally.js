@@ -29,6 +29,7 @@
 
   async function load(refresh) {
     const id = ++A.reqId; A.loading = true; render();
+    groupsFor(!!refresh);
     const s = JT.day(A.start), e = JT.day(A.end);
     try {
       const [days, prods, un, st, ship, nco] = await Promise.all([
@@ -103,9 +104,29 @@
           <td>${n0(p.units)}</td><td>${n0(p.orders)}</td><td><b>${m(p.net)}</b></td><td>${c > 0.005 ? m(p.cogs) : "—"}</td><td class="${g < 0 ? "neg" : ""}">${c > 0.005 ? m(g) : "—"}</td><td>${c > 0.005 ? pct(g / c) : "—"}</td></tr>`; }).join("")
       || '<tr><td class="l dim" colspan="8">No product sales in this range.</td></tr>'}</tbody>`;
 
+    renderWhere();
     renderNoCost();
     $("anr-unm").hidden = !A.unmatched.length;
     $("anr-unm-list").innerHTML = A.unmatched.map(u => `<li><b>${esc(u.title)}</b> <span class="mono small">${esc(u.sku || "no SKU")}${u.barcode ? " · " + esc(u.barcode) : ""}</span></li>`).join("");
+  }
+
+  // Net sales: where it went, and Brands & categories (js/salesviz.js)
+  const WHERE_SEGS = [["cogs", "Product cost", "var(--azs-cogs)"], ["ship", "Shipping", "var(--sv-ship)"], ["nocost", "No cost", "var(--sv-nocost)"], ["profit", "Profit after shipping", "var(--azs-profit)"]];
+  function renderWhere() {
+    const host = $("anr-where"); if (!host || !window.JTViz) return;
+    const by = new Map(A.days.map(d => [d.day, d])), rows = [];
+    for (let d = A.start; d <= A.end; d = window.JTDate.addDays(d, 1)) {
+      const x = by.get(d); if (!x) { rows.push({ day: d, orders: 0, sales: 0, cogs: 0, ship: 0, nocost: 0, profit: 0 }); continue; }
+      const ship = x.labels - x.ship, nocost = Math.max(0, x.nocost);
+      rows.push({ day: d, orders: x.orders, sales: x.net, cogs: x.cogs, ship: Math.max(0, ship), nocost, profit: x.gp - ship });
+    }
+    window.JTViz.where(host, rows, WHERE_SEGS);
+  }
+  let grp = null;
+  function groupsFor(refresh) {
+    const host = $("anr-grp"); if (!host || !window.JTViz) return;
+    if (!grp) grp = window.JTViz.groups(host, { key: "jt-anr-grp", note: "Brand is the Ace n Rally product's vendor; category its product type; cost is the matched Just Tennis cost.", load: window.JTViz.shopifyLines("jt.v_anr_sales_final") });
+    grp.render(A.start, A.end, refresh);
   }
 
   // orders with uncosted items: enter what they cost (custom items, used rackets with no Just Tennis cost)

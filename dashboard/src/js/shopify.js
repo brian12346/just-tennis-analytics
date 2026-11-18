@@ -149,6 +149,7 @@
       const ordersP = loadOrders(refresh, (n) => cur() && setStatus(`Loading ${label} orders… ${n} so far`)).then(o => { if (cur()) { state.orders = o; state.ordersErr = null; } }).catch(e => { if (cur()) { state.ordersErr = e; if (isDenial(e)) state.orders = null; } });
       const costsP = loadOrderCosts(refresh).then(c => { if (cur()) { state.costs = c; state.costsErr = null; } }).catch(e => { if (cur()) { state.costsErr = e; if (isDenial(e)) state.costs = null; } });
       const ncP = loadNoCostRows(refresh).then(r => { if (cur()) state.ncRows = r; }).catch(() => { if (cur()) state.ncRows = null; });
+      groupsFor(!!refresh);
       const shipP = loadLabels(refresh, cur).catch(() => { if (cur()) { state.dbReady = true; state.shipErr = true; } });
       await dailyP; if (cur()) { safeRender(); state.shownRange = range; $("tab-shopify").classList.remove("stale"); }
       await Promise.all([ordersP, costsP, ncP, shipP]);
@@ -241,7 +242,7 @@
 
   function render() {
     const dv = derive();
-    renderKpis(dv); renderChart(dv); renderDaily(dv); renderOrders(); renderShipSummary(); renderAttn(dv);
+    renderKpis(dv); renderChart(dv); renderWhere(dv); renderDaily(dv); renderOrders(); renderShipSummary(); renderAttn(dv);
     note("daily-note", "bad", state.dailyErr ? esc(mcpMessage(state.dailyErr)) : "");
     note("orders-note", state.ordersErr ? "bad" : "warn",
       state.ordersErr ? esc(mcpMessage(state.ordersErr)) :
@@ -319,6 +320,24 @@
       tip.style.top = (y(r.net) * (sb.height / H) - 8) + "px";
     });
     svg.addEventListener("pointerleave", () => { tip.hidden = true; });
+  }
+
+  // Net sales: where it went (js/salesviz.js) — product cost, shipping (labels − shipping charged), sales with no cost, profit
+  const WHERE_SEGS = [["cogs", "Product cost", "var(--azs-cogs)"], ["ship", "Shipping", "var(--sv-ship)"], ["nocost", "No cost set", "var(--sv-nocost)"], ["profit", "Profit after shipping", "var(--azs-profit)"]];
+  function renderWhere(dv) {
+    const host = $("jt-where"); if (!host || !window.JTViz) return;
+    if (!state.daily) { host.innerHTML = `<div class="skel">${state.dailyErr ? "No data" : "Loading…"}</div>`; return; }
+    const rows = adjustedDaily(dv).map(r => {
+      const lab = (dv.perDay.get(r.day) || {}).cost || 0, ship = lab - r.shipping, nocost = Math.max(0, r.nocost);
+      return { day: r.day, orders: r.orders, sales: r.net, cogs: r.cogs, ship: Math.max(0, ship), nocost, profit: r.gp - ship };
+    });
+    window.JTViz.where(host, rows, WHERE_SEGS);
+  }
+  let jtGroups = null;
+  function groupsFor(refresh) {
+    const host = $("jt-grp"); if (!host || !window.JTViz || !state.start) return;
+    if (!jtGroups) jtGroups = window.JTViz.groups(host, { key: "jt-shop-grp", load: window.JTViz.shopifyLines(JT.src.sales) });
+    jtGroups.render(state.start, state.end, refresh);
   }
 
   function renderDaily(dv) {

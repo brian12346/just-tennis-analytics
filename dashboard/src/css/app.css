@@ -1776,8 +1776,8 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .gbar .gt i{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
 .gbar .gv{font-family:var(--mono);font-size:12px;min-width:70px;text-align:right}
 .gsw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
-#az-grp-tbl select{font-size:12px;padding:2px 4px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
-#az-grp-tbl tr.gon td:first-child{font-weight:600}
+#az-grp-tbl select,.grp-tbl select{font-size:12px;padding:2px 4px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+#az-grp-tbl tr.gon td:first-child,.grp-tbl tr.gon td:first-child{font-weight:600}
 #az-grp-legend{margin:6px 0}
 
 /* Amazon › daily sales split: product cost, fees, promos & refunds, other, profit */
@@ -1791,3 +1791,6 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .azs-keys{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px;font-size:12px;color:var(--muted)}
 .azs-keys b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:0}
 .azs-keys strong{color:var(--ink);font-weight:600}
+:root{--sv-ship:#f0a24a;--sv-nocost:#d9c7a0}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--sv-ship:#d98a33;--sv-nocost:#7d6e4c}}
+:root[data-theme="dark"]{--sv-ship:#d98a33;--sv-nocost:#7d6e4c}

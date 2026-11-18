@@ -1104,7 +1104,7 @@
   function renderGrpChart(ag, series) {
     const host = $("az-grp-chart"), M = G.metric, B = ag.buckets;
     if (!series.length) { host.innerHTML = '<div class="skel">Pick brands or categories in the table below to chart them.</div>'; return; }
-    if (!B.length) { host.innerHTML = '<div class="skel">No Amazon activity in this range.</div>'; return; }
+    if (B.length <= 1) { host.innerHTML = B.length ? "" : '<div class="skel">No Amazon activity in this range.</div>'; return; }
     const W = Math.max(320, host.clientWidth || 800), H = W < 560 ? 220 : 280, pad = { l: 60, r: 28, t: 12, b: 28 }, iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
     const val = (s, b) => gVal(s.by.get(b), M, ag.tot.get(b));
     const vs = []; for (const s of series) for (const b of B) { const v = val(s, b); if (v != null) vs.push(v); }
