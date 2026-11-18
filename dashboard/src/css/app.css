@@ -1794,3 +1794,10 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 :root{--sv-ship:#f0a24a;--sv-nocost:#d9c7a0}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--sv-ship:#d98a33;--sv-nocost:#7d6e4c}}
 :root[data-theme="dark"]{--sv-ship:#d98a33;--sv-nocost:#7d6e4c}
+
+/* Just Tennis › By product */
+#jt-prods tr.jtp-row,#jt-prods tr.jtp-var{cursor:pointer}
+#jt-prods tr.jtp-var td{background:var(--line-soft)}
+#jt-prods .jtp-ind{padding-left:22px;display:inline-block}
+#jt-prods .jtp-var .meta{padding-left:22px}
+#jt-prods .jtp-tog{font-size:12px;width:16px;display:inline-block;text-decoration:none}

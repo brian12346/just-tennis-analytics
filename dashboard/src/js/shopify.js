@@ -150,6 +150,7 @@
       const costsP = loadOrderCosts(refresh).then(c => { if (cur()) { state.costs = c; state.costsErr = null; } }).catch(e => { if (cur()) { state.costsErr = e; if (isDenial(e)) state.costs = null; } });
       const ncP = loadNoCostRows(refresh).then(r => { if (cur()) state.ncRows = r; }).catch(() => { if (cur()) state.ncRows = null; });
       groupsFor(!!refresh);
+      loadProds(refresh, cur);
       const shipP = loadLabels(refresh, cur).catch(() => { if (cur()) { state.dbReady = true; state.shipErr = true; } });
       await dailyP; if (cur()) { safeRender(); state.shownRange = range; $("tab-shopify").classList.remove("stale"); }
       await Promise.all([ordersP, costsP, ncP, shipP]);
@@ -333,6 +334,72 @@
     });
     window.JTViz.where(host, rows, WHERE_SEGS);
   }
+  // ---------- By product (Shopify products sold in the range; variants on ▸; a variant opens the item detail) ----------
+  const P = { rows: null, err: null, shown: 100, open: new Set(), loading: false };
+  async function loadProds(refresh, cur) {
+    P.loading = true; renderProds();
+    try {
+      const parts = Math.max(1, Math.min(8, Math.ceil(spanDays() / 60)));
+      const r = await JT.rowsSplit(["coalesce(product_id, 0)::text", "coalesce(variant_id, 0)::text", "max(product_title)", "max(variant_title)", "max(sku)", "max(vendor)", "max(product_type)",
+          "sum(units)", "sum(gross)", "sum(discounts)", "sum(returns)", "sum(net)", "sum(cogs)", "sum(net_no_cost)", "count(distinct order_id)"],
+        `from ${JT.src.sales} where day between ${JT.day(state.start)} and ${JT.day(state.end)} group by 1, 2`, "coalesce(product_id, 0)", parts, refresh);
+      if (cur && !cur()) return;
+      const by = new Map();
+      for (const x of r) {
+        const pid = x[0], v = { vid: x[1], vt: x[3] || "", sku: x[4] || "", units: num(x[7]), gross: num(x[8]), disc: num(x[9]), ret: num(x[10]), net: num(x[11]), cogs: num(x[12]), nc: num(x[13]), orders: num(x[14]) };
+        const key = pid !== "0" ? pid : "t:" + (x[2] || "");
+        let p = by.get(key);
+        if (!p) { p = { pid, title: x[2] || "(Custom items)", vendor: x[5] || "", type: x[6] || "", vars: [], units: 0, gross: 0, disc: 0, ret: 0, net: 0, cogs: 0, nc: 0, orders: 0 }; by.set(key, p); }
+        p.vars.push(v); for (const k of ["units", "gross", "disc", "ret", "net", "cogs", "nc", "orders"]) p[k] += v[k];
+        if (!p.vendor && x[5]) p.vendor = x[5];
+      }
+      P.rows = [...by.values()]; P.err = null; P.shown = 100;
+    } catch (e) { if (!cur || cur()) P.err = e; }
+    P.loading = false; renderProds();
+  }
+  const pGp = (p) => p.net - p.nc - p.cogs, pCosted = (p) => p.net - p.nc;
+  function renderProds() {
+    const t = $("jt-prods"); if (!t) return;
+    if (P.err) { t.innerHTML = `<tbody><tr><td class="l dim">Couldn't load products: ${esc(mcpMessage(P.err))}</td></tr></tbody>`; return; }
+    if (!P.rows) { t.innerHTML = `<tbody><tr><td class="l skel">Loading…</td></tr></tbody>`; return; }
+    const q = $("jt-pq").value.trim().toLowerCase(), onlyNc = $("jt-pnc").checked, srt = $("jt-psort").value;
+    const key = { net: p => p.net, units: p => p.units, gp: pGp, margin: p => pCosted(p) > 0.005 ? pGp(p) / pCosted(p) : -9, returns: p => p.ret }[srt];
+    const words = q.split(/\s+/).filter(Boolean);
+    const rows = P.rows.filter(p => (!onlyNc || p.nc > 0.005) && (!words.length || words.every(w => (p.title + " " + p.vendor + " " + p.type + " " + p.vars.map(v => v.sku + " " + v.vt).join(" ")).toLowerCase().includes(w))))
+      .sort((a, b) => key(b) - key(a));
+    const T = P.rows.reduce((a, p) => { for (const k of ["units", "gross", "disc", "ret", "net", "cogs", "nc"]) a[k] += p[k]; return a; }, { units: 0, gross: 0, disc: 0, ret: 0, net: 0, cogs: 0, nc: 0 });
+    const ADM = "https://admin.shopify.com/store/justtennis-822/products/";
+    const cells = (x, sub) => { const c = pCosted(x), g = pGp(x);
+      return `<td>${Math.round(x.units).toLocaleString()}</td><td>${m(x.gross)}</td><td class="${x.disc ? "neg" : "dim"}">${x.disc ? m(-Math.abs(x.disc)) : "—"}</td><td class="${x.ret ? "neg" : "dim"}">${x.ret ? m(-Math.abs(x.ret)) : "—"}</td>
+        <td>${sub ? m(x.net) : `<b>${m(x.net)}</b>`}</td><td class="dim">${T.net ? pct(x.net / T.net) : ""}</td>
+        <td>${c > 0.005 ? m(x.cogs) : ""}${x.nc > 0.005 ? `<div class="meta warnt">${m(x.nc)} no cost</div>` : ""}</td>
+        <td class="${g < 0 ? "neg" : ""}">${c > 0.005 ? (sub ? m(g) : `<b>${m(g)}</b>`) : '<span class="dim">—</span>'}</td><td class="dim">${c > 0.005 ? pct(g / c) : ""}</td>`; };
+    const body = rows.slice(0, P.shown).map(p => {
+      const k = p.pid !== "0" ? p.pid : "t:" + p.title, open = P.open.has(k), many = p.vars.length > 1;
+      const head = `<tr class="jtp-row" data-pk="${esc(k)}"${!many && p.vars[0].vid !== "0" ? ` data-item-row="${esc(p.vars[0].vid)}" title="Click for sales, cost and inventory history"` : ""}>
+        <td class="l">${many ? `<button class="linkbtn jtp-tog" data-ptog="${esc(k)}" aria-expanded="${open}" aria-label="Show variants">${open ? "▾" : "▸"}</button> ` : ""}${p.pid !== "0" ? `<a class="olink" href="${ADM}${encodeURIComponent(p.pid)}" target="_blank" rel="noopener">${esc(p.title)}</a>` : esc(p.title)}
+          <div class="meta">${esc([p.vendor, p.type].filter(Boolean).join(" · "))}${many ? ` · ${p.vars.length} variants` : p.vars[0].sku ? ` · <span class="mono">${esc(p.vars[0].sku)}</span>` : ""}</div></td>${cells(p)}</tr>`;
+      if (!open || !many) return head;
+      return head + p.vars.slice().sort((a, b) => b.net - a.net).map(v => `<tr class="jtp-var"${v.vid !== "0" ? ` data-item-row="${esc(v.vid)}" title="Click for sales, cost and inventory history"` : ""}><td class="l"><span class="jtp-ind">${esc(v.vt || "Default")}</span><div class="meta mono">${esc(v.sku || "no SKU")}</div></td>${cells(v, true)}</tr>`).join("");
+    }).join("");
+    t.innerHTML = `<thead><tr><th class="l">Product</th><th>Units</th><th>Gross sales</th><th>Discounts</th><th>Returns</th><th>Net sales</th><th>Share</th><th>Product cost</th><th>Gross profit</th><th>Margin</th></tr></thead>
+      <tbody>${body || '<tr><td class="l dim" colspan="10">No products match.</td></tr>'}</tbody>
+      <tfoot><tr><td class="l">All products${P.loading ? ' <span class="dim">· refreshing…</span>' : ""}</td><td>${Math.round(T.units).toLocaleString()}</td><td>${m(T.gross)}</td><td>${m(-Math.abs(T.disc))}</td><td>${m(-Math.abs(T.ret))}</td><td>${m(T.net)}</td><td></td><td>${m(T.cogs)}</td><td>${m(pGp(T))}</td><td>${pCosted(T) > 0.005 ? pct(pGp(T) / pCosted(T)) : ""}</td></tr></tfoot>`;
+    $("jt-pmore").hidden = rows.length <= P.shown;
+    $("jt-pcount").textContent = rows.length ? `Showing ${Math.min(P.shown, rows.length)} of ${rows.length.toLocaleString()} products` : "";
+  }
+  (function bindProds() {
+    const t = $("jt-prods"); if (!t) return;
+    ["jt-pq", "jt-psort", "jt-pnc"].forEach(id => $(id).addEventListener(id === "jt-pq" ? "input" : "change", () => { P.shown = 100; renderProds(); }));
+    $("jt-pmore").addEventListener("click", () => { P.shown += 100; renderProds(); });
+    t.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-ptog]"); if (b) { const k = b.dataset.ptog; P.open.has(k) ? P.open.delete(k) : P.open.add(k); renderProds(); return; }
+      const row = e.target.closest("tr[data-item-row]");
+      if (row && !e.target.closest("button, a, input, select") && !String(window.getSelection() || "") && window.JTItem) { window.JTItem.open(row.dataset.itemRow); return; }
+      const pr = e.target.closest("tr.jtp-row"); if (pr && !e.target.closest("a")) { const k = pr.dataset.pk; P.open.has(k) ? P.open.delete(k) : P.open.add(k); renderProds(); }
+    });
+  })();
+
   let jtGroups = null;
   function groupsFor(refresh) {
     const host = $("jt-grp"); if (!host || !window.JTViz || !state.start) return;

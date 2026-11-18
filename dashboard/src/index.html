@@ -105,6 +105,19 @@
     <div class="chart" id="jt-where"><div class="skel">Loading…</div></div>
   </section>
   <section class="panel" id="jt-grp"></section>
+  <section class="panel" id="jt-prods-panel">
+    <div class="panel-head">
+      <h2>By product</h2>
+      <div class="filters">
+        <label for="jt-pq">Search <input id="jt-pq" class="inp" type="search" placeholder="Product, SKU, vendor or type" autocomplete="off" data-jtnofill="1"></label>
+        <label for="jt-psort">Sort <select id="jt-psort" class="inp sm"><option value="net">Net sales</option><option value="units">Units</option><option value="gp">Gross profit</option><option value="margin">Margin</option><option value="returns">Returns</option></select></label>
+        <label for="jt-pnc"><input type="checkbox" id="jt-pnc"> Missing cost only</label>
+      </div>
+    </div>
+    <p class="muted small">Shopify products sold in this range (all Just Tennis channels: online, POS and others), from Shopify Analytics. Click ▸ for the variants; click a variant for its sales, cost and inventory history.</p>
+    <div class="tbl-wrap tall"><table id="jt-prods"></table></div>
+    <div class="row"><button class="btn" id="jt-pmore" hidden>Show more</button><span class="muted small" id="jt-pcount"></span></div>
+  </section>
 
   <section class="panel daycards" id="daily-panel">
     <div class="panel-head">
