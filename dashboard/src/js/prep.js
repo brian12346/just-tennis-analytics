@@ -270,12 +270,33 @@
     const b = $("prep-amzsync"); if (b) { b.disabled = !!P.amzSyncing; b.textContent = P.amzSyncing ? "Syncing…" : "Sync Amazon shipments"; }
     document.querySelectorAll('[data-act="amz-sync"]').forEach(x => { x.disabled = !!P.amzSyncing; x.textContent = P.amzSyncing ? "Syncing from Seller Central…" : "Sync from Seller Central"; });
   }
+  // "Include store stock" (Nov 18, Brian: "toggle shop inventory on/off for items to show up in the stock list — when
+  // the prep center has 0 but other channels do, so perhaps send to FBA"): products mapped to an Amazon listing that have
+  // none in the prep center but units in the Shopify store are listed too, marked "store only". Ship pulls them from the
+  // store (the shipment's "Pull from Shopify"); Move brings them into the prep center.
+  try { P.store = localStorage.getItem("jt-prep-store") === "1"; } catch (_) { P.store = false; }
+  let storeCache = null;
+  function storeRows() {
+    const d = cache; if (!d || !P.store) return [];
+    if (!cat) { if (!P.catAsked2) { P.catAsked2 = true; catalog().then(() => { storeCache = null; render(); }).catch(() => {}); } return []; }
+    if (storeCache && storeCache.d === d) return storeCache.rows;
+    const inPrep = new Set(d.rows.filter(r => r.qty > 0).map(r => r.vid)), byVid = new Map(cat.map(v => [v.vid, v])), out = [];
+    for (const [vid, listings] of d.byVariant) {
+      const v = byVid.get(vid); if (!v || !(v.shop > 0) || inPrep.has(vid) || v.status === "ARCHIVED") continue;
+      const val = listings.length === 1 ? listings[0] : null;
+      out.push({ vid, asku: "", qty: 0, storeOnly: true, shopQty: v.shop, note: "", upd: null, pid: "", sku: v.sku, title: v.title, vendor: v.vendor, type: "", cost: v.cost, price: null,
+        listings, target: null, val, amzUnits: null, amzPrice: val && val.price != null ? val.price : null, amzValue: null, wrongMap: null });
+    }
+    storeCache = { d, rows: out };
+    return out;
+  }
+  const shopOf = (vid) => { if (!cat) return null; if (!P.shopIdx || P.shopIdx.c !== cat) P.shopIdx = { c: cat, m: new Map(cat.map(v => [v.vid, v.shop])) }; return P.shopIdx.m.get(vid) || 0; };
   function visible() {
     const d = cache; if (!d) return [];
     const q = P.q.trim().toLowerCase();
-    return d.rows.filter(r => r.qty > 0 && (P.vendor === "all" || r.vendor === P.vendor)
+    return d.rows.concat(storeRows()).filter(r => (r.qty > 0 || r.storeOnly) && (P.vendor === "all" || r.vendor === P.vendor)
       && (!q || [r.title, r.sku, r.vendor, r.asku, r.target && r.target.title].join(" ").toLowerCase().includes(q)))
-      .sort((a, b) => b.qty * (b.cost || 0) - a.qty * (a.cost || 0) || a.title.localeCompare(b.title));
+      .sort((a, b) => (a.storeOnly ? 1 : 0) - (b.storeOnly ? 1 : 0) || b.qty * (b.cost || 0) - a.qty * (a.cost || 0) || (b.shopQty || 0) * (b.cost || 0) - (a.shopQty || 0) * (a.cost || 0) || a.title.localeCompare(b.title));
   }
 
   // ---------- render ----------
@@ -293,7 +314,7 @@
     if ($("tab-prep").hidden) return;
     const d = cache, st = $("prep-status");
     if (!d) { st.textContent = P.loading ? "Loading the prep center…" : ""; $("prep-kpis").innerHTML = ""; $("prep-body").innerHTML = ""; $("prep-moves").innerHTML = ""; return; }
-    const all = d.rows.filter(r => r.qty > 0), rows = visible(), t = totals(rows), ta = totals(all);
+    const all = d.rows.filter(r => r.qty > 0), rows = visible(), t = totals(rows.filter(r => !r.storeOnly)), ta = totals(all);
     const last = d.moves[0];
     st.textContent = `${all.length.toLocaleString()} product${all.length === 1 ? "" : "s"} in the prep center${last ? " · last change " + when(last[0]) : ""}${P.loading ? " · refreshing…" : ""}`;
     $("prep-kpis").innerHTML = [
@@ -309,9 +330,9 @@
     renderShipments();
     renderIncoming();
     // vendor filter
-    const vs = [...new Set(all.map(r => r.vendor))].sort((a, b) => a.localeCompare(b));
+    const vs = [...new Set(all.concat(storeRows()).map(r => r.vendor))].sort((a, b) => a.localeCompare(b));
     $("prep-vendor").innerHTML = `<option value="all">All vendors</option>` + vs.map(v => `<option value="${esc(v)}" ${v === P.vendor ? "selected" : ""}>${esc(v || "(none)")}</option>`).join("");
-    $("prep-filters").hidden = !all.length;
+    $("prep-filters").hidden = !all.length; $("prep-store").checked = !!P.store;
     $("prep-ship").disabled = !all.length;
 
     if (!all.length) {
@@ -335,11 +356,11 @@
             : `<span class="dim">Any listing</span><div class="meta">${r.listings.length ? `${r.listings.length} mapped listing${r.listings.length === 1 ? "" : "s"}` : "no Amazon listing mapped"}</div>`;
           return `<tr class="prodrow" data-prod="${esc(r.vid)}" data-psku="${esc(r.asku)}" title="Click for everything about this product"><td class="l">${r.pid ? `<a class="olink" href="${ADMIN}/products/${esc(r.pid)}/variants/${esc(r.vid)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}<div class="meta"><span class="mono">${esc(r.sku) || "no SKU"}</span> · ${esc(r.vendor)}${r.type ? " · " + esc(r.type) : ""}</div></td>
             <td class="l">${lst}${r.wrongMap ? mapWarn(r) : ""}</td>
-            <td><b>${n0(r.qty)}</b>${d.alloc.get(r.vid + "|" + r.asku) ? `<div class="meta ${d.alloc.get(r.vid + "|" + r.asku) > r.qty + comingOf(r.vid + "|" + r.asku) ? "neg" : ""}">${n0(d.alloc.get(r.vid + "|" + r.asku))} in shipments${d.alloc.get(r.vid + "|" + r.asku) > r.qty && d.alloc.get(r.vid + "|" + r.asku) <= r.qty + comingOf(r.vid + "|" + r.asku) ? " (some incoming)" : ""}</div>` : ""}${comingOf(r.vid + "|" + r.asku) ? `<div class="meta">+ ${n0(comingOf(r.vid + "|" + r.asku))} incoming</div>` : ""}${r.amzUnits != null && r.val && r.val.units !== 1 ? `<div class="meta">≈ ${n0(r.amzUnits)} Amazon units</div>` : ""}</td>
+            <td><b>${n0(r.qty)}</b>${r.storeOnly ? `<div class="meta"><span class="pill web">store only</span> ${n0(r.shopQty)} in the Shopify store</div>` : P.store && shopOf(r.vid) ? `<div class="meta">+ ${n0(shopOf(r.vid))} in the store</div>` : ""}${d.alloc.get(r.vid + "|" + r.asku) ? `<div class="meta ${d.alloc.get(r.vid + "|" + r.asku) > r.qty + comingOf(r.vid + "|" + r.asku) ? "neg" : ""}">${n0(d.alloc.get(r.vid + "|" + r.asku))} in shipments${d.alloc.get(r.vid + "|" + r.asku) > r.qty && d.alloc.get(r.vid + "|" + r.asku) <= r.qty + comingOf(r.vid + "|" + r.asku) ? " (some incoming)" : ""}</div>` : ""}${comingOf(r.vid + "|" + r.asku) ? `<div class="meta">+ ${n0(comingOf(r.vid + "|" + r.asku))} incoming</div>` : ""}${r.amzUnits != null && r.val && r.val.units !== 1 ? `<div class="meta">≈ ${n0(r.amzUnits)} Amazon units</div>` : ""}</td>
             <td>${r.cost == null ? '<span class="pill miss">No cost</span>' : m(r.cost)}</td><td>${r.cost == null ? dash : m0(r.qty * r.cost)}</td>
             <td>${r.amzPrice == null ? dash : m(r.amzPrice)}</td><td>${r.amzValue == null ? dash : m0(r.amzValue)}</td>
             <td class="l small">${when(r.upd)}${r.note ? `<div class="meta">${esc(r.note)}</div>` : ""}</td>
-            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button><button class="mini" data-act="move" data-vid="${esc(r.vid)}" title="Move units to the Shopify store (or back)">Move</button>${r.asku || r.listings.length ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}</span></td></tr>`;
+            <td class="l"><span class="rbtns"><button class="mini" data-act="count" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Count</button><button class="mini" data-act="ship" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}">Ship</button><button class="mini" data-act="move" data-vid="${esc(r.vid)}" title="${r.storeOnly ? "Bring units from the Shopify store into the prep center" : "Move units to the Shopify store (or back)"}">Move</button>${!r.storeOnly && (r.asku || r.listings.length) ? `<button class="mini" data-act="assign" data-vid="${esc(r.vid)}" data-sku="${esc(r.asku)}" title="${r.asku ? "Move these units to another listing, or back to any listing" : "Earmark these units for an Amazon listing (ASIN)"}">Assign</button>` : ""}</span></td></tr>`;
         }).join("") || `<tr><td class="l muted" colspan="9">No products match.</td></tr>`}</tbody>
         <tfoot><tr><td class="l">Total · ${rows.length.toLocaleString()} products</td><td></td><td>${n0(t.units)}</td><td></td><td>${m0(t.cost)}</td><td></td><td>${m0(t.amz)}</td><td></td><td></td></tr></tfoot></table></div>`;
     }
@@ -1312,7 +1333,7 @@
     renderModal(); setTimeout(() => { const i = extraKey ? document.querySelector(`#prep-modal input[data-k="${CSS.escape(extraKey)}"]`) : null; if (i) i.focus(); }, 0);
   }
   const keyOf = (r) => r.vid + "|" + r.asku;
-  const rowOf = (k) => cache && (cache.rows.find(r => keyOf(r) === k) || (cache.incoming && cache.incoming.get(k)) || null);
+  const rowOf = (k) => cache && (cache.rows.find(r => keyOf(r) === k) || (cache.incoming && cache.incoming.get(k)) || storeRows().find(r => keyOf(r) === k) || null);
   const comingOf = (k) => (cache && cache.incoming && cache.incoming.get(k) || {}).coming || 0;
   // a shipment line: the prep row when it still has stock, else what the shipment saved
   const lineOf = (k) => { const r = rowOf(k); if (r) return r; const i = P.modal && P.modal.info[k]; if (!i) return null;
@@ -1849,6 +1870,7 @@
     on("prep-count", "click", () => openCount());
     on("prep-ship", "click", () => openNewShip());
     on("prep-vendor", "change", (e) => { P.vendor = e.target.value; render(); });
+    on("prep-store", "change", (e) => { P.store = e.target.checked; try { localStorage.setItem("jt-prep-store", P.store ? "1" : "0"); } catch (_) {} storeCache = null; render(); });
     on("prep-q", "input", (e) => { P.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(render, 200); });
     on("prep-shview", "click", (e) => { const b = e.target.closest("button[data-v]"); if (b) { P.shipView = b.dataset.v; renderShipments(); } });
     on("prep-ships", "click", (e) => {
