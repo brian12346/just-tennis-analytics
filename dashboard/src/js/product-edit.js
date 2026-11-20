@@ -100,7 +100,7 @@
         const raw = e[k];
         if (k === "sku" || k === "barcode") { const nv = String(raw).trim(); if (nv !== v[k]) shop.push({ lvl: "v", vid: v.vid, name, k, label: l, from: v[k], to: nv }); continue; }
         if (k === "count") { if (String(raw).trim() === "") continue; const n = intv(raw); if (isNaN(n)) { bad.push(`${name}: the store count must be a whole number.`); continue; }
-          if (n !== v.store) shop.push({ lvl: "v", vid: v.vid, name, k, label: l, from: v.store, to: n }); continue; }
+          if (n !== v.store) shop.push({ lvl: "v", vid: v.vid, name, k, label: l, from: v.store, to: n, note: String(e.note || "").trim() }); continue; }
         const n = money(raw);
         if (n == null) continue;
         if (isNaN(n)) { bad.push(`${name}: the ${l.toLowerCase()} must be a number, like 129.99.`); continue; }
@@ -142,7 +142,8 @@
         <td class="${isCh(v.vid, "price") ? "pe-ch" : ""}">${inp(`data-pv="${esc(v.vid)}" data-k="price" inputmode="decimal" aria-label="Price"`, ed(v.vid, "price") ?? (v.price == null ? "" : v.price.toFixed(2)), "pe-w5")}</td>
         <td class="${isCh(v.vid, "cost") ? "pe-ch" : ""}">${inp(`data-pv="${esc(v.vid)}" data-k="cost" inputmode="decimal" aria-label="Cost"`, ed(v.vid, "cost") ?? (v.cost == null ? "" : v.cost.toFixed(2)), "pe-w5")}
           ${v.price > 0 && v.cost != null ? `<div class="meta">${Math.round((1 - (money(ed(v.vid, "cost") ?? v.cost) || 0) / (money(ed(v.vid, "price") ?? v.price) || v.price)) * 100)}% margin</div>` : ""}</td>
-        <td class="${isCh(v.vid, "count") ? "pe-ch" : ""}">${v.tracked ? inp(`data-pv="${esc(v.vid)}" data-k="count" inputmode="numeric" aria-label="Store count"`, ed(v.vid, "count") ?? "", "pe-w4", v.store == null ? "" : String(Math.max(0, v.store))) + `<div class="meta">now ${n0(v.store)}</div>` : '<span class="dim small">not tracked</span>'}</td>
+        <td class="${isCh(v.vid, "count") ? "pe-ch" : ""}">${v.tracked ? inp(`data-pv="${esc(v.vid)}" data-k="count" inputmode="numeric" aria-label="Store count"`, ed(v.vid, "count") ?? "", "pe-w4", v.store == null ? "" : String(Math.max(0, v.store))) + `<div class="meta">now ${n0(v.store)}</div>`
+          + (isCh(v.vid, "count") ? inp(`data-pv="${esc(v.vid)}" data-k="note" aria-label="Why the count changed"`, ed(v.vid, "note") ?? "", "pe-note", "Why? (e.g. found 2 in back)") : "") : '<span class="dim small">not tracked</span>'}</td>
         <td class="num small">${n0(v.prep)}</td><td class="num small">${n0(v.fba)}</td><td class="num small">${n0(v.awd)}</td></tr>`).join("");
     const amzRows = D.amz.map(a => { const v = D.vars.find(x => x.vid === a.vid);
       return `<tr><td class="l"><span class="mono">${esc(a.sku)}</span>${a.units > 1 ? ` <span class="pill pos">${a.units}-pack</span>` : ""}<div class="meta">${a.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(a.asin)}" target="_blank" rel="noopener">${esc(a.asin)}</a> · ` : ""}${esc(v ? v.vt || "Default" : "")}${a.ch ? " · " + esc(a.ch.toUpperCase()) : ""}${a.st ? " · " + esc(a.st) : ""}</div></td>
@@ -169,7 +170,7 @@
   }
   // the save question: where each change goes, with a box per destination
   function confirmBox(ch) {
-    const C = M.confirm, list = (xs) => `<ul class="pe-list">${xs.map(c => `<li>${c.lvl === "v" ? `<b>${esc(c.name)}</b> · ` : c.sku ? `<span class="mono">${esc(c.sku)}</span> · ` : ""}${esc(c.label)}: ${esc(String(fmtFrom(c)))} → <b>${esc(String(fmt(c)))}</b></li>`).join("")}</ul>`;
+    const C = M.confirm, list = (xs) => `<ul class="pe-list">${xs.map(c => `<li>${c.lvl === "v" ? `<b>${esc(c.name)}</b> · ` : c.sku ? `<span class="mono">${esc(c.sku)}</span> · ` : ""}${esc(c.label)}: ${esc(String(fmtFrom(c)))} → <b>${esc(String(fmt(c)))}</b>${c.k === "count" ? (c.note ? ` <span class="muted">— “${esc(c.note)}”</span>` : ' <span class="warnt small">— no reason given</span>') : ""}</li>`).join("")}</ul>`;
     return `<div class="pe-confirm"><b>Save these changes?</b>
       ${ch.shop.length ? `<label class="pe-dest"><input type="checkbox" data-pe-dest="shop" ${C.shop ? "checked" : ""} ${M.busy ? "disabled" : ""}> <b>Save to Shopify</b> <span class="muted small">(${ch.shop.length} change${ch.shop.length === 1 ? "" : "s"} · written within a minute or two)</span></label>${list(ch.shop)}` : ""}
       ${ch.amz.length ? `<label class="pe-dest"><input type="checkbox" data-pe-dest="amz" ${C.amz ? "checked" : ""} ${M.busy ? "disabled" : ""}> <b>Save to Amazon</b> <span class="muted small">(${ch.amz.length} price${ch.amz.length === 1 ? "" : "s"} · live on amazon.com in about 15 minutes; MAP floors still apply)</span></label>${list(ch.amz)}` : ""}
@@ -222,7 +223,7 @@
     const body = { product_id: Number(M.pid), product: {}, variants: [] }, vv = new Map();
     for (const c of list) {
       if (c.lvl === "p") { body.product[c.k] = c.to; continue; }
-      const v = vv.get(c.vid) || { variant_id: Number(c.vid) }; v[c.k] = c.to; vv.set(c.vid, v);
+      const v = vv.get(c.vid) || { variant_id: Number(c.vid) }; v[c.k] = c.to; if (c.k === "count" && c.note) v.note = c.note; vv.set(c.vid, v);
     }
     body.variants = [...vv.values()];
     if (!Object.keys(body.product).length) delete body.product;

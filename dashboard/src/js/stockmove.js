@@ -64,7 +64,7 @@
     document.body.appendChild(d);
     d.addEventListener("click", (e) => { if (e.target === d) close(); });
     d.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); if (e.key === "Enter" && e.target.id === "mv-qty") { e.preventDefault(); go(); } });
-    d.addEventListener("input", (e) => { if (e.target.id === "mv-qty") { M.qty = e.target.value; paintFoot(); } });
+    d.addEventListener("input", (e) => { if (e.target.id === "mv-qty") { M.qty = e.target.value; paintFoot(); } if (e.target.id === "mv-note" && M) M.note = e.target.value; });
     d.addEventListener("change", (e) => {
       if (e.target.id === "mv-from") { M.from = e.target.value; paint(); }
       if (e.target.id === "mv-to") { M.to = e.target.value; paint(); }
@@ -103,6 +103,7 @@
       <div class="row mv-row">${M.dir.startsWith("prep") ? prepSel : ""}${toSel}
         <label class="stack">Units<input id="mv-qty" class="inp num" inputmode="numeric" value="${esc(M.qty)}" placeholder="0" style="width:90px"></label>
         <span class="dbtns mv-quick">${[6, 12, 24, 48].filter(q => q < max).map(q => `<button class="mini" type="button" data-mv-q="${q}">${q}</button>`).join("")}${max > 0 ? `<button class="mini" type="button" data-mv-q="all">All ${n0(max)}</button>` : ""}</span></div>
+      <label class="stack mv-note">Note <input id="mv-note" class="inp" maxlength="300" value="${esc(M.note || "")}" placeholder="Why? (optional — shows in the item's history)" autocomplete="off" data-lpignore="true" data-jtnofill="1"></label>
       <div id="mv-foot"></div>
       <div class="small muted">${toAmz ? "Opens a new Amazon shipment in the prep center with these units on it — count, pack and send it as usual." : "Shopify updates in a minute or two (the inventory sync applies it at the store's location)."} FBA and AWD stock only comes back through a removal order in Seller Central.</div>`;
     paintFoot();
@@ -121,6 +122,7 @@
       <span class="dbtns right"><button class="btn" data-mv="close">Cancel</button><button class="btn primary" data-mv="go" ${!after || M.busy ? "disabled" : ""}>${M.busy ? "Moving…" : route[0].endsWith("amz") ? "Start shipment" : `Move to ${route[2]}`}</button></span></div>`;
   }
 
+  const noteOr = (d) => { const t = (M && M.note || "").trim(); return t ? `${d} · ${t}` : d; };
   async function go() {
     if (!M || M.busy) return;
     const q = Number(M.qty), max = fromQty();
@@ -128,11 +130,11 @@
     M.busy = true; M.err2 = ""; paintFoot();
     const title = M.title, vid = M.vid;
     try {
-      if (M.dir === "prep>shop") await JT.prep.inventoryEdit({ variant_id: Number(vid), note: "quick move", moves: [{ dir: "to_shopify", amazon_sku: M.from, qty: q }] });
-      else if (M.dir === "shop>prep") await JT.prep.inventoryEdit({ variant_id: Number(vid), note: "quick move", moves: [{ dir: "from_shopify", amazon_sku: M.to, qty: q }] });
+      if (M.dir === "prep>shop") await JT.prep.inventoryEdit({ variant_id: Number(vid), note: noteOr("quick move"), moves: [{ dir: "to_shopify", amazon_sku: M.from, qty: q }] });
+      else if (M.dir === "shop>prep") await JT.prep.inventoryEdit({ variant_id: Number(vid), note: noteOr("quick move"), moves: [{ dir: "from_shopify", amazon_sku: M.to, qty: q }] });
       else {
         let asku = M.dir === "prep>amz" ? M.from : M.to;
-        if (M.dir === "shop>amz") await JT.prep.inventoryEdit({ variant_id: Number(vid), note: "to Amazon shipment", moves: [{ dir: "from_shopify", amazon_sku: asku, qty: q }] });
+        if (M.dir === "shop>amz") await JT.prep.inventoryEdit({ variant_id: Number(vid), note: noteOr("to Amazon shipment"), moves: [{ dir: "from_shopify", amazon_sku: asku, qty: q }] });
         if (!asku && M.listings.length === 1) asku = M.listings[0].sku;     // not earmarked: the shipment earmarks it for the one listing
         const lines = [{ vid, asku, qty: q, title, sku: M.sku, vendor: M.vendor, cost: M.cost }], shopD = M.dir === "shop>amz" ? -q : 0;
         close();

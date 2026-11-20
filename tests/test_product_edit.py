@@ -29,7 +29,7 @@ def test_product_edit_queues_and_applies(conn):
     _seed(cur)
     p = {"product_id": 100, "by": "b@x.com", "product": {"title": " Speed MP 2026 (Black) ", "status": "draft"},
          "variants": [{"variant_id": 11, "sku": "SPD-1B", "barcode": "0123", "price": "289", "cost": ""},
-                      {"variant_id": 12, "cost": "155", "count": 7}]}
+                      {"variant_id": 12, "cost": "155", "count": 7, "note": " found 2 behind the counter "}]}
     cur.execute("select jt.product_edit(%s::jsonb)", (json.dumps(p),))
     assert cur.fetchone()[0] == {"product": 1, "variants": 1, "prices_costs": 2, "counts": 1}
     cur.execute("select fields from jt.shopify_product_updates where variant_id is null")
@@ -37,8 +37,10 @@ def test_product_edit_queues_and_applies(conn):
     cur.execute("select variant_id, new_cost, new_price from jt.cost_updates order by variant_id")
     rows = cur.fetchall()
     assert [(r[0], r[1] and float(r[1]), r[2] and float(r[2])) for r in rows] == [(11, None, 289.0), (12, 155.0, None)]
-    cur.execute("select variant_id, set_to from jt.shopify_stock_moves")
-    assert cur.fetchall() == [(12, 7)]
+    cur.execute("select variant_id, set_to, reason from jt.shopify_stock_moves")
+    assert cur.fetchall() == [(12, 7, "physical count: 7 · found 2 behind the counter")]
+    cur.execute("select counted, note from jt.stock_counts")
+    assert cur.fetchall() == [(7, "found 2 behind the counter")]
     conn.commit()
 
     shop = FakeShop()

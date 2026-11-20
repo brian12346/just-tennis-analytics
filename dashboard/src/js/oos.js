@@ -143,7 +143,7 @@
   function actCell(r) {
     const busy = S.busy === r.vid, dis = busy ? "disabled" : "";
     const sending = r.moveSt === "pending", archiving = r.arSt === "pending";
-    if (isOpen(r.vid, "count")) return `<span class="oos-count"><input class="inp sm" id="oos-n" type="number" min="0" step="1" inputmode="numeric" placeholder="Count" aria-label="How many are on the shelf" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${dis}><button class="btn sm primary" type="button" data-oos-save="${esc(r.vid)}" ${dis}>${busy ? "Saving…" : "Save"}</button><button class="btn sm" type="button" data-oos-cancel="1" ${dis}>Cancel</button></span>`;
+    if (isOpen(r.vid, "count")) return `<span class="oos-count"><input class="inp sm" id="oos-n" type="number" min="0" step="1" inputmode="numeric" placeholder="Count" aria-label="How many are on the shelf" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${dis}><input class="inp sm oos-cnote" id="oos-cn" type="text" maxlength="300" placeholder="Note (optional)" aria-label="Note for this count" autocomplete="off" data-lpignore="true" data-jtnofill="1" ${dis}><button class="btn sm primary" type="button" data-oos-save="${esc(r.vid)}" ${dis}>${busy ? "Saving…" : "Save"}</button><button class="btn sm" type="button" data-oos-cancel="1" ${dis}>Cancel</button></span>`;
     if (archiving) return `<span class="pill warn">Archiving in Shopify…</span>`;
     const canArch = r.others <= 0;
     return `<span class="oos-btns"><button class="btn sm" type="button" data-oos-count="${esc(r.vid)}" ${sending ? "disabled title='Waiting for Shopify to take the last count'" : ""}>Count</button>`
@@ -280,7 +280,8 @@
     const n = Number(v), r = S.rows.find(x => x.vid === vid);
     S.busy = vid; render();
     try {
-      await call("jt_stock_count", "jt.stock_count", { variant_id: Number(vid), counted: n });
+      const cn = $("oos-cn") ? $("oos-cn").value.trim() : "";
+      await call("jt_stock_count", "jt.stock_count", { variant_id: Number(vid), counted: n, note: cn });
       S.open = null; S.busy = null;
       note(n > 0 ? `Counted <b>${n0(n)}</b> of ${esc(r ? r.title : "it")}: sending to Shopify. It leaves this list once Shopify has it.` : `Counted <b>0</b> of ${esc(r ? r.title : "it")}: it stays on the list with this count.`);
       await load(true);
