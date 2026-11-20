@@ -63,9 +63,13 @@
 
   async function load() {
     S.err = null;
-    const r = await JT.rows(["a.variant_id::text", "a.product_id::text", "a.title", "a.sku", "a.vendor", "a.product_type", "a.status", "a.price", "a.unit_cost",
+    // a busy database (the scheduled refreshes at :28 and :55 past the hour) can push this past the 8-second limit: try twice more
+    const slow = (e) => /statement timeout|57014|canceling statement/i.test(String((e && (e.message || e.code)) || ""));
+    const q = async (...x) => { for (const wait of [3000, 6000]) { try { return await JT.rows(...x); } catch (e) { if (!slow(e)) throw e; S.retry = true; render(); await new Promise(r => setTimeout(r, wait)); } } return JT.rows(...x); };
+    const r = await q(["a.variant_id::text", "a.product_id::text", "a.title", "a.sku", "a.vendor", "a.product_type", "a.status", "a.price", "a.unit_cost",
       "a.store", "a.prep", "a.fba", "a.awd", "a.shop365", "a.anr365", "a.amz365", "a.sold90", "a.last_sold::text", "a.discontinued", "a.culled", "a.culled_at::text", "a.culled_by", "a.cull_note", "a.added_at::text", "a.added_how", "a.on_order", "a.set_status", "a.status_note", "a.status_by", "a.status_at::text", "coalesce(v.barcode, '')"],
       "from jt.active_products() a left join jt.variants v on v.variant_id = a.variant_id", true);
+    S.retry = false;
     S.rows = r.map(x => ({ vid: x[0], pid: x[1], title: x[2] || "", sku: x[3] || "", vendor: x[4] || "", type: x[5] || "", status: x[6] || "", price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8],
       store: +x[9] || 0, prep: +x[10] || 0, fba: +x[11] || 0, awd: +x[12] || 0, shop: +x[13] || 0, anr: +x[14] || 0, amz: +x[15] || 0, s90: +x[16] || 0, last: x[17] || "",
       disc: x[18] === true || x[18] === "true", culled: x[19] === true || x[19] === "true", cAt: x[20] || "", cBy: x[21] || "", cNote: x[22] || "", added: x[23] || "", how: x[24] || "", onOrder: +x[25] || 0, st: x[26] || "", stNote: x[27] || "", stBy: x[28] || "", stAt: x[29] || "", barcode: x[30] || "" }));
@@ -147,7 +151,7 @@
     }
     const st = $("ap-status");
     if (S.err) { st.innerHTML = `<span class="neg">Couldn't load the list: ${esc(JT.message(S.err))}</span>`; return; }
-    if (!S.prods) { st.textContent = "Loading products, stock and 12 months of sales… (a few seconds)"; $("ap-table").innerHTML = ""; return; }
+    if (!S.prods) { st.textContent = S.retry ? "The database is busy with a scheduled refresh — trying again…" : "Loading products, stock and 12 months of sales… (a few seconds)"; $("ap-table").innerHTML = ""; return; }
     for (const b of document.querySelectorAll("#ap-view [data-ap-view]")) { b.setAttribute("aria-pressed", String(b.dataset.apView === S.view)); if (b.dataset.apView === "used") b.innerHTML = `Used <span class="cnt">${n0(S.used.filter(v => v.stock > 0).length)}</span>`; }
     for (const id of ["ap-seg", "ap-stock", "ap-miss", "ap-by", "ap-bulk", "ap-dl"]) { const el = $(id); if (el) el.hidden = S.view === "used"; }
     if (S.view === "used") return renderUsed();
