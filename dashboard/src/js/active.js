@@ -45,6 +45,8 @@
   }
   // an edit saved in the editor: reload the list so it shows (the catalog copy changes when Shopify takes it)
   window.addEventListener("jt:productedited", () => { setTimeout(() => { load().then(render).catch(() => {}); }, 90000); });
+  // the editor saw Shopify take the changes: show them in the list now
+  window.addEventListener("jt:productsynced", () => { load().then(render).catch(() => {}); });
 
   // missing product info (Oct 29, Brian: "a filter for missing product attributes so we can fill them in" — products with
   // no SKU / UPC don't match on vendor invoices). Checked per size / color; a product shows when any of its sizes is missing it.

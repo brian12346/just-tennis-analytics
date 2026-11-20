@@ -38,6 +38,7 @@
   }
 
   async function open(pid, focusVid) {
+    clearTimeout(pollT); pollN = 0; hadPending = false;
     M.pid = String(pid); M.focus = focusVid ? String(focusVid) : null; M.data = null; M.err = null; M.ed = { p: {}, v: {}, a: {} }; M.confirm = null; M.msg = null;
     const d = host(); d.hidden = false; document.body.classList.add("modal-open"); render();
     await load();
@@ -77,8 +78,34 @@
           ...movePend.map(x => ({ kind: "count", vid: x[0], set_to: x[1], delta: x[2], status: x[3], error: x[4] }))],
       };
     } catch (e) { if (mine === M.pid) M.err = e; }
-    if (mine === M.pid) render();
-    if (M.focus) setTimeout(() => { const r = document.querySelector(`#jt-pedit tr[data-pe-v="${CSS.escape(M.focus)}"]`); if (r) { r.classList.add("pe-focus"); r.scrollIntoView({ block: "center" }); } }, 0);
+    if (mine !== M.pid) return;
+    render();
+    if (M.focus) { const f = M.focus; M.focus = null; setTimeout(() => { const r = document.querySelector(`#jt-pedit tr[data-pe-v="${CSS.escape(f)}"]`); if (r) { r.classList.add("pe-focus"); r.scrollIntoView({ block: "center" }); } }, 0); }
+    watch();
+  }
+  // Nov 19, Brian: "the screen was stale and said it was working on the Shopify update" — while changes are on their way
+  // to Shopify, check every 8 seconds (for up to 5 minutes) and show the numbers Shopify ends up with. Typing isn't
+  // interrupted: a check that comes while a box has the cursor waits for the next one.
+  let pollT = null, pollN = 0, hadPending = false;
+  const pending = () => !!(M.data && M.data.pend.some(x => x.status === "pending"));
+  function watch() {
+    clearTimeout(pollT); pollT = null;
+    const d = $("jt-pedit"); if (!d || d.hidden || !M.pid) return;
+    if (pending()) { hadPending = true; if (pollN++ < 38) pollT = setTimeout(tick, 8000); return; }
+    if (hadPending) {
+      hadPending = false; pollN = 0;
+      const failed = M.data && M.data.pend.some(x => x.status === "failed");
+      M.msg = failed ? ["bad", "Shopify turned down part of it — see the note under the size below."] : ["info", "Done — Shopify has the changes, and the numbers here are Shopify's now."];
+      render();
+      window.dispatchEvent(new CustomEvent("jt:productsynced", { detail: { pid: M.pid } }));
+    }
+  }
+  function tick() {
+    const d = $("jt-pedit"); if (!d || d.hidden || !M.pid || M.busy || M.confirm) return watch();
+    const a = document.activeElement;
+    if (a && d.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) { pollT = setTimeout(tick, 5000); return; }
+    const y = ($("jt-pedit-card") || {}).scrollTop || 0;
+    load().then(() => { const c = $("jt-pedit-card"); if (c) c.scrollTop = y; });
   }
 
   // ---- edits: kept as typed text; a field equal to its current value isn't a change ----
@@ -256,7 +283,7 @@
     M.busy = false; M.confirm = null;
     if (!fail.length) M.ed = { p: {}, v: {}, a: {} };
     M.msg = fail.length ? ["bad", (done.length ? done.join(" · ") + "<br>" : "") + "Not saved — " + fail.join("<br>")] : ["info", done.join(" · ") || "Nothing was saved."];
-    M.data = null; render();
+    M.data = null; render(); pollN = 0;
     await load();
     window.dispatchEvent(new CustomEvent("jt:productedited", { detail: { pid: M.pid } }));
   }
