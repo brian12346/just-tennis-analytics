@@ -41,6 +41,7 @@
         price: x[7] == null ? null : +x[7], cost: x[8] == null ? null : +x[8], qty: x[9] == null ? null : +x[9] }));
       P.pending = new Map(pend.map(([v, c]) => [v, +c]));
       fillFilters();
+      loadHist(refresh);
       if (JT.fba) JT.fba.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
       if (window.JTPrep) window.JTPrep.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
       if (window.JTCost) window.JTCost.load(refresh).then(() => { if (id === P.reqId) render(); }).catch(() => {});
@@ -167,6 +168,85 @@
     ].map(k => `<div class="kpi ${k.c || ""}"><span class="eyebrow">${k.l}</span><span class="v">${k.v}</span><span class="s">${k.s}</span></div>`).join("");
   }
 
+  // ---------- Over time (Nov 19, Brian: "a graph to show inventory over time … break down by vendor and category") ----------
+  // jt.stock_value_history (migration 220): each month end's units and value at today's cost, by vendor, category and
+  // location. Follows the page's Vendor and Category filters; split into locations, or the top 7 vendors/categories + Other.
+  const H = (() => { let v = null; try { v = JSON.parse(localStorage.getItem("jt-pc-hist") || "null"); } catch (_) {} return Object.assign({ split: "loc", meas: "v" }, v || {}); })();
+  let HD = null, HERR = null;
+  async function loadHist(refresh) {
+    try {
+      const r = await JT.rows(["month::text", "vendor", "category", "store_u", "store_v", "prep_u", "prep_v", "fba_u", "fba_v", "awd_u", "awd_v", "has_store", "has_prep", "has_fba", "has_awd"],
+        "from jt.stock_value_history(13)", refresh);
+      const num = (x) => Number(x) || 0, b = (x) => x === true || x === "t" || x === "true";
+      HD = r.map(x => ({ month: x[0], vendor: x[1], cat: x[2], u: { shop: num(x[3]), prep: num(x[5]), fba: num(x[7]), awd: num(x[9]) }, v: { shop: num(x[4]), prep: num(x[6]), fba: num(x[8]), awd: num(x[10]) },
+        has: { shop: b(x[11]), prep: b(x[12]), fba: b(x[13]), awd: b(x[14]) } }));
+      HERR = null;
+    } catch (e) { HERR = e; }
+    renderHist();
+  }
+  const HCOL = { shop: "var(--ch-jt)", prep: "var(--brand-gold)", fba: "var(--ch-amz)", awd: "color-mix(in srgb,var(--ch-amz) 45%,var(--panel))" };
+  function renderHist() {
+    const host = $("pc-hchart"); if (!host) return;
+    document.querySelectorAll("#pc-hsplit button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === H.split)));
+    document.querySelectorAll("#pc-hmeas button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === H.meas)));
+    if (HERR) { host.innerHTML = `<div class="skel">Couldn't load the history: ${esc(JT.message(HERR))}</div>`; return; }
+    if (!HD) { host.innerHTML = '<div class="skel">Loading…</div>'; return; }
+    P.histKey = P.vendor + "|" + P.cat;
+    const rows = HD.filter(r => (P.vendor === "all" || r.vendor === P.vendor) && (P.cat === "all" || r.cat === P.cat));
+    const months = [...new Set(HD.map(r => r.month))].sort(), has = new Map();
+    for (const r of HD) has.set(r.month, r.has);
+    const K = H.meas === "v" ? "v" : "u", fmt = (x) => K === "v" ? m0(x) : Math.round(x).toLocaleString();
+    const ax = (x) => K === "v" ? (Math.abs(x) >= 1e6 ? "$" + +(x / 1e6).toFixed(2) + "M" : Math.abs(x) >= 1000 ? "$" + +(x / 1000).toFixed(0) + "k" : "$" + Math.round(x)) : Math.abs(x) >= 1000 ? +(x / 1000).toFixed(1) + "k" : String(Math.round(x));
+    const tot = (r) => r[K].shop + r[K].prep + r[K].fba + r[K].awd;
+    // series: locations, or the top 7 groups (by the latest month) + Other
+    let series;
+    if (H.split === "loc") series = LOCS.map(([l, lb]) => ({ key: l, label: lb, color: HCOL[l], val: (mo) => rows.filter(r => r.month === mo).reduce((a, r) => a + r[K][l], 0), known: (mo) => (has.get(mo) || {})[l] }));
+    else {
+      const g = (r) => H.split === "vendor" ? r.vendor : r.cat, last = months[months.length - 1], score = new Map();
+      for (const r of rows) if (r.month === last) score.set(g(r), (score.get(g(r)) || 0) + tot(r));
+      for (const r of rows) if (!score.has(g(r))) score.set(g(r), 0);
+      const top = [...score.entries()].sort((a, b) => b[1] - a[1]).slice(0, 7).map(x => x[0]), topS = new Set(top);
+      series = top.map((name, i) => ({ key: name, label: name, color: `var(--g${i + 1})`, val: (mo) => rows.filter(r => r.month === mo && g(r) === name).reduce((a, r) => a + tot(r), 0) }));
+      if (score.size > top.length) series.push({ key: "__other", label: `Other (${score.size - top.length})`, color: "var(--g8)", val: (mo) => rows.filter(r => r.month === mo && !topS.has(g(r))).reduce((a, r) => a + tot(r), 0) });
+    }
+    const data = months.map(mo => ({ mo, vals: series.map(s => s.val(mo)) })), sumOf = (d) => d.vals.reduce((a, x) => a + x, 0);
+    const miss = (l) => months.filter(mo => !(has.get(mo) || {})[l]);
+    const lab = (mo) => new Date(mo + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }) + " ’" + mo.slice(2, 4);
+    const gaps = [["prep", "Prep center"], ["awd", "AWD"]].map(([l, lb]) => { const ms = miss(l); return ms.length ? `${lb} history starts ${lab(months.find(mo => !ms.includes(mo)) || months[months.length - 1])}` : ""; }).filter(Boolean);
+    $("pc-hnote").textContent = `Each month's end (this month: now), valued at today's Shopify unit cost. Store from Shopify's inventory history, FBA from Amazon's inventory ledger.${gaps.length ? " " + gaps.join("; ") + " (earlier months count it as unknown, not zero)." : ""}${P.vendor !== "all" || P.cat !== "all" ? ` Filtered to ${[P.vendor !== "all" ? P.vendor : "", P.cat !== "all" ? P.cat : ""].filter(Boolean).join(" · ")}.` : ""}`;
+    $("pc-hlegend").innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join("");
+    const W = Math.max(320, host.clientWidth || 800), Hh = W < 560 ? 220 : 280, pad = { l: 64, r: 12, t: 12, b: 28 }, iw = W - pad.l - pad.r, ih = Hh - pad.t - pad.b;
+    const nice = (v) => { if (v <= 0) return 1; const e = Math.pow(10, Math.floor(Math.log10(v))); for (const f of [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (f * e >= v) return f * e; return 10 * e; };
+    const step = nice(Math.max(1, ...data.map(sumOf)) / 4), max = Math.ceil(Math.max(1, ...data.map(sumOf)) / step) * step, y = (v) => pad.t + ih - v / max * ih, bw = iw / Math.max(1, data.length);
+    let s = `<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="Inventory ${K === "v" ? "value" : "units"} at each month end">`;
+    for (let t = 0; t <= max + step / 2; t += step) s += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line-soft)"/><text x="${pad.l - 8}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--faint)" font-family="var(--mono)">${ax(t)}</text>`;
+    data.forEach((d, i) => {
+      const x = pad.l + i * bw, w = Math.min(48, bw * 0.66), bx = x + (bw - w) / 2; let base = 0;
+      d.vals.forEach((v, j) => { if (!(v > 0)) return; const h = y(base) - y(base + v); s += `<rect x="${bx}" y="${y(base + v)}" width="${w}" height="${Math.max(0, h - (h > 2 ? 1 : 0))}" fill="${series[j].color}"/>`; base += v; });
+      s += `<text x="${x + bw / 2}" y="${Hh - 8}" text-anchor="middle" font-size="11" fill="var(--muted)">${lab(d.mo)}</text>`;
+    });
+    data.forEach((d, i) => { s += `<rect data-i="${i}" x="${pad.l + i * bw}" y="${pad.t}" width="${bw}" height="${ih}" fill="transparent"/>`; });
+    host.innerHTML = s + `</svg><div class="tip" hidden></div>`;
+    const svg = host.querySelector("svg"), tip = host.querySelector(".tip");
+    svg.addEventListener("pointermove", (ev) => {
+      const t = ev.target.closest("rect[data-i]"); if (!t) { tip.hidden = true; return; }
+      const i = +t.dataset.i, d = data[i], prev = data[i - 1], sb = svg.getBoundingClientRect(), box = host.getBoundingClientRect();
+      tip.innerHTML = `<b>${i === data.length - 1 ? "Now" : "End of " + lab(d.mo)}</b> · ${fmt(sumOf(d))}${prev ? ` <span class="dim">(${sumOf(d) - sumOf(prev) >= 0 ? "+" : ""}${fmt(sumOf(d) - sumOf(prev))})</span>` : ""}`
+        + series.map((se, j) => ({ se, v: d.vals[j] })).reverse().map(({ se, v }) => `<br><span class="gsw" style="background:${se.color}"></span>${esc(se.label)} <b>${se.known && !se.known(d.mo) ? "no data" : fmt(v)}</b>`).join("");
+      tip.hidden = false; tip.style.left = Math.min(Math.max((pad.l + i * bw + bw / 2) * sb.width / W, 120), box.width - 120) + "px"; tip.style.top = (svg.offsetTop + (pad.t + ih * 0.3) * sb.height / Hh) + "px";
+    });
+    svg.addEventListener("pointerleave", () => { tip.hidden = true; });
+    // table: each series, 12 months ago / 3 months ago / now, and the change
+    const at = (k) => data[Math.max(0, data.length - 1 - k)], cols = [[12, "12 months ago"], [6, "6 months ago"], [3, "3 months ago"], [1, "Last month"], [0, "Now"]].filter(([k]) => k < data.length);
+    const cell = (j, d, se) => se.known && !se.known(d.mo) ? '<td class="dim">no data</td>' : `<td>${fmt(d.vals[j])}</td>`;
+    const first = at(cols[0][0]), now = at(0), chg = (j) => now.vals[j] - first.vals[j];
+    $("pc-htbl").innerHTML = `<thead><tr><th class="l">${H.split === "loc" ? "Location" : H.split === "vendor" ? "Vendor" : "Category"}</th>${cols.map(([k, l]) => `<th>${l}<div class="meta">${lab(at(k).mo)}</div></th>`).join("")}<th>Change</th></tr></thead><tbody>${
+      series.map((se, j) => `<tr><td class="l"><span class="gsw" style="background:${se.color}"></span>${esc(se.label)}</td>${cols.map(([k]) => cell(j, at(k), se)).join("")}<td class="${chg(j) < 0 ? "neg" : ""}">${se.known && !se.known(first.mo) ? "—" : (chg(j) >= 0 ? "+" : "") + fmt(chg(j))}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td class="l">Total</td>${cols.map(([k]) => `<td>${fmt(sumOf(at(k)))}</td>`).join("")}<td>${(sumOf(now) - sumOf(first) >= 0 ? "+" : "") + fmt(sumOf(now) - sumOf(first))}</td></tr></tfoot>`;
+  }
+  ["pc-hsplit", "pc-hmeas"].forEach(id => $(id).addEventListener("click", (e) => { const b = e.target.closest("button[data-v]"); if (!b) return;
+    H[id === "pc-hsplit" ? "split" : "meas"] = b.dataset.v; try { localStorage.setItem("jt-pc-hist", JSON.stringify(H)); } catch (_) {} renderHist(); }));
+
   // move stock between the store, the prep center and Amazon (stockmove.js); nothing in the store but stock in the
   // prep center gets the one-click "→ Store" (Brian, Oct 23)
   function moveBtn(r, u) {
@@ -181,6 +261,7 @@
     if (!P.rows) { t.innerHTML = `<tbody><tr><td class="l muted">${P.loading ? "Loading…" : ""}</td></tr></tbody>`; $("pc-inv").innerHTML = ""; return; }
     const rows = visible();
     renderInv();
+    if (P.histKey !== P.vendor + "|" + P.cat) { P.histKey = P.vendor + "|" + P.cat; renderHist(); }
     const vt = sumUp(rows);
     const pages = Math.max(1, Math.ceil(rows.length / PER)); if (P.page >= pages) P.page = pages - 1;
     pageRows = rows.slice(P.page * PER, P.page * PER + PER);

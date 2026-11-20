@@ -589,6 +589,19 @@
       <div class="panel-head"><h2>Totals</h2><span class="muted small" id="pc-inv-scope"></span></div>
       <section class="kpis" id="pc-inv" aria-label="Inventory value"></section>
     </section>
+    <section class="panel" id="pc-hist-panel">
+      <div class="panel-head">
+        <h2>Over time</h2>
+        <div class="filters">
+          <div class="seg" id="pc-hsplit" role="group" aria-label="Split by"><button type="button" data-v="loc">Location</button><button type="button" data-v="vendor">Vendor</button><button type="button" data-v="cat">Category</button></div>
+          <div class="seg" id="pc-hmeas" role="group" aria-label="Measure"><button type="button" data-v="v">Value at cost</button><button type="button" data-v="u">Units</button></div>
+        </div>
+      </div>
+      <p class="muted small" id="pc-hnote"></p>
+      <div class="legend" id="pc-hlegend" style="margin:6px 0"></div>
+      <div class="chart" id="pc-hchart"><div class="skel">Loading…</div></div>
+      <div class="tbl-wrap" style="margin-top:10px"><table id="pc-htbl"></table></div>
+    </section>
     <section class="panel">
       <div class="panel-head">
         <h2>Units and cost by product</h2>
