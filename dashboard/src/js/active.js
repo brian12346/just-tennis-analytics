@@ -37,6 +37,15 @@
   const suggest = (o, isP) => o.disc ? "eol" : o.stk === "new" || o.stk === "onorder" ? "active" : o.stk === "dead" ? "eol" : (isP ? o.draft : o.status !== "ACTIVE") && o.stock <= 0 ? "eol" : "active";
   const SORTK = { added: (p) => -(p.added ? Date.parse(p.added) : 0), sold: (p) => -p.sold, stock: (p) => -p.stock, last: (p) => -(p.last ? Date.parse(p.last) : 0), name: (p) => p.title.toLowerCase(), vendor: (p) => (p.vendor + " " + p.title).toLowerCase() };
   const GROUPS = [["", "No grouping"], ["vendor", "Vendor"], ["type", "Category"]];
+  // vendor and category suggestions for the editor (every Shopify vendor / product type in the list)
+  function peLists() {
+    if (!window.JTProductEdit || !S.rows) return;
+    window.JTProductEdit._vendors = [...new Set(S.rows.map(v => v.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    window.JTProductEdit._types = [...new Set(S.rows.map(v => v.type).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  }
+  // an edit saved in the editor: reload the list so it shows (the catalog copy changes when Shopify takes it)
+  window.addEventListener("jt:productedited", () => { setTimeout(() => { load().then(render).catch(() => {}); }, 90000); });
+
   // missing product info (Oct 29, Brian: "a filter for missing product attributes so we can fill them in" — products with
   // no SKU / UPC don't match on vendor invoices). Checked per size / color; a product shows when any of its sizes is missing it.
   const MISS = { sku: ["No SKU", v => !v.sku.trim()], upc: ["No UPC / barcode", v => !v.barcode.trim()], cost: ["No cost", v => !(v.cost > 0)],
@@ -194,7 +203,7 @@
 
         const vs = p.vs.filter(v => rem ? v.culled : !v.culled), o = S.open.has(p.pid), on = vs.length && vs.every(v => S.sel.has(v.vid)), some = !on && vs.some(v => S.sel.has(v.vid));
         const one = p.vs.length === 1 ? p.vs[0] : null;
-        return `<tr class="po-row ap-p ${o ? "on" : ""}" data-ap-open="${esc(p.pid)}">
+        return `<tr class="po-row ap-p ${o ? "on" : ""}" data-ap-open="${esc(p.pid)}" ${one ? `data-ap-vid="${esc(one.vid)}"` : ""} title="Click to edit">
           <td><input type="checkbox" data-ap-selp="${esc(p.pid)}" ${on ? "checked" : ""} ${some ? 'data-some="1"' : ""} aria-label="Select ${esc(p.title)}"></td>
           <td class="rl-car" aria-hidden="true">${p.vs.length > 1 ? (o ? "▾" : "▸") : ""}</td>
           <td class="l"><a class="olink" href="${ADMIN}/products/${esc(p.pid)}" target="_blank" rel="noopener">${esc(one ? one.title : p.title)}</a>
@@ -205,7 +214,7 @@
           <td class="num">${soldCell(p)}</td><td class="l small muted">${chans(p)}</td>
           <td class="l small">${p.last ? esc(sd(p.last)) : '<span class="dim">—</span>'}</td>
           <td class="l small">${rem ? vs.map(v => v.cNote).filter(Boolean).slice(0, 1).map(esc).join("") || '<span class="dim">removed</span>' : ""}</td></tr>
-          ${(o || S.mf) && p.vs.length > 1 ? (S.mf && !o ? vs.filter(v => S.mf === "any" ? missOf(v).length : MISS[S.mf][1](v)) : vs).map(v => `<tr class="ap-v"><td><input type="checkbox" data-ap-selv="${esc(v.vid)}" ${S.sel.has(v.vid) ? "checked" : ""} aria-label="Select ${esc(v.title)}"></td><td></td>
+          ${(o || S.mf) && p.vs.length > 1 ? (S.mf && !o ? vs.filter(v => S.mf === "any" ? missOf(v).length : MISS[S.mf][1](v)) : vs).map(v => `<tr class="ap-v" data-ap-open="${esc(v.pid)}" data-ap-vid="${esc(v.vid)}" title="Click to edit"><td><input type="checkbox" data-ap-selv="${esc(v.vid)}" ${S.sel.has(v.vid) ? "checked" : ""} aria-label="Select ${esc(v.title)}"></td><td></td>
             <td class="l"><a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a><div class="meta">${codes(v)} ${missPill(v)} ${stockPill(v)} ${tags(v, false)}</div></td>
             <td class="l ap-stc">${v.culled ? "" : stCell(v, "v" + v.vid, false)}</td><td></td><td class="num">${stockCell(v)}</td><td class="l small muted">${where(v)}</td><td class="num">${soldCell(v)}</td><td class="l small muted">${chans(v)}</td>
             <td class="l small">${v.last ? esc(sd(v.last)) : '<span class="dim">—</span>'}</td><td class="l small">${v.culled ? `<span class="dim" title="${esc(v.cBy)} · ${esc(v.cAt.slice(0, 10))}">${esc(v.cNote || "removed")}</span>` : ""}</td></tr>`).join("") : ""}`;
@@ -241,7 +250,7 @@
     const seg = `<tr class="ap-useg"><td colspan="9" class="l"><span class="seg sm">${UFILT.map(([k2, n]) => `<button type="button" data-ap-uf="${k2}" aria-pressed="${S.uf === k2}">${n}</button>`).join("")}</span></td></tr>`;
     $("ap-table").innerHTML = `<thead>${seg}<tr>${th("name", "Used piece", 1)}${th("vendor", "Brand · type", 1)}${th("price", "Price")}${th("cost", "Cost")}${th("stock", "On hand")}<th class="l">Where</th>${th("added", "Came in", 1)}${th("sold", "Sold 12 mo")}${th("last", "Last sold", 1)}</tr></thead><tbody>${
       list.slice(0, S.limit).map(v => { const d = daysIn(v);
-        return `<tr><td class="l"><a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a>${v.status !== "ACTIVE" ? ` <span class="pill pos">${esc((v.status || "").toLowerCase())}</span>` : ""}</td>
+        return `<tr class="ap-v" data-ap-open="${esc(v.pid)}" data-ap-vid="${esc(v.vid)}" title="Click to edit"><td class="l"><a class="olink" href="${ADMIN}/products/${esc(v.pid)}/variants/${esc(v.vid)}" target="_blank" rel="noopener">${esc(v.title)}</a>${v.status !== "ACTIVE" ? ` <span class="pill pos">${esc((v.status || "").toLowerCase())}</span>` : ""}</td>
           <td class="l small">${esc(v.vendor || "—")}<div class="meta">${esc(v.type || "")}</div></td>
           <td class="num">${v.price ? "$" + v.price.toFixed(2) : '<span class="dim">—</span>'}</td><td class="num">${v.cost ? "$" + v.cost.toFixed(2) : '<span class="pill miss">no cost</span>'}</td>
           <td class="num">${stockCell(v)}</td><td class="l small muted">${where(v)}</td>
@@ -507,8 +516,12 @@
     const g = e.target.closest("[data-ap-g]"); if (g) { const k = g.dataset.apG; S.shut.has(k) ? S.shut.delete(k) : S.shut.add(k); render(); return; }
     if (e.target.closest("#ap-more")) { S.limit += 300; render(); return; }
     if (e.target.closest("#ap-refresh")) { refresh(); return; }
+    // Nov 19: clicking a product (or a size/color) opens the editor; the ▸ column folds the sizes in and out
     const row = e.target.closest("[data-ap-open]");
-    if (row && !e.target.closest("a, button, input")) { const id = row.dataset.apOpen; S.open.has(id) ? S.open.delete(id) : S.open.add(id); render(); }
+    if (row && !e.target.closest("a, button, input, select, label") && !String(window.getSelection() || "")) {
+      const id = row.dataset.apOpen;
+      if (e.target.closest(".rl-car") || !window.JTProductEdit) { S.open.has(id) ? S.open.delete(id) : S.open.add(id); render(); return; }
+      peLists(); window.JTProductEdit.open(id, row.dataset.apVid || null); return; }
   });
   $("ap-q").addEventListener("input", (e) => { S.q = e.target.value; clearTimeout(e.target._t); e.target._t = setTimeout(() => { S.limit = 150; render(); }, 150); });
   $("ap-vendor").addEventListener("change", (e) => { S.vendor = e.target.value; S.limit = 150; render(); });

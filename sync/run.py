@@ -112,6 +112,8 @@ def main(argv: list[str] | None = None) -> None:
         # costs typed in the dashboard -> Shopify (a save starts job cost-updates right away; hourly catches any missed)
         from . import shopify as sh2
         run("cost_updates", lambda: sh2.apply_cost_updates(shopify(), conn, today))
+        # product name / vendor / category / status and SKU / barcode edited on Inventory › Products (migration 221)
+        run("product_updates", lambda: sh2.apply_product_updates(shopify(), conn))
 
     if a.job in ("hourly", "nightly", "fbm-inventory"):
         # Amazon FBM orders confirmed on the dashboard -> Shopify stock (a confirm starts job fbm-inventory right away)

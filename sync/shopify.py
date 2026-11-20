@@ -9,6 +9,7 @@ the dashboard back to Shopify (apply_cost_updates).
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import time
 
@@ -765,6 +766,66 @@ def apply_product_archives(shop: "Shopify", conn) -> int:
             else:
                 cur.execute("update jt.product_archives set status = 'done', error = '', applied_at = now() where id = %s", (rid,))
                 cur.execute("update jt.variants set status = 'ARCHIVED' where product_id = %s", (pid,))
+                done += 1
+        conn.commit()
+    return done
+
+
+# Products › edit (migration 221): jt.shopify_product_updates, status pending -> Shopify. A product-level row changes
+# title / vendor / product type / status (productUpdate); a variant row changes SKU / barcode (productVariantsBulkUpdate).
+# Needs the app's write_products scope. On success the catalog copy (jt.variants) is updated at once.
+PRODUCT_UPDATE_M = """mutation($p: ProductUpdateInput!) { productUpdate(product: $p) { product { id } userErrors { field message } } }"""
+VARIANT_FIELDS_M = """mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) { productVariants { id } userErrors { field message } }
+}"""
+_PRODUCT_KEYS = {"title": "title", "vendor": "vendor", "product_type": "productType", "status": "status"}
+
+
+def apply_product_updates(shop: "Shopify", conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("select id, product_id, variant_id, fields from jt.shopify_product_updates where status = 'pending' order by id")
+        todo = cur.fetchall()
+    done = 0
+    for uid, pid, vid, fields in todo:
+        f = fields if isinstance(fields, dict) else json.loads(fields)
+        err = ""
+        try:
+            if vid is None:
+                inp = {"id": f"gid://shopify/Product/{pid}", **{_PRODUCT_KEYS[k]: v for k, v in f.items() if k in _PRODUCT_KEYS}}
+                out = shop.graphql(PRODUCT_UPDATE_M, {"p": inp})["productUpdate"]
+            else:
+                var = {"id": f"gid://shopify/ProductVariant/{vid}"}
+                if "barcode" in f:
+                    var["barcode"] = f["barcode"]
+                if "sku" in f:
+                    var["inventoryItem"] = {"sku": f["sku"]}
+                out = shop.graphql(VARIANT_FIELDS_M, {"productId": f"gid://shopify/Product/{pid}", "variants": [var]})["productVariantsBulkUpdate"]
+            ue = out.get("userErrors") or []
+            if ue:
+                raise RuntimeError("; ".join(x["message"] for x in ue))
+        except Exception as e:  # noqa: BLE001 - record it on the request and carry on
+            err = str(e)[:500]
+            if "access" in err.lower() or "scope" in err.lower():
+                err = "the Shopify app needs the write_products scope to edit products — " + err
+        with conn.cursor() as cur:
+            if err:
+                cur.execute("update jt.shopify_product_updates set status = 'failed', error = %s, applied_at = now() where id = %s", (err, uid))
+            else:
+                cur.execute("update jt.shopify_product_updates set status = 'done', error = '', applied_at = now() where id = %s", (uid,))
+                if vid is None:
+                    cols = {"title": "product_title", "vendor": "vendor", "product_type": "product_type", "status": "status"}
+                    sets = [(cols[k], v) for k, v in f.items() if k in cols]
+                    if sets:
+                        cur.execute("update jt.variants set " + ", ".join(f"{c} = %s" for c, _ in sets) + " where product_id = %s",
+                                    [v for _, v in sets] + [pid])
+                    if "title" in f:
+                        cur.execute("""update jt.variants set display_name = case when coalesce(variant_title, '') in ('', 'Default Title') then product_title
+                                       else product_title || ' - ' || variant_title end where product_id = %s""", (pid,))
+                else:
+                    if "sku" in f:
+                        cur.execute("update jt.variants set sku = %s where variant_id = %s", (f["sku"], vid))
+                    if "barcode" in f:
+                        cur.execute("update jt.variants set barcode = %s where variant_id = %s", (f["barcode"], vid))
                 done += 1
         conn.commit()
     return done

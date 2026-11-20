@@ -50,7 +50,7 @@
     <button role="tab" data-tab="amazon" data-group="sales" aria-selected="false">Amazon</button>
     <button role="tab" data-tab="ads" data-group="sales" aria-selected="false">Ads</button>
     <button role="tab" data-tab="pricematch" data-group="sales" aria-selected="false">Price match</button>
-    <button role="tab" data-tab="active" data-group="inventory" aria-selected="false" hidden>Active products</button>
+    <button role="tab" data-tab="active" data-group="inventory" aria-selected="false" hidden>Products</button>
     <button role="tab" data-tab="costs" data-group="inventory" aria-selected="false" hidden>Value</button>
     <button role="tab" data-tab="fba" data-group="inventory" aria-selected="false" hidden>Amazon FBA &amp; AWD</button>
     <button role="tab" data-tab="fbm" data-group="inventory" aria-selected="false" hidden>FBM stock</button>
@@ -545,7 +545,7 @@
     <header class="top">
       <div class="title">
         <span class="eyebrow">Everything in stock (Shopify store, prep center, Amazon FBA &amp; AWD), sold in the last 12 months, or new · cull from here</span>
-        <h1>Active products</h1>
+        <h1>Products</h1>
       </div>
       <div class="controls"><span class="muted small" id="ap-shopst" aria-live="polite"></span><button class="btn" id="ap-shop" type="button" title="Read new and changed products from Shopify now (otherwise it happens every hour, and in full overnight)">Refresh from Shopify</button><button class="btn icon" id="ap-refresh" title="Refresh" aria-label="Refresh">↻</button></div>
     </header>
@@ -1107,6 +1107,9 @@
 </script>
 <script>
 <!-- @inline js/db.js -->
+</script>
+<script>
+<!-- @inline js/product-edit.js -->
 </script>
 <script>
 <!-- @inline js/salesviz.js -->
