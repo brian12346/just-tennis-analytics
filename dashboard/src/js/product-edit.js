@@ -28,7 +28,8 @@
     d.addEventListener("click", onClick);
     d.addEventListener("input", onInput);
     d.addEventListener("change", onInput);
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !d.hidden && !M.busy) { e.preventDefault(); if (M.confirm) { M.confirm = null; render(); } else close(); } });
+    document.addEventListener("keydown", (e) => { const mv = $("mv-modal"); if ((mv && !mv.hidden) || (e.target.closest && e.target.closest("#mv-modal"))) return;
+      if (e.key === "Escape" && !d.hidden && !M.busy) { e.preventDefault(); if (M.confirm) { M.confirm = null; render(); } else close(); } });
     return d;
   }
   function close() {
@@ -144,7 +145,9 @@
           ${v.price > 0 && v.cost != null ? `<div class="meta">${Math.round((1 - (money(ed(v.vid, "cost") ?? v.cost) || 0) / (money(ed(v.vid, "price") ?? v.price) || v.price)) * 100)}% margin</div>` : ""}</td>
         <td class="${isCh(v.vid, "count") ? "pe-ch" : ""}">${v.tracked ? inp(`data-pv="${esc(v.vid)}" data-k="count" inputmode="numeric" aria-label="Store count"`, ed(v.vid, "count") ?? "", "pe-w4", v.store == null ? "" : String(Math.max(0, v.store))) + `<div class="meta">now ${n0(v.store)}</div>`
           + (isCh(v.vid, "count") ? inp(`data-pv="${esc(v.vid)}" data-k="note" aria-label="Why the count changed"`, ed(v.vid, "note") ?? "", "pe-note", "Why? (e.g. found 2 in back)") : "") : '<span class="dim small">not tracked</span>'}</td>
-        <td class="num small">${n0(v.prep)}</td><td class="num small">${n0(v.fba)}</td><td class="num small">${n0(v.awd)}</td></tr>`).join("");
+        <td class="num small">${n0(v.prep)}</td>
+        <td class="l pe-mv">${window.JTMove ? `<button class="mini" type="button" data-pe="move" data-dir="shop>prep" data-vid="${esc(v.vid)}" ${(v.store || 0) > 0 && !M.busy ? "" : "disabled"} title="Move units from the Shopify store into the prep center">→ Prep</button><button class="mini" type="button" data-pe="move" data-dir="prep>shop" data-vid="${esc(v.vid)}" ${v.prep > 0 && !M.busy ? "" : "disabled"} title="Move units from the prep center into the Shopify store">→ Store</button>` : ""}</td>
+        <td class="num small">${n0(v.fba)}</td><td class="num small">${n0(v.awd)}</td></tr>`).join("");
     const amzRows = D.amz.map(a => { const v = D.vars.find(x => x.vid === a.vid);
       return `<tr><td class="l"><span class="mono">${esc(a.sku)}</span>${a.units > 1 ? ` <span class="pill pos">${a.units}-pack</span>` : ""}<div class="meta">${a.asin ? `<a class="olink" href="https://www.amazon.com/dp/${encodeURIComponent(a.asin)}" target="_blank" rel="noopener">${esc(a.asin)}</a> · ` : ""}${esc(v ? v.vt || "Default" : "")}${a.ch ? " · " + esc(a.ch.toUpperCase()) : ""}${a.st ? " · " + esc(a.st) : ""}</div></td>
         <td class="l small">${esc(a.title || "")}</td>
@@ -159,7 +162,7 @@
           <label class="${pCh("status") ? "pe-ch" : ""}"><span class="eyebrow">Shopify status</span><select class="inp" data-pp="status" aria-label="Status">${STATUSES.map(([k, l]) => `<option value="${k}" ${val(p, "status", D.status) === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
         </div>${pendNote(pendFor(""))}
         <h3 class="eyebrow pe-h">Sizes / colors <span class="muted" style="text-transform:none;letter-spacing:0">· a store count sets Shopify's available units to the number counted; prep center, FBA and AWD are shown for reference</span></h3>
-        <div class="tbl-wrap"><table class="pe-t"><thead><tr><th class="l">Size / color</th><th>SKU</th><th>Barcode / UPC</th><th>Price</th><th>Cost</th><th>Store count</th><th>Prep</th><th>FBA</th><th>AWD</th></tr></thead><tbody>${varRows}</tbody></table></div>
+        <div class="tbl-wrap"><table class="pe-t"><thead><tr><th class="l">Size / color</th><th>SKU</th><th>Barcode / UPC</th><th>Price</th><th>Cost</th><th>Store count</th><th>Prep</th><th class="l">Move</th><th>FBA</th><th>AWD</th></tr></thead><tbody>${varRows}</tbody></table></div>
         <h3 class="eyebrow pe-h">Amazon listings</h3>
         ${D.amz.length ? `<div class="tbl-wrap"><table class="pe-t"><thead><tr><th class="l">Seller SKU</th><th class="l">Amazon title</th><th>Our price</th></tr></thead><tbody>${amzRows}</tbody></table></div>`
           : '<p class="muted small">No Amazon listing is mapped to this product (Amazon › Mapping).</p>'}
@@ -199,6 +202,7 @@
     const a = b.dataset.pe;
     if (a === "close") return close();
     if (a === "item") { if (window.JTItem) window.JTItem.open(b.dataset.vid); return; }
+    if (a === "move") { if (window.JTMove) window.JTMove.open(b.dataset.vid, b.dataset.dir); return; }
     if (a === "reset") { M.ed = { p: {}, v: {}, a: {} }; M.msg = null; render(); return; }
     if (a === "save") { const c = changes(); M.confirm = { shop: c.shop.length > 0, amz: c.amz.length > 0 }; render(); return; }
     if (a === "back") { M.confirm = null; render(); return; }
@@ -257,5 +261,7 @@
     window.dispatchEvent(new CustomEvent("jt:productedited", { detail: { pid: M.pid } }));
   }
 
+  // a move made from here (stockmove.js): reload the numbers, keeping anything typed
+  window.addEventListener("jt:stockmoved", () => { const d = $("jt-pedit"); if (d && !d.hidden && M.pid && !M.busy) { M.msg = ["info", "Moved. Shopify's store count updates in a minute or two; the prep center right away."]; load(); } });
   window.JTProductEdit = { open, close, _vendors: [], _types: [] };
 })();

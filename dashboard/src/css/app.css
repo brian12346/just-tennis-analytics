@@ -1812,7 +1812,7 @@ section.panel.pfold .lanehead > :not(h2):not(.muted){display:none}
 .pe-grid .inp{width:100%}
 .pe-t .inp{padding:5px 7px;font-size:13px;text-align:right}
 .pe-t td:nth-child(2) .inp,.pe-t td:nth-child(3) .inp{text-align:left}
-.pe-w8{width:9.5em}.pe-w5{width:6.5em}.pe-w4{width:5em}
+.pe-w8{width:8em}.pe-w5{width:6.5em}.pe-w4{width:5em}
 .pe-ch .inp,label.pe-ch .inp{border-color:var(--brand-gold);background:var(--warn-bg)}
 .pe-h{margin:14px 0 6px}
 .pe-pend{font-size:12px;margin-top:4px}
@@ -1826,3 +1826,4 @@ tr.pe-focus td{background:var(--warn-bg)}
 .oos-count .oos-cnote{width:14em}
 .mv-note{display:flex;flex-direction:column;gap:4px;margin:8px 0}
 .mv-note .inp{width:100%}
+.pe-mv{white-space:nowrap}.pe-mv .mini{display:block;width:100%;margin:2px 0}.pe-mv .mini:disabled{opacity:.4}

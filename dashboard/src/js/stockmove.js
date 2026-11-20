@@ -21,9 +21,11 @@
   ];
   const vidOk = (v) => /^\d+$/.test(String(v));
 
-  async function open(vid) {
+  // dir (optional): "prep>shop" or "shop>prep" to start on that route (Products editor, Nov 19)
+  async function open(vid, want) {
     if (!vidOk(vid)) return;
     host();
+    document.body.appendChild($("mv-modal"));    // on top of any dialog already open
     M = { vid: String(vid), loading: true, dir: null, qty: "", from: "", to: "" };
     paint();
     try {
@@ -41,7 +43,7 @@
       M = { ...M, loading: false, title: x[0] || "variant " + vid, sku: x[1] || "", vendor: x[2] || "", cost: x[3] == null ? null : +x[3],
         shop: sq && sq[0] && sq[0][0] != null ? +sq[0][0] : 0, prep: pi.map(r => ({ sku: r[0] || "", qty: +r[1] || 0 })), listings, fba, awd };
       const prepN = M.prep.reduce((a, r) => a + r.qty, 0);
-      M.dir = M.shop <= 0 && prepN > 0 ? "prep>shop" : prepN > 0 ? "prep>shop" : M.shop > 0 ? "shop>prep" : "prep>shop";
+      M.dir = want === "prep>shop" || want === "shop>prep" ? want : M.shop <= 0 && prepN > 0 ? "prep>shop" : prepN > 0 ? "prep>shop" : M.shop > 0 ? "shop>prep" : "prep>shop";
       pickDefaults();
     } catch (e) { M.loading = false; M.err = JT.message ? JT.message(e) : String(e); }
     paint();
@@ -78,7 +80,9 @@
       if (b.dataset.mv === "product" && window.JTPrepTab && window.JTPrepTab.openProduct) { const v = M.vid; close(); window.JTPrepTab.openProduct(v); }
     });
   }
-  function close() { M = null; const d = $("mv-modal"); if (d) d.hidden = true; document.body.classList.remove("modal-open"); }
+  function close() { M = null; const d = $("mv-modal"); if (d) d.hidden = true;
+    // keep the page locked while another dialog (e.g. the Products editor) is still open underneath
+    if (![...document.querySelectorAll(".modal")].some(x => x !== d && !x.hidden)) document.body.classList.remove("modal-open"); }
 
   function paint() {
     const d = $("mv-modal"), c = $("mv-card"); if (!d || !M) return;
